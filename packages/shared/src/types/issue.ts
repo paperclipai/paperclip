@@ -1,7 +1,8 @@
-import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssueOriginKind, IssuePriority, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
-import type { IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { IssueWorkProduct } from "./work-product.js";
 
 export interface IssueAncestorProject {
   id: string;
@@ -50,10 +51,54 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type DocumentFormat = "markdown";
+
+export interface IssueDocumentSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  key: string;
+  title: string | null;
+  format: DocumentFormat;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueDocument extends IssueDocumentSummary {
+  body: string;
+}
+
+export interface DocumentRevision {
+  id: string;
+  companyId: string;
+  documentId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+  body: string;
+  changeSummary: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface LegacyPlanDocument {
+  key: "plan";
+  body: string;
+  source: "issue_description";
+}
+
 export interface Issue {
   id: string;
   companyId: string;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
   ancestors?: IssueAncestor[];
@@ -71,9 +116,14 @@ export interface Issue {
   createdByUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
+  originKind?: IssueOriginKind;
+  originId?: string | null;
+  originRunId?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  executionWorkspaceId: string | null;
+  executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -81,8 +131,13 @@ export interface Issue {
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  planDocument?: IssueDocument | null;
+  documentSummaries?: IssueDocumentSummary[];
+  legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
   goal?: Goal | null;
+  currentExecutionWorkspace?: ExecutionWorkspace | null;
+  workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;

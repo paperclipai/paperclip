@@ -3,6 +3,18 @@ import { resolveMigrationConnection } from "./migration-runtime.js";
 
 const jsonMode = process.argv.includes("--json");
 
+function toError(error: unknown, context = "Migration status check failed"): Error {
+  if (error instanceof Error) return error;
+  if (error === undefined) return new Error(context);
+  if (typeof error === "string") return new Error(`${context}: ${error}`);
+
+  try {
+    return new Error(`${context}: ${JSON.stringify(error)}`);
+  } catch {
+    return new Error(`${context}: ${String(error)}`);
+  }
+}
+
 async function main(): Promise<void> {
   const connection = await resolveMigrationConnection();
 
@@ -42,4 +54,8 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+main().catch((error) => {
+  const err = toError(error, "Migration status check failed");
+  process.stderr.write(`${err.stack ?? err.message}\n`);
+  process.exit(1);
+});

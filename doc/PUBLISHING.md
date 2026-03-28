@@ -1,18 +1,19 @@
 # Publishing to npm
 
-Low-level reference for how Paperclip packages are built for npm.
+Low-level reference for how Paperclip packages are prepared and published to npm.
 
-For the maintainer release workflow, use [doc/RELEASING.md](RELEASING.md). This document is only about packaging internals and the scripts that produce publishable artifacts.
+For the maintainer workflow, use [doc/RELEASING.md](RELEASING.md). This document focuses on packaging internals.
 
 ## Current Release Entry Points
 
-Use these scripts instead of older one-off publish commands:
+Use these scripts:
 
-- [`scripts/release-start.sh`](../scripts/release-start.sh) to create or resume `release/X.Y.Z`
-- [`scripts/release-preflight.sh`](../scripts/release-preflight.sh) before any canary or stable release
-- [`scripts/release.sh`](../scripts/release.sh) for canary and stable npm publishes
-- [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest` during rollback
-- [`scripts/create-github-release.sh`](../scripts/create-github-release.sh) after pushing the stable branch tag
+- [`scripts/release.sh`](../scripts/release.sh) for canary and stable publish flows
+- [`scripts/create-github-release.sh`](../scripts/create-github-release.sh) after pushing a stable tag
+- [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest`
+- [`scripts/build-npm.sh`](../scripts/build-npm.sh) for the CLI packaging build
+
+Paperclip no longer uses release branches or Changesets for publishing.
 
 ## Why the CLI needs special packaging
 
@@ -23,7 +24,7 @@ The CLI package, `paperclipai`, imports code from workspace packages such as:
 - `@paperclipai/shared`
 - adapter packages under `packages/adapters/`
 
-Those workspace references use `workspace:*` during development. npm cannot install those references directly for end users, so the release build has to transform the CLI into a publishable standalone package.
+Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
 
 ## `build-npm.sh`
 
@@ -33,89 +34,119 @@ Run:
 ./scripts/build-npm.sh
 ```
 
-This script does six things:
+This script:
 
-1. Runs the forbidden token check unless `--skip-checks` is supplied
-2. Runs `pnpm -r typecheck`
-3. Bundles the CLI entrypoint with esbuild into `cli/dist/index.js`
-4. Verifies the bundled entrypoint with `node --check`
-5. Rewrites `cli/package.json` into a publishable npm manifest and stores the dev copy as `cli/package.dev.json`
-6. Copies the repo `README.md` into `cli/README.md` for npm package metadata
+1. runs the forbidden token check unless `--skip-checks` is supplied
+2. runs `pnpm -r typecheck`
+3. bundles the CLI entrypoint with esbuild into `cli/dist/index.js`
+4. verifies the bundled entrypoint with `node --check`
+5. rewrites `cli/package.json` into a publishable npm manifest and stores the dev copy as `cli/package.dev.json`
+6. copies the repo `README.md` into `cli/README.md` for npm metadata
 
-`build-npm.sh` is used by the release script so that npm users install a real package rather than unresolved workspace dependencies.
+After the release script exits, the dev manifest and temporary files are restored automatically.
 
-## Publishable CLI layout
+## Package discovery and versioning
 
-During development, [`cli/package.json`](../cli/package.json) contains workspace references.
-
-During release preparation:
-
-- `cli/package.json` becomes a publishable manifest with external npm dependency ranges
-- `cli/package.dev.json` stores the development manifest temporarily
-- `cli/dist/index.js` contains the bundled CLI entrypoint
-- `cli/README.md` is copied in for npm metadata
-
-After release finalization, the release script restores the development manifest and removes the temporary README copy.
-
-## Package discovery
-
-The release tooling scans the workspace for public packages under:
+Public packages are discovered from:
 
 - `packages/`
 - `server/`
+- `ui/`
 - `cli/`
 
-`ui/` remains ignored for npm publishing because it is private.
+The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs), which:
 
-This matters because all public packages are versioned and published together as one release unit.
+- finds all public packages
+- sorts them topologically by internal dependencies
+- rewrites each package version to the target release version
+- rewrites internal `workspace:*` dependency references to the exact target version
+- updates the CLI's displayed version string
 
-## Canary packaging model
+Those rewrites are temporary. The working tree is restored after publish or dry-run.
 
-Canaries are published as semver prereleases such as:
+## `@paperclipai/ui` packaging
 
-- `1.2.3-canary.0`
-- `1.2.3-canary.1`
+The UI package publishes prebuilt static assets, not the source workspace.
 
-They are published under the npm dist-tag `canary`.
+The `ui` package uses [`scripts/generate-ui-package-json.mjs`](../scripts/generate-ui-package-json.mjs) during `prepack` to swap in a lean publish manifest that:
 
-This means:
+- keeps the release-managed `name` and `version`
+- publishes only `dist/`
+- omits the source-only dependency graph from downstream installs
 
-- `npx paperclipai@canary onboard` can install them explicitly
-- `npx paperclipai onboard` continues to resolve `latest`
-- the stable changelog can stay at `releases/v1.2.3.md`
+After packing or publishing, `postpack` restores the development manifest automatically.
 
-## Stable packaging model
+## Version formats
 
-Stable releases publish normal semver versions such as `1.2.3` under the npm dist-tag `latest`.
+Paperclip uses calendar versions:
 
-The stable publish flow also creates the local release commit and git tag on `release/X.Y.Z`. Pushing that branch commit/tag, creating the GitHub Release, and merging the release branch back to `master` happen afterward as separate maintainer steps.
+- stable: `YYYY.MDD.P`
+- canary: `YYYY.MDD.P-canary.N`
+
+Examples:
+
+- stable: `2026.318.0`
+- canary: `2026.318.1-canary.2`
+
+## Publish model
+
+### Canary
+
+Canaries publish under the npm dist-tag `canary`.
+
+Example:
+
+- `paperclipai@2026.318.1-canary.2`
+
+This keeps the default install path unchanged while allowing explicit installs with:
+
+```bash
+npx paperclipai@canary onboard
+```
+
+### Stable
+
+Stable publishes use the npm dist-tag `latest`.
+
+Example:
+
+- `paperclipai@2026.318.0`
+
+Stable publishes do not create a release commit. Instead:
+
+- package versions are rewritten temporarily
+- packages are published from the chosen source commit
+- git tag `vYYYY.MDD.P` points at that original commit
+
+## Trusted publishing
+
+The intended CI model is npm trusted publishing through GitHub OIDC.
+
+That means:
+
+- no long-lived `NPM_TOKEN` in repository secrets
+- GitHub Actions obtains short-lived publish credentials
+- trusted publisher rules are configured per workflow file
+
+See [doc/RELEASE-AUTOMATION-SETUP.md](RELEASE-AUTOMATION-SETUP.md) for the GitHub/npm setup steps.
 
 ## Rollback model
 
-Rollback does not unpublish packages.
+Rollback does not unpublish anything.
 
-Instead, the maintainer should move the `latest` dist-tag back to the previous good stable version with:
+It repoints the `latest` dist-tag to a prior stable version:
 
 ```bash
-./scripts/rollback-latest.sh <stable-version>
+./scripts/rollback-latest.sh 2026.318.0
 ```
 
-That keeps history intact while restoring the default install path quickly.
-
-## Notes for CI
-
-The repo includes a manual GitHub Actions release workflow at [`.github/workflows/release.yml`](../.github/workflows/release.yml).
-
-Recommended CI release setup:
-
-- use npm trusted publishing via GitHub OIDC
-- require approval through the `npm-release` environment
-- run releases from `release/X.Y.Z`
-- use canary first, then stable
+This is the fastest way to restore the default install path if a stable release is bad.
 
 ## Related Files
 
 - [`scripts/build-npm.sh`](../scripts/build-npm.sh)
 - [`scripts/generate-npm-package-json.mjs`](../scripts/generate-npm-package-json.mjs)
+- [`scripts/generate-ui-package-json.mjs`](../scripts/generate-ui-package-json.mjs)
+- [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
 - [`cli/esbuild.config.mjs`](../cli/esbuild.config.mjs)
 - [`doc/RELEASING.md`](RELEASING.md)

@@ -4,11 +4,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   computeInboxBadgeData,
+  getApprovalsForTab,
+  getInboxWorkItems,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   loadLastInboxTab,
   RECENT_ISSUES_LIMIT,
   saveLastInboxTab,
+  shouldShowInboxSection,
 } from "./inbox";
 
 const storage = new Map<string, string>();
@@ -43,6 +46,19 @@ function makeApproval(status: Approval["status"]): Approval {
     decidedAt: null,
     createdAt: new Date("2026-03-11T00:00:00.000Z"),
     updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+  };
+}
+
+function makeApprovalWithTimestamps(
+  id: string,
+  status: Approval["status"],
+  updatedAt: string,
+): Approval {
+  return {
+    ...makeApproval(status),
+    id,
+    createdAt: new Date(updatedAt),
+    updatedAt: new Date(updatedAt),
   };
 }
 
@@ -95,6 +111,10 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     logCompressed: false,
     errorCode: null,
     externalRunId: null,
+    processPid: null,
+    processStartedAt: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
     stdoutExcerpt: null,
     stderrExcerpt: null,
     contextSnapshot: null,
@@ -110,6 +130,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     id,
     companyId: "company-1",
     projectId: null,
+    projectWorkspaceId: null,
     goalId: null,
     parentId: null,
     title: `Issue ${id}`,
@@ -125,6 +146,8 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     requestDepth: 0,
     billingCode: null,
     assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
     executionWorkspaceSettings: null,
     checkoutRunId: null,
     executionRunId: null,
@@ -164,6 +187,12 @@ const dashboard: DashboardSummary = {
     monthUtilizationPercent: 90,
   },
   pendingApprovals: 1,
+  budgets: {
+    activeIncidents: 0,
+    pendingApprovals: 0,
+    pausedAgents: 0,
+    pausedProjects: 0,
+  },
 };
 
 describe("inbox helpers", () => {
@@ -181,7 +210,7 @@ describe("inbox helpers", () => {
         makeRun("run-latest", "timed_out", "2026-03-11T01:00:00.000Z"),
         makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
       ],
-      unreadIssues: [makeIssue("1", true)],
+      mineIssues: [makeIssue("1", true)],
       dismissed: new Set<string>(),
     });
 
@@ -190,7 +219,7 @@ describe("inbox helpers", () => {
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
-      unreadTouchedIssues: 1,
+      mineIssues: 1,
       alerts: 1,
     });
   });
@@ -201,7 +230,7 @@ describe("inbox helpers", () => {
       joinRequests: [],
       dashboard,
       heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
-      unreadIssues: [],
+      mineIssues: [],
       dismissed: new Set<string>(["run:run-1", "alert:budget", "alert:agent-errors"]),
     });
 
@@ -210,7 +239,7 @@ describe("inbox helpers", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 0,
-      unreadTouchedIssues: 0,
+      mineIssues: 0,
       alerts: 0,
     });
   });
@@ -220,6 +249,130 @@ describe("inbox helpers", () => {
 
     expect(getUnreadTouchedIssues(issues).map((issue) => issue.id)).toEqual(["1"]);
     expect(issues).toHaveLength(2);
+  });
+
+  it("shows recent approvals in updated order and unread approvals as actionable only", () => {
+    const approvals = [
+      makeApprovalWithTimestamps("approval-approved", "approved", "2026-03-11T02:00:00.000Z"),
+      makeApprovalWithTimestamps("approval-pending", "pending", "2026-03-11T01:00:00.000Z"),
+      makeApprovalWithTimestamps(
+        "approval-revision",
+        "revision_requested",
+        "2026-03-11T03:00:00.000Z",
+      ),
+    ];
+
+    expect(getApprovalsForTab(approvals, "mine", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-approved",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "recent", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-approved",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "unread", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-pending",
+    ]);
+    expect(getApprovalsForTab(approvals, "all", "resolved").map((approval) => approval.id)).toEqual([
+      "approval-approved",
+    ]);
+  });
+
+  it("mixes approvals into the inbox feed by most recent activity", () => {
+    const newerIssue = makeIssue("1", true);
+    newerIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const olderIssue = makeIssue("2", false);
+    olderIssue.lastExternalCommentAt = new Date("2026-03-11T02:00:00.000Z");
+
+    const approval = makeApprovalWithTimestamps(
+      "approval-between",
+      "pending",
+      "2026-03-11T03:00:00.000Z",
+    );
+
+    expect(
+      getInboxWorkItems({
+        issues: [olderIssue, newerIssue],
+        approvals: [approval],
+      }).map((item) => {
+        if (item.kind === "issue") return `issue:${item.issue.id}`;
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        return `run:${item.run.id}`;
+      }),
+    ).toEqual([
+      "issue:1",
+      "approval:approval-between",
+      "issue:2",
+    ]);
+  });
+
+  it("mixes join requests into the inbox feed by most recent activity", () => {
+    const issue = makeIssue("1", true);
+    issue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const joinRequest = makeJoinRequest("join-1");
+    joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const approval = makeApprovalWithTimestamps(
+      "approval-oldest",
+      "pending",
+      "2026-03-11T02:00:00.000Z",
+    );
+
+    expect(
+      getInboxWorkItems({
+        issues: [issue],
+        approvals: [approval],
+        joinRequests: [joinRequest],
+      }).map((item) => {
+        if (item.kind === "issue") return `issue:${item.issue.id}`;
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        return `run:${item.run.id}`;
+      }),
+    ).toEqual([
+      "issue:1",
+      "join:join-1",
+      "approval:approval-oldest",
+    ]);
+  });
+
+  it("can include sections on recent without forcing them to be unread", () => {
+    expect(
+      shouldShowInboxSection({
+        tab: "mine",
+        hasItems: true,
+        showOnMine: true,
+        showOnRecent: false,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowInboxSection({
+        tab: "recent",
+        hasItems: true,
+        showOnMine: false,
+        showOnRecent: true,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowInboxSection({
+        tab: "unread",
+        hasItems: true,
+        showOnMine: true,
+        showOnRecent: true,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(false);
   });
 
   it("limits recent touched issues before unread badge counting", () => {
@@ -235,16 +388,16 @@ describe("inbox helpers", () => {
     expect(getUnreadTouchedIssues(recentIssues).map((issue) => issue.id)).toEqual(["1", "2", "3"]);
   });
 
-  it("defaults the remembered inbox tab to recent and persists all", () => {
+  it("defaults the remembered inbox tab to mine and persists all", () => {
     localStorage.clear();
-    expect(loadLastInboxTab()).toBe("recent");
+    expect(loadLastInboxTab()).toBe("mine");
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
   });
 
-  it("maps legacy new-tab storage to recent", () => {
+  it("maps legacy new-tab storage to mine", () => {
     localStorage.setItem("paperclip:inbox:last-tab", "new");
-    expect(loadLastInboxTab()).toBe("recent");
+    expect(loadLastInboxTab()).toBe("mine");
   });
 });

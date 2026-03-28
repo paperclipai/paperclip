@@ -51,6 +51,26 @@ function normalizeEnv(input: unknown): Record<string, string> {
 
 const PI_AUTH_REQUIRED_RE =
   /(?:auth(?:entication)?\s+required|api\s*key|invalid\s*api\s*key|not\s+logged\s+in|free\s+usage\s+exceeded)/i;
+const PI_STALE_PACKAGE_RE = /pi-driver|npm:\s*pi-driver/i;
+
+function buildPiModelDiscoveryFailureCheck(message: string): AdapterEnvironmentCheck {
+  if (PI_STALE_PACKAGE_RE.test(message)) {
+    return {
+      code: "pi_package_install_failed",
+      level: "warn",
+      message: "Pi startup failed while installing configured package `npm:pi-driver`.",
+      detail: message,
+      hint: "Remove `npm:pi-driver` from ~/.pi/agent/settings.json or set adapter env HOME to a clean Pi profile, then retry `pi --list-models`.",
+    };
+  }
+
+  return {
+    code: "pi_models_discovery_failed",
+    level: "warn",
+    message,
+    hint: "Run `pi --list-models` manually to verify provider auth and config.",
+  };
+}
 
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
@@ -130,12 +150,11 @@ export async function testEnvironment(
         });
       }
     } catch (err) {
-      checks.push({
-        code: "pi_models_discovery_failed",
-        level: "warn",
-        message: err instanceof Error ? err.message : "Pi model discovery failed.",
-        hint: "Run `pi --list-models` manually to verify provider auth and config.",
-      });
+      checks.push(
+        buildPiModelDiscoveryFailureCheck(
+          err instanceof Error ? err.message : "Pi model discovery failed.",
+        ),
+      );
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "paperclipai",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
@@ -16,10 +16,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip.git",
+    "url": "https://github.com/paperclipai/paperclip",
     "directory": "cli"
   },
   "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
   "files": [
     "dist"
   ],

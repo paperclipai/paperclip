@@ -197,6 +197,132 @@
       "when": 1773150731736,
       "tag": "0027_tranquil_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1773432085646,
+      "tag": "0028_harsh_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1773417600000,
+      "tag": "0029_plugin_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1773670925214,
+      "tag": "0030_rich_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1773511922713,
+      "tag": "0031_zippy_magma",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1773542934499,
+      "tag": "0032_pretty_doctor_octopus",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1773664961967,
+      "tag": "0033_shiny_black_tarantula",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1773697572188,
+      "tag": "0034_fat_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1773698696169,
+      "tag": "0035_marvelous_satana",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1773756213455,
+      "tag": "0036_cheerful_nitro",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1773756922363,
+      "tag": "0037_friendly_eddie_brock",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1773931592563,
+      "tag": "0038_careless_iron_monger",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1773926116580,
+      "tag": "0039_fat_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1773927102783,
+      "tag": "0040_eager_shotgun",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1774011294562,
+      "tag": "0041_curly_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1774031825634,
+      "tag": "0042_spotty_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774008910991,
+      "tag": "0043_reflective_captain_universe",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1774269579794,
+      "tag": "0044_illegal_toad",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1774530504348,
+      "tag": "0045_workable_shockwave",
+      "breakpoints": true
     }
   ]
 }

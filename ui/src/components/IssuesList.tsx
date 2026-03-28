@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { startTransition, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
@@ -40,6 +41,7 @@ export type IssueViewState = {
   priorities: string[];
   assignees: string[];
   labels: string[];
+  projects: string[];
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
@@ -52,6 +54,7 @@ const defaultViewState: IssueViewState = {
   priorities: [],
   assignees: [],
   labels: [],
+  projects: [],
   sortField: "updated",
   sortDir: "desc",
   groupBy: "none",
@@ -65,6 +68,7 @@ const quickFilterPresets = [
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
+const ISSUE_SEARCH_COMMIT_DELAY_MS = 150;
 
 function getViewState(key: string): IssueViewState {
   try {
@@ -104,6 +108,7 @@ function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: st
     });
   }
   if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
+  if (state.projects.length > 0) result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
   return result;
 }
 
@@ -135,6 +140,7 @@ function countActiveFilters(state: IssueViewState): number {
   if (state.priorities.length > 0) count++;
   if (state.assignees.length > 0) count++;
   if (state.labels.length > 0) count++;
+  if (state.projects.length > 0) count++;
   return count;
 }
 
@@ -145,19 +151,66 @@ interface Agent {
   name: string;
 }
 
+interface ProjectOption {
+  id: string;
+  name: string;
+}
+
 interface IssuesListProps {
   issues: Issue[];
   isLoading?: boolean;
   error?: Error | null;
   agents?: Agent[];
+  projects?: ProjectOption[];
   liveIssueIds?: Set<string>;
   projectId?: string;
   viewStateKey: string;
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialSearch?: string;
+  searchFilters?: {
+    participantAgentId?: string;
+  };
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+}
+
+interface IssuesSearchInputProps {
+  initialValue: string;
+  onValueCommitted: (value: string) => void;
+}
+
+function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInputProps) {
+  const [value, setValue] = useState(initialValue);
+  const onValueCommittedRef = useRef(onValueCommitted);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  useEffect(() => {
+    onValueCommittedRef.current = onValueCommitted;
+  }, [onValueCommitted]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      onValueCommittedRef.current(value);
+    }, ISSUE_SEARCH_COMMIT_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [value]);
+
+  return (
+    <div className="relative w-48 sm:w-64 md:w-80">
+      <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Search issues..."
+        className="pl-7 text-xs sm:text-sm"
+        aria-label="Search issues"
+      />
+    </div>
+  );
 }
 
 export function IssuesList({
@@ -165,12 +218,14 @@ export function IssuesList({
   isLoading,
   error,
   agents,
+  projects,
   liveIssueIds,
   projectId,
   viewStateKey,
   issueLinkState,
   initialAssignees,
   initialSearch,
+  searchFilters,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -194,19 +249,11 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
-  const [debouncedIssueSearch, setDebouncedIssueSearch] = useState(issueSearch);
-  const normalizedIssueSearch = debouncedIssueSearch.trim();
+  const normalizedIssueSearch = issueSearch.trim();
 
   useEffect(() => {
     setIssueSearch(initialSearch ?? "");
   }, [initialSearch]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedIssueSearch(issueSearch);
-    }, 300);
-    return () => window.clearTimeout(timeoutId);
-  }, [issueSearch]);
 
   // Reload view state from localStorage when company changes (scopedKey changes).
   const prevScopedKey = useRef(scopedKey);
@@ -219,6 +266,13 @@ export function IssuesList({
     }
   }, [scopedKey, initialAssignees]);
 
+  const handleIssueSearchCommit = useCallback((nextSearch: string) => {
+    startTransition(() => {
+      setIssueSearch(nextSearch);
+    });
+    onSearchChange?.(nextSearch);
+  }, [onSearchChange]);
+
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
       const next = { ...prev, ...patch };
@@ -228,9 +282,13 @@ export function IssuesList({
   }, [scopedKey]);
 
   const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId }),
+    queryKey: [
+      ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
+      searchFilters ?? {},
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    placeholderData: (previousData) => previousData,
   });
 
   const agentName = useCallback((id: string | null) => {
@@ -314,19 +372,10 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
           </Button>
-          <div className="relative w-48 sm:w-64 md:w-80">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={issueSearch}
-              onChange={(e) => {
-                setIssueSearch(e.target.value);
-                onSearchChange?.(e.target.value);
-              }}
-              placeholder="Search issues..."
-              className="pl-7 text-xs sm:text-sm"
-              aria-label="Search issues"
-            />
-          </div>
+          <IssuesSearchInput
+            initialValue={initialSearch ?? ""}
+            onValueCommitted={handleIssueSearchCommit}
+          />
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
@@ -362,7 +411,7 @@ export function IssuesList({
                     className="h-3 w-3 ml-1 hidden sm:block"
                     onClick={(e) => {
                       e.stopPropagation();
-                      updateView({ statuses: [], priorities: [], assignees: [], labels: [] });
+                      updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] });
                     }}
                   />
                 )}
@@ -490,6 +539,23 @@ export function IssuesList({
                               />
                               <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                               <span className="text-sm">{label.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {projects && projects.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-xs text-muted-foreground">Project</span>
+                        <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                          {projects.map((project) => (
+                            <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                              <Checkbox
+                                checked={viewState.projects.includes(project.id)}
+                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
+                              />
+                              <span className="text-sm">{project.name}</span>
                             </label>
                           ))}
                         </div>
@@ -652,9 +718,6 @@ export function IssuesList({
                   )}
                   desktopMetaLeading={(
                     <>
-                      <span className="hidden sm:inline-flex">
-                        <PriorityIcon priority={issue.priority} />
-                      </span>
                       <span
                         className="hidden shrink-0 sm:inline-flex"
                         onClick={(e) => {
@@ -694,7 +757,7 @@ export function IssuesList({
                               className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
                               style={{
                                 borderColor: label.color,
-                                color: label.color,
+                                color: pickTextColorForPillBg(label.color, 0.12),
                                 backgroundColor: `${label.color}1f`,
                               }}
                             >

@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -10,6 +13,7 @@ import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { useToast } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
@@ -39,7 +43,9 @@ import {
   Tag,
   Calendar,
   Paperclip,
+  FileText,
   Loader2,
+  X,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -50,18 +56,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
-/** Return black or white hex based on background luminance (WCAG perceptual weights). */
-function getContrastTextColor(hexColor: string): string {
-  const hex = hexColor.replace("#", "");
-  const r = parseInt(hex.substring(0, 2), 16);
-  const g = parseInt(hex.substring(2, 4), 16);
-  const b = parseInt(hex.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.5 ? "#000000" : "#ffffff";
-}
 
 interface IssueDraft {
   title: string;
@@ -71,13 +66,25 @@ interface IssueDraft {
   assigneeValue: string;
   assigneeId?: string;
   projectId: string;
+  projectWorkspaceId?: string;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
-  useIsolatedExecutionWorkspace: boolean;
+  executionWorkspaceMode?: string;
+  selectedExecutionWorkspaceId?: string;
+  useIsolatedExecutionWorkspace?: boolean;
 }
 
+type StagedIssueFile = {
+  id: string;
+  file: File;
+  kind: "document" | "attachment";
+  documentKey?: string;
+  title?: string | null;
+};
+
 const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
@@ -156,6 +163,59 @@ function clearDraft() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+function isTextDocumentFile(file: File) {
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith(".md") ||
+    name.endsWith(".markdown") ||
+    name.endsWith(".txt") ||
+    file.type === "text/markdown" ||
+    file.type === "text/plain"
+  );
+}
+
+function fileBaseName(filename: string) {
+  return filename.replace(/\.[^.]+$/, "");
+}
+
+function slugifyDocumentKey(input: string) {
+  const slug = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "document";
+}
+
+function titleizeFilename(input: string) {
+  return input
+    .split(/[-_ ]+/g)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function createUniqueDocumentKey(baseKey: string, stagedFiles: StagedIssueFile[]) {
+  const existingKeys = new Set(
+    stagedFiles
+      .filter((file) => file.kind === "document")
+      .map((file) => file.documentKey)
+      .filter((key): key is string => Boolean(key)),
+  );
+  if (!existingKeys.has(baseKey)) return baseKey;
+  let suffix = 2;
+  while (existingKeys.has(`${baseKey}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseKey}-${suffix}`;
+}
+
+function formatFileSize(file: File) {
+  if (file.size < 1024) return `${file.size} B`;
+  if (file.size < 1024 * 1024) return `${(file.size / 1024).toFixed(1)} KB`;
+  return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const statuses = [
   { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
   { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
@@ -171,23 +231,64 @@ const priorities = [
   { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
+const EXECUTION_WORKSPACE_MODES = [
+  { value: "shared_workspace", label: "Project default" },
+  { value: "isolated_workspace", label: "New isolated workspace" },
+  { value: "reuse_existing", label: "Reuse existing workspace" },
+] as const;
+
+function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
+  if (!project) return "";
+  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
+    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.[0]?.id
+    ?? "";
+}
+
+function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
+  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
+  if (
+    defaultMode === "isolated_workspace" ||
+    defaultMode === "operator_branch" ||
+    defaultMode === "adapter_default"
+  ) {
+    return defaultMode === "adapter_default" ? "agent_default" : defaultMode;
+  }
+  return "shared_workspace";
+}
+
+function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | undefined) {
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
+    return mode;
+  }
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") {
+    return "agent_default";
+  }
+  return "shared_workspace";
+}
+
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
   const [projectId, setProjectId] = useState("");
+  const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
-  const [useIsolatedExecutionWorkspace, setUseIsolatedExecutionWorkspace] = useState(false);
+  const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
+  const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
+  const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
 
@@ -200,7 +301,7 @@ export function NewIssueDialog() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
-  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const stageFileInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
@@ -215,13 +316,36 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
+  const { data: reusableExecutionWorkspaces } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
+      projectId,
+      projectWorkspaceId: projectWorkspaceId || undefined,
+      reuseEligible: true,
+    }),
+    queryFn: () =>
+      executionWorkspacesApi.list(effectiveCompanyId!, {
+        projectId,
+        projectWorkspaceId: projectWorkspaceId || undefined,
+        reuseEligible: true,
+      }),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(projectId),
+  });
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: newIssueOpen,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const activeProjects = useMemo(
+    () => (projects ?? []).filter((p) => !p.archivedAt),
+    [projects],
+  );
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects: activeProjects,
     companyId: effectiveCompanyId,
     userId: currentUserId,
   });
@@ -244,6 +368,8 @@ export function NewIssueDialog() {
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
+        agentId: agent.id,
+        agentIcon: agent.icon,
       });
     }
     for (const project of orderedProjects) {
@@ -268,11 +394,53 @@ export function NewIssueDialog() {
   });
 
   const createIssue = useMutation({
-    mutationFn: ({ companyId, ...data }: { companyId: string } & Record<string, unknown>) =>
-      issuesApi.create(companyId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(effectiveCompanyId!) });
+    mutationFn: async ({
+      companyId,
+      stagedFiles: pendingStagedFiles,
+      ...data
+    }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
+      const issue = await issuesApi.create(companyId, data);
+      const failures: string[] = [];
+
+      for (const stagedFile of pendingStagedFiles) {
+        try {
+          if (stagedFile.kind === "document") {
+            const body = await stagedFile.file.text();
+            await issuesApi.upsertDocument(issue.id, stagedFile.documentKey ?? "document", {
+              title: stagedFile.documentKey === "plan" ? null : stagedFile.title ?? null,
+              format: "markdown",
+              body,
+              baseRevisionId: null,
+            });
+          } else {
+            await issuesApi.uploadAttachment(companyId, issue.id, stagedFile.file);
+          }
+        } catch {
+          failures.push(stagedFile.file.name);
+        }
+      }
+
+      return { issue, companyId, failures };
+    },
+    onSuccess: ({ issue, companyId, failures }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (failures.length > 0) {
+        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+        const issueRef = issue.identifier ?? issue.id;
+        pushToast({
+          title: `Created ${issueRef} with upload warnings`,
+          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          tone: "warn",
+          action: prefix
+            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+            : undefined,
+        });
+      }
       clearDraft();
       reset();
       closeNewIssue();
@@ -307,10 +475,12 @@ export function NewIssueDialog() {
       priority,
       assigneeValue,
       projectId,
+      projectWorkspaceId,
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
-      useIsolatedExecutionWorkspace,
+      executionWorkspaceMode,
+      selectedExecutionWorkspaceId,
     });
   }, [
     title,
@@ -319,10 +489,12 @@ export function NewIssueDialog() {
     priority,
     assigneeValue,
     projectId,
+    projectWorkspaceId,
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
-    useIsolatedExecutionWorkspace,
+    executionWorkspaceMode,
+    selectedExecutionWorkspaceId,
     newIssueOpen,
     scheduleSave,
   ]);
@@ -339,13 +511,20 @@ export function NewIssueDialog() {
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
-      setProjectId(newIssueDefaults.projectId ?? "");
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setUseIsolatedExecutionWorkspace(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
+      setSelectedExecutionWorkspaceId("");
+      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (draft && draft.title.trim()) {
+      const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
+      const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
       setTitle(draft.title);
       setDescription(draft.description);
       setStatus(draft.status || "todo");
@@ -355,22 +534,33 @@ export function NewIssueDialog() {
           ? assigneeValueFromSelection(newIssueDefaults)
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
-      setProjectId(newIssueDefaults.projectId ?? draft.projectId);
+      setProjectId(restoredProjectId);
+      setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
-      setUseIsolatedExecutionWorkspace(draft.useIsolatedExecutionWorkspace ?? false);
+      setExecutionWorkspaceMode(
+        draft.executionWorkspaceMode
+          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
+      );
+      setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current = restoredProjectId || null;
     } else {
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
-      setProjectId(newIssueDefaults.projectId ?? "");
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setUseIsolatedExecutionWorkspace(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
+      setSelectedExecutionWorkspaceId("");
+      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     }
-  }, [newIssueOpen, newIssueDefaults]);
+  }, [newIssueOpen, newIssueDefaults, orderedProjects]);
 
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
@@ -406,13 +596,17 @@ export function NewIssueDialog() {
     setPriority("");
     setAssigneeValue("");
     setProjectId("");
+    setProjectWorkspaceId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setUseIsolatedExecutionWorkspace(false);
+    setExecutionWorkspaceMode("shared_workspace");
+    setSelectedExecutionWorkspaceId("");
     setExpanded(false);
     setDialogCompanyId(null);
+    setStagedFiles([]);
+    setIsFileDragOver(false);
     setCompanyOpen(false);
     executionWorkspaceDefaultProjectId.current = null;
   }
@@ -422,10 +616,12 @@ export function NewIssueDialog() {
     setDialogCompanyId(companyId);
     setAssigneeValue("");
     setProjectId("");
+    setProjectWorkspaceId("");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
-    setUseIsolatedExecutionWorkspace(false);
+    setExecutionWorkspaceMode("shared_workspace");
+    setSelectedExecutionWorkspaceId("");
   }
 
   function discardDraft() {
@@ -443,16 +639,23 @@ export function NewIssueDialog() {
       chrome: assigneeChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
-    const executionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
-      ? selectedProject?.executionWorkspacePolicy
-      : null;
+    const executionWorkspacePolicy =
+      experimentalSettings?.enableIsolatedWorkspaces === true
+        ? selectedProject?.executionWorkspacePolicy ?? null
+        : null;
+    const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+      (workspace) => workspace.id === selectedExecutionWorkspaceId,
+    );
+    const requestedExecutionWorkspaceMode =
+      executionWorkspaceMode === "reuse_existing"
+        ? issueExecutionWorkspaceModeForExistingWorkspace(selectedReusableExecutionWorkspace?.mode)
+        : executionWorkspaceMode;
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
-      ? {
-          mode: useIsolatedExecutionWorkspace ? "isolated" : "project_primary",
-        }
+      ? { mode: requestedExecutionWorkspaceMode }
       : null;
     createIssue.mutate({
       companyId: effectiveCompanyId,
+      stagedFiles,
       title: title.trim(),
       description: description.trim() || undefined,
       status,
@@ -460,7 +663,12 @@ export function NewIssueDialog() {
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
+      ...(executionWorkspacePolicy?.enabled ? { executionWorkspacePreference: executionWorkspaceMode } : {}),
+      ...(executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId
+        ? { executionWorkspaceId: selectedExecutionWorkspaceId }
+        : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
     });
   }
@@ -472,32 +680,96 @@ export function NewIssueDialog() {
     }
   }
 
-  async function handleAttachImage(evt: ChangeEvent<HTMLInputElement>) {
-    const file = evt.target.files?.[0];
-    if (!file) return;
-    try {
-      const asset = await uploadDescriptionImage.mutateAsync(file);
-      const name = file.name || "image";
-      setDescription((prev) => {
-        const suffix = `![${name}](${asset.contentPath})`;
-        return prev ? `${prev}\n\n${suffix}` : suffix;
-      });
-    } finally {
-      if (attachInputRef.current) attachInputRef.current.value = "";
+  function stageFiles(files: File[]) {
+    if (files.length === 0) return;
+    setStagedFiles((current) => {
+      const next = [...current];
+      for (const file of files) {
+        if (isTextDocumentFile(file)) {
+          const baseName = fileBaseName(file.name);
+          const documentKey = createUniqueDocumentKey(slugifyDocumentKey(baseName), next);
+          next.push({
+            id: `${file.name}:${file.size}:${file.lastModified}:${documentKey}`,
+            file,
+            kind: "document",
+            documentKey,
+            title: titleizeFilename(baseName),
+          });
+          continue;
+        }
+        next.push({
+          id: `${file.name}:${file.size}:${file.lastModified}`,
+          file,
+          kind: "attachment",
+        });
+      }
+      return next;
+    });
+  }
+
+  function handleStageFilesPicked(evt: ChangeEvent<HTMLInputElement>) {
+    stageFiles(Array.from(evt.target.files ?? []));
+    if (stageFileInputRef.current) {
+      stageFileInputRef.current.value = "";
     }
   }
 
-  const hasDraft = title.trim().length > 0 || description.trim().length > 0;
+  function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.types.includes("Files")) return;
+    evt.preventDefault();
+    setIsFileDragOver(true);
+  }
+
+  function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.types.includes("Files")) return;
+    evt.preventDefault();
+    evt.dataTransfer.dropEffect = "copy";
+    setIsFileDragOver(true);
+  }
+
+  function handleFileDragLeave(evt: DragEvent<HTMLDivElement>) {
+    if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+    setIsFileDragOver(false);
+  }
+
+  function handleFileDrop(evt: DragEvent<HTMLDivElement>) {
+    if (!evt.dataTransfer.files.length) return;
+    evt.preventDefault();
+    setIsFileDragOver(false);
+    stageFiles(Array.from(evt.dataTransfer.files));
+  }
+
+  function removeStagedFile(id: string) {
+    setStagedFiles((current) => current.filter((file) => file.id !== id));
+  }
+
+  const hasDraft = title.trim().length > 0 || description.trim().length > 0 || stagedFiles.length > 0;
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
   const currentAssignee = selectedAssigneeAgentId
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
   const currentProject = orderedProjects.find((project) => project.id === projectId);
-  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
-    ? currentProject?.executionWorkspacePolicy ?? null
-    : null;
+  const currentProjectExecutionWorkspacePolicy =
+    experimentalSettings?.enableIsolatedWorkspaces === true
+      ? currentProject?.executionWorkspacePolicy ?? null
+      : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const deduplicatedReusableWorkspaces = useMemo(() => {
+    const workspaces = reusableExecutionWorkspaces ?? [];
+    const seen = new Map<string, typeof workspaces[number]>();
+    for (const ws of workspaces) {
+      const key = ws.cwd ?? ws.id;
+      const existing = seen.get(key);
+      if (!existing || new Date(ws.lastUsedAt) > new Date(existing.lastUsedAt)) {
+        seen.set(key, ws);
+      }
+    }
+    return Array.from(seen.values());
+  }, [reusableExecutionWorkspaces]);
+  const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+    (workspace) => workspace.id === selectedExecutionWorkspaceId,
+  );
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -541,13 +813,16 @@ export function NewIssueDialog() {
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
     createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+  const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
+  const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
   const handleProjectChange = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
-    const policy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI ? nextProject?.executionWorkspacePolicy : null;
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
-    setUseIsolatedExecutionWorkspace(Boolean(policy?.enabled && policy.defaultMode === "isolated"));
+    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
+    setSelectedExecutionWorkspaceId("");
   }, [orderedProjects]);
 
   useEffect(() => {
@@ -557,13 +832,9 @@ export function NewIssueDialog() {
     const project = orderedProjects.find((entry) => entry.id === projectId);
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
-    setUseIsolatedExecutionWorkspace(
-      Boolean(
-        SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI &&
-        project.executionWorkspacePolicy?.enabled &&
-        project.executionWorkspacePolicy.defaultMode === "isolated",
-      ),
-    );
+    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
+    setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(
     () => {
@@ -637,7 +908,7 @@ export function NewIssueDialog() {
                     dialogCompany?.brandColor
                       ? {
                           backgroundColor: dialogCompany.brandColor,
-                          color: getContrastTextColor(dialogCompany.brandColor),
+                          color: pickTextColorForSolidBg(dialogCompany.brandColor),
                         }
                       : undefined
                   }
@@ -667,7 +938,7 @@ export function NewIssueDialog() {
                         c.brandColor
                           ? {
                               backgroundColor: c.brandColor,
-                              color: getContrastTextColor(c.brandColor),
+                              color: pickTextColorForSolidBg(c.brandColor),
                             }
                           : undefined
                       }
@@ -844,30 +1115,48 @@ export function NewIssueDialog() {
           </div>
         </div>
 
-        {currentProjectSupportsExecutionWorkspace && (
-          <div className="px-4 pb-2 shrink-0">
-            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-              <div className="space-y-0.5">
-                <div className="text-xs font-medium">Use isolated issue checkout</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Create an issue-specific execution workspace instead of using the project's primary checkout.
-                </div>
+        {currentProject && currentProjectSupportsExecutionWorkspace && (
+          <div className="px-4 py-3 shrink-0 space-y-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium">Execution workspace</div>
+              <div className="text-[11px] text-muted-foreground">
+                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
-              <button
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
-                )}
-                onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
-                type="button"
+              <select
+                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                value={executionWorkspaceMode}
+                onChange={(e) => {
+                  setExecutionWorkspaceMode(e.target.value);
+                  if (e.target.value !== "reuse_existing") {
+                    setSelectedExecutionWorkspaceId("");
+                  }
+                }}
               >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
-                  )}
-                />
-              </button>
+                {EXECUTION_WORKSPACE_MODES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              {executionWorkspaceMode === "reuse_existing" && (
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={selectedExecutionWorkspaceId}
+                  onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
+                >
+                  <option value="">Choose an existing workspace</option>
+                  {deduplicatedReusableWorkspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
+                <div className="text-[11px] text-muted-foreground">
+                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -917,6 +1206,7 @@ export function NewIssueDialog() {
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
                     <button
+                      data-slot="toggle"
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
                         assigneeChrome ? "bg-green-600" : "bg-muted"
@@ -938,20 +1228,103 @@ export function NewIssueDialog() {
         )}
 
         {/* Description */}
-        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={description}
-            onChange={setDescription}
-            placeholder="Add description..."
-            bordered={false}
-            mentions={mentionOptions}
-            contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-            imageUploadHandler={async (file) => {
-              const asset = await uploadDescriptionImage.mutateAsync(file);
-              return asset.contentPath;
-            }}
-          />
+        <div
+          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}
+          onDragEnter={handleFileDragEnter}
+          onDragOver={handleFileDragOver}
+          onDragLeave={handleFileDragLeave}
+          onDrop={handleFileDrop}
+        >
+          <div
+            className={cn(
+              "rounded-md transition-colors",
+              isFileDragOver && "bg-accent/20",
+            )}
+          >
+            <MarkdownEditor
+              ref={descriptionEditorRef}
+              value={description}
+              onChange={setDescription}
+              placeholder="Add description..."
+              bordered={false}
+              mentions={mentionOptions}
+              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+              imageUploadHandler={async (file) => {
+                const asset = await uploadDescriptionImage.mutateAsync(file);
+                return asset.contentPath;
+              }}
+            />
+          </div>
+          {stagedFiles.length > 0 ? (
+            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+              {stagedDocuments.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="space-y-2">
+                    {stagedDocuments.map((file) => (
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                              {file.documentKey}
+                            </span>
+                            <span className="truncate text-sm">{file.file.name}</span>
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <FileText className="h-3.5 w-3.5" />
+                            <span>{file.title || file.file.name}</span>
+                            <span>•</span>
+                            <span>{formatFileSize(file.file)}</span>
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="shrink-0 text-muted-foreground"
+                          onClick={() => removeStagedFile(file.id)}
+                          disabled={createIssue.isPending}
+                          title="Remove document"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {stagedAttachments.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="space-y-2">
+                    {stagedAttachments.map((file) => (
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="truncate text-sm">{file.file.name}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="shrink-0 text-muted-foreground"
+                          onClick={() => removeStagedFile(file.id)}
+                          disabled={createIssue.isPending}
+                          title="Remove attachment"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {/* Property chips bar */}
@@ -1021,21 +1394,21 @@ export function NewIssueDialog() {
             Labels
           </button>
 
-          {/* Attach image chip */}
           <input
-            ref={attachInputRef}
+            ref={stageFileInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
+            accept={STAGED_FILE_ACCEPT}
             className="hidden"
-            onChange={handleAttachImage}
+            onChange={handleStageFilesPicked}
+            multiple
           />
           <button
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
-            onClick={() => attachInputRef.current?.click()}
-            disabled={uploadDescriptionImage.isPending}
+            onClick={() => stageFileInputRef.current?.click()}
+            disabled={createIssue.isPending}
           >
             <Paperclip className="h-3 w-3" />
-            {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
+            Upload
           </button>
 
           {/* More (dates) */}
