@@ -72,7 +72,7 @@ All four agent CLI tools are pinned via Docker `ARG` in both `Dockerfile` and `D
 | `CLAUDE_CODE_VERSION` | `2.1.78` |
 | `GEMINI_CLI_VERSION` | `0.34.0` |
 | `CODEX_VERSION` | `0.115.0` |
-| `OPENCODE_VERSION` | `1.2.27` |
+| `OPENCODE_VERSION` | `1.3.3` |
 
 These can be overridden at build time with `--build-arg`. The values were last updated 2026-03-18 to unblock the deploy pipeline after `@openai/codex@0.1.2504221644` (a non-existent beta version) caused `npm error notarget` failures since March 16.
 
@@ -517,6 +517,7 @@ rm -f /tmp/gen-secrets.mjs
 | `viracue-stripe-test-secret-key` | Stripe test secret key for Viracue | CEO, CTO |
 | `viracue-stripe-live-publishable-key` | Stripe live publishable key for Viracue | CEO, CTO |
 | `viracue-stripe-live-secret-key` | Stripe live secret key for Viracue | CEO, CTO |
+| `paperclip-vps-ssh-key` | SSH private key for Paperclip VPS 64.176.199.162 (v1) | Senior Platform Engineer |
 
 **Undecryptable (encrypted with lost master key — need plaintext to re-encrypt):**
 
