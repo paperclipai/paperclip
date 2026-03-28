@@ -457,6 +457,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);
+    if (wakeCommentId && (!wakeComment || wakeComment.issueId !== issue.id)) {
+      res.status(404).json({ error: "Wake comment not found on issue" });
+      return;
+    }
 
     res.json({
       issue: {

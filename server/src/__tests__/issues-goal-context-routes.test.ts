@@ -184,4 +184,19 @@ describe("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
+
+  it("returns 404 when wakeCommentId resolves to a comment on another issue", async () => {
+    mockIssueService.getComment.mockResolvedValueOnce({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      issueId: "99999999-9999-4999-8999-999999999999",
+      body: "foreign comment",
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context?wakeCommentId=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Wake comment not found on issue" });
+  });
 });
