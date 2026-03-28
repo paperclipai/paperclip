@@ -35,6 +35,7 @@ import type {
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { useToast, type ToastInput } from "@/context/ToastContext";
+import { useNavigate as useRouterNavigate } from "react-router-dom";
 
 // ---------------------------------------------------------------------------
 // Bridge error type (mirrors the SDK's PluginBridgeError)
@@ -374,6 +375,27 @@ export function usePluginToast(): PluginToastFn {
     (input: PluginToastInput) => pushToast(input),
     [pushToast],
   );
+}
+
+// ---------------------------------------------------------------------------
+// usePluginNavigate — concrete implementation
+// ---------------------------------------------------------------------------
+
+export interface PluginNavigateOptions {
+  replace?: boolean;
+  state?: unknown;
+}
+
+export type PluginNavigateFn = (to: string, options?: PluginNavigateOptions) => void;
+
+/**
+ * Concrete implementation of `usePluginNavigate()`.
+ *
+ * Returns a navigate function backed by the host's React Router instance.
+ * Plugins call this for SPA-style navigation without a full page reload.
+ */
+export function usePluginNavigate(): PluginNavigateFn {
+  return useRouterNavigate();
 }
 
 // ---------------------------------------------------------------------------

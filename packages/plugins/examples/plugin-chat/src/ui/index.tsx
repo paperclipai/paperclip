@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from "react";
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent, type MouseEvent } from "react";
 import {
   useHostContext,
   usePluginAction,
   usePluginData,
+  usePluginNavigate,
   usePluginStream,
   usePluginToast,
   type PluginPageProps,
@@ -16,7 +17,9 @@ import { ACTION_KEYS, DATA_KEYS, PLUGIN_ID, SLOT_IDS, STREAM_CHANNELS } from "..
 // ---------------------------------------------------------------------------
 
 function pluginPagePath(companyPrefix: string | null | undefined): string {
-  return companyPrefix ? `/${companyPrefix}/plugin/${PLUGIN_ID}/chat` : `/plugin/${PLUGIN_ID}/chat`;
+  // The page slot declares routePath: "chat", which maps to /:companyPrefix/:pluginRoutePath
+  // in the host router. Use the routePath directly under the company prefix.
+  return companyPrefix ? `/${companyPrefix}/chat` : `/chat`;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,11 +53,19 @@ function MessageBubble({ message }: { message: { role: string; text: string; tim
 // ---------------------------------------------------------------------------
 
 export function ChatSidebarLink({ context }: PluginSidebarProps) {
+  const navigate = usePluginNavigate();
   const href = pluginPagePath(context.companyPrefix);
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
+
+  function handleClick(e: MouseEvent<HTMLAnchorElement>) {
+    e.preventDefault();
+    navigate(href);
+  }
+
   return (
     <a
       href={href}
+      onClick={handleClick}
       aria-current={isActive ? "page" : undefined}
       className={[
         "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",

@@ -4,6 +4,7 @@ import type {
   PluginHostContext,
   PluginStreamResult,
   PluginToastFn,
+  PluginNavigateFn,
 } from "./types.js";
 import { getSdkUiRuntimeValue } from "./runtime.js";
 
@@ -170,5 +171,35 @@ export function usePluginStream<T = unknown>(
  */
 export function usePluginToast(): PluginToastFn {
   const impl = getSdkUiRuntimeValue<() => PluginToastFn>("usePluginToast");
+  return impl();
+}
+
+// ---------------------------------------------------------------------------
+// usePluginNavigate
+// ---------------------------------------------------------------------------
+
+/**
+ * Get an SPA navigate function to navigate within the host app.
+ *
+ * Navigates without a full page reload using the host's React Router instance.
+ * The returned function accepts an absolute path (including company prefix).
+ *
+ * @returns A `PluginNavigateFn` that navigates within the host SPA
+ *
+ * @example
+ * ```tsx
+ * function ChatSidebarLink({ context }: PluginSidebarProps) {
+ *   const navigate = usePluginNavigate();
+ *   const href = `/${context.companyPrefix}/chat`;
+ *   return (
+ *     <a href={href} onClick={(e) => { e.preventDefault(); navigate(href); }}>
+ *       Chat
+ *     </a>
+ *   );
+ * }
+ * ```
+ */
+export function usePluginNavigate(): PluginNavigateFn {
+  const impl = getSdkUiRuntimeValue<() => PluginNavigateFn>("usePluginNavigate");
   return impl();
 }

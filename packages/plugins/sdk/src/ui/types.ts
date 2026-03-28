@@ -324,6 +324,21 @@ export interface PluginToastInput {
 export type PluginToastFn = (input: PluginToastInput) => string | null;
 
 // ---------------------------------------------------------------------------
+// usePluginNavigate hook types
+// ---------------------------------------------------------------------------
+
+export interface PluginNavigateOptions {
+  replace?: boolean;
+  state?: unknown;
+}
+
+/**
+ * SPA navigation function returned by `usePluginNavigate()`.
+ * Navigates within the host app without a full page reload.
+ */
+export type PluginNavigateFn = (to: string, options?: PluginNavigateOptions) => void;
+
+// ---------------------------------------------------------------------------
 // usePluginAction hook return type
 // ---------------------------------------------------------------------------
 
