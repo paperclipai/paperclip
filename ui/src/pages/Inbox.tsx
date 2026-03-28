@@ -919,7 +919,11 @@ export function Inbox() {
     dashboard.costs.monthBudgetCents > 0 &&
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
-  const hasAlerts = showAggregateAgentError || showBudgetAlert;
+  const showQueueStarvation =
+    !!dashboard &&
+    (dashboard.queueStarvation?.starvedAgentCount ?? 0) > 0 &&
+    !dismissed.has("alert:queue-starvation");
+  const hasAlerts = showAggregateAgentError || showBudgetAlert || showQueueStarvation;
   const showWorkItemsSection = workItemsToRender.length > 0;
   const showAlertsSection = shouldShowInboxSection({
     tab,
@@ -1273,6 +1277,30 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:budget")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              {showQueueStarvation && (
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/issues"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                    <span className="text-sm">
+                      <span className="font-medium">
+                        {dashboard!.queueStarvation.starvedAgentCount} agent{dashboard!.queueStarvation.starvedAgentCount === 1 ? "" : "s"}
+                      </span>{" "}
+                      starved — no runnable work assigned (only backlog/blocked)
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:queue-starvation")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >

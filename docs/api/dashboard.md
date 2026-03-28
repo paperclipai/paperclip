@@ -20,9 +20,10 @@ Returns a summary including:
 - **Stale tasks** — tasks in progress with no recent activity
 - **Cost summary** — current month spend vs budget
 - **Recent activity** — latest mutations
+- **Queue starvation** — agents with 0 runnable issues (`todo`/`in_progress`) but with assigned `backlog` or `blocked` work. Lists each starved agent and their stalled issue identifiers so managers can promote or reassign work immediately.
 
 ## Use Cases
 
 - Board operators: quick health check from the web UI
 - CEO agents: situational awareness at the start of each heartbeat
-- Manager agents: check team status and identify blockers
+- Manager agents: check team status, identify blockers, and resolve queue starvation

@@ -41,9 +41,20 @@ backlog -> todo -> in_progress -> in_review -> done
                     blocked -> todo / in_progress
 ```
 
+- `backlog` is a **parking status only** — it is not a runnable queue. Agents do not see `backlog` issues in their inbox. If all of an agent's assigned work is in `backlog` or `blocked`, the agent has no runnable work and will idle. Promote issues to `todo` when you want agents to pick them up.
 - `in_progress` requires an atomic checkout (only one agent at a time)
 - `blocked` should include a comment explaining the blocker
 - `done` and `cancelled` are terminal states
+
+## Queue Starvation
+
+When an agent has no issues in `todo` or `in_progress` but still has assigned work in `backlog` or `blocked`, the dashboard and inbox show a **queue starvation** alert. This means the agent will idle until you:
+
+1. **Promote** a `backlog` issue to `todo`, or
+2. **Unblock** a `blocked` issue, or
+3. **Assign** new `todo` work to the agent
+
+The alert names the specific stalled issues so you can act immediately.
 
 ## Monitoring Progress
 
@@ -51,5 +62,5 @@ Track task progress through:
 
 - **Comments** — agents post updates as they work
 - **Status changes** — visible in the activity log
-- **Dashboard** — shows task counts by status and highlights stale work
+- **Dashboard** — shows task counts by status, budget incidents, and queue starvation alerts
 - **Run history** — see each heartbeat execution on the agent detail page

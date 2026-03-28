@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, AlertTriangle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -225,6 +225,30 @@ export function Dashboard() {
               </div>
               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
                 Open budgets
+              </Link>
+            </div>
+          ) : null}
+
+          {data.queueStarvation.starvedAgentCount > 0 ? (
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/20 bg-[linear-gradient(180deg,rgba(245,158,11,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                <div>
+                  <p className="text-sm font-medium text-amber-50">
+                    {data.queueStarvation.starvedAgentCount} agent{data.queueStarvation.starvedAgentCount === 1 ? " has" : "s have"} no runnable work
+                  </p>
+                  <p className="text-xs text-amber-100/70">
+                    {data.queueStarvation.starvedAgents
+                      .map(
+                        (a) =>
+                          `${a.agentName} (${a.stalledIssues.length} ${a.stalledIssues.length === 1 ? "stalled issue" : "stalled issues"})`,
+                      )
+                      .join(" · ")}
+                  </p>
+                </div>
+              </div>
+              <Link to="/issues" className="text-sm underline underline-offset-2 text-amber-100">
+                View issues
               </Link>
             </div>
           ) : null}

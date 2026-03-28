@@ -278,7 +278,13 @@ export function computeInboxBadgeData({
     monthBudgetCents > 0 &&
     monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
-  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
+  const starvedAgentCount = dashboard?.queueStarvation?.starvedAgentCount ?? 0;
+  const showQueueStarvation =
+    starvedAgentCount > 0 && !dismissed.has("alert:queue-starvation");
+  const alerts =
+    Number(showAggregateAgentError) +
+    Number(showBudgetAlert) +
+    Number(showQueueStarvation);
 
   return {
     inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + alerts,

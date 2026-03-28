@@ -1,11 +1,102 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
+const RUNNABLE_STATUSES = ["todo", "in_progress"];
+const NON_RUNNABLE_STATUSES = ["backlog", "blocked"];
+
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
+
+  async function detectQueueStarvation(companyId: string) {
+    // Find all non-terminated agents in the company
+    const activeAgents = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          not(eq(agents.status, "terminated")),
+        ),
+      );
+
+    if (activeAgents.length === 0) return [];
+
+    const agentIds = activeAgents.map((a) => a.id);
+
+    // Count runnable (todo/in_progress) issues per agent
+    const runnableCounts = await db
+      .select({
+        agentId: issues.assigneeAgentId,
+        count: sql<number>`count(*)`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.assigneeAgentId, agentIds),
+          inArray(issues.status, RUNNABLE_STATUSES),
+        ),
+      )
+      .groupBy(issues.assigneeAgentId);
+
+    const runnableByAgent = new Map(
+      runnableCounts.map((r) => [r.agentId, Number(r.count)]),
+    );
+
+    // Find agents with 0 runnable issues
+    const starvedAgentIds = agentIds.filter(
+      (id) => !runnableByAgent.has(id) || runnableByAgent.get(id) === 0,
+    );
+
+    if (starvedAgentIds.length === 0) return [];
+
+    // Get non-runnable (backlog/blocked) issues for starved agents
+    const nonRunnableIssues = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.assigneeAgentId, starvedAgentIds),
+          inArray(issues.status, NON_RUNNABLE_STATUSES),
+        ),
+      );
+
+    // Group by agent — only include agents that actually have non-runnable work
+    const byAgent = new Map<
+      string,
+      Array<{ id: string; identifier: string | null; title: string; status: string }>
+    >();
+    for (const issue of nonRunnableIssues) {
+      const agentId = issue.assigneeAgentId!;
+      if (!byAgent.has(agentId)) byAgent.set(agentId, []);
+      byAgent.get(agentId)!.push({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+      });
+    }
+
+    const agentMap = new Map(activeAgents.map((a) => [a.id, a.name]));
+
+    return Array.from(byAgent.entries()).map(([agentId, stalled]) => ({
+      agentId,
+      agentName: agentMap.get(agentId) ?? agentId,
+      runnableCount: 0,
+      stalledIssues: stalled,
+    }));
+  }
+
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -81,6 +172,7 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
       const budgetOverview = await budgets.overview(companyId);
+      const starvedAgents = await detectQueueStarvation(companyId);
 
       return {
         companyId,
@@ -102,6 +194,10 @@ export function dashboardService(db: Db) {
           pendingApprovals: budgetOverview.pendingApprovalCount,
           pausedAgents: budgetOverview.pausedAgentCount,
           pausedProjects: budgetOverview.pausedProjectCount,
+        },
+        queueStarvation: {
+          starvedAgentCount: starvedAgents.length,
+          starvedAgents,
         },
       };
     },

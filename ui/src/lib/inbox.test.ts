@@ -193,6 +193,10 @@ const dashboard: DashboardSummary = {
     pausedAgents: 0,
     pausedProjects: 0,
   },
+  queueStarvation: {
+    starvedAgentCount: 0,
+    starvedAgents: [],
+  },
 };
 
 describe("inbox helpers", () => {

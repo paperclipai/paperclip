@@ -3,4 +3,5 @@ export interface SidebarBadges {
   approvals: number;
   failedRuns: number;
   joinRequests: number;
+  starvedAgents: number;
 }

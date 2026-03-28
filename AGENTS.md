@@ -146,3 +146,15 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+
+
+---
+
+## Execution Environment
+
+You run locally on a Mac mini with full filesystem access. No sandboxing, no worktrees, no isolation.
+
+- **Filesystem**: Full read/write access to the entire Mac mini filesystem.
+- **OpenCode**: All permissions (`read`, `edit`, `glob`, `bash`, `write`, `fetch`) are set to `allow` in `opencode.json`. You always run as OpenCode — there is no Claude fallback.
+- **No worktrees**: Work directly in `/Users/kale/projects/creator-skills`. Do not create or switch to git worktrees unless explicitly asked.
+- **No sandboxes**: Do not wrap commands in sandbox profiles. Execute directly.

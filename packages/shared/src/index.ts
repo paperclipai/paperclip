@@ -242,6 +242,7 @@ export type {
   InstanceSchedulerHeartbeatAgent,
   LiveEvent,
   DashboardSummary,
+  StarvedAgentDetail,
   ActivityEvent,
   SidebarBadges,
   CompanyMembership,

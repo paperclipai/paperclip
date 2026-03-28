@@ -1,3 +1,15 @@
+export interface StarvedAgentDetail {
+  agentId: string;
+  agentName: string;
+  runnableCount: number;
+  stalledIssues: Array<{
+    id: string;
+    identifier: string | null;
+    title: string;
+    status: string;
+  }>;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -23,5 +35,9 @@ export interface DashboardSummary {
     pendingApprovals: number;
     pausedAgents: number;
     pausedProjects: number;
+  };
+  queueStarvation: {
+    starvedAgentCount: number;
+    starvedAgents: StarvedAgentDetail[];
   };
 }
