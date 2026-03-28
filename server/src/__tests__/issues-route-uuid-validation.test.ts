@@ -97,6 +97,16 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when duplicate after cursors resolve to an invalid first value", async () => {
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/comments?after=not-a-uuid&after=22222222-2222-4222-8222-222222222222",
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("after comment cursor");
+    expect(mockIssueService.listComments).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for invalid attachment ids before attachment lookup", async () => {
     const res = await request(createApp()).get("/api/attachments/not-a-uuid/content");
     expect(res.status).toBe(400);

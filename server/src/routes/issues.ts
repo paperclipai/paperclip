@@ -442,10 +442,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, issue.companyId);
 
-    const wakeCommentId =
-      typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
-        ? req.query.wakeCommentId.trim()
-        : null;
+    const wakeCommentIdRaw = readQueryString(req.query.wakeCommentId);
+    const wakeCommentId = wakeCommentIdRaw && wakeCommentIdRaw.trim().length > 0
+      ? wakeCommentIdRaw.trim()
+      : null;
     if (wakeCommentId && !isUuidLike(wakeCommentId)) {
       res.status(400).json({ error: "Invalid wakeCommentId query parameter" });
       return;
@@ -1257,24 +1257,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const afterCommentId =
-      typeof req.query.after === "string" && req.query.after.trim().length > 0
-        ? req.query.after.trim()
-        : typeof req.query.afterCommentId === "string" && req.query.afterCommentId.trim().length > 0
-          ? req.query.afterCommentId.trim()
-          : null;
+    const afterCommentIdRaw = readQueryString(req.query.after) ?? readQueryString(req.query.afterCommentId);
+    const afterCommentId = afterCommentIdRaw && afterCommentIdRaw.trim().length > 0
+      ? afterCommentIdRaw.trim()
+      : null;
     if (afterCommentId && !isUuidLike(afterCommentId)) {
       res.status(400).json({ error: "Invalid after comment cursor" });
       return;
     }
-    const order =
-      typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "asc"
-        ? "asc"
-        : "desc";
-    const limitRaw =
-      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
-        ? Number(req.query.limit)
-        : null;
+    const orderRaw = readQueryString(req.query.order);
+    const order = orderRaw && orderRaw.trim().toLowerCase() === "asc"
+      ? "asc"
+      : "desc";
+    const limitRawString = readQueryString(req.query.limit);
+    const limitRaw = limitRawString && limitRawString.trim().length > 0
+      ? Number(limitRawString)
+      : null;
     const limit =
       limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
