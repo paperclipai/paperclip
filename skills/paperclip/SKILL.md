@@ -286,6 +286,8 @@ PATCH /api/agents/{agentId}/instructions-path
 | List agents                           | `GET /api/companies/:companyId/agents`                                                     |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                       |
+| List agent workspace files            | `GET /api/agents/:agentId/files?path=subdir`                                               |
+| Read agent workspace file             | `GET /api/agents/:agentId/files/content?path=file.md`                                      |
 | List company skills                   | `GET /api/companies/:companyId/skills`                                                     |
 | Install company/agent skill           | `POST /api/companies/:companyId/skills`                                                    |
 | Send Telegram message                 | `POST /api/agents/:agentId/telegram/send`                                                  |
@@ -423,6 +425,38 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 ```
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+## Workspace Files
+
+Agents have workspace files accessible via API — the same files visible in the UI under Agent → Workspace. Use these endpoints to browse another agent's workspace or read file content programmatically.
+
+**List directory:**
+```
+GET /api/agents/{agentId}/files?path=workspace/docs
+```
+Returns `{ path, entries[] }` where each entry has `name`, `type` (`"file"` or `"directory"`), `size`, and `modified`. Omit `path` to list the agent's root directory.
+
+**Read file content:**
+```
+GET /api/agents/{agentId}/files/content?path=workspace/docs/my-plan.md
+```
+Returns `{ path, content, mimeType, size, modified }`. Max 1 MB, text files only.
+
+### Referencing workspace files in issues
+
+When creating an issue that should point the assignee at a workspace document, include the file path in the description:
+
+```
+POST /api/companies/{companyId}/issues
+{
+  "title": "Review: deployment-plan.md",
+  "description": "Review and act on the following workspace document.\n\n**Workspace file:** `agents/nexus/workspace/docs/deployment-plan.md`",
+  "assigneeAgentId": "{target-agent-id}",
+  "status": "todo"
+}
+```
+
+The receiving agent reads the referenced path (via the file content endpoint or local filesystem) before starting work. This replicates the UI's "create issue from file" flow.
 
 ## Self-Test Playbook (App-Level)
 
