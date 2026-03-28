@@ -119,6 +119,16 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   // inter-container traffic — replace with localhost for child processes.
   apiUrl = apiUrl.replace(/^(https?:\/\/)server(:\d+)/, "$1localhost$2");
   vars.PAPERCLIP_API_URL = apiUrl;
+
+  // Inject Vibe-Stack backend config so agent containers can talk directly
+  // to LLM backends without routing through the Paperclip control plane.
+  // Paperclip decides *which* backend config to inject; agents own the
+  // inference calls themselves.
+  const vibeBackendHost = process.env.VIBE_BACKEND_HOST;
+  if (vibeBackendHost) vars.VIBE_BACKEND_HOST = vibeBackendHost;
+  const vibeFallbackUrls = process.env.VIBE_FALLBACK_URLS;
+  if (vibeFallbackUrls) vars.VIBE_FALLBACK_URLS = vibeFallbackUrls;
+
   return vars;
 }
 

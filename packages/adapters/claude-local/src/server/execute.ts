@@ -535,7 +535,10 @@ async function extractAndStoreMemories(
   taskContext: string,
   env: Record<string, string>,
 ): Promise<void> {
-  const vllmUrl = process.env.VLLM_API_URL;
+  // Prefer VIBE_BACKEND_HOST (injected by Paperclip control plane) over the
+  // legacy VLLM_API_URL.  This keeps the inference endpoint decision in
+  // Paperclip while the actual LLM call stays in the agent container.
+  const vllmUrl = process.env.VIBE_BACKEND_HOST ?? process.env.VLLM_API_URL;
   const apiUrl = env.PAPERCLIP_API_URL;
   const apiKey = env.PAPERCLIP_API_KEY;
   const companyId = env.PAPERCLIP_COMPANY_ID;

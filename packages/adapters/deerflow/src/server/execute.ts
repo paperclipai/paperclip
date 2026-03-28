@@ -287,7 +287,12 @@ export async function execute(
 ): Promise<AdapterExecutionResult> {
   const { config, onLog, onMeta } = ctx;
 
-  const deerflowUrl = asString(config.deerflowUrl as unknown, "http://deerflow-langgraph:2024");
+  // Prefer explicit adapter config, fall back to VIBE_BACKEND_HOST (injected
+  // by Paperclip at container start), then to the Docker-internal default.
+  const deerflowUrl = asString(
+    config.deerflowUrl as unknown,
+    process.env.VIBE_BACKEND_HOST ?? "http://deerflow-langgraph:2024",
+  );
   const model = asString(config.model as unknown, "");
   const skill = asString(config.skill as unknown, "");
   const thinkingEnabled = asBoolean(config.thinkingEnabled as unknown, false);
