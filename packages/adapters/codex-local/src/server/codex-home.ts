@@ -18,13 +18,15 @@ const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
  * section header is removed as well.
  */
 export function sanitizeConfigToml(content: string): string {
-  // Match sandbox = "elevated" / 'elevated' / elevated (with optional surrounding whitespace)
+  // Match sandbox = "elevated" / 'elevated' / elevated anywhere in the file.
+  // In practice this key only appears under [windows] in Codex config; a full
+  // TOML-section-aware match would require a parser we don't carry.
   const sandboxRe = /^[ \t]*sandbox\s*=\s*(?:"elevated"|'elevated'|elevated)[ \t]*\r?\n?/gm;
   let result = content.replace(sandboxRe, "");
 
   // Remove [windows] header only if it's now empty (no non-blank lines before the next section or EOF)
   result = result.replace(
-    /^([ \t]*\[windows\][ \t]*\n)((?:[ \t]*\n)*)(?=\[|$)/gm,
+    /^([ \t]*\[windows\][ \t]*\r?\n)((?:[ \t]*\r?\n)*)(?=\[|$)/gm,
     (_match, _header, blanks) => blanks,
   );
 

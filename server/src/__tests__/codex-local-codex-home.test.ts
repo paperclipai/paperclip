@@ -95,6 +95,25 @@ describe("sanitizeConfigToml", () => {
     expect(result).not.toContain("sandbox");
     expect(result).not.toContain("elevated");
   });
+
+  it("handles CRLF line endings and removes empty [windows] section", () => {
+    const input = [
+      'model = "gpt-5.4"',
+      "",
+      "[windows]",
+      'sandbox = "elevated"',
+      "",
+      "[mcp_servers.foo]",
+      'command = "bar"',
+    ].join("\r\n");
+
+    const result = sanitizeConfigToml(input);
+
+    expect(result).not.toContain('sandbox = "elevated"');
+    expect(result).not.toContain("[windows]");
+    expect(result).toContain('model = "gpt-5.4"');
+    expect(result).toContain("[mcp_servers.foo]");
+  });
 });
 
 describe("prepareManagedCodexHome", () => {
@@ -129,7 +148,6 @@ describe("prepareManagedCodexHome", () => {
       ].join("\n"),
     );
 
-    const managedHome = path.join(root, "managed-codex");
     const env: NodeJS.ProcessEnv = {
       CODEX_HOME: sourceHome,
       PAPERCLIP_HOME: root,
