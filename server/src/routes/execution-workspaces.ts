@@ -19,15 +19,29 @@ export function executionWorkspaceRoutes(db: Db) {
   const svc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
 
+  function readQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      const first = value.find((entry): entry is string => typeof entry === "string");
+      return first;
+    }
+    return undefined;
+  }
+
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const projectId = readQueryString(req.query.projectId);
+    const projectWorkspaceId = readQueryString(req.query.projectWorkspaceId);
+    const issueId = readQueryString(req.query.issueId);
+    const status = readQueryString(req.query.status);
+    const reuseEligible = readQueryString(req.query.reuseEligible) === "true";
     const workspaces = await svc.list(companyId, {
-      projectId: req.query.projectId as string | undefined,
-      projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
-      issueId: req.query.issueId as string | undefined,
-      status: req.query.status as string | undefined,
-      reuseEligible: req.query.reuseEligible === "true",
+      projectId,
+      projectWorkspaceId,
+      issueId,
+      status,
+      reuseEligible,
     });
     res.json(workspaces);
   });
