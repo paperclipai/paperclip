@@ -1,0 +1,173 @@
+name: Upstream Sync Check
+
+# Runs weekly on Monday at 9 AM CT (14:00 UTC during CDT)
+# Also runnable manually from the Actions tab
+on:
+  schedule:
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout our fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git 2>/dev/null || true
+          git fetch upstream --quiet
+
+      - name: Compare with upstream
+        id: diff
+        run: |
+          # Get our latest commit on master
+          OUR_HEAD=$(git rev-parse HEAD)
+          UPSTREAM_HEAD=$(git rev-parse upstream/master 2>/dev/null || git rev-parse upstream/main 2>/dev/null)
+
+          echo "our_head=$OUR_HEAD" >> "$GITHUB_OUTPUT"
+          echo "upstream_head=$UPSTREAM_HEAD" >> "$GITHUB_OUTPUT"
+
+          # Check if we're behind
+          BEHIND=$(git rev-list --count HEAD..upstream/master 2>/dev/null || git rev-list --count HEAD..upstream/main 2>/dev/null || echo "0")
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            echo "✅ Fork is up to date with upstream."
+            exit 0
+          fi
+
+          echo "status=behind" >> "$GITHUB_OUTPUT"
+          echo "📦 Fork is $BEHIND commits behind upstream."
+
+          # Get the new commits
+          BRANCH="upstream/master"
+          git rev-parse upstream/master >/dev/null 2>&1 || BRANCH="upstream/main"
+
+          echo "## New Upstream Commits ($BEHIND)" > /tmp/upstream-report.md
+          echo "" >> /tmp/upstream-report.md
+          git log --oneline HEAD..$BRANCH | head -50 >> /tmp/upstream-report.md
+
+          echo "" >> /tmp/upstream-report.md
+          echo "## Changed Files" >> /tmp/upstream-report.md
+          echo '```' >> /tmp/upstream-report.md
+          git diff --stat HEAD..$BRANCH | tail -20 >> /tmp/upstream-report.md
+          echo '```' >> /tmp/upstream-report.md
+
+          echo "" >> /tmp/upstream-report.md
+          echo "## Risk Assessment" >> /tmp/upstream-report.md
+          echo "" >> /tmp/upstream-report.md
+
+          # Check for breaking changes
+          SCHEMA_CHANGES=$(git diff --name-only HEAD..$BRANCH | grep -c 'schema\|migration' || true)
+          PACKAGE_CHANGES=$(git diff --name-only HEAD..$BRANCH | grep -c 'package.json' || true)
+          DOCKER_CHANGES=$(git diff --name-only HEAD..$BRANCH | grep -c 'Dockerfile\|docker-compose' || true)
+          CONFIG_CHANGES=$(git diff --name-only HEAD..$BRANCH | grep -c 'config\|\.env' || true)
+
+          if [ "$SCHEMA_CHANGES" -gt 0 ]; then
+            echo "- ⚠️ **Database schema/migration changes detected** ($SCHEMA_CHANGES files) — requires migration review" >> /tmp/upstream-report.md
+          fi
+          if [ "$PACKAGE_CHANGES" -gt 0 ]; then
+            echo "- ⚠️ **Package dependency changes** ($PACKAGE_CHANGES files) — lockfile refresh needed" >> /tmp/upstream-report.md
+          fi
+          if [ "$DOCKER_CHANGES" -gt 0 ]; then
+            echo "- ⚠️ **Docker configuration changes** ($DOCKER_CHANGES files) — container rebuild needed" >> /tmp/upstream-report.md
+          fi
+          if [ "$CONFIG_CHANGES" -gt 0 ]; then
+            echo "- ⚠️ **Configuration changes** ($CONFIG_CHANGES files) — check for breaking config format changes" >> /tmp/upstream-report.md
+          fi
+          if [ "$SCHEMA_CHANGES" -eq 0 ] && [ "$PACKAGE_CHANGES" -eq 0 ] && [ "$DOCKER_CHANGES" -eq 0 ] && [ "$CONFIG_CHANGES" -eq 0 ]; then
+            echo "- ✅ No high-risk changes detected (no schema, deps, Docker, or config changes)" >> /tmp/upstream-report.md
+          fi
+
+          echo "" >> /tmp/upstream-report.md
+          echo "## Recommended Action" >> /tmp/upstream-report.md
+          echo "" >> /tmp/upstream-report.md
+
+          if [ "$SCHEMA_CHANGES" -gt 0 ]; then
+            echo "**Cherry-pick** — Schema changes require careful review. Cherry-pick non-breaking commits first, then handle migrations separately." >> /tmp/upstream-report.md
+          elif [ "$BEHIND" -gt 50 ]; then
+            echo "**Staged merge** — Large delta ($BEHIND commits). Consider merging in batches with testing between each." >> /tmp/upstream-report.md
+          else
+            echo "**Merge** — Low-risk changes. Create a branch, merge upstream, test, then PR." >> /tmp/upstream-report.md
+          fi
+
+          echo "" >> /tmp/upstream-report.md
+          echo "## Merge Commands" >> /tmp/upstream-report.md
+          echo '```bash' >> /tmp/upstream-report.md
+          echo "git checkout -b chore/upstream-sync-$(date +%Y%m%d)" >> /tmp/upstream-report.md
+          echo "git merge upstream/master --no-ff" >> /tmp/upstream-report.md
+          echo "# Resolve conflicts if any" >> /tmp/upstream-report.md
+          echo "pnpm install" >> /tmp/upstream-report.md
+          echo "pnpm build" >> /tmp/upstream-report.md
+          echo "# Push and create PR" >> /tmp/upstream-report.md
+          echo '```' >> /tmp/upstream-report.md
+
+      - name: Create or update GitHub issue
+        if: steps.diff.outputs.status == 'behind'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/upstream-report.md', 'utf8');
+            const behind = '${{ steps.diff.outputs.behind }}';
+            const upstreamHead = '${{ steps.diff.outputs.upstream_head }}'.substring(0, 8);
+            const title = `⬆️ Upstream sync: ${behind} new commits from paperclipai/paperclip`;
+
+            // Check if an open upstream sync issue already exists
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'upstream-sync',
+              state: 'open',
+            });
+
+            const body = `## Upstream Sync Report\n\n` +
+              `**Upstream:** paperclipai/paperclip @ \`${upstreamHead}\`\n` +
+              `**Our fork:** VetSecItPro/ironworks @ \`${{ steps.diff.outputs.our_head }}\`\n` +
+              `**Delta:** ${behind} commits behind\n` +
+              `**Checked:** ${new Date().toISOString()}\n\n` +
+              report + '\n\n' +
+              `---\n` +
+              `*This issue was auto-generated by the [Upstream Sync Check](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) workflow.*`;
+
+            if (existingIssues.data.length > 0) {
+              // Update existing issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssues.data[0].number,
+                title: title,
+                body: body,
+              });
+              console.log(`Updated issue #${existingIssues.data[0].number}`);
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['upstream-sync', 'chore'],
+              });
+              console.log('Created new upstream sync issue');
+            }
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.diff.outputs.status }}" = "up-to-date" ]; then
+            echo "✅ Fork is up to date with upstream. No action needed."
+          else
+            echo "📦 Fork is ${{ steps.diff.outputs.behind }} commits behind upstream."
+            echo "📋 GitHub issue created/updated with sync report."
+          fi

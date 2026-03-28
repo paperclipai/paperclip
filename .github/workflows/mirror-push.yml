@@ -1,0 +1,48 @@
+name: Mirror Push
+
+# Runs daily at 6 AM CT (11:00 UTC during CDT)
+# Also pushes on every merge to master
+on:
+  schedule:
+    - cron: '0 11 * * *'
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify remote
+        run: |
+          REMOTE_URL=$(git remote get-url origin)
+          if [[ "$REMOTE_URL" != *"VetSecItPro/ironworks"* ]]; then
+            echo "❌ Remote is not VetSecItPro/ironworks — aborting for safety."
+            echo "Remote: $REMOTE_URL"
+            exit 1
+          fi
+          echo "✅ Remote verified: $REMOTE_URL"
+
+      - name: Push all branches and tags
+        run: |
+          echo "Pushing master and tags to origin..."
+          git push origin master --force-with-lease
+          git push origin --tags
+          echo "✅ Mirror push complete."
+
+      - name: Summary
+        run: |
+          echo "📤 Pushed to VetSecItPro/ironworks"
+          echo "   Branch: master @ $(git rev-parse --short HEAD)"
+          echo "   Commit: $(git log -1 --oneline)"
