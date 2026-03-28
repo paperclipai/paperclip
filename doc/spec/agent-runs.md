@@ -607,28 +607,28 @@ Agent 级控制平面设置（非适配器专属）：
 }
 ```
 
-## 11.3 Required event types
+## 11.3 必需的事件类型
 
 1. `agent.status.changed`
 2. `heartbeat.run.queued`
 3. `heartbeat.run.started`
-4. `heartbeat.run.status` (short color+message updates)
-5. `heartbeat.run.log` (optional live chunk stream; full persistence handled by `RunLogStore`)
+4. `heartbeat.run.status`（短颜色+消息更新）
+5. `heartbeat.run.log`（可选的实时块流；完整持久化由 `RunLogStore` 处理）
 6. `heartbeat.run.finished`
 7. `issue.updated`
 8. `issue.comment.created`
 9. `activity.appended`
 
-## 11.4 UI behavior
+## 11.4 UI 行为
 
-1. Agent detail view updates run timeline live.
-2. Task board reflects assignment/status/comment changes from agent activity without refresh.
-3. Org/agent list reflects status changes live.
-4. If websocket disconnects, client falls back to short polling until reconnect.
+1. Agent 详情视图实时更新运行时间线。
+2. 任务看板无需刷新即可反映来自 agent 活动的分配/状态/评论变更。
+3. 组织/agent 列表实时反映状态变更。
+4. 若 websocket 断开，客户端回退到短轮询直到重新连接。
 
-## 12. Error Handling and Diagnostics
+## 12. 错误处理与诊断
 
-## 12.1 Error classes
+## 12.1 错误类型
 
 - `adapter_not_installed`
 - `invalid_working_directory`
@@ -640,50 +640,50 @@ Agent 级控制平面设置（非适配器专属）：
 - `resume_session_invalid`
 - `budget_blocked`
 
-## 12.2 Logging requirements
+## 12.2 日志记录要求
 
-1. Persist full stdout/stderr stream to configured `RunLogStore`.
-2. Persist only lightweight run metadata/events in Postgres (`heartbeat_runs`, `heartbeat_run_events`).
-3. Persist bounded `stdout_excerpt` and `stderr_excerpt` in Postgres for quick diagnostics.
-4. Mark truncation explicitly when excerpts are capped.
-5. Redact secrets from logs, excerpts, and websocket payloads.
+1. 将完整的 stdout/stderr 流持久化到已配置的 `RunLogStore`。
+2. 仅将轻量运行元数据/事件持久化到 Postgres（`heartbeat_runs`、`heartbeat_run_events`）。
+3. 将有界的 `stdout_excerpt` 和 `stderr_excerpt` 持久化到 Postgres 以便快速诊断。
+4. 摘录被截断时明确标记。
+5. 从日志、摘录和 websocket 负载中脱敏密钥。
 
-## 12.3 Log retention and lifecycle
+## 12.3 日志保留与生命周期
 
-1. `RunLogStore` retention is configurable by deployment (for example 7/30/90 days).
-2. Postgres run metadata can outlive full log objects.
-3. Deletion/pruning jobs must handle orphaned metadata/log-object references safely.
-4. If full log object is gone, APIs still return metadata and excerpts with `log_unavailable` status.
+1. `RunLogStore` 保留期可按部署配置（例如 7/30/90 天）。
+2. Postgres 运行元数据可在完整日志对象之后继续存在。
+3. 删除/清理任务必须安全处理孤立的元数据/日志对象引用。
+4. 若完整日志对象已删除，API 仍返回元数据和摘录，状态为 `log_unavailable`。
 
-## 12.4 Restart recovery
+## 12.4 重启恢复
 
-On server startup:
+服务端启动时：
 
-1. Find stale `queued`/`running` runs.
-2. Mark as `failed` with `error_code=control_plane_restart`.
-3. Set affected non-paused/non-terminated agents to `error` (or `idle` based on policy).
-4. Emit recovery events to websocket and activity log.
+1. 查找过期的 `queued`/`running` 运行。
+2. 以 `error_code=control_plane_restart` 标记为 `failed`。
+3. 将受影响的非暂停/非终止 agents 设置为 `error`（或按策略为 `idle`）。
+4. 向 websocket 和活动日志发出恢复事件。
 
-## 13. API Surface Changes
+## 13. API 接口变更
 
-## 13.1 New/updated endpoints
+## 13.1 新增/更新端点
 
 1. `POST /agents/:agentId/wakeup`
-   - enqueue wakeup with source/reason
+   - 以 source/reason 将唤醒入队
 2. `POST /agents/:agentId/heartbeat/invoke`
-   - backward-compatible alias to wakeup API
+   - 向唤醒 API 的向后兼容别名
 3. `GET /agents/:agentId/runtime-state`
-   - board-only debug view
+   - 仅看板可访问的调试视图
 4. `GET /agents/:agentId/task-sessions`
-   - board-only list of task-scoped adapter sessions
+   - 仅看板可访问的任务范围适配器 session 列表
 5. `POST /agents/:agentId/runtime-state/reset-session`
-   - clears all task sessions for the agent, or one when `taskKey` is provided
+   - 清除 agent 的所有任务 session，或在提供 `taskKey` 时清除单个
 6. `GET /heartbeat-runs/:runId/events?afterSeq=:n`
-   - fetch persisted lightweight timeline
+   - 获取已持久化的轻量时间线
 7. `GET /heartbeat-runs/:runId/log`
-   - reads full log stream via `RunLogStore` (or redirects/presigned URL for object store)
+   - 通过 `RunLogStore` 读取完整日志流（或对象存储的重定向/预签名 URL）
 8. `GET /api/companies/:companyId/events/ws`
-   - websocket stream
+   - websocket 流
 
 ## 13.2 Mutation logging
 

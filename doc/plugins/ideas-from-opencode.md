@@ -443,68 +443,68 @@ Paperclip 已隐式具备这种模式：
 
 这些是核心不变量。
 
-## 4. Plugins ship their own UI
+## 4. 插件提供自有 UI
 
-Plugins ship their own React UI as a bundled module inside `dist/ui/`. The host loads plugin components into designated **extension slots** (pages, tabs, widgets, sidebar entries) and provides a **bridge** for the plugin frontend to talk to its own worker backend and to access host context.
+插件将自己的 React UI 作为 `dist/ui/` 中的捆绑模块提供。宿主将插件组件加载到指定的**扩展槽**（页面、标签页、小部件、侧边栏条目）中，并提供一个 **bridge**，让插件前端可与其自身的工作进程后端通信并访问宿主上下文。
 
-**How it works:**
+**工作原理：**
 
-1. The plugin's UI exports named components for each slot it fills (e.g. `DashboardWidget`, `IssueDetailTab`, `SettingsPage`).
-2. The host mounts the plugin component into the correct slot, passing a bridge object with hooks like `usePluginData(key, params)` and `usePluginAction(key)`.
-3. The plugin component fetches data from its own worker via the bridge and renders it however it wants.
-4. The host enforces capability gates through the bridge — if the worker doesn't have a capability, the bridge rejects the call.
+1. 插件 UI 为其填充的每个槽位导出具名组件（例如 `DashboardWidget`、`IssueDetailTab`、`SettingsPage`）。
+2. 宿主将插件组件挂载到正确的槽位，传递带有 `usePluginData(key, params)` 和 `usePluginAction(key)` 等钩子的 bridge 对象。
+3. 插件组件通过 bridge 从其自身的工作进程获取数据并按自己的方式渲染。
+4. 宿主通过 bridge 执行能力门控——如果工作进程没有某项能力，bridge 将拒绝该调用。
 
-**What the host controls:** where plugin components appear, the bridge API, capability enforcement, and shared UI primitives (`@paperclipai/plugin-sdk/ui`) with design tokens and common components.
+**宿主控制的内容：** 插件组件的显示位置、bridge API、能力执行，以及带设计令牌和通用组件的共享 UI 原语（`@paperclipai/plugin-sdk/ui`）。
 
-**What the plugin controls:** how to render its data, what data to fetch, what actions to expose, and whether to use the host's shared components or build entirely custom UI.
+**插件控制的内容：** 如何渲染其数据、获取哪些数据、暴露哪些操作，以及是否使用宿主的共享组件或完全自定义 UI。
 
-First version extension slots:
+第一版扩展槽：
 
-- dashboard widgets
-- settings pages
-- detail-page tabs (project, issue, agent, goal, run)
-- sidebar entries
-- company-context plugin pages
+- 仪表板小部件
+- 设置页面
+- 详情页标签页（project、issue、agent、goal、run）
+- 侧边栏条目
+- company 上下文插件页面
 
-The host SDK ships shared components (MetricCard, DataTable, StatusBadge, LogView, etc.) for visual consistency, but these are optional.
+宿主 SDK 提供共享组件（MetricCard、DataTable、StatusBadge、LogView 等）以保持视觉一致性，但这些是可选的。
 
-Later, if untrusted third-party plugins become common, the host can move to iframe-based isolation without changing the plugin's source code (the bridge API stays the same).
+以后若不受信任的第三方插件变得普遍，宿主可以迁移到基于 iframe 的隔离，而无需更改插件源代码（bridge API 保持不变）。
 
-## 5. Make installation global and keep mappings/config separate
+## 5. 使安装全局化，并将映射/配置分开存储
 
-`opencode` is mostly user-level local config.
-Paperclip should treat plugin installation as a global instance-level action.
+`opencode` 主要是用户级本地配置。
+Paperclip 应将插件安装视为全局实例级操作。
 
-Examples:
+示例：
 
-- install `@paperclip/plugin-linear` once
-- make it available everywhere immediately
-- optionally store mappings over Paperclip objects if one company maps to a different Linear team than another
+- 安装一次 `@paperclip/plugin-linear`
+- 立即在所有地方可用
+- 可选地在 Paperclip 对象上存储映射，如果一个 company 映射到与另一个 company 不同的 Linear team
 
-## 6. Use project workspaces as the primary anchor for local tooling
+## 6. 以项目工作区作为本地工具的主要锚点
 
-Paperclip already has a concrete workspace model for projects:
+Paperclip 已经为项目提供了具体的工作区模型：
 
-- projects expose `workspaces` and `primaryWorkspace`
-- the database already has `project_workspaces`
-- project routes already support creating, updating, and deleting workspaces
-- heartbeat resolution already prefers project workspaces before falling back to task-session or agent-home workspaces
+- 项目暴露 `workspaces` 和 `primaryWorkspace`
+- 数据库中已有 `project_workspaces`
+- 项目路由已支持创建、更新和删除工作区
+- 心跳解析已优先选择项目工作区，然后才回退到任务会话或 agent 主目录工作区
 
-That means local/runtime plugins should generally anchor themselves to projects first, not invent a parallel workspace model.
+这意味着本地/运行时插件通常应首先锚定到项目，而不是发明一个并行的工作区模型。
 
-Practical guidance:
+实践指导：
 
-- file browser should browse project workspaces first
-- terminal sessions should be launchable from a project workspace
-- git should treat the project workspace as the repo root anchor
-- dev server and child-process tracking should attach to project workspaces
-- issue and agent views can still deep-link into the relevant project workspace context
+- 文件浏览器应首先浏览项目工作区
+- 终端会话应可从项目工作区启动
+- git 应将项目工作区视为仓库根目录的锚点
+- 开发服务器和子进程追踪应附加到项目工作区
+- issue 和 agent 视图仍可深度链接到相关的项目工作区上下文
 
-In other words:
+换句话说：
 
-- `project` is the business object
-- `project_workspace` is the local runtime anchor
-- plugins should build on that instead of creating an unrelated workspace model first
+- `project` 是业务对象
+- `project_workspace` 是本地运行时锚点
+- 插件应基于此构建，而不是首先创建一个无关的工作区模型
 
 ## 7. Let plugins contribute agent tools
 

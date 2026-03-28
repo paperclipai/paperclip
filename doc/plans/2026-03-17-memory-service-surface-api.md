@@ -75,43 +75,43 @@ Paperclip 核心应负责：
 
 其他所有情况应从显式操作开始。
 
-## Proposed Concepts
+## 核心概念
 
-### Memory provider
+### 记忆提供商
 
-A built-in or plugin-supplied implementation that stores and retrieves memory.
+内置或由插件提供的实现，负责存储和检索记忆。
 
-Examples:
+示例：
 
-- local markdown + vector index
-- mem0 adapter
-- supermemory adapter
-- MemOS adapter
+- 本地 markdown + 向量索引
+- mem0 适配器
+- supermemory 适配器
+- MemOS 适配器
 
-### Memory binding
+### 记忆绑定
 
-A company-scoped configuration record that points to a provider and carries provider-specific config.
+一条公司级范围的配置记录，指向某个提供商并携带该提供商的特定配置。
 
-This is the object selected by key.
+这是通过键名选择的对象。
 
-### Memory scope
+### 记忆范围
 
-The normalized Paperclip scope passed into a provider request.
+传入提供商请求的规范化 Paperclip 范围对象。
 
-At minimum:
+最低包含：
 
 - `companyId`
-- optional `agentId`
-- optional `projectId`
-- optional `issueId`
-- optional `runId`
-- optional `subjectId` for external/user identity
+- 可选的 `agentId`
+- 可选的 `projectId`
+- 可选的 `issueId`
+- 可选的 `runId`
+- 可选的 `subjectId`，用于外部 / 用户身份
 
-### Memory source reference
+### 记忆来源引用
 
-The provenance handle that explains where a memory came from.
+解释记忆来源的溯源句柄。
 
-Supported source kinds should include:
+支持的来源类型应包括：
 
 - `issue_comment`
 - `issue_document`
@@ -121,15 +121,15 @@ Supported source kinds should include:
 - `manual_note`
 - `external_document`
 
-### Memory operation
+### 记忆操作
 
-A normalized write, query, browse, or delete action performed through Paperclip.
+通过 Paperclip 执行的规范化写入、查询、浏览或删除动作。
 
-Paperclip should log every operation, whether the provider is local or external.
+无论提供商是本地还是外部，Paperclip 都应记录每次操作的日志。
 
-## Required Adapter Contract
+## 必需的适配器契约
 
-The required core should be small enough to fit `memsearch`, `mem0`, `Memori`, `MemOS`, or `OpenViking`.
+必需的核心应足够精简，以兼容 `memsearch`、`mem0`、`Memori`、`MemOS` 或 `OpenViking`。
 
 ```ts
 export interface MemoryAdapterCapabilities {

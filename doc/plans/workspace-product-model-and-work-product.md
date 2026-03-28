@@ -526,17 +526,17 @@ Paperclip 需要一个统一的地方来显示：
 - 外部提供商至少应存储链接、提供商、外部 id 和最新已知状态
 - 云代理应能够在 Paperclip 不拥有执行主机的情况下创建工作成果记录
 
-## Page and UI Model
+## 页面与 UI 模型
 
-## 1. Global Navigation
+## 1. 全局导航
 
-Do not add `Workspaces` as a top-level sidebar item in V1.
+在 V1 中不要将 `Workspaces` 添加为顶级侧边栏条目。
 
-### Motivation
+### 动机
 
-That would make the whole product feel infra-heavy, even for companies that do not use code automation.
+这会让整个产品感觉基础设施过重，即使对于不使用代码自动化的公司也是如此。
 
-### Global nav remains
+### 全局导航保持
 
 - Dashboard
 - Inbox
@@ -547,206 +547,206 @@ That would make the whole product feel infra-heavy, even for companies that do n
 - Issues
 - Approvals
 
-Workspaces and work product should be surfaced through project and issue detail views.
+工作区和工作成果应通过项目和 issue 详情视图展示。
 
-## 2. Project Detail
+## 2. 项目详情
 
-Add a project sub-navigation that keeps planning first and code second.
+添加一个以规划为先、代码为辅的项目子导航。
 
-### Tabs
+### 标签页
 
 - `Overview`
 - `Issues`
 - `Code`
 - `Activity`
 
-Optional future:
+未来可选：
 
 - `Outputs`
 
-### `Overview` tab
+### `Overview` 标签页
 
-Planning-first summary:
+以规划为先的摘要：
 
-- project status
-- goals
-- lead
-- issue counts
-- top-level progress
-- latest major work product summaries
+- 项目状态
+- 目标
+- 负责人
+- issue 计数
+- 顶级进度
+- 最新的主要工作成果摘要
 
-### `Issues` tab
+### `Issues` 标签页
 
-- default to top-level issues only
-- show parent issue rollups:
-  - child count
-  - `x/y` done
-  - active preview/PR badges
-- optional toggle: `Show subissues`
+- 默认仅显示顶级 issue
+- 显示父 issue 汇总：
+  - 子 issue 数量
+  - `x/y` 已完成
+  - 活跃预览/PR 标记
+- 可选切换：`显示子 issue`
 
-### `Code` tab
+### `Code` 标签页
 
-This is the main workspace configuration and visibility surface.
+这是主要的工作区配置和可见性界面。
 
-#### Section: `Project Workspaces`
+#### 区域：`Project Workspaces`
 
-List durable project workspaces for the project.
+列出项目的持久项目工作区。
 
-Card/list columns:
+卡片/列表列：
 
-- workspace name
-- source type
-- path or repo
-- default ref
-- primary/default badge
-- active execution workspaces count
-- active issue count
-- active preview count
-- hosting type / provider when remote-managed
+- 工作区名称
+- 来源类型
+- 路径或仓库
+- 默认 ref
+- 主要/默认标记
+- 活跃执行工作区数量
+- 活跃 issue 数量
+- 活跃预览数量
+- 远程管理时的托管类型/提供商
 
-Actions:
+操作：
 
-- `Add workspace`
-- `Edit`
-- `Set default`
-- `Archive`
+- `添加工作区`
+- `编辑`
+- `设为默认`
+- `归档`
 
-#### Section: `Execution Defaults`
+#### 区域：`Execution Defaults`
 
-Fields:
+字段：
 
-- `Enable workspace automation`
-- `Default issue execution mode`
+- `启用工作区自动化`
+- `默认 issue 执行模式`
   - `Shared workspace`
   - `Isolated workspace`
   - `Operator branch`
   - `Adapter default`
-- `Default codebase`
-- `Allow issue override`
+- `默认代码库`
+- `允许 issue 覆盖`
 
-#### Section: `Provisioning`
+#### 区域：`Provisioning`
 
-Fields:
+字段：
 
 - `Setup command`
 - `Cleanup command`
-- `Implementation`
+- `实现方式`
   - `Shared workspace`
   - `Git worktree`
   - `Adapter-managed`
 - `Base ref`
-- `Branch naming template`
-- `Derived workspace parent directory`
+- `分支命名模板`
+- `派生工作区父目录`
 
-Hide git-specific fields when the selected workspace is not git-backed.
-Hide local-path-specific fields when the selected workspace is remote-managed.
+当所选工作区不是 git 支持时，隐藏 git 专属字段。
+当所选工作区是远程管理时，隐藏本地路径专属字段。
 
-#### Section: `Pull Requests`
+#### 区域：`Pull Requests`
 
-Fields:
+字段：
 
-- `PR workflow`
+- `PR 工作流`
   - `Disabled`
   - `Manual`
   - `Agent may open draft PR`
   - `Approval required to open PR`
   - `Approval required to mark ready`
-- `Default base branch`
-- `PR title template`
-- `PR body template`
+- `默认基础分支`
+- `PR 标题模板`
+- `PR 正文模板`
 
-#### Section: `Previews and Runtime`
+#### 区域：`Previews and Runtime`
 
-Fields:
+字段：
 
-- `Allow workspace runtime services`
-- `Default services profile`
-- `Harvest owned preview URLs`
-- `Track external preview URLs`
+- `允许工作区运行时服务`
+- `默认服务配置文件`
+- `收集所有预览 URL`
+- `追踪外部预览 URL`
 
-#### Section: `Cleanup`
+#### 区域：`Cleanup`
 
-Fields:
+字段：
 
-- `Cleanup mode`
+- `清理模式`
   - `Manual`
   - `When issue is terminal`
   - `When PR closes`
   - `After retention window`
-- `Retention window`
-- `Keep while preview is active`
-- `Keep while PR is open`
+- `保留时间窗口`
+- `预览活跃时保持`
+- `PR 开放时保持`
 
-## 3. Add Project Workspace Flow
+## 3. 添加项目工作区流程
 
-Entry point: `Project > Code > Add workspace`
+入口点：`Project > Code > 添加工作区`
 
-### Form fields
+### 表单字段
 
-- `Name`
-- `Source type`
+- `名称`
+- `来源类型`
   - `Local folder`
   - `Git repo`
   - `Non-git folder`
   - `Remote managed`
-- `Local path`
-- `Repository URL`
-- `Remote provider`
-- `Remote workspace reference`
+- `本地路径`
+- `仓库 URL`
+- `远程提供商`
+- `远程工作区引用`
 - `Default ref`
-- `Set as default workspace`
+- `设为默认工作区`
 - `Setup command`
 - `Cleanup command`
 
-### Behavior
+### 行为
 
-- if source type is non-git, hide branch/PR-specific setup
-- if source type is git, show ref and optional advanced branch fields
-- if source type is remote-managed, show provider/reference fields and hide local-path-only configuration
-- for simple solo users, this can be one path field and one save button
+- 如果来源类型是非 git，隐藏分支/PR 专属设置
+- 如果来源类型是 git，显示 ref 和可选的高级分支字段
+- 如果来源类型是远程管理，显示提供商/引用字段并隐藏本地路径专属配置
+- 对于简单的单人用户，这可以是一个路径字段和一个保存按钮
 
-## 4. Issue Create Flow
+## 4. Issue 创建流程
 
-Issue creation should stay simple by default.
+Issue 创建在默认情况下应保持简单。
 
-### Default behavior
+### 默认行为
 
-If the selected project:
+如果所选项目：
 
-- has no workspace automation: show no workspace UI
-- has one default project workspace and default execution mode: inherit silently
+- 没有工作区自动化：不显示工作区 UI
+- 有一个默认项目工作区和默认执行模式：静默继承
 
-### Show a `Workspace` section only when relevant
+### 仅在相关时显示 `Workspace` 区域
 
-#### Basic fields
+#### 基本字段
 
-- `Codebase`
-  - default selected project workspace
-- `Execution mode`
+- `代码库`
+  - 默认选择项目工作区
+- `执行模式`
   - `Project default`
   - `Shared workspace`
   - `Isolated workspace`
   - `Operator branch`
 
-#### Advanced-only field
+#### 仅高级字段
 
-- `Reuse existing execution workspace`
+- `重用现有执行工作区`
 
-This dropdown should show only active execution workspaces for the selected project workspace, with labels like:
+此下拉列表应仅显示所选项目工作区的活跃执行工作区，标签如：
 
 - `dotta/integration-branch`
 - `PAP-447-add-worktree-support`
 - `shared primary workspace`
 
-### Important rule
+### 重要规则
 
-Do not show a picker containing every possible workspace object by default.
+默认情况下不要显示包含所有可能工作区对象的选择器。
 
-The normal flow should feel like:
+正常流程应该感觉是：
 
-- choose project
-- optionally choose codebase
-- optionally choose execution mode
+- 选择项目
+- 可选择代码库
+- 可选择执行模式
 
 not:
 

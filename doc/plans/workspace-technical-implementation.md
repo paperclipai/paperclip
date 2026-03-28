@@ -51,69 +51,69 @@
 
 本次实施应在现有基线之上构建，而非另起炉灶。
 
-## Terminology
+## 术语
 
-- `Project workspace`: durable configured codebase/root for a project
-- `Execution workspace`: actual runtime workspace used for one or more issues
-- `Work product`: user-facing output such as PR, preview, branch, commit, artifact, document
-- `Runtime service`: process or service owned or tracked for a workspace
-- `Compatibility mode`: existing behavior preserved for upgraded installs with no explicit workspace opt-in
+- `Project workspace`：为项目持久配置的代码库/根目录
+- `Execution workspace`：供一个或多个 issue 使用的实际运行时 workspace
+- `Work product`：面向用户的输出物，例如 PR、预览、分支、提交、构件、文档
+- `Runtime service`：workspace 所拥有或追踪的进程或服务
+- `Compatibility mode`：为升级后尚未显式启用 workspace 的安装实例保留的现有行为
 
-## Architecture Summary
+## 架构概述
 
-The first slice should introduce three explicit layers:
+第一个切片应引入三个明确的层次：
 
 1. `Project workspace`
-   - existing durable project-scoped codebase record
-   - extended to support local, git, non-git, and remote-managed shapes
+   - 现有的、项目范围内的持久化代码库记录
+   - 扩展以支持本地、git、非 git 及远程托管等形态
 
 2. `Execution workspace`
-   - new durable runtime record
-   - represents shared, isolated, operator-branch, or remote-managed execution context
+   - 新的持久化运行时记录
+   - 代表共享、隔离、operator 分支或远程托管的执行上下文
 
 3. `Issue work product`
-   - new durable output record
-   - stores PRs, previews, branches, commits, artifacts, and documents
+   - 新的持久化输出记录
+   - 存储 PR、预览、分支、提交、构件和文档
 
-The issue remains the planning and ownership unit.
-The execution workspace remains the runtime unit.
-The work product remains the deliverable/output unit.
+issue 仍然是规划和所有权单元。
+执行 workspace 仍然是运行时单元。
+工作产物仍然是可交付/输出单元。
 
-## Configuration and Deployment Topology
+## 配置与部署拓扑
 
-## Important correction
+## 重要更正
 
-This repo already uses `PAPERCLIP_DEPLOYMENT_MODE` for auth/deployment behavior (`local_trusted | authenticated`).
+该代码库已使用 `PAPERCLIP_DEPLOYMENT_MODE` 来处理认证/部署行为（`local_trusted | authenticated`）。
 
-Do not overload that variable for workspace execution topology.
+请勿将该变量复用于 workspace 执行拓扑。
 
-## New env var
+## 新增环境变量
 
-Add a separate execution-host hint:
+新增一个独立的执行主机提示变量：
 
 - `PAPERCLIP_EXECUTION_TOPOLOGY=local|cloud|hybrid`
 
-Default:
+默认值：
 
-- if unset, treat as `local`
+- 若未设置，视为 `local`
 
-Purpose:
+用途：
 
-- influences defaults and validation for workspace configuration
-- does not change current auth/deployment semantics
-- does not break existing installs
+- 影响 workspace 配置的默认值和校验逻辑
+- 不改变当前的认证/部署语义
+- 不破坏现有安装实例
 
-### Semantics
+### 语义说明
 
 - `local`
-  - Paperclip may create host-local worktrees, processes, and paths
+  - Paperclip 可在宿主机上创建 worktree、进程和路径
 - `cloud`
-  - Paperclip should assume no durable host-local execution workspace management
-  - adapter-managed and cloud-sandbox flows should be treated as first-class
+  - Paperclip 应假设没有持久化的宿主机本地执行 workspace 管理
+  - adapter 托管流程和 cloud sandbox 流程应作为一等公民对待
 - `hybrid`
-  - both local and remote execution strategies may exist
+  - 本地和远程执行策略可以并存
 
-This is a guardrail and defaulting aid, not a hard policy engine in the first slice.
+这是第一个切片中的护栏和默认值辅助机制，而非严格的策略引擎。
 
 ## Instance Settings
 

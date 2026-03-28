@@ -64,78 +64,78 @@
 
 这**并不**意味着没有真实的 token 问题。这意味着我们在评估优化效果之前，需要一个可信的基准。
 
-### 2. Timer wakes currently throw away reusable task sessions
+### 2. 定时器唤醒目前会丢弃可复用的任务 session
 
-In `server/src/services/heartbeat.ts`, `shouldResetTaskSessionForWake(...)` returns `true` for:
+在 `server/src/services/heartbeat.ts` 中，`shouldResetTaskSessionForWake(...)` 在以下情况下返回 `true`：
 
 - `wakeReason === "issue_assigned"`
 - `wakeSource === "timer"`
-- manual on-demand wakes
+- 手动按需唤醒
 
-That means many normal heartbeats skip saved task-session resume even when the workspace is stable.
+这意味着许多正常的心跳即使在工作区稳定的情况下也会跳过已保存的任务 session 恢复。
 
-Local data supports the impact:
+本地数据支持这一影响：
 
-- `timer/system` runs: 6,587 total
-- only 976 had a previous session
-- only 963 ended with the same session
+- `timer/system` 运行次数：共 6,587 次
+- 仅 976 次有前一个 session
+- 仅 963 次以相同的 session 结束
 
-So timer wakes are the largest heartbeat path and are mostly not resuming prior task state.
+因此，定时器唤醒是最主要的心跳路径，但大多数情况下并未恢复先前的任务状态。
 
-### 3. We repeatedly ask agents to reload the same task context
+### 3. 我们反复要求 agent 重新加载相同的任务上下文
 
-The `paperclip` skill currently tells agents to do this on essentially every heartbeat:
+`paperclip` skill 目前在几乎每次心跳时都要求 agent 执行以下操作：
 
-- fetch assignments
-- fetch issue details
-- fetch ancestor chain
-- fetch full issue comments
+- 获取任务分配
+- 获取 issue 详情
+- 获取祖先链
+- 获取完整的 issue 评论
 
-Current API shape reinforces that pattern:
+当前 API 的形态强化了这种模式：
 
-- `GET /api/issues/:id/comments` returns the full thread
-- there is no `since`, cursor, digest, or summary endpoint for heartbeat consumption
-- `GET /api/issues/:id` returns full enriched issue context, not a minimal delta payload
+- `GET /api/issues/:id/comments` 返回完整的评论线程
+- 没有面向心跳消费的 `since`、游标、摘要或汇总端点
+- `GET /api/issues/:id` 返回完整的丰富 issue 上下文，而非最小化的增量负载
 
-This is safe but expensive. It forces the model to repeatedly consume unchanged information.
+这是安全的，但代价高昂。它迫使模型反复消费未发生变化的信息。
 
-### 4. Static instruction payloads are not separated cleanly from dynamic heartbeat prompts
+### 4. 静态指令负载与动态心跳提示未被清晰分离
 
-The user discussion suggested a bootstrap prompt. That is the right direction.
+用户讨论建议使用引导提示（bootstrap prompt），方向是正确的。
 
-Current state:
+当前状态：
 
-- the UI exposes `bootstrapPromptTemplate`
-- adapter execution paths do not currently use it
-- several adapters prepend `instructionsFilePath` content directly into the per-run prompt or system prompt
+- UI 暴露了 `bootstrapPromptTemplate`
+- adapter 执行路径目前并未使用它
+- 多个 adapter 直接将 `instructionsFilePath` 内容添加到每次运行的提示或系统提示中
 
-Result:
+结果：
 
-- stable instructions are re-sent or re-applied in the same path as dynamic heartbeat content
-- we are not deliberately optimizing for provider prompt caching
+- 稳定指令与动态心跳内容走同一路径被重新发送或重新应用
+- 我们没有刻意针对提供商的提示缓存进行优化
 
-### 5. We inject more skill surface than most agents need
+### 5. 我们注入的 skill 面超出了大多数 agent 的实际需求
 
-Local adapters inject repo skills into runtime skill directories.
+本地 adapter 将仓库 skill 注入到运行时 skill 目录中。
 
-Important `codex_local` nuance:
+关于 `codex_local` 的重要细节：
 
-- Codex does not read skills directly from the active worktree.
-- Paperclip discovers repo skills from the current checkout, then symlinks them into `$CODEX_HOME/skills` or `~/.codex/skills`.
-- If an existing Paperclip skill symlink already points at another live checkout, the current implementation skips it instead of repointing it.
-- This can leave Codex using stale skill content from a different worktree even after Paperclip-side skill changes land.
-- That is both a correctness risk and a token-analysis risk, because runtime behavior may not reflect the instructions in the checkout being tested.
+- Codex 不会直接从当前工作树读取 skill。
+- Paperclip 从当前检出中发现仓库 skill，然后将其符号链接到 `$CODEX_HOME/skills` 或 `~/.codex/skills`。
+- 如果已有的 Paperclip skill 符号链接指向另一个活跃的检出，当前实现会跳过它，而不是重新指向。
+- 即使 Paperclip 侧的 skill 变更已落地，这也可能导致 Codex 使用来自不同工作树的过期 skill 内容。
+- 这既是正确性风险，也是 token 分析风险，因为运行时行为可能无法反映被测试检出中的指令。
 
-Current repo skill sizes:
+当前仓库 skill 大小：
 
-- `skills/paperclip/SKILL.md`: 17,441 bytes
-- `.agents/skills/create-agent-adapter/SKILL.md`: 31,832 bytes
-- `skills/paperclip-create-agent/SKILL.md`: 4,718 bytes
-- `skills/para-memory-files/SKILL.md`: 3,978 bytes
+- `skills/paperclip/SKILL.md`：17,441 字节
+- `.agents/skills/create-agent-adapter/SKILL.md`：31,832 字节
+- `skills/paperclip-create-agent/SKILL.md`：4,718 字节
+- `skills/para-memory-files/SKILL.md`：3,978 字节
 
-That is nearly 58 KB of skill markdown before any company-specific instructions.
+在任何公司特定指令之前，skill markdown 接近 58 KB。
 
-Not all of that is necessarily loaded into model context every run, but it increases startup surface area and should be treated as a token budget concern.
+并非所有这些内容都一定在每次运行时加载到模型上下文中，但它增加了启动时的指令面，应视为 token 预算问题。
 
 ## Principles
 

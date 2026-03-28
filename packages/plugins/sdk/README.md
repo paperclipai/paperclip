@@ -274,29 +274,29 @@ ctx.jobs.register("heartbeat", async (job) => {
 
 在问题详情时间轴中每条评论的"更多"下拉菜单（⋮）中渲染的逐条上下文菜单项。适用于添加逐条操作，例如"从评论创建子问题"、"翻译"、"标记审阅"或自定义插件操作。接收 `PluginCommentContextMenuItemProps`，其中 `context.entityId` 设置为评论 UUID，`context.entityType` 设置为 `"comment"`，`context.parentEntityId` 设置为父问题 UUID，`context.projectId` 设置为问题所属项目（如有），`context.companyPrefix` 设置为当前活跃公司的 slug。插件可以打开限定到该评论的抽屉、模态框或弹出框。⋮ 菜单按钮仅在至少有一个插件渲染可见内容的评论上显示。需要 `ui.action.register` 能力。
 
-### Launcher actions and render options
+### 启动器操作与渲染选项
 
-| Launcher action | Description |
+| 启动器操作 | 说明 |
 |-----------------|-------------|
-| `navigate` | Navigate to a route (plugin or host). |
-| `openModal` | Open a modal. |
-| `openDrawer` | Open a drawer. |
-| `openPopover` | Open a popover. |
-| `performAction` | Run an action (e.g. call plugin). |
-| `deepLink` | Deep link to plugin or external URL. |
+| `navigate` | 导航到一个路由（插件或宿主）。 |
+| `openModal` | 打开一个模态框。 |
+| `openDrawer` | 打开一个抽屉。 |
+| `openPopover` | 打开一个弹出框。 |
+| `performAction` | 执行一个操作（例如调用插件）。 |
+| `deepLink` | 深度链接到插件或外部 URL。 |
 
-| Render option | Values | Description |
+| 渲染选项 | 取值 | 说明 |
 |---------------|--------|-------------|
-| `environment` | `hostInline`, `hostOverlay`, `hostRoute`, `external`, `iframe` | Container the launcher expects after activation. |
-| `bounds` | `inline`, `compact`, `default`, `wide`, `full` | Size hint for overlays/drawers. |
+| `environment` | `hostInline`, `hostOverlay`, `hostRoute`, `external`, `iframe` | 启动器激活后期望的容器类型。 |
+| `bounds` | `inline`, `compact`, `default`, `wide`, `full` | 叠加层/抽屉的尺寸提示。 |
 
-### Capabilities
+### 能力
 
-Declare in `manifest.capabilities`. Grouped by scope:
+在 `manifest.capabilities` 中声明。按作用域分组：
 
-| Scope | Capability |
+| 作用域 | 能力 |
 |-------|------------|
-| **Company** | `companies.read` |
+| **公司** | `companies.read` |
 | | `projects.read` |
 | | `project.workspaces.read` |
 | | `issues.read` |
@@ -312,16 +312,16 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issue.comments.create` |
 | | `activity.log.write` |
 | | `metrics.write` |
-| **Instance** | `instance.settings.register` |
+| **实例** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
-| **Runtime** | `events.subscribe` |
+| **运行时** | `events.subscribe` |
 | | `events.emit` |
 | | `jobs.schedule` |
 | | `webhooks.receive` |
 | | `http.outbound` |
 | | `secrets.read-ref` |
-| **Agent** | `agent.tools.register` |
+| **代理** | `agent.tools.register` |
 | | `agents.invoke` |
 | | `agent.sessions.create` |
 | | `agent.sessions.list` |
@@ -334,9 +334,9 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.commentAnnotation.register` |
 | | `ui.action.register` |
 
-Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+完整列表见代码：从 `@paperclipai/plugin-sdk` 导入 `PLUGIN_CAPABILITIES`。
 
-## UI quick start
+## UI 快速入门
 
 ```tsx
 import { usePluginData, usePluginAction } from "@paperclipai/plugin-sdk/ui";
@@ -354,11 +354,11 @@ export function DashboardWidget() {
 }
 ```
 
-### Hooks reference
+### Hooks 参考
 
 #### `usePluginData<T>(key, params?)`
 
-Fetches data from the worker's registered `getData` handler. Re-fetches when `params` changes. Returns `{ data, loading, error, refresh }`.
+从 worker 注册的 `getData` 处理器获取数据。当 `params` 变化时重新获取。返回 `{ data, loading, error, refresh }`。
 
 ```tsx
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
@@ -390,7 +390,7 @@ export function SyncStatusWidget({ context }: PluginWidgetProps) {
 
 #### `usePluginAction(key)`
 
-Returns an async function that calls the worker's `performAction` handler. Throws `PluginBridgeError` on failure.
+返回一个异步函数，用于调用 worker 的 `performAction` 处理器。失败时抛出 `PluginBridgeError`。
 
 ```tsx
 import { useState } from "react";

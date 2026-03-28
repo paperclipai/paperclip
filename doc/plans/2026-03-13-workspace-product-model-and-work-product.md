@@ -746,23 +746,23 @@ Issue 创建默认应保持简单。
 
 - 选择项目
 - 可选择代码库
-- optionally choose execution mode
+- 可选择执行模式
 
-not:
+而非：
 
-- choose from a long mixed list of roots, derived worktrees, previews, and branch names
+- 从根目录、派生 worktree、预览和分支名称的长混合列表中选择
 
-### Migration rule
+### 迁移规则
 
-For existing users, issue creation should continue to look the same until a project explicitly enables richer workspace behavior.
+对于现有用户，issue 创建应继续看起来相同，直到项目明确启用更丰富的工作区行为。
 
-## 5. Issue Detail
+## 5. Issue 详情
 
-Issue detail should expose workspace and work product clearly, but without becoming a code host UI.
+Issue 详情应清晰地暴露工作区和工作成果，但不应成为代码托管 UI。
 
-### Header chips
+### 标题标签
 
-Show compact summary chips near the title/status area:
+在标题/状态区域附近显示紧凑的摘要标签：
 
 - `Codebase: Web App`
 - `Workspace: Shared`
@@ -770,16 +770,16 @@ Show compact summary chips near the title/status area:
 - `PR: Open`
 - `Preview: Healthy`
 
-### Tabs
+### 标签页
 
 - `Comments`
 - `Subissues`
 - `Work Product`
 - `Activity`
 
-### `Work Product` tab
+### `Work Product` 标签页
 
-Sections:
+区域：
 
 - `Current workspace`
 - `Previews`
@@ -787,114 +787,114 @@ Sections:
 - `Branches and commits`
 - `Artifacts and documents`
 
-#### Current workspace panel
+#### 当前工作区面板
 
-Fields:
+字段：
 
-- workspace name
-- mode
-- branch
-- base ref
-- last used
-- linked issues count
-- cleanup status
+- 工作区名称
+- 模式
+- 分支
+- 基础引用
+- 最后使用时间
+- 链接的 issue 数量
+- 清理状态
 
-Actions:
+操作：
 
 - `Open workspace details`
 - `Mark in review`
 - `Request cleanup`
 
-#### Pull request cards
+#### Pull request 卡片
 
-Fields:
+字段：
 
-- title
-- provider
-- status
-- review state
-- linked branch
-- open/ready/merged timestamps
+- 标题
+- 提供商
+- 状态
+- 审查状态
+- 链接的分支
+- 开启/就绪/合并时间戳
 
-Actions:
+操作：
 
 - `Open PR`
 - `Refresh status`
 - `Request board review`
 
-#### Preview cards
+#### 预览卡片
 
-Fields:
+字段：
 
-- title
+- 标题
 - URL
-- provider
-- health
-- ownership
-- updated at
+- 提供商
+- 健康状态
+- 所有权
+- 更新时间
 
-Actions:
+操作：
 
 - `Open preview`
 - `Refresh`
 - `Archive`
 
-## 6. Execution Workspace Detail
+## 6. 执行工作区详情
 
-This can be reached from a project code tab or an issue work product tab.
+可从项目代码标签页或 issue 工作成果标签页访问。
 
-It does not need to be in the main sidebar.
+不需要在主侧边栏中。
 
-### Sections
+### 区域
 
-- identity
-- source issue
-- linked issues
-- branch/ref
-- provider/session identity
-- active runtime services
-- previews
-- PRs
-- cleanup state
-- event/activity history
+- 身份标识
+- 来源 issue
+- 链接的 issue
+- 分支/引用
+- 提供商/会话身份
+- 活跃运行时服务
+- 预览
+- PR
+- 清理状态
+- 事件/活动历史
 
-### Motivation
+### 动机
 
-This is where advanced users go when they need to inspect the mechanics. Most users should not need it in normal flow.
+这是高级用户在需要检查机制时去的地方。大多数用户在正常流程中不需要它。
 
-## 7. Inbox Behavior
+## 7. 收件箱行为
 
-Inbox should surface actionable work product events, not every implementation detail.
+收件箱应呈现可操作的工作成果事件，而非每个实现细节。
 
-### Show inbox items for
+### 显示收件箱条目的情况
 
-- issue assigned or updated
-- PR needs board review
-- PR opened or marked ready
-- preview unhealthy
-- workspace cleanup failed
-- runtime service failed
-- remote cloud-agent run returned PR or preview that needs review
+- issue 被分配或更新
+- PR 需要看板审查
+- PR 被打开或标记为就绪
+- 预览不健康
+- 工作区清理失败
+- 运行时服务失败
+- 远程云代理运行返回了需要审查的 PR 或预览
 
-### Do not show by default
+### 默认不显示
 
-- every workspace heartbeat
-- every branch update
-- every derived workspace creation
+- 每次工作区心跳
+- 每次分支更新
+- 每次派生工作区创建
 
-### Display style
+### 显示样式
 
-If the inbox item is about a preview or PR, show issue context with it:
+如果收件箱条目是关于预览或 PR 的，随之显示 issue 上下文：
 
-- issue identifier and title
-- parent issue if this is a subissue
-- workspace name if relevant
+- issue 标识符和标题
+- 如果这是子 issue，显示父 issue
+- 如果相关，显示工作区名称
 
-## 8. Issues List and Kanban
+## 8. Issue 列表和看板
 
-Keep list and board planning-first.
+保持列表和看板以规划为主。
 
-### Default behavior
+### 默认行为
 
 - show top-level issues by default
 - show parent rollups for subissues

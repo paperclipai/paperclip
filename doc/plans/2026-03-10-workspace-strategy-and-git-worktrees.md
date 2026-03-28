@@ -442,98 +442,98 @@ type IssueExecutionWorkspaceSettings = {
 - 如果不存在，继承项目 + 问题策略
 - 如果存在，仅覆盖该适配器所需的实现细节
 
-## Shared Type and API Changes
+## 共享类型与 API 变更
 
-### 1. Shared project types
+### 1. 共享项目类型
 
-Files to change first:
+首先需要修改的文件：
 
 - `packages/shared/src/types/project.ts`
 - `packages/shared/src/validators/project.ts`
 
-Add:
+添加：
 
 - `executionWorkspacePolicy?: ProjectExecutionWorkspacePolicy | null`
 
-### 2. Shared issue types
+### 2. 共享问题类型
 
-Files to change:
+需要修改的文件：
 
 - `packages/shared/src/types/issue.ts`
 - `packages/shared/src/validators/issue.ts`
 
-Add:
+添加：
 
 - `executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null`
 
-### 3. DB schema
+### 3. 数据库模式
 
-If we want these fields persisted directly on existing entities instead of living in opaque JSON:
+如果希望这些字段直接持久化在现有实体上，而非存储在不透明的 JSON 中：
 
 - `packages/db/src/schema/projects.ts`
 - `packages/db/src/schema/issues.ts`
-- migration generation in `packages/db/src/migrations/`
+- 迁移生成位于 `packages/db/src/migrations/`
 
-Recommended first cut:
+建议的第一步：
 
-- store project policy as JSONB on `projects`
-- store issue setting override as JSONB on `issues`
+- 将项目策略作为 JSONB 存储在 `projects` 上
+- 将问题设置覆盖作为 JSONB 存储在 `issues` 上
 
-That minimizes schema churn while the product model is still moving.
+这在产品模型仍在演进时最大程度减少了模式变动。
 
-Suggested columns:
+建议的列：
 
 - `projects.execution_workspace_policy jsonb`
 - `issues.execution_workspace_settings jsonb`
 
-## Server-Side Resolution Changes
+## 服务端解析变更
 
-### 4. Project service read/write path
+### 4. 项目服务读写路径
 
-Files:
+文件：
 
 - `server/src/services/projects.ts`
-- project routes in `server/src/routes/projects.ts`
+- `server/src/routes/projects.ts` 中的项目路由
 
-Tasks:
+任务：
 
-- accept and validate project execution workspace policy
-- return it from project API payloads
-- enforce company scoping as usual
+- 接受并验证项目执行工作区策略
+- 从项目 API 载荷中返回它
+- 像往常一样强制执行公司范围
 
-### 5. Issue service create/update path
+### 5. 问题服务创建/更新路径
 
-Files:
+文件：
 
 - `server/src/services/issues.ts`
 - `server/src/routes/issues.ts`
 
-Tasks:
+任务：
 
-- accept issue-level `executionWorkspaceSettings`
-- when creating an issue in a project with execution workspaces enabled, default the issue setting from the project policy if not explicitly provided
-- keep issue payload simple for normal clients; advanced fields may be optional
+- 接受问题级 `executionWorkspaceSettings`
+- 在启用了执行工作区的项目中创建问题时，如果未明确提供，则从项目策略中默认问题设置
+- 对普通客户端保持问题载荷简单；高级字段可以是可选的
 
-### 6. Heartbeat and run resolution
+### 6. 心跳与运行解析
 
-Primary file:
+主要文件：
 
 - `server/src/services/heartbeat.ts`
 
-Current behavior should be refactored so workspace resolution is based on:
+当前行为应重构，使工作区解析基于：
 
-- issue setting
-- then project policy
-- then adapter override
+- 问题设置
+- 然后是项目策略
+- 然后是适配器覆盖
 
-Specific technical work:
+具体技术工作：
 
-- load project execution workspace policy during run resolution
-- load issue execution workspace settings during run resolution
-- derive an effective execution workspace decision object before adapter launch
-- keep adapter config as override only
+- 在运行解析期间加载项目执行工作区策略
+- 在运行解析期间加载问题执行工作区设置
+- 在适配器启动前推导有效执行工作区决策对象
+- 将适配器配置保持为仅覆盖
 
-Suggested internal helper:
+建议的内部助手：
 
 ```ts
 type EffectiveExecutionWorkspaceDecision = {

@@ -598,47 +598,47 @@ CLI 应继续支持无需注册中心的直接导入/导出。
 
 此阶段有意安排在结构模型稳定之后。
 
-## 15. Documentation Plan
+## 15. 文档计划
 
-Primary docs:
+主要文档：
 
-- `docs/companies/companies-spec.md` as the package-format draft
-- this implementation plan for rollout sequencing
+- `docs/companies/companies-spec.md`，作为包格式草案
+- 本实施计划，用于推广排期
 
-Docs to update later as implementation lands:
+待实施落地后更新的文档：
 
 - `doc/SPEC-implementation.md`
 - `docs/api/companies.md`
 - `docs/cli/control-plane-commands.md`
-- board operator docs for Company Settings import/export
+- 公司设置导入/导出的看板操作员文档
 
-## 16. Open Questions
+## 16. 待解决问题
 
-1. Should imported skill packages be stored as managed package files in Paperclip storage, or only referenced at import time?
-   Decision: managed package files should support both company-scoped reuse and agent-scoped attachment.
-2. What is the minimum adapter skill interface needed to make the UI useful across Claude Code, Codex, OpenClaw, and future adapters?
-   Decision: use the baseline interface in section 8.5.
-3. Should Paperclip support direct local folder selection in the web UI, or keep that CLI-only initially?
-4. Do we want optional generated lock files in phase 2, or defer them until provenance work?
-5. How strict should pinning be by default for GitHub references:
-   - warn on unpinned
-   - or block in normal mode
-6. Is package-provenance grouping enough for imported teams, or do we expect product requirements soon that would justify a first-class runtime `teams` table?
-   Decision: provenance grouping is enough for the import/export product model for now.
+1. 导入的 skill 包应作为托管包文件存储在 Paperclip 存储中，还是仅在导入时引用？
+   决策：托管包文件应同时支持公司级复用和 agent 级挂载。
+2. 为使界面在 Claude Code、Codex、OpenClaw 及未来适配器中均可用，所需的最小适配器 skill 接口是什么？
+   决策：使用第 8.5 节中的基础接口。
+3. Paperclip 是否应在 Web 界面中支持直接选择本地文件夹，还是初期仅保留在 CLI 中？
+4. 是否希望在第二阶段生成可选的锁文件，还是推迟到来源追踪工作时再处理？
+5. GitHub 引用默认的固定版本策略应多严格：
+   - 对未固定版本发出警告
+   - 还是在正常模式下阻止
+6. 包来源分组对于导入团队是否已足够，或者预计很快会有产品需求来支撑建立一流的运行时 `teams` 表？
+   决策：来源分组对于当前的导入/导出产品模型已足够。
 
-## 17. Recommendation
+## 17. 建议
 
-Engineering should treat this as the current plan of record for company import/export beyond the existing V1 portability feature.
+工程团队应将本文档视为超越现有 V1 可移植性功能的公司导入/导出当前记录方案。
 
-Immediate next steps:
+立即可行的后续步骤：
 
-1. accept `docs/companies/companies-spec.md` as the package-format draft
-2. implement phase 1 stabilization work
-3. build phase 2 markdown-first package reader before expanding ClipHub or `companies.sh`
-4. treat the old manifest-based format as deprecated and not part of the future surface
+1. 接受 `docs/companies/companies-spec.md` 作为包格式草案
+2. 实施第一阶段稳定化工作
+3. 在扩展 ClipHub 或 `companies.sh` 之前构建第二阶段的 markdown 优先包读取器
+4. 将旧的基于清单的格式视为已弃用，不纳入未来方案范围
 
-This keeps Paperclip aligned with:
+这使 Paperclip 与以下方向保持一致：
 
-- GitHub-native distribution
-- Agent Skills compatibility
-- a registry-optional ecosystem model
+- GitHub 原生分发
+- Agent Skills 兼容性
+- 注册中心可选的生态系统模型

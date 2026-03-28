@@ -621,55 +621,55 @@ interface AgentAdapter {
 - 存在活跃的运行
 - 已触达硬预算上限
 
-## 12. Governance and Approval Flows
+## 12. 治理与审批流程
 
-## 12.1 Hiring
+## 12.1 招聘
 
-1. Agent or board creates `approval(type=hire_agent, status=pending, payload=agent draft)`.
-2. Board approves or rejects.
-3. On approval, server creates agent row and initial API key (optional).
-4. Decision is logged in `activity_log`.
+1. 智能体或董事会创建 `approval(type=hire_agent, status=pending, payload=agent draft)`。
+2. 董事会批准或拒绝。
+3. 批准后，服务端创建智能体记录和初始 API 密钥（可选）。
+4. 决策记录到 `activity_log`。
 
-Board can bypass request flow and create agents directly via UI; direct create is still logged as a governance action.
+董事会可绕过申请流程直接通过 UI 创建智能体；直接创建仍作为治理操作记录。
 
-## 12.2 CEO Strategy Approval
+## 12.2 CEO 战略审批
 
-1. CEO posts strategy proposal as `approval(type=approve_ceo_strategy)`.
-2. Board reviews payload (plan text, initial structure, high-level tasks).
-3. Approval unlocks execution state for CEO-created delegated work.
+1. CEO 提交战略提案，形式为 `approval(type=approve_ceo_strategy)`。
+2. 董事会审阅负载（计划文本、初始结构、高层级任务）。
+3. 审批通过后解锁 CEO 创建的委派工作的执行状态。
 
-Before first strategy approval, CEO may only draft tasks, not transition them to active execution states.
+在首次战略审批通过之前，CEO 只能起草任务，不能将其转换为活跃执行状态。
 
-## 12.3 Board Override
+## 12.3 董事会覆盖
 
-Board can at any time:
+董事会可随时：
 
-- pause/resume/terminate any agent
-- reassign or cancel any task
-- edit budgets and limits
-- approve/reject/cancel pending approvals
+- 暂停/恢复/终止任意智能体
+- 重新分配或取消任意任务
+- 编辑预算和限制
+- 批准/拒绝/取消待处理的审批
 
-## 13. Cost and Budget System
+## 13. 成本与预算系统
 
-## 13.1 Budget Layers
+## 13.1 预算层级
 
-- company monthly budget
-- agent monthly budget
-- optional project budget (if configured)
+- 公司月度预算
+- 智能体月度预算
+- 可选的项目预算（若已配置）
 
-## 13.2 Enforcement Rules
+## 13.2 执行规则
 
-- soft alert default threshold: 80%
-- hard limit: at 100%, trigger:
-  - set agent status to `paused`
-  - block new checkout/invocation for that agent
-  - emit high-priority activity event
+- 软性警报默认阈值：80%
+- 硬上限：达到 100% 时触发：
+  - 将智能体状态设为 `paused`
+  - 阻止该智能体的新检出/调用
+  - 发出高优先级活动事件
 
-Board may override by raising budget or explicitly resuming agent.
+董事会可通过提升预算或明确恢复智能体来覆盖此行为。
 
-## 13.3 Cost Event Ingestion
+## 13.3 成本事件采集
 
-`POST /companies/:companyId/cost-events` body:
+`POST /companies/:companyId/cost-events` 请求体：
 
 ```json
 {
@@ -685,16 +685,16 @@ Board may override by raising budget or explicitly resuming agent.
 }
 ```
 
-Validation:
+验证：
 
-- non-negative token counts
+- Token 数量不能为负
 - `costCents >= 0`
-- company ownership checks for all linked entities
+- 对所有关联实体进行公司归属检查
 
-## 13.4 Rollups
+## 13.4 汇总
 
-Read-time aggregate queries are acceptable for V1.
-Materialized rollups can be added later if query latency exceeds targets.
+V1 可接受读取时聚合查询。
+若查询延迟超出目标，后续可添加物化汇总。
 
 ## 14. UI Requirements (Board App)
 

@@ -116,57 +116,57 @@ Paperclip 应有两个阈值等级：
 
 这些应在后续可按策略配置，但目前作为默认值是合适的。
 
-## Scope Model
+## 范围模型
 
-### Supported Scope Types
+### 支持的范围类型
 
-Budget policies should support:
+预算策略应支持：
 
 - `company`
 - `agent`
 - `project`
 
-This plan focuses on finishing `agent` and `project` first while preserving the existing company budget behavior.
+本计划优先完成 `agent` 和 `project`，同时保留现有的公司预算行为。
 
-### Recommended V1.5 Policy Presets
+### 推荐的 V1.5 策略预设
 
-- Company
+- 公司
   - metric: `billed_cents`
   - window: `calendar_month_utc`
-- Agent
+- 代理
   - metric: `billed_cents`
   - window: `calendar_month_utc`
-- Project
+- 项目
   - metric: `billed_cents`
   - window: `lifetime`
 
-Future extensions can add:
+未来扩展可以添加：
 
-- token advisory policies
-- daily or weekly spend windows
-- provider- or biller-scoped budgets
-- inherited delegated budgets down the org tree
+- token 咨询策略
+- 每日或每周消费窗口
+- 提供商或计费方范围的预算
+- 沿组织树向下继承的委托预算
 
-## Current Implementation Baseline
+## 当前实现基准
 
-The current codebase is not starting from zero, but the existing shape is too ad hoc to extend safely.
+当前代码库并非从零开始，但现有结构过于临时性，无法安全地扩展。
 
-### What Exists Today
+### 现有内容
 
-- company and agent monthly cents counters
-- cost ingestion that updates those counters
-- agent hard-stop pause on monthly budget overrun
+- 公司和代理的月度金额计数器
+- 更新这些计数器的费用摄入逻辑
+- 代理在超出月度预算时的硬停止暂停
 
-### What Is Missing
+### 缺失内容
 
-- project budgets
-- generic budget policy persistence
-- generic threshold crossing detection
-- incident deduplication per scope/window
-- approval creation on hard-stop
-- project execution blocking
-- budget timeline and incident UI
-- distinction between advisory quota and enforceable budget
+- 项目预算
+- 通用预算策略持久化
+- 通用阈值越过检测
+- 按范围/窗口的事件去重
+- 硬停止时创建审批
+- 项目执行阻止
+- 预算时间线和事件 UI
+- 咨询性配额与可执行预算的区分
 
 ## Proposed Data Model
 

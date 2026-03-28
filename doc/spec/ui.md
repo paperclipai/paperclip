@@ -51,9 +51,9 @@ Paperclip 的 UI 是专业级控制平面，而非玩具式仪表板。它应该
 
 ---
 
-## 2. Application Shell
+## 2. 应用外壳
 
-The app is a three-zone layout:
+应用采用三区域布局：
 
 ```
 ┌──────────┬────────────────────────────────────────────────┐
@@ -65,12 +65,12 @@ The app is a three-zone layout:
 └──────────┴──────────────────────────┴─────────────────────┘
 ```
 
-- **Sidebar:** Fixed left, 240px. Collapsible to icon-only (48px) via toggle or keyboard shortcut.
-- **Breadcrumb bar:** Spans the full width above main+properties. Shows navigation path, entity actions, and view controls.
-- **Main content:** Scrollable. Contains the primary view (list, detail, chart, etc).
-- **Properties panel:** Right side, 320px. Shown on detail views (issue detail, project detail, agent detail). Hidden on list views and dashboard. Resizable.
+- **侧边栏（Sidebar）：** 固定在左侧，240px。可通过切换按钮或键盘快捷键折叠为仅显示图标模式（48px）。
+- **面包屑栏（Breadcrumb bar）：** 横跨主内容区和属性面板上方的完整宽度。显示导航路径、实体操作和视图控件。
+- **主内容区（Main content）：** 可滚动。包含主视图（列表、详情、图表等）。
+- **属性面板（Properties panel）：** 右侧，320px。在详情视图（issue 详情、项目详情、agent 详情）中显示，在列表视图和仪表板中隐藏。可调整大小。
 
-The properties panel slides in when you click into a detail view and slides out when you go back to a list. It is NOT a sidebar — it's contextual to the selected entity.
+属性面板在进入详情视图时滑入，返回列表时滑出。它不是侧边栏——它与当前选中实体的上下文绑定。
 
 ---
 

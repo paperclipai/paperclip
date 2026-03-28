@@ -597,31 +597,31 @@ pnpm paperclipai store export                  # export current company as templ
 
 ---
 
-## Module Candidates
+## 模块候选
 
-### Tier 1 — Build first (core extensions)
+### 第一层——优先构建（核心扩展）
 
-| Module | What it does | Key hooks |
+| 模块 | 功能 | 关键钩子 |
 |--------|-------------|-----------|
-| **Observability** | Token usage tracking, cost metrics, agent performance dashboards, Prometheus export | `agent:heartbeat`, `budget:spend_recorded` |
-| **Revenue Tracking** | Connect Stripe/crypto wallets, track income, show P&L against agent costs | `budget:spend_recorded` |
-| **Notifications** | Slack/Discord/email alerts on configurable triggers | All hooks (configurable) |
+| **可观测性（Observability）** | Token 使用追踪、成本指标、智能体性能仪表盘、Prometheus 导出 | `agent:heartbeat`、`budget:spend_recorded` |
+| **收入追踪（Revenue Tracking）** | 连接 Stripe/加密钱包、追踪收入、对比智能体成本显示损益 | `budget:spend_recorded` |
+| **通知（Notifications）** | 基于可配置触发器的 Slack/Discord/邮件提醒 | 所有钩子（可配置） |
 
-### Tier 2 — High value
+### 第二层——高价值
 
-| Module | What it does | Key hooks |
+| 模块 | 功能 | 关键钩子 |
 |--------|-------------|-----------|
-| **Analytics Dashboard** | Burn rate trends, agent utilization over time, goal velocity charts | `agent:heartbeat`, `issue:status_changed`, `goal:completed` |
-| **Workflow Automation** | If/then rules: "when issue is done, create follow-up", "when budget at 90%, pause agent" | `issue:status_changed`, `budget:threshold_crossed` |
-| **Knowledge Base** | Shared document store, vector search, agents read/write organizational knowledge | `agent:heartbeat` (for context injection) |
+| **分析仪表盘（Analytics Dashboard）** | 消耗率趋势、智能体利用率随时间变化、目标进度图表 | `agent:heartbeat`、`issue:status_changed`、`goal:completed` |
+| **工作流自动化（Workflow Automation）** | 条件规则："issue 完成时创建跟进"、"预算达 90% 时暂停智能体" | `issue:status_changed`、`budget:threshold_crossed` |
+| **知识库（Knowledge Base）** | 共享文档存储、向量检索、智能体读写组织知识 | `agent:heartbeat`（用于上下文注入） |
 
-### Tier 3 — Nice to have
+### 第三层——锦上添花
 
-| Module | What it does | Key hooks |
+| 模块 | 功能 | 关键钩子 |
 |--------|-------------|-----------|
-| **Audit & Compliance** | Immutable audit trail, approval workflows, spend authorization | All write hooks |
-| **Agent Logs / Replay** | Full execution traces per agent, token-by-token replay | `agent:heartbeat` |
-| **Multi-tenant** | Separate companies/orgs within one Paperclip instance | `server:started` |
+| **审计与合规（Audit & Compliance）** | 不可篡改的审计追踪、审批工作流、支出授权 | 所有写钩子 |
+| **智能体日志/回放（Agent Logs / Replay）** | 每个智能体的完整执行追踪、逐 token 回放 | `agent:heartbeat` |
+| **多租户（Multi-tenant）** | 在单个 Paperclip 实例中隔离多家公司/组织 | `server:started` |
 
 ---
 
