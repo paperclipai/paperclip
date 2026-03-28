@@ -1310,6 +1310,9 @@ export function issueService(db: Db) {
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 
     getLabelById: (id: string) =>
+      !isUuidLike(id)
+        ? Promise.resolve(null)
+        :
       db
         .select()
         .from(labels)
@@ -1329,6 +1332,9 @@ export function issueService(db: Db) {
     },
 
     deleteLabel: async (id: string) =>
+      !isUuidLike(id)
+        ? null
+        :
       db
         .delete(labels)
         .where(eq(labels.id, id))

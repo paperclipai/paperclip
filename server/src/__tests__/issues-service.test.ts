@@ -720,6 +720,14 @@ describe("issueService.list participantAgentId", () => {
     await expect(svc.remove("not-a-uuid")).resolves.toBeNull();
   });
 
+  it("returns null for malformed label ids on getLabelById", async () => {
+    await expect(svc.getLabelById("not-a-uuid")).resolves.toBeNull();
+  });
+
+  it("returns null for malformed label ids on deleteLabel", async () => {
+    await expect(svc.deleteLabel("not-a-uuid")).resolves.toBeNull();
+  });
+
   it("returns null for malformed issue ids on release", async () => {
     await expect(svc.release("not-a-uuid")).resolves.toBeNull();
   });
