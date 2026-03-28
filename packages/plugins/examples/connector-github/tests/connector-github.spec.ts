@@ -241,9 +241,11 @@ describe("mapping helpers", () => {
     await setIssueMapping(ctx, "org", "myrepo", 1, "issue-id");
     await setPrMapping(ctx, "org", "myrepo", 1, "pr-id");
     const calls = (ctx.state.set as ReturnType<typeof vi.fn>).mock.calls as [{ stateKey: string }, unknown][];
-    expect(calls[0][0].stateKey).not.toEqual(calls[1][0].stateKey);
-    expect(calls[0][0].stateKey).toContain("issue");
-    expect(calls[1][0].stateKey).toContain("pr");
+    const allKeys = calls.map(c => c[0].stateKey);
+    expect(allKeys.some(k => k.includes("issue"))).toBe(true);
+    expect(allKeys.some(k => k.includes("pr"))).toBe(true);
+    // All keys must be distinct
+    expect(new Set(allKeys).size).toBe(allKeys.length);
   });
 
   it("different GH numbers produce different state keys", async () => {
@@ -362,5 +364,98 @@ describe("manifest security contract", () => {
     // We only declare what we actually use
     expect(caps).not.toContain("issues.delete");
     expect(caps).not.toContain("agents.create");
+  });
+
+  it("declares goals.create and goals.update capabilities", async () => {
+    const { default: manifest } = await import("../src/manifest.js");
+    expect(manifest.capabilities).toContain("goals.create");
+    expect(manifest.capabilities).toContain("goals.update");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Labels ↔ Priority mapping
+// ---------------------------------------------------------------------------
+
+describe("LABEL_TO_PRIORITY / PRIORITY_TO_LABEL constants", () => {
+  it("covers all four priority levels inbound", async () => {
+    const { LABEL_TO_PRIORITY } = await import("../src/constants.js");
+    expect(LABEL_TO_PRIORITY["priority:critical"]).toBe("critical");
+    expect(LABEL_TO_PRIORITY["priority:high"]).toBe("high");
+    expect(LABEL_TO_PRIORITY["priority:medium"]).toBe("medium");
+    expect(LABEL_TO_PRIORITY["priority:low"]).toBe("low");
+  });
+
+  it("round-trips through PRIORITY_TO_LABEL then LABEL_TO_PRIORITY", async () => {
+    const { LABEL_TO_PRIORITY, PRIORITY_TO_LABEL } = await import("../src/constants.js");
+    for (const priority of ["critical", "high", "medium", "low"]) {
+      const label = PRIORITY_TO_LABEL[priority]!;
+      expect(LABEL_TO_PRIORITY[label]).toBe(priority);
+    }
+  });
+
+  it("unknown label is not in LABEL_TO_PRIORITY", async () => {
+    const { LABEL_TO_PRIORITY } = await import("../src/constants.js");
+    expect(LABEL_TO_PRIORITY["bug"]).toBeUndefined();
+    expect(LABEL_TO_PRIORITY["enhancement"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reverse index (getIssueMappingReverse)
+// ---------------------------------------------------------------------------
+
+describe("reverse issue mapping", () => {
+  it("setIssueMapping writes a retrievable reverse entry", async () => {
+    const { setIssueMapping, getIssueMappingReverse } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    await setIssueMapping(ctx, "acme", "myrepo", 42, "pc-issue-abc");
+    const reverse = await getIssueMappingReverse(ctx, "pc-issue-abc");
+    expect(reverse).toEqual({ owner: "acme", repo: "myrepo", ghNumber: 42 });
+  });
+
+  it("getIssueMappingReverse returns null for unknown paperclipId", async () => {
+    const { getIssueMappingReverse } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    expect(await getIssueMappingReverse(ctx, "unknown-id")).toBeNull();
+  });
+
+  it("two different issues get distinct reverse keys", async () => {
+    const { setIssueMapping, getIssueMappingReverse } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    await setIssueMapping(ctx, "acme", "repo", 1, "pc-1");
+    await setIssueMapping(ctx, "acme", "repo", 2, "pc-2");
+    expect(await getIssueMappingReverse(ctx, "pc-1")).toEqual({ owner: "acme", repo: "repo", ghNumber: 1 });
+    expect(await getIssueMappingReverse(ctx, "pc-2")).toEqual({ owner: "acme", repo: "repo", ghNumber: 2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone ↔ Goal mapping
+// ---------------------------------------------------------------------------
+
+describe("milestone mapping helpers", () => {
+  it("setMilestoneMapping / getMilestoneMapping round-trips", async () => {
+    const { setMilestoneMapping, getMilestoneMapping } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    await setMilestoneMapping(ctx, "acme", "repo", 3, "goal-uuid-1");
+    expect(await getMilestoneMapping(ctx, "acme", "repo", 3)).toEqual({ paperclipGoalId: "goal-uuid-1" });
+  });
+
+  it("getMilestoneMapping returns null for unknown milestone", async () => {
+    const { getMilestoneMapping } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    expect(await getMilestoneMapping(ctx, "acme", "repo", 99)).toBeNull();
+  });
+
+  it("milestone key is distinct from issue key for same number", async () => {
+    const { setIssueMapping, setMilestoneMapping } = await import("../src/mapping.js");
+    const ctx = makeMockCtx();
+    await setIssueMapping(ctx, "acme", "repo", 1, "issue-1");
+    await setMilestoneMapping(ctx, "acme", "repo", 1, "goal-1");
+    const calls = (ctx.state.set as ReturnType<typeof vi.fn>).mock.calls as [{ stateKey: string }, unknown][];
+    const allKeys = calls.map(c => c[0].stateKey);
+    expect(allKeys.some(k => k.includes("milestone"))).toBe(true);
+    expect(new Set(allKeys).size).toBe(allKeys.length);
   });
 });

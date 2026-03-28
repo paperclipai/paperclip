@@ -15,6 +15,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.create",
     "issues.update",
     "issue.comments.create",
+    "goals.read",
+    "goals.create",
+    "goals.update",
     "events.subscribe",
     "http.outbound",
     "secrets.read-ref",
@@ -70,13 +73,19 @@ const manifest: PaperclipPluginManifestV1 = {
         items: { type: "string" },
         default: [],
       },
+      prCreatesIssue: {
+        type: "boolean",
+        title: "PR creates Paperclip issue",
+        description: "When true, a pull_request:opened event with no 'Fixes #N' link creates a new Paperclip issue. Default: false.",
+        default: false,
+      },
     },
   },
   webhooks: [
     {
       endpointKey: WEBHOOK_KEYS.github,
       displayName: "GitHub Events",
-      description: "Receives issues, pull_request, issue_comment, pull_request_review, and push events from GitHub.",
+      description: "Receives issues, pull_request, issue_comment, milestone, pull_request_review, and push events from GitHub.",
     },
   ],
   ui: {
