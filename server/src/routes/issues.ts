@@ -18,6 +18,7 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  issueLinkService,
   issueService,
   logActivity,
   projectService,
@@ -37,6 +38,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const issueLinksSvc = issueLinkService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -657,6 +659,67 @@ export function issueRoutes(db: Db, storage: StorageService) {
               source: "comment.mention",
             },
           });
+        }
+      }
+
+      // Dependency trigger: when status changes to "done", fire downstream linked issues
+      if (existing.status !== "done" && issue.status === "done") {
+        try {
+          const triggerLinks = await issueLinksSvc.findTriggersFromSource(issue.id);
+          for (const link of triggerLinks) {
+            const allDone = await issueLinksSvc.allUpstreamTriggersDone(link.targetId);
+            if (!allDone) continue;
+
+            const target = await svc.getById(link.targetId);
+            if (!target) continue;
+            if (target.status === "done" || target.status === "cancelled") continue;
+
+            // Transition target to "todo"
+            if (target.status === "backlog" || target.status === "blocked") {
+              await svc.update(link.targetId, { status: "todo" });
+            }
+
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "agent",
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.dependency_triggered",
+              entityType: "issue",
+              entityId: link.targetId,
+              details: {
+                triggeredByIssueId: issue.id,
+                triggeredByIdentifier: issue.identifier,
+                linkId: link.id,
+              },
+            });
+
+            // Wake the assigned agent if any
+            if (target.assigneeAgentId && !wakeups.has(target.assigneeAgentId)) {
+              wakeups.set(target.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "dependency_triggered",
+                payload: {
+                  issueId: target.id,
+                  triggeredByIssueId: issue.id,
+                  linkId: link.id,
+                },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: {
+                  issueId: target.id,
+                  taskId: target.id,
+                  issueIds: [issue.id],
+                  wakeReason: "dependency_triggered",
+                  source: "issue.dependency_trigger",
+                },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to fire dependency triggers");
         }
       }
 
