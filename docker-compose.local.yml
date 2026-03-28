@@ -1,0 +1,13 @@
+services:
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperclip
+    ports:
+      - "3100:3100"
+    env_file:
+      - .env
+    volumes:
+      - ./data/docker-paperclip:/paperclip
+    restart: unless-stopped
