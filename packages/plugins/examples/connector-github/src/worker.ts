@@ -47,6 +47,21 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" ? value : null;
 }
 
+/**
+ * Parse "Fixes #123", "Closes #45", "Resolves #7" patterns from a PR body.
+ * Returns the referenced GitHub issue numbers (not Paperclip IDs).
+ */
+function parseLinkedIssueNumbers(body: string): number[] {
+  const pattern = /(?:closes?|fixes?|resolves?)\s+#(\d+)/gi;
+  const numbers: number[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(body)) !== null) {
+    const n = parseInt(match[1]!, 10);
+    if (!isNaN(n)) numbers.push(n);
+  }
+  return [...new Set(numbers)];
+}
+
 // ---------------------------------------------------------------------------
 // Inbound: GitHub → Paperclip
 // ---------------------------------------------------------------------------
@@ -111,13 +126,12 @@ async function handleIssuesEvent(
 
   if (action === "labeled" || action === "unlabeled") {
     // Re-derive priority from the full label set on the issue (not just the event label)
-    // to handle rapid label changes correctly.
+    // to handle rapid label changes correctly. When no priority:* label remains,
+    // fall back to "medium" (GitHub has no concept of "no priority").
     const labels = ghIssue.labels as Array<Record<string, unknown>> | undefined ?? [];
     const priorityLabel = labels.map(l => readString(l.name)).find(n => n in LABEL_TO_PRIORITY);
-    const priority = priorityLabel ? LABEL_TO_PRIORITY[priorityLabel] as Issue["priority"] : null;
-    if (priority) {
-      await ctx.issues.update(mapping.paperclipIssueId, { priority }, companyId);
-    }
+    const priority = (priorityLabel ? LABEL_TO_PRIORITY[priorityLabel] : "medium") as Issue["priority"];
+    await ctx.issues.update(mapping.paperclipIssueId, { priority }, companyId);
   }
 }
 
@@ -232,11 +246,29 @@ async function handlePullRequestEvent(
   if (!companyId) return;
 
   if (action === "opened") {
+    const prBody = readString(pr.body);
+    const linkedGhNumbers = parseLinkedIssueNumbers(prBody);
+
+    if (linkedGhNumbers.length > 0) {
+      // Link PR to existing Paperclip issues via "Fixes #N" references.
+      for (const ghNumber of linkedGhNumbers) {
+        const issueMapping = await getIssueMapping(ctx, owner, repo, ghNumber);
+        if (!issueMapping) continue;
+        await ctx.issues.update(issueMapping.paperclipIssueId, { status: "in_progress" as Issue["status"] }, companyId);
+        // Store PR mapping pointing to first linked issue for closed handling
+        await setPrMapping(ctx, owner, repo, prNumber, issueMapping.paperclipIssueId);
+      }
+      return;
+    }
+
+    // No linked issue — only create a Paperclip issue if opt-in is enabled
+    if (!config.prCreatesIssue) return;
+
     const issue = await ctx.issues.create({
       companyId,
       projectId: config.defaultProjectId,
       title: readString(pr.title),
-      description: readString(pr.body),
+      description: prBody,
     });
     await setPrMapping(ctx, owner, repo, prNumber, issue.id);
     return;
@@ -245,9 +277,13 @@ async function handlePullRequestEvent(
   const mapping = await getPrMapping(ctx, owner, repo, prNumber);
   if (!mapping) return;
 
-  // closed with merged = done; closed without merged = also done (rejected/abandoned)
   if (action === "closed") {
+    const merged = pr.merged === true;
+    const prUrl = readString(pr.html_url);
     await ctx.issues.update(mapping.paperclipIssueId, { status: "done" as Issue["status"] }, companyId);
+    if (merged && prUrl) {
+      await ctx.issues.createComment(mapping.paperclipIssueId, `PR merged: ${prUrl}`, companyId);
+    }
   }
 }
 
@@ -319,8 +355,8 @@ async function registerOutboundHandlers(ctx: PluginContext): Promise<void> {
     const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
     if (!issueId) return;
 
-    // Suppress echoes from inbound GitHub events
-    if (await isDuplicateDelivery(ctx, issueId)) return;
+    // Use outbound: namespace to avoid colliding with inbound delivery IDs
+    if (await isDuplicateDelivery(ctx, `outbound:${issueId}`)) return;
 
     const issue = await ctx.issues.get(issueId, event.companyId);
     if (!issue) return;
