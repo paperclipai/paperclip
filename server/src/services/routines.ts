@@ -1251,6 +1251,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     firePublicTrigger: async (publicId: string, input: {
       authorizationHeader?: string | null;
       signatureHeader?: string | null;
+      hubSignatureHeader?: string | null;
       timestampHeader?: string | null;
       idempotencyKey?: string | null;
       rawBody?: Buffer | null;
@@ -1266,8 +1267,24 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
-      const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
-      if (trigger.signingMode === "bearer") {
+      if (trigger.signingMode === "none") {
+        // No authentication — the publicId in the URL acts as a shared secret.
+      } else if (trigger.signingMode === "github_hmac") {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+        const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
+        const providedSignature = (input.hubSignatureHeader ?? input.signatureHeader)?.trim() ?? "";
+        if (!providedSignature) throw unauthorized();
+        const expectedHmac = crypto
+          .createHmac("sha256", secretValue)
+          .update(rawBody)
+          .digest("hex");
+        const normalizedSignature = providedSignature.replace(/^sha256=/, "");
+        const valid =
+          normalizedSignature.length === expectedHmac.length &&
+          crypto.timingSafeEqual(Buffer.from(normalizedSignature), Buffer.from(expectedHmac));
+        if (!valid) throw unauthorized();
+      } else if (trigger.signingMode === "bearer") {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const expected = `Bearer ${secretValue}`;
         const provided = input.authorizationHeader?.trim() ?? "";
         const expectedBuf = Buffer.from(expected);
@@ -1280,6 +1297,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           throw unauthorized();
         }
       } else {
+        const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
         const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
         const providedSignature = input.signatureHeader?.trim() ?? "";
         const providedTimestamp = input.timestampHeader?.trim() ?? "";
