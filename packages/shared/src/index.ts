@@ -169,6 +169,8 @@ export type {
   CostTrend,
   CostForecast,
   CostEfficiencyAgent,
+  InboxFeedItem,
+  InboxFeedActivity,
 } from "./types/index.js";
 
 export {

@@ -20,6 +20,7 @@ export { heartbeatService } from "./heartbeat.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export { inboxFeedService } from "./inbox-feed.js";
 export { accessService } from "./access.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { skillService } from "./skills.js";
