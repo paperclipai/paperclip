@@ -1,27 +1,27 @@
-# 2026-03-14 Adapter Skill Sync Rollout
+# 2026-03-14 适配器技能同步上线计划
 
-Status: Proposed
-Date: 2026-03-14
-Audience: Product and engineering
-Related:
+状态：提议中
+日期：2026-03-14
+受众：产品和工程团队
+相关文档：
 - `doc/plans/2026-03-14-skills-ui-product-plan.md`
 - `doc/plans/2026-03-13-company-import-export-v2.md`
 - `docs/companies/companies-spec.md`
 
-## 1. Purpose
+## 1. 目的
 
-This document defines the rollout plan for adapter-wide skill support in Paperclip.
+本文档定义了 Paperclip 全适配器技能支持的上线计划。
 
-The goal is not just “show a skills tab.” The goal is:
+目标不仅仅是"显示一个技能标签页"。真正的目标是：
 
-- every adapter has a deliberate skill-sync truth model
-- the UI tells the truth for that adapter
-- Paperclip stores desired skill state consistently even when the adapter cannot fully reconcile it
-- unsupported adapters degrade clearly and safely
+- 每个适配器都有一个经过深思熟虑的技能同步真相模型
+- UI 如实反映该适配器的状态
+- 即使适配器无法完全协调，Paperclip 也能一致地存储期望的技能状态
+- 不受支持的适配器能够清晰、安全地降级
 
-## 2. Current Adapter Matrix
+## 2. 当前适配器矩阵
 
-Paperclip currently has these adapters:
+Paperclip 目前拥有以下适配器：
 
 - `claude_local`
 - `codex_local`
@@ -31,369 +31,369 @@ Paperclip currently has these adapters:
 - `pi_local`
 - `openclaw_gateway`
 
-The current skill API supports:
+当前技能 API 支持的模式：
 
 - `unsupported`
 - `persistent`
 - `ephemeral`
 
-Current implementation state:
+当前实现状态：
 
-- `codex_local`: implemented, `persistent`
-- `claude_local`: implemented, `ephemeral`
-- `cursor_local`: not yet implemented, but technically suited to `persistent`
-- `gemini_local`: not yet implemented, but technically suited to `persistent`
-- `pi_local`: not yet implemented, but technically suited to `persistent`
-- `opencode_local`: not yet implemented; likely `persistent`, but with special handling because it currently injects into Claude’s shared skills home
-- `openclaw_gateway`: not yet implemented; blocked on gateway protocol support, so `unsupported` for now
+- `codex_local`：已实现，`persistent`
+- `claude_local`：已实现，`ephemeral`
+- `cursor_local`：尚未实现，但技术上适合 `persistent`
+- `gemini_local`：尚未实现，但技术上适合 `persistent`
+- `pi_local`：尚未实现，但技术上适合 `persistent`
+- `opencode_local`：尚未实现；可能适合 `persistent`，但需要特殊处理，因为它目前注入到 Claude 的共享技能主目录中
+- `openclaw_gateway`：尚未实现；受网关协议支持阻塞，暂时为 `unsupported`
 
-## 3. Product Principles
+## 3. 产品原则
 
-1. Desired skills live in Paperclip for every adapter.
-2. Adapters may expose different truth models, and the UI must reflect that honestly.
-3. Persistent adapters should read and reconcile actual installed state.
-4. Ephemeral adapters should report effective runtime state, not pretend they own a persistent install.
-5. Shared-home adapters need stronger safeguards than isolated-home adapters.
-6. Gateway or cloud adapters must not fake local filesystem sync.
+1. 期望的技能对每个适配器都存储在 Paperclip 中。
+2. 适配器可能暴露不同的真相模型，UI 必须如实反映。
+3. 持久化适配器应该读取并协调实际安装状态。
+4. 临时适配器应该报告有效的运行时状态，而不是假装拥有持久化安装。
+5. 共享主目录的适配器比隔离主目录的适配器需要更强的安全措施。
+6. 网关或云适配器不得伪造本地文件系统同步。
 
-## 4. Adapter Classification
+## 4. 适配器分类
 
-### 4.1 Persistent local-home adapters
+### 4.1 持久化本地主目录适配器
 
-These adapters have a stable local skills directory that Paperclip can read and manage.
+这些适配器具有稳定的本地技能目录，Paperclip 可以读取和管理。
 
-Candidates:
+候选适配器：
 
 - `codex_local`
 - `cursor_local`
 - `gemini_local`
 - `pi_local`
-- `opencode_local` with caveats
+- `opencode_local`（有注意事项）
 
-Expected UX:
+预期用户体验：
 
-- show actual installed skills
-- show managed vs external skills
-- support `sync`
-- support stale removal
-- preserve unknown external skills
+- 显示实际已安装的技能
+- 显示受管理与外部技能
+- 支持 `sync`（同步）
+- 支持清除过期技能
+- 保留未知的外部技能
 
-### 4.2 Ephemeral mount adapters
+### 4.2 临时挂载适配器
 
-These adapters do not have a meaningful Paperclip-owned persistent install state.
+这些适配器没有由 Paperclip 拥有的有意义的持久化安装状态。
 
-Current adapter:
+当前适配器：
 
 - `claude_local`
 
-Expected UX:
+预期用户体验：
 
-- show desired Paperclip skills
-- show any discoverable external dirs if available
-- say “mounted on next run” instead of “installed”
-- do not imply a persistent adapter-owned install state
+- 显示 Paperclip 期望的技能
+- 如果可用，显示可发现的外部目录
+- 显示"下次运行时挂载"而非"已安装"
+- 不暗示存在由适配器拥有的持久化安装状态
 
-### 4.3 Unsupported / remote adapters
+### 4.3 不支持/远程适配器
 
-These adapters cannot support skill sync without new external capabilities.
+这些适配器在没有新的外部能力的情况下无法支持技能同步。
 
-Current adapter:
+当前适配器：
 
 - `openclaw_gateway`
 
-Expected UX:
+预期用户体验：
 
-- company skill library still works
-- agent attachment UI still works at the desired-state level
-- actual adapter state is `unsupported`
-- sync button is disabled or replaced with explanatory text
+- 公司技能库仍然可用
+- 代理附加 UI 仍然在期望状态层面工作
+- 实际适配器状态为 `unsupported`
+- 同步按钮被禁用或替换为说明文字
 
-## 5. Per-Adapter Plan
+## 5. 各适配器计划
 
 ### 5.1 Codex Local
 
-Target mode:
+目标模式：
 
 - `persistent`
 
-Current state:
+当前状态：
 
-- already implemented
+- 已实现
 
-Requirements to finish:
+完成所需工作：
 
-- keep as reference implementation
-- tighten tests around external custom skills and stale removal
-- ensure imported company skills can be attached and synced without manual path work
+- 保持作为参考实现
+- 加强外部自定义技能和过期清除的测试
+- 确保导入的公司技能可以被附加和同步，无需手动路径操作
 
-Success criteria:
+成功标准：
 
-- list installed managed and external skills
-- sync desired skills into `CODEX_HOME/skills`
-- preserve external user-managed skills
+- 列出已安装的受管理和外部技能
+- 将期望的技能同步到 `CODEX_HOME/skills`
+- 保留外部用户管理的技能
 
 ### 5.2 Claude Local
 
-Target mode:
+目标模式：
 
 - `ephemeral`
 
-Current state:
+当前状态：
 
-- already implemented
+- 已实现
 
-Requirements to finish:
+完成所需工作：
 
-- polish status language in UI
-- clearly distinguish “desired” from “mounted on next run”
-- optionally surface configured external skill dirs if Claude exposes them
+- 优化 UI 中的状态语言
+- 清晰区分"期望"和"下次运行时挂载"
+- 可选地展示已配置的外部技能目录（如果 Claude 公开了这些信息）
 
-Success criteria:
+成功标准：
 
-- desired skills stored in Paperclip
-- selected skills mounted per run
-- no misleading “installed” language
+- 期望的技能存储在 Paperclip 中
+- 选中的技能按次运行时挂载
+- 没有误导性的"已安装"用语
 
 ### 5.3 Cursor Local
 
-Target mode:
+目标模式：
 
 - `persistent`
 
-Technical basis:
+技术基础：
 
-- runtime already injects Paperclip skills into `~/.cursor/skills`
+- 运行时已将 Paperclip 技能注入到 `~/.cursor/skills`
 
-Implementation work:
+实现工作：
 
-1. Add `listSkills` for Cursor.
-2. Add `syncSkills` for Cursor.
-3. Reuse the same managed-symlink pattern as Codex.
-4. Distinguish:
-   - managed Paperclip skills
-   - external skills already present
-   - missing desired skills
-   - stale managed skills
+1. 为 Cursor 添加 `listSkills`。
+2. 为 Cursor 添加 `syncSkills`。
+3. 复用与 Codex 相同的受管理符号链接模式。
+4. 区分：
+   - 受管理的 Paperclip 技能
+   - 已存在的外部技能
+   - 缺失的期望技能
+   - 过期的受管理技能
 
-Testing:
+测试：
 
-- unit tests for discovery
-- unit tests for sync and stale removal
-- verify shared auth/session setup is not disturbed
+- 发现功能的单元测试
+- 同步和过期清除的单元测试
+- 验证共享的认证/会话设置不受干扰
 
-Success criteria:
+成功标准：
 
-- Cursor agents show real installed state
-- syncing from the agent Skills tab works
+- Cursor 代理显示真实的安装状态
+- 从代理技能标签页进行同步可以正常工作
 
 ### 5.4 Gemini Local
 
-Target mode:
+目标模式：
 
 - `persistent`
 
-Technical basis:
+技术基础：
 
-- runtime already injects Paperclip skills into `~/.gemini/skills`
+- 运行时已将 Paperclip 技能注入到 `~/.gemini/skills`
 
-Implementation work:
+实现工作：
 
-1. Add `listSkills` for Gemini.
-2. Add `syncSkills` for Gemini.
-3. Reuse managed-symlink conventions from Codex/Cursor.
-4. Verify auth remains untouched while skills are reconciled.
+1. 为 Gemini 添加 `listSkills`。
+2. 为 Gemini 添加 `syncSkills`。
+3. 复用 Codex/Cursor 的受管理符号链接约定。
+4. 验证在协调技能时认证保持不变。
 
-Potential caveat:
+潜在注意事项：
 
-- if Gemini treats that skills directory as shared user state, the UI should warn before removing stale managed skills
+- 如果 Gemini 将该技能目录视为共享用户状态，UI 应在删除过期受管理技能前发出警告
 
-Success criteria:
+成功标准：
 
-- Gemini agents can reconcile desired vs actual skill state
+- Gemini 代理可以协调期望状态与实际技能状态
 
 ### 5.5 Pi Local
 
-Target mode:
+目标模式：
 
 - `persistent`
 
-Technical basis:
+技术基础：
 
-- runtime already injects Paperclip skills into `~/.pi/agent/skills`
+- 运行时已将 Paperclip 技能注入到 `~/.pi/agent/skills`
 
-Implementation work:
+实现工作：
 
-1. Add `listSkills` for Pi.
-2. Add `syncSkills` for Pi.
-3. Reuse managed-symlink helpers.
-4. Verify session-file behavior remains independent from skill sync.
+1. 为 Pi 添加 `listSkills`。
+2. 为 Pi 添加 `syncSkills`。
+3. 复用受管理符号链接辅助工具。
+4. 验证会话文件行为与技能同步保持独立。
 
-Success criteria:
+成功标准：
 
-- Pi agents expose actual installed skill state
-- Paperclip can sync desired skills into Pi’s persistent home
+- Pi 代理暴露实际已安装的技能状态
+- Paperclip 可以将期望的技能同步到 Pi 的持久化主目录
 
 ### 5.6 OpenCode Local
 
-Target mode:
+目标模式：
 
 - `persistent`
 
-Special case:
+特殊情况：
 
-- OpenCode currently injects Paperclip skills into `~/.claude/skills`
+- OpenCode 目前将 Paperclip 技能注入到 `~/.claude/skills`
 
-This is product-risky because:
+这在产品层面存在风险，因为：
 
-- it shares state with Claude
-- Paperclip may accidentally imply the skills belong only to OpenCode when the home is shared
+- 它与 Claude 共享状态
+- 当主目录是共享的时，Paperclip 可能会意外暗示这些技能仅属于 OpenCode
 
-Plan:
+计划：
 
-Phase 1:
+第一阶段：
 
-- implement `listSkills` and `syncSkills`
-- treat it as `persistent`
-- explicitly label the home as shared in UI copy
-- only remove stale managed Paperclip skills that are clearly marked as Paperclip-managed
+- 实现 `listSkills` 和 `syncSkills`
+- 将其视为 `persistent`
+- 在 UI 文案中明确标注该主目录为共享
+- 仅删除明确标记为 Paperclip 管理的过期受管理技能
 
-Phase 2:
+第二阶段：
 
-- investigate whether OpenCode supports its own isolated skills home
-- if yes, migrate to an adapter-specific home and remove the shared-home caveat
+- 调查 OpenCode 是否支持其自己的隔离技能主目录
+- 如果支持，迁移到适配器专属主目录并消除共享主目录的注意事项
 
-Success criteria:
+成功标准：
 
-- OpenCode agents show real state
-- shared-home risk is visible and bounded
+- OpenCode 代理显示真实状态
+- 共享主目录风险可见且受控
 
 ### 5.7 OpenClaw Gateway
 
-Target mode:
+目标模式：
 
-- `unsupported` until gateway protocol support exists
+- 在网关协议支持可用之前为 `unsupported`
 
-Required external work:
+所需的外部工作：
 
-- gateway API to list installed/available skills
-- gateway API to install/remove or otherwise reconcile skills
-- gateway metadata for whether state is persistent or ephemeral
+- 列出已安装/可用技能的网关 API
+- 安装/删除或以其他方式协调技能的网关 API
+- 状态是持久化还是临时的网关元数据
 
-Until then:
+在此之前：
 
-- Paperclip stores desired skills only
-- UI shows unsupported actual state
-- no fake sync implementation
+- Paperclip 仅存储期望的技能
+- UI 显示不支持的实际状态
+- 不提供伪造的同步实现
 
-Future target:
+未来目标：
 
-- likely a fourth truth model eventually, such as remote-managed persistent state
-- for now, keep the current API and treat gateway as unsupported
+- 最终可能出现第四种真相模型，例如远程管理的持久化状态
+- 目前保持当前 API，将网关视为不支持
 
-## 6. API Plan
+## 6. API 计划
 
-## 6.1 Keep the current minimal adapter API
+## 6.1 保持当前最小化的适配器 API
 
-Near-term adapter contract remains:
+近期适配器契约保持不变：
 
 - `listSkills(ctx)`
 - `syncSkills(ctx, desiredSkills)`
 
-This is enough for all local adapters.
+这对所有本地适配器已经足够。
 
-## 6.2 Optional extension points
+## 6.2 可选扩展点
 
-Add only if needed after the first broad rollout:
+仅在首次广泛上线后根据需要添加：
 
 - `skillHomeLabel`
 - `sharedHome: boolean`
 - `supportsExternalDiscovery: boolean`
 - `supportsDestructiveSync: boolean`
 
-These should be optional metadata additions to the snapshot, not required new adapter methods.
+这些应该是快照的可选元数据补充，而不是必需的新适配器方法。
 
-## 7. UI Plan
+## 7. UI 计划
 
-The company-level skill library can stay adapter-neutral.
+公司级技能库可以保持适配器无关。
 
-The agent-level Skills tab must become adapter-aware by copy and status:
+代理级技能标签页必须通过文案和状态变得适配器感知：
 
-- `persistent`: installed / missing / stale / external
-- `ephemeral`: mounted on next run / external / desired only
-- `unsupported`: desired only, adapter cannot report actual state
+- `persistent`：已安装 / 缺失 / 过期 / 外部
+- `ephemeral`：下次运行时挂载 / 外部 / 仅期望
+- `unsupported`：仅期望，适配器无法报告实际状态
 
-Additional UI requirement for shared-home adapters:
+共享主目录适配器的额外 UI 要求：
 
-- show a small warning that the adapter uses a shared user skills home
-- avoid destructive wording unless Paperclip can prove a skill is Paperclip-managed
+- 显示一个小警告，说明该适配器使用共享的用户技能主目录
+- 除非 Paperclip 能证明某个技能是 Paperclip 管理的，否则避免使用破坏性措辞
 
-## 8. Rollout Phases
+## 8. 上线阶段
 
-### Phase 1: Finish the local filesystem family
+### 第一阶段：完成本地文件系统家族
 
-Ship:
+发布：
 
 - `cursor_local`
 - `gemini_local`
 - `pi_local`
 
-Rationale:
+理由：
 
-- these are the closest to Codex in architecture
-- they already inject into stable local skill homes
+- 这些在架构上最接近 Codex
+- 它们已经注入到稳定的本地技能主目录
 
-### Phase 2: OpenCode shared-home support
+### 第二阶段：OpenCode 共享主目录支持
 
-Ship:
+发布：
 
 - `opencode_local`
 
-Rationale:
+理由：
 
-- technically feasible now
-- needs slightly more careful product language because of the shared Claude skills home
+- 技术上现在就可以实现
+- 由于共享 Claude 技能主目录，需要稍微更谨慎的产品用语
 
-### Phase 3: Gateway support decision
+### 第三阶段：网关支持决策
 
-Decide:
+决定：
 
-- keep `openclaw_gateway` unsupported for V1
-- or extend the gateway protocol for remote skill management
+- V1 保持 `openclaw_gateway` 不支持
+- 或扩展网关协议以支持远程技能管理
 
-My recommendation:
+我的建议：
 
-- do not block V1 on gateway support
-- keep it explicitly unsupported until the remote protocol exists
+- 不要因为网关支持而阻塞 V1
+- 在远程协议存在之前明确保持不支持状态
 
-## 9. Definition Of Done
+## 9. 完成定义
 
-Adapter-wide skill support is ready when all are true:
+全适配器技能支持在以下条件全部满足时视为就绪：
 
-1. Every adapter has an explicit truth model:
+1. 每个适配器都有明确的真相模型：
    - `persistent`
    - `ephemeral`
    - `unsupported`
-2. The UI copy matches that truth model.
-3. All local persistent adapters implement:
+2. UI 文案与该真相模型匹配。
+3. 所有本地持久化适配器都实现了：
    - `listSkills`
    - `syncSkills`
-4. Tests cover:
-   - desired-state storage
-   - actual-state discovery
-   - managed vs external distinctions
-   - stale managed-skill cleanup where supported
-5. `openclaw_gateway` is either:
-   - explicitly unsupported with clean UX
-   - or backed by a real remote skill API
+4. 测试覆盖：
+   - 期望状态存储
+   - 实际状态发现
+   - 受管理与外部的区分
+   - 支持的场景下的过期受管理技能清理
+5. `openclaw_gateway` 要么：
+   - 明确不支持并具有清晰的用户体验
+   - 要么由真实的远程技能 API 支撑
 
-## 10. Recommendation
+## 10. 建议
 
-The recommended immediate order is:
+推荐的即时执行顺序为：
 
 1. `cursor_local`
 2. `gemini_local`
 3. `pi_local`
 4. `opencode_local`
-5. defer `openclaw_gateway`
+5. 推迟 `openclaw_gateway`
 
-That gets Paperclip from “skills work for Codex and Claude” to “skills work for the whole local-adapter family,” which is the meaningful V1 milestone.
+这将使 Paperclip 从"技能仅对 Codex 和 Claude 有效"升级到"技能对整个本地适配器家族有效"，这才是有意义的 V1 里程碑。
