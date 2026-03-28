@@ -57,6 +57,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
+  function readQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      const first = value.find((entry): entry is string => typeof entry === "string");
+      return first;
+    }
+    return undefined;
+  }
+
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -228,9 +237,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
-    const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
-    const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
+    const statusFilter = readQueryString(req.query.status);
+    const assigneeAgentIdFilter = readQueryString(req.query.assigneeAgentId);
+    const participantAgentIdFilter = readQueryString(req.query.participantAgentId);
+    const assigneeUserFilterRaw = readQueryString(req.query.assigneeUserId);
+    const touchedByUserFilterRaw = readQueryString(req.query.touchedByUserId);
+    const unreadForUserFilterRaw = readQueryString(req.query.unreadForUserId);
+    const projectIdFilter = readQueryString(req.query.projectId);
+    const parentIdFilter = readQueryString(req.query.parentId);
+    const labelIdFilter = readQueryString(req.query.labelId);
+    const originKindFilter = readQueryString(req.query.originKind);
+    const originIdFilter = readQueryString(req.query.originId);
+    const includeRoutineExecutionsFilter = readQueryString(req.query.includeRoutineExecutions);
+    const searchFilter = readQueryString(req.query.q);
+
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -258,20 +278,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const result = await svc.list(companyId, {
-      status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      status: statusFilter,
+      assigneeAgentId: assigneeAgentIdFilter,
+      participantAgentId: participantAgentIdFilter,
       assigneeUserId,
       touchedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
-      originKind: req.query.originKind as string | undefined,
-      originId: req.query.originId as string | undefined,
+      projectId: projectIdFilter,
+      parentId: parentIdFilter,
+      labelId: labelIdFilter,
+      originKind: originKindFilter,
+      originId: originIdFilter,
       includeRoutineExecutions:
-        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
-      q: req.query.q as string | undefined,
+        includeRoutineExecutionsFilter === "true" || includeRoutineExecutionsFilter === "1",
+      q: searchFilter,
     });
     res.json(result);
   });
