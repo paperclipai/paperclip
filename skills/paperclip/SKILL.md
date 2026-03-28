@@ -298,6 +298,65 @@ PATCH /api/agents/{agentId}/instructions-path
 | Create recurring schedule (on issue)  | `POST /api/issues/:issueId/task-cron-schedules`                                            |
 | Update recurring schedule             | `PATCH /api/task-cron-schedules/:id`                                                       |
 | Delete recurring schedule             | `DELETE /api/task-cron-schedules/:id`                                                      |
+| List issue links                      | `GET /api/issues/:issueId/links`                                                           |
+| Create issue link                     | `POST /api/issues/:issueId/links`                                                          |
+| Delete issue link                     | `DELETE /api/issue-links/:linkId`                                                          |
+
+## Issue Links (Dependency Chains)
+
+Issue links let you chain tasks so completing one automatically triggers the next. Links are directional: a **source** issue triggers a **target** issue when the source moves to `done`.
+
+### Link types
+
+| Type | Behavior |
+|------|----------|
+| `triggers` | When source → `done`, target moves to `todo` and its assignee is woken (if all upstream triggers are also `done`). |
+
+### Creating a link
+
+```
+POST /api/issues/{sourceIssueId}/links
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY
+{ "targetId": "uuid-of-downstream-issue", "linkType": "triggers" }
+```
+
+The server rejects links that would create circular dependency chains (422).
+
+### Listing links
+
+```
+GET /api/issues/{issueId}/links
+```
+
+Returns `{ outgoing: [...], incoming: [...] }` with issue details (identifier, title, status) for each linked issue.
+
+### Deleting a link
+
+```
+DELETE /api/issue-links/{linkId}
+```
+
+### Fan-out and fan-in
+
+- **Fan-out:** One issue can trigger multiple downstream issues in parallel.
+- **Fan-in:** A target with multiple incoming `triggers` links is only triggered when ALL upstream sources are `done`.
+
+### Dependency-triggered wake
+
+When your agent is woken by a dependency trigger, these env vars are set:
+
+- `PAPERCLIP_WAKE_REASON=dependency_triggered`
+- `PAPERCLIP_LINKED_ISSUE_IDS=<comma-separated source issue IDs that triggered this wake>`
+
+### Building a pipeline
+
+Create downstream issues in `backlog` status so they don't appear in agent inboxes until triggered:
+
+```bash
+# Create chain: research → implement → test
+curl -X POST /api/issues/$research_id/links -d '{"targetId":"'$implement_id'","linkType":"triggers"}'
+curl -X POST /api/issues/$implement_id/links -d '{"targetId":"'$test_id'","linkType":"triggers"}'
+```
 
 ## Recurring Schedules (Task Cron)
 
