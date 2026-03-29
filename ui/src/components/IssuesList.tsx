@@ -5,6 +5,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { projectsApi } from "../api/projects";
 import { taskCronsApi } from "../api/taskCrons";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
@@ -50,6 +51,7 @@ import {
   XCircle,
   RotateCcw,
   Loader2,
+  FolderKanban,
 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
@@ -250,8 +252,10 @@ export function IssuesList({
   });
 
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
+  const [projectPickerIssueId, setProjectPickerIssueId] = useState<string | null>(null);
   const [recurringPickerIssueId, setRecurringPickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [projectSearch, setProjectSearch] = useState("");
   const [recurringDrafts, setRecurringDrafts] = useState<Record<string, string>>({});
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [debouncedIssueSearch, setDebouncedIssueSearch] = useState(issueSearch);
@@ -334,6 +338,12 @@ export function IssuesList({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
+
+  const { data: allProjects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
@@ -448,7 +458,9 @@ export function IssuesList({
 
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           <span className="w-3.5 shrink-0 hidden sm:block" />
-          <span className="hidden sm:inline-flex"><PriorityIcon priority={issue.priority} /></span>
+          <span className="hidden sm:inline-flex" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+            <PriorityIcon priority={issue.priority} onChange={(p) => onUpdateIssue(issue.id, { priority: p })} />
+          </span>
           <span className="hidden shrink-0 sm:inline-flex" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
             <StatusIcon
               status={issue.status}
@@ -713,12 +725,102 @@ export function IssuesList({
             </div>
           </PopoverContent>
         </Popover>
+        <Popover
+          open={projectPickerIssueId === issue.id}
+          onOpenChange={(open) => {
+            setProjectPickerIssueId(open ? issue.id : null);
+            if (!open) setProjectSearch("");
+          }}
+        >
+          <PopoverTrigger asChild>
+            <button
+              className="flex w-[150px] shrink-0 items-center rounded-md px-2 py-1 hover:bg-accent/50 transition-colors"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+            >
+              {issue.projectId && issue.project ? (
+                <span className="inline-flex items-center gap-1.5 text-xs min-w-0">
+                  <span
+                    className="shrink-0 h-3 w-3 rounded-sm"
+                    style={{ backgroundColor: issue.project.color ?? "#6366f1" }}
+                  />
+                  <span className="truncate">{issue.project.name}</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                    <FolderKanban className="h-3 w-3" />
+                  </span>
+                  Project
+                </span>
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            className="w-56 p-1"
+            align="end"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDownOutside={() => setProjectSearch("")}
+          >
+            <input
+              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+              placeholder="Search projects..."
+              value={projectSearch}
+              onChange={(e) => setProjectSearch(e.target.value)}
+              autoFocus
+            />
+            <div className="max-h-48 overflow-y-auto overscroll-contain">
+              <button
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  !issue.projectId && "bg-accent"
+                )}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onUpdateIssue(issue.id, { projectId: null });
+                  setProjectPickerIssueId(null);
+                }}
+              >
+                No project
+              </button>
+              {(allProjects ?? [])
+                .filter((proj) => {
+                  if (!projectSearch.trim()) return true;
+                  return proj.name.toLowerCase().includes(projectSearch.toLowerCase());
+                })
+                .map((proj) => (
+                  <button
+                    key={proj.id}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                      issue.projectId === proj.id && "bg-accent"
+                    )}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onUpdateIssue(issue.id, { projectId: proj.id });
+                      setProjectPickerIssueId(null);
+                    }}
+                  >
+                    <span
+                      className="shrink-0 h-3 w-3 rounded-sm"
+                      style={{ backgroundColor: proj.color ?? "#6366f1" }}
+                    />
+                    <span className="truncate">{proj.name}</span>
+                  </button>
+                ))}
+            </div>
+          </PopoverContent>
+        </Popover>
         <span className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
           {formatDateTime(issue.updatedAt)}
         </span>
       </span>
     </Link>
-  ), [issueLinkState, onUpdateIssue, recurringIssueIds, liveIssueIds, recurringByIssueId, recurringPickerIssueId, updateSchedule, scheduleDraftValue, recurringDrafts, assigneePickerIssueId, assigneeSearch, agentName, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  ), [issueLinkState, onUpdateIssue, recurringIssueIds, liveIssueIds, recurringByIssueId, recurringPickerIssueId, updateSchedule, scheduleDraftValue, recurringDrafts, assigneePickerIssueId, assigneeSearch, agentName, agents, projectPickerIssueId, projectSearch, allProjects]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">

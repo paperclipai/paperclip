@@ -1417,7 +1417,7 @@ export function issueService(db: Db) {
 
         const rows = await db.select({
           id: projects.id, name: projects.name, description: projects.description,
-          status: projects.status, goalId: projects.goalId,
+          status: projects.status, goalId: projects.goalId, color: projects.color,
         }).from(projects).where(inArray(projects.id, projectIds));
         for (const r of rows) {
           const projectWorkspaceRows = workspaceMap.get(r.id) ?? [];

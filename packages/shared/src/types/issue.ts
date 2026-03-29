@@ -10,6 +10,7 @@ export interface IssueAncestorProject {
   description: string | null;
   status: string;
   goalId: string | null;
+  color?: string | null;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
 }
