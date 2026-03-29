@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { companiesApi } from "../api/companies";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -19,7 +20,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Play, Square } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -78,6 +79,20 @@ export function Dashboard() {
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const queryClient = useQueryClient();
+  const companyPaused = data?.companyStatus === "paused";
+
+  const togglePause = useMutation({
+    mutationFn: () =>
+      companyPaused
+        ? companiesApi.resume(selectedCompanyId!)
+        : companiesApi.pause(selectedCompanyId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
   });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
@@ -207,6 +222,65 @@ export function Dashboard() {
       )}
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+      {data && (
+        <>
+          <div
+            className={cn(
+              "flex items-center justify-between gap-3 rounded-xl border px-4 py-3",
+              companyPaused
+                ? "border-red-500/30 bg-[linear-gradient(180deg,rgba(255,60,60,0.10),rgba(255,255,255,0.02))]"
+                : "border-border bg-card",
+            )}
+          >
+            <div className="flex items-center gap-4">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground shrink-0">
+                Company Kill Switch
+              </span>
+              <div className="flex items-center gap-2.5">
+                {companyPaused ? (
+                  <Square className="h-4 w-4 shrink-0 text-red-400" />
+                ) : (
+                  <Play className="h-4 w-4 shrink-0 text-green-400" />
+                )}
+                <div>
+                  <p className={cn("text-sm font-medium", companyPaused ? "text-red-50" : "text-foreground")}>
+                    {companyPaused ? "All heartbeats paused" : "Heartbeats active"}
+                  </p>
+                  {companyPaused && data.companyPauseReason && (
+                    <p className="text-xs text-red-100/70">
+                      Paused by {data.companyPauseReason === "budget" ? "budget hard-stop" : "board operator"}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => togglePause.mutate()}
+              disabled={togglePause.isPending}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                companyPaused
+                  ? "bg-green-600 text-white hover:bg-green-500"
+                  : "bg-red-600 text-white hover:bg-red-500",
+                togglePause.isPending && "opacity-50 cursor-not-allowed",
+              )}
+            >
+              {companyPaused ? (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  Resume All
+                </>
+              ) : (
+                <>
+                  <Square className="h-3.5 w-3.5" />
+                  Pause All
+                </>
+              )}
+            </button>
+          </div>
+        </>
+      )}
 
       {data && (
         <>
