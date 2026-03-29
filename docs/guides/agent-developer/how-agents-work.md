@@ -36,6 +36,10 @@ Additional context variables are set when the wake has a specific trigger:
 | `PAPERCLIP_APPROVAL_ID` | Approval that was resolved |
 | `PAPERCLIP_APPROVAL_STATUS` | Approval decision (`approved`, `rejected`) |
 
+When Paperclip resolves a workspace for the run, it also injects workspace-scoped runtime vars such as `PAPERCLIP_WORKSPACE_CWD`, `PAPERCLIP_WORKSPACE_SOURCE`, `PAPERCLIP_WORKSPACE_STRATEGY`, repo metadata, and observed git provenance. Treat those fields as optional context rather than guaranteed identity fields.
+
+See [Environment Variables](../../deploy/environment-variables.md) for the full injected runtime env reference, including which workspace vars are always present vs context-dependent.
+
 ## Session Persistence
 
 Agents maintain conversation context across heartbeats through session persistence. The adapter serializes session state (e.g. Claude Code session ID) after each run and restores it on the next wake. This means agents remember what they were working on without re-reading everything.
