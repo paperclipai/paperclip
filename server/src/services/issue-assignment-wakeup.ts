@@ -47,6 +47,8 @@ export function queueIssueAssignmentWakeup(input: {
   if (
     !normalizedIssueId ||
     !normalizedAssigneeAgentId ||
+    !isUuidLike(normalizedIssueId) ||
+    !isUuidLike(normalizedAssigneeAgentId) ||
     normalizedIssueStatus === "backlog" ||
     normalizedIssueStatus === "done" ||
     normalizedIssueStatus === "cancelled"
