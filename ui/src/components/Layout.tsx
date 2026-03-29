@@ -70,6 +70,7 @@ export function Layout() {
     setSelectedCompanyId,
   } = useCompany();
   const { theme, toggleTheme } = useTheme();
+  const showCompanyRail = companies.length > 1;
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -335,7 +336,7 @@ export function Layout() {
           )}
         >
           <div className="flex flex-1 min-h-0 overflow-hidden">
-            <CompanyRail />
+            {showCompanyRail && <CompanyRail />}
             <Sidebar />
           </div>
           <div className="border-t border-r border-border px-3 py-2 bg-background">
@@ -362,7 +363,7 @@ export function Layout() {
         </div>
       ) : (
         <div className="flex shrink-0 h-full">
-          <CompanyRail />
+          {showCompanyRail && <CompanyRail />}
           <div
             className={cn(
               "overflow-hidden transition-[width] duration-100 ease-out flex flex-col",
