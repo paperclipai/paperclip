@@ -1,4 +1,5 @@
 import { logger } from "../middleware/logger.js";
+import { isUuidLike } from "@paperclipai/shared";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
@@ -37,9 +38,12 @@ export function queueIssueAssignmentWakeup(input: {
   const normalizedAssigneeAgentId = typeof input.issue.assigneeAgentId === "string"
     ? input.issue.assigneeAgentId.trim().toLowerCase()
     : null;
-  const normalizedRequestedByActorId = typeof input.requestedByActorId === "string"
-    ? input.requestedByActorId.trim().toLowerCase()
+  const requestedByActorIdTrimmed = typeof input.requestedByActorId === "string"
+    ? input.requestedByActorId.trim()
     : null;
+  const normalizedRequestedByActorId = requestedByActorIdTrimmed && isUuidLike(requestedByActorIdTrimmed)
+    ? requestedByActorIdTrimmed.toLowerCase()
+    : requestedByActorIdTrimmed;
   if (
     !normalizedIssueId ||
     !normalizedAssigneeAgentId ||

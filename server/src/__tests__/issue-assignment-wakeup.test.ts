@@ -160,4 +160,29 @@ describe("queueIssueAssignmentWakeup", () => {
 
     expect(wakeup).not.toHaveBeenCalled();
   });
+
+  it("preserves non-uuid requester ids for user-triggered wakeups", async () => {
+    const wakeup = vi.fn(async () => undefined);
+
+    await queueIssueAssignmentWakeup({
+      heartbeat: { wakeup },
+      issue: {
+        id: "11111111-1111-4111-8111-111111111111",
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        status: "todo",
+      },
+      reason: "issue_assigned",
+      mutation: "update",
+      contextSource: "test",
+      requestedByActorType: "user",
+      requestedByActorId: "  User-ABC  ",
+    });
+
+    expect(wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        requestedByActorId: "User-ABC",
+      }),
+    );
+  });
 });
