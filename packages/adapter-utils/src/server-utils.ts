@@ -735,25 +735,48 @@ export async function runChildProcess(
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
 
-    // Strip Claude Code nesting-guard env vars so spawned `claude` processes
-    // don't refuse to start with "cannot be launched inside another session".
-    // These vars leak in when the Paperclip server itself is started from
-    // within a Claude Code session (e.g. `npx paperclipai run` in a terminal
-    // owned by Claude Code) or when cron inherits a contaminated shell env.
-    const CLAUDE_CODE_NESTING_VARS = [
+    // Strip environment variables that can contaminate or block child process execution.
+    // 1. Claude Code nesting-guards prevent `claude` from launching inside another session.
+    // 2. Node.js/TS loader vars (like `tsx`) break ESM resolution in standalone Node CLIs.
+    const CONTAMINATING_VARS_TO_CLEAR = [
       "CLAUDECODE",
       "CLAUDE_CODE_ENTRYPOINT",
       "CLAUDE_CODE_SESSION",
       "CLAUDE_CODE_PARENT_SESSION",
+      "NODE_PATH",
+      "NODE_V8_COVERAGE",
+      "TS_NODE_PROJECT",
+      "TS_NODE_COMPILER_OPTIONS",
+      "TS_NODE_IGNORE",
+      "TS_NODE_SKIP_PROJECT",
+      "TS_NODE_SKIP_IGNORE",
+      "TS_NODE_PREFER_TS_EXTS",
     ] as const;
-    for (const key of CLAUDE_CODE_NESTING_VARS) {
+    for (const key of CONTAMINATING_VARS_TO_CLEAR) {
       delete rawMerged[key];
     }
 
+    // Force NODE_OPTIONS to be empty to prevent inherited loaders (like tsx) from
+    // breaking the child process ESM resolution.
+    rawMerged.NODE_OPTIONS = "";
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
-      .then((target) => {
-        const child = spawn(target.command, target.args, {
+      .then(async (target) => {
+        let finalCommand = target.command;
+        let finalArgs = target.args;
+
+        // Special case: if we're running 'gemini', use the current node executable
+        // to ensure it runs with the same working environment as the Paperclip server
+        // but without the contaminating loaders.
+        if (command === "gemini") {
+          // Resolve real path if it's a symlink to help Node ESM resolution find sibling files
+          const realCommandPath = await fs.realpath(target.command).catch(() => target.command);
+          finalCommand = process.execPath;
+          finalArgs = [realCommandPath, ...target.args];
+        }
+
+        const child = spawn(finalCommand, finalArgs, {
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,

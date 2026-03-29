@@ -48,10 +48,18 @@ function errorText(value: unknown): string {
   }
 }
 
+function readMessagePayload(value: Record<string, unknown>): unknown {
+  return value.content ?? value.message;
+}
+
 function collectTextEntries(messageRaw: unknown, ts: string, kind: "assistant" | "user"): TranscriptEntry[] {
   if (typeof messageRaw === "string") {
     const text = messageRaw.trim();
     return text ? [{ kind, ts, text }] : [];
+  }
+
+  if (Array.isArray(messageRaw)) {
+    return collectTextEntries({ content: messageRaw }, ts, kind);
   }
 
   const message = asRecord(messageRaw);
@@ -78,6 +86,10 @@ function parseAssistantMessage(messageRaw: unknown, ts: string): TranscriptEntry
   if (typeof messageRaw === "string") {
     const text = messageRaw.trim();
     return text ? [{ kind: "assistant", ts, text }] : [];
+  }
+
+  if (Array.isArray(messageRaw)) {
+    return parseAssistantMessage({ content: messageRaw }, ts);
   }
 
   const message = asRecord(messageRaw);
@@ -231,6 +243,17 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
 
   if (type === "assistant") {
     return parseAssistantMessage(parsed.message, ts);
+  }
+
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    const payload = readMessagePayload(parsed);
+    if (role === "assistant") {
+      return parseAssistantMessage(payload, ts);
+    }
+    if (role === "user") {
+      return collectTextEntries(payload, ts, "user");
+    }
   }
 
   if (type === "user") {
