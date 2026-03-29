@@ -33,6 +33,9 @@ export interface CostByAgent {
   subscriptionRunCount: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  budgetMonthlyCents: number;
+  spentMonthlyCents: number;
+  utilizationPercent: number | null;
 }
 
 export interface CostTrendPoint {
@@ -63,4 +66,14 @@ export interface CostEfficiencyAgent {
   tasksAttempted: number;
   totalRuns: number;
   totalCostCents: number;
+}
+
+export interface CostByModel {
+  provider: string;
+  model: string;
+  totalCostCents: number;
+  inputTokens: number;
+  outputTokens: number;
+  costPerKTokens: number | null;
+  eventCount: number;
 }

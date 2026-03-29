@@ -111,6 +111,8 @@ export function costService(db: Db) {
           agentId: costEvents.agentId,
           agentName: agents.name,
           agentStatus: agents.status,
+          budgetMonthlyCents: agents.budgetMonthlyCents,
+          spentMonthlyCents: agents.spentMonthlyCents,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
@@ -118,7 +120,7 @@ export function costService(db: Db) {
         .from(costEvents)
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
-        .groupBy(costEvents.agentId, agents.name, agents.status)
+        .groupBy(costEvents.agentId, agents.name, agents.status, agents.budgetMonthlyCents, agents.spentMonthlyCents)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
 
       const runConditions: ReturnType<typeof eq>[] = [eq(heartbeatRuns.companyId, companyId)];
@@ -144,8 +146,13 @@ export function costService(db: Db) {
       const runRowsByAgent = new Map(runRows.map((row) => [row.agentId, row]));
       return costRows.map((row) => {
         const runRow = runRowsByAgent.get(row.agentId);
+        const budget = Number(row.budgetMonthlyCents ?? 0);
+        const spent = Number(row.spentMonthlyCents ?? 0);
         return {
           ...row,
+          budgetMonthlyCents: budget,
+          spentMonthlyCents: spent,
+          utilizationPercent: budget > 0 ? Number(((spent / budget) * 100).toFixed(2)) : null,
           apiRunCount: runRow?.apiRunCount ?? 0,
           subscriptionRunCount: runRow?.subscriptionRunCount ?? 0,
           subscriptionInputTokens: runRow?.subscriptionInputTokens ?? 0,
@@ -328,6 +335,41 @@ export function costService(db: Db) {
           totalCostCents: cost,
         };
       });
+    },
+
+    byModel: async (companyId: string, range?: CostDateRange) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const rows = await db
+        .select({
+          provider: costEvents.provider,
+          model: costEvents.model,
+          totalCostCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          eventCount: sql<number>`count(*)::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions))
+        .groupBy(costEvents.provider, costEvents.model)
+        .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      return {
+        models: rows.map((row) => {
+          const totalTokens = Number(row.inputTokens) + Number(row.outputTokens);
+          const cost = Number(row.totalCostCents);
+          return {
+            ...row,
+            totalCostCents: cost,
+            inputTokens: Number(row.inputTokens),
+            outputTokens: Number(row.outputTokens),
+            eventCount: Number(row.eventCount),
+            costPerKTokens: totalTokens > 0 ? Number((cost / (totalTokens / 1000)).toFixed(2)) : null,
+          };
+        }),
+      };
     },
 
     byProject: async (companyId: string, range?: CostDateRange) => {

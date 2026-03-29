@@ -21,6 +21,7 @@ import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Link } from "@/lib/router";
 import {
   DollarSign,
   TrendingUp,
@@ -28,8 +29,11 @@ import {
   Clock,
   Activity,
   Zap,
+  ArrowUpDown,
+  Users,
+  Cpu,
 } from "lucide-react";
-import type { CostForecast, CostEfficiencyAgent } from "@paperclipai/shared";
+import type { CostForecast, CostEfficiencyAgent, CostByAgent, CostByModel } from "@paperclipai/shared";
 
 type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
@@ -213,6 +217,276 @@ function TrendChartTooltip({ active, payload }: { active?: boolean; payload?: Ar
   );
 }
 
+type AgentSortKey = "cost" | "efficiency" | "utilization" | "tasks";
+
+const SORT_LABELS: Record<AgentSortKey, string> = {
+  cost: "Cost",
+  efficiency: "Tokens/$",
+  utilization: "Budget Used",
+  tasks: "Task Count",
+};
+
+function computeTokensPerDollar(row: CostByAgent): number {
+  if (row.costCents <= 0) return 0;
+  return (row.inputTokens + row.outputTokens) / (row.costCents / 100);
+}
+
+function sortAgents(
+  agents: CostByAgent[],
+  sortKey: AgentSortKey,
+  efficiencyMap: Map<string, CostEfficiencyAgent>,
+): CostByAgent[] {
+  const sorted = [...agents];
+  sorted.sort((a, b) => {
+    switch (sortKey) {
+      case "cost":
+        return b.costCents - a.costCents;
+      case "efficiency":
+        return computeTokensPerDollar(b) - computeTokensPerDollar(a);
+      case "utilization":
+        return (b.utilizationPercent ?? 0) - (a.utilizationPercent ?? 0);
+      case "tasks": {
+        const aT = efficiencyMap.get(a.agentId)?.tasksCompleted ?? 0;
+        const bT = efficiencyMap.get(b.agentId)?.tasksCompleted ?? 0;
+        return bT - aT;
+      }
+    }
+  });
+  return sorted;
+}
+
+function AgentBreakdownCard({
+  agents,
+  efficiencyData,
+}: {
+  agents: CostByAgent[];
+  efficiencyData: CostEfficiencyAgent[];
+}) {
+  const [sortKey, setSortKey] = useState<AgentSortKey>("cost");
+
+  const efficiencyMap = useMemo(
+    () => new Map(efficiencyData.map((e) => [e.agentId, e])),
+    [efficiencyData],
+  );
+
+  const totalCost = useMemo(
+    () => agents.reduce((sum, a) => sum + a.costCents, 0),
+    [agents],
+  );
+
+  const sortedAgents = useMemo(
+    () => sortAgents(agents, sortKey, efficiencyMap),
+    [agents, sortKey, efficiencyMap],
+  );
+
+  const sortKeys: AgentSortKey[] = ["cost", "efficiency", "utilization", "tasks"];
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">By Agent</h3>
+          </div>
+          <div className="flex items-center gap-1">
+            <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
+            {sortKeys.map((key) => (
+              <Button
+                key={key}
+                variant={sortKey === key ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setSortKey(key)}
+              >
+                {SORT_LABELS[key]}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {agents.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No cost events yet.</p>
+        ) : (
+          <div className="space-y-3">
+            {sortedAgents.map((row) => {
+              const sharePercent = totalCost > 0 ? (row.costCents / totalCost) * 100 : 0;
+              const tokPerDollar = computeTokensPerDollar(row);
+              const eff = efficiencyMap.get(row.agentId);
+
+              return (
+                <Link
+                  key={row.agentId}
+                  to={`/agents/${row.agentId}`}
+                  className="block rounded-md border border-transparent hover:border-border/50 hover:bg-muted/30 transition-colors px-2 py-2 -mx-2"
+                >
+                  {/* Agent name + cost */}
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Identity name={row.agentName ?? row.agentId} size="sm" />
+                      {row.agentStatus === "terminated" && (
+                        <StatusBadge status="terminated" />
+                      )}
+                    </div>
+                    <span className="font-medium tabular-nums text-sm shrink-0 ml-2">
+                      {formatCents(row.costCents)}
+                    </span>
+                  </div>
+
+                  {/* Spend share bar */}
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500/70 rounded-full transition-[width] duration-150"
+                        style={{ width: `${Math.max(1, sharePercent)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground tabular-nums w-10 text-right shrink-0">
+                      {sharePercent.toFixed(1)}%
+                    </span>
+                  </div>
+
+                  {/* Budget utilization + metrics row */}
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    {/* Budget utilization */}
+                    {row.budgetMonthlyCents > 0 ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1">
+                          <span className="inline-block w-12 h-1 bg-muted rounded-full overflow-hidden">
+                            <span
+                              className={`block h-full rounded-full ${
+                                (row.utilizationPercent ?? 0) > 90
+                                  ? "bg-red-400"
+                                  : (row.utilizationPercent ?? 0) > 70
+                                    ? "bg-yellow-400"
+                                    : "bg-green-400"
+                              }`}
+                              style={{ width: `${Math.min(100, row.utilizationPercent ?? 0)}%` }}
+                            />
+                          </span>
+                          <span className="tabular-nums">
+                            {row.utilizationPercent?.toFixed(0) ?? 0}% of {formatCents(row.budgetMonthlyCents)}
+                          </span>
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="tabular-nums">No budget set</span>
+                    )}
+
+                    <span className="text-border">|</span>
+
+                    {/* Tokens per dollar */}
+                    <span className="tabular-nums">
+                      {tokPerDollar > 0 ? `${formatTokens(Math.round(tokPerDollar))} tok/$` : "\u2014 tok/$"}
+                    </span>
+
+                    {eff && (
+                      <>
+                        <span className="text-border">|</span>
+                        <span className="tabular-nums">{eff.tasksCompleted} tasks</span>
+                      </>
+                    )}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ModelBreakdownCard({ models }: { models: CostByModel[] }) {
+  const totalCost = useMemo(
+    () => models.reduce((sum, m) => sum + m.totalCostCents, 0),
+    [models],
+  );
+
+  if (models.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Cpu className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">By Model</h3>
+          </div>
+          <p className="text-sm text-muted-foreground">No cost events yet.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Cpu className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">By Model</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border/50">
+                <th className="text-left font-medium text-muted-foreground pb-2 pr-4">Model</th>
+                <th className="text-right font-medium text-muted-foreground pb-2 px-2">Cost</th>
+                <th className="text-left font-medium text-muted-foreground pb-2 px-2 w-24">Share</th>
+                <th className="text-right font-medium text-muted-foreground pb-2 px-2">In Tokens</th>
+                <th className="text-right font-medium text-muted-foreground pb-2 px-2">Out Tokens</th>
+                <th className="text-right font-medium text-muted-foreground pb-2 px-2">$/1K Tok</th>
+                <th className="text-right font-medium text-muted-foreground pb-2 pl-2">Events</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map((row) => {
+                const sharePercent = totalCost > 0 ? (row.totalCostCents / totalCost) * 100 : 0;
+                return (
+                  <tr key={`${row.provider}-${row.model}`} className="border-b border-border/20 last:border-0">
+                    <td className="py-2 pr-4">
+                      <div>
+                        <span className="font-medium">{row.model}</span>
+                        <span className="text-xs text-muted-foreground ml-1.5">{row.provider}</span>
+                      </div>
+                    </td>
+                    <td className="text-right py-2 px-2 tabular-nums font-medium">
+                      {formatCents(row.totalCostCents)}
+                    </td>
+                    <td className="py-2 px-2">
+                      <div className="flex items-center gap-1.5">
+                        <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-violet-500/70 rounded-full transition-[width] duration-150"
+                            style={{ width: `${Math.max(1, sharePercent)}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-muted-foreground tabular-nums w-10 text-right shrink-0">
+                          {sharePercent.toFixed(0)}%
+                        </span>
+                      </div>
+                    </td>
+                    <td className="text-right py-2 px-2 tabular-nums text-muted-foreground">
+                      {formatTokens(row.inputTokens)}
+                    </td>
+                    <td className="text-right py-2 px-2 tabular-nums text-muted-foreground">
+                      {formatTokens(row.outputTokens)}
+                    </td>
+                    <td className="text-right py-2 px-2 tabular-nums text-muted-foreground">
+                      {row.costPerKTokens !== null ? formatCents(row.costPerKTokens) : "\u2014"}
+                    </td>
+                    <td className="text-right py-2 pl-2 tabular-nums text-muted-foreground">
+                      {row.eventCount.toLocaleString()}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -265,6 +539,13 @@ export function Costs() {
     queryKey: queryKeys.costsEfficiency(selectedCompanyId!, from || undefined, to || undefined),
     queryFn: () =>
       costsApi.efficiency(selectedCompanyId!, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: byModelData } = useQuery({
+    queryKey: queryKeys.costsByModel(selectedCompanyId!, from || undefined, to || undefined),
+    queryFn: () =>
+      costsApi.byModel(selectedCompanyId!, from || undefined, to || undefined),
     enabled: !!selectedCompanyId,
   });
 
@@ -436,74 +717,38 @@ export function Costs() {
             <EfficiencyTable agents={efficiencyData} />
           )}
 
-          {/* By Agent / By Project */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardContent className="p-4">
-                <h3 className="text-sm font-semibold mb-3">By Agent</h3>
-                {data.byAgent.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No cost events yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {data.byAgent.map((row) => (
-                      <div
-                        key={row.agentId}
-                        className="flex items-start justify-between text-sm"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Identity
-                            name={row.agentName ?? row.agentId}
-                            size="sm"
-                          />
-                          {row.agentStatus === "terminated" && (
-                            <StatusBadge status="terminated" />
-                          )}
-                        </div>
-                        <div className="text-right shrink-0 ml-2 tabular-nums">
-                          <span className="font-medium block">{formatCents(row.costCents)}</span>
-                          <span className="text-xs text-muted-foreground block">
-                            in {formatTokens(row.inputTokens)} / out {formatTokens(row.outputTokens)} tok
-                          </span>
-                          {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) && (
-                            <span className="text-xs text-muted-foreground block">
-                              {row.apiRunCount > 0 ? `api runs: ${row.apiRunCount}` : null}
-                              {row.apiRunCount > 0 && row.subscriptionRunCount > 0 ? " | " : null}
-                              {row.subscriptionRunCount > 0
-                                ? `subscription runs: ${row.subscriptionRunCount} (${formatTokens(row.subscriptionInputTokens)} in / ${formatTokens(row.subscriptionOutputTokens)} out tok)`
-                                : null}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+          {/* Enhanced Agent Breakdown */}
+          <AgentBreakdownCard
+            agents={data.byAgent}
+            efficiencyData={efficiencyData ?? []}
+          />
 
-            <Card>
-              <CardContent className="p-4">
-                <h3 className="text-sm font-semibold mb-3">By Project</h3>
-                {data.byProject.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No project-attributed run costs yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {data.byProject.map((row) => (
-                      <div
-                        key={row.projectId ?? "na"}
-                        className="flex items-center justify-between text-sm"
-                      >
-                        <span className="truncate">
-                          {row.projectName ?? row.projectId ?? "Unattributed"}
-                        </span>
-                        <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+          {/* Model Cost Breakdown */}
+          {byModelData && <ModelBreakdownCard models={byModelData.models} />}
+
+          {/* By Project */}
+          <Card>
+            <CardContent className="p-4">
+              <h3 className="text-sm font-semibold mb-3">By Project</h3>
+              {data.byProject.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No project-attributed run costs yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {data.byProject.map((row) => (
+                    <div
+                      key={row.projectId ?? "na"}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <span className="truncate">
+                        {row.projectName ?? row.projectId ?? "Unattributed"}
+                      </span>
+                      <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </>
       )}
     </div>
