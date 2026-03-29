@@ -594,6 +594,45 @@ describe("issueService.list participantAgentId", () => {
     }
   });
 
+  it("normalizes status and originKind filters for non-route callers", async () => {
+    const companyId = randomUUID();
+    const routineIssueId = randomUUID();
+    const manualIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: routineIssueId,
+        companyId,
+        title: "Routine issue",
+        status: "todo",
+        priority: "medium",
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      },
+      {
+        id: manualIssueId,
+        companyId,
+        title: "Manual issue",
+        status: "todo",
+        priority: "medium",
+        originKind: "manual",
+      },
+    ]);
+
+    const statusResult = await svc.list(companyId, { status: " TODO " });
+    expect(statusResult.map((issue) => issue.id)).toContain(manualIssueId);
+
+    const originResult = await svc.list(companyId, { originKind: " ROUTINE_EXECUTION " });
+    expect(originResult.map((issue) => issue.id)).toContain(routineIssueId);
+  });
+
   it("keeps routine_execution issues excluded by default for malformed non-route origin/include filters", async () => {
     const companyId = randomUUID();
     const routineIssueId = randomUUID();

@@ -576,7 +576,7 @@ export function issueService(db: Db) {
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       if (!isUuidLike(companyId)) return [];
-      const statusFilter = asNonEmptyString(filters?.status);
+      const statusFilter = asNonEmptyString(filters?.status)?.toLowerCase();
       const assigneeAgentIdFilter = asNonEmptyString(filters?.assigneeAgentId);
       const participantAgentIdFilter = asNonEmptyString(filters?.participantAgentId);
       const assigneeUserIdFilter = asNonEmptyString(filters?.assigneeUserId);
@@ -585,7 +585,7 @@ export function issueService(db: Db) {
       const projectIdFilter = asNonEmptyString(filters?.projectId);
       const parentIdFilter = asNonEmptyString(filters?.parentId);
       const labelIdFilter = asNonEmptyString(filters?.labelId);
-      const originKindFilter = asNonEmptyString(filters?.originKind);
+      const originKindFilter = asNonEmptyString(filters?.originKind)?.toLowerCase();
       const originIdFilter = asNonEmptyString(filters?.originId);
       const includeRoutineExecutionsRaw = filters?.includeRoutineExecutions as unknown;
       const includeRoutineExecutions =
