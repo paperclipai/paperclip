@@ -384,6 +384,92 @@ describe("heartbeat orphaned process recovery", () => {
     expect(repairedIssue?.executionRunId).toBe(repairedRun?.id ?? null);
   });
 
+  it("does not overwrite execution lock when orphaned wakeup issue is reassigned or already locked", async () => {
+    const companyId = randomUUID();
+    const wakeupAgentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const existingExecutionRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: wakeupAgentId,
+        companyId,
+        name: "WakeupAgent",
+        role: "engineer",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "AssigneeAgent",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: existingExecutionRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Do not clobber reassigned lock",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      executionRunId: existingExecutionRunId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: wakeupAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      status: "queued",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(assigneeAgentId);
+    expect(issue?.executionRunId).toBe(existingExecutionRunId);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

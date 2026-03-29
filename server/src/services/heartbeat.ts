@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -1984,6 +1984,8 @@ export function heartbeatService(db: Db) {
             and(
               eq(issues.id, issueId),
               eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              isNull(issues.executionRunId),
             ),
           );
 
