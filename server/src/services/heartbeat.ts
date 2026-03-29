@@ -2032,7 +2032,9 @@ export function heartbeatService(db: Db) {
     const config = parseObject(agent.adapterConfig);
     const agentRuntimeConfig = parseObject(agent.runtimeConfig);
     const agentWorkspaceStrategy =
-      typeof agentRuntimeConfig.workspaceStrategy === "string" ? agentRuntimeConfig.workspaceStrategy : null;
+      isolatedWorkspacesEnabled && typeof agentRuntimeConfig.workspaceStrategy === "string"
+        ? agentRuntimeConfig.workspaceStrategy
+        : null;
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,

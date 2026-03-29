@@ -169,6 +169,9 @@ export function resolveExecutionWorkspaceMode(input: {
   if (input.agentWorkspaceStrategy === "git_worktree") {
     return "isolated_workspace";
   }
+  if (input.agentWorkspaceStrategy === "project_primary") {
+    return "shared_workspace";
+  }
   return "shared_workspace";
 }
 
@@ -191,7 +194,8 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     projectHasPolicy ||
     issueHasWorkspaceOverrides ||
     input.legacyUseProjectWorkspace === false ||
-    input.agentWorkspaceStrategy === "git_worktree";
+    input.agentWorkspaceStrategy === "git_worktree" ||
+    input.agentWorkspaceStrategy === "project_primary";
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
