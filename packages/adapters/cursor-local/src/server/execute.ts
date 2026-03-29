@@ -170,11 +170,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  const workspaceBranch = asString(workspaceContext.branchName, "");
   const workspaceObservedBranch = asString(workspaceContext.observedBranchName, "");
   const workspaceObservedHead = asString(workspaceContext.observedHeadSha, "");
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
   const agentHome = asString(workspaceContext.agentHome, "");
   const workspaceHints = Array.isArray(context.paperclipWorkspaces)
     ? context.paperclipWorkspaces.filter(
@@ -242,6 +245,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceSource) {
     env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
   }
+  if (workspaceStrategy) {
+    env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
+  }
   if (workspaceId) {
     env.PAPERCLIP_WORKSPACE_ID = workspaceId;
   }
@@ -251,11 +257,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (workspaceRepoRef) {
     env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
   }
+  if (workspaceBranch) {
+    env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
+  }
   if (workspaceObservedBranch) {
     env.PAPERCLIP_WORKSPACE_OBSERVED_BRANCH = workspaceObservedBranch;
   }
   if (workspaceObservedHead) {
     env.PAPERCLIP_WORKSPACE_OBSERVED_HEAD = workspaceObservedHead;
+  }
+  if (workspaceWorktreePath) {
+    env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
   }
   if (agentHome) {
     env.AGENT_HOME = agentHome;
