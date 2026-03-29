@@ -145,6 +145,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type !== "board" || req.actor.source !== "local_implicit") return false;
     if (options?.allowHiddenAtOnly) return false;
     if (!issue.assigneeAgentId && !issue.executionRunId) return false;
+
+    const body = req.body as Record<string, unknown> | undefined;
+    const requestKeys = body ? Object.keys(body) : [];
+    const allowedLocalImplicitPatchKeys = new Set([
+      "status",
+      "priority",
+      "assigneeAgentId",
+      "assigneeUserId",
+      "comment",
+      "blockedReason",
+      "hiddenAt",
+    ]);
+    const onlyWorkflowSafeKeys =
+      requestKeys.length > 0 && requestKeys.every((key) => allowedLocalImplicitPatchKeys.has(key));
+    const localImplicitWorkflowMutationAllowed =
+      req.method === "PATCH" && reason === "issue_patch" && onlyWorkflowSafeKeys;
+    if (localImplicitWorkflowMutationAllowed) {
+      logger.info(
+        {
+          method: req.method,
+          url: req.originalUrl,
+          issueId: issue.id,
+          companyId: issue.companyId,
+          issueStatus: issue.status ?? null,
+          assigneeAgentId: issue.assigneeAgentId,
+          executionRunId: issue.executionRunId,
+          actorType: req.actor.type,
+          actorUserId: req.actor.userId ?? null,
+          source: req.actor.source,
+          requestKeys,
+          reason,
+        },
+        "allowing local implicit board workflow mutation on agent-owned issue",
+      );
+      return false;
+    }
     logger.info(
       {
         method: req.method,
@@ -1220,6 +1256,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, issue, "issue_checkout")) return;
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -1288,6 +1325,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, existing, "issue_release")) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -1376,6 +1414,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, issue, "issue_comment")) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);
@@ -1462,6 +1501,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
+    logger.info(
+      {
+        issueId: id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        actorSource: req.actor.source,
+        actorUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        actorIsLocalImplicitBoard: req.actor.type === "board" ? req.actor.source === "local_implicit" : false,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+        executionRunId: currentIssue.executionRunId,
+        issueStatus: currentIssue.status,
+        reopenRequested,
+        interruptRequested,
+        bodyPreview: req.body.body.slice(0, 120),
+      },
+      "issue comment request accepted",
+    );
+
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -1471,6 +1530,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
+
+    logger.info(
+      {
+        issueId: id,
+        commentId: comment.id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        actorSource: req.actor.source,
+        actorUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        actorIsLocalImplicitBoard: req.actor.type === "board" ? req.actor.source === "local_implicit" : false,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+        executionRunId: currentIssue.executionRunId,
+        commentAuthorAgentId: comment.authorAgentId,
+        commentAuthorUserId: comment.authorUserId,
+      },
+      "issue comment persisted",
+    );
 
     await logActivity(db, {
       companyId: currentIssue.companyId,

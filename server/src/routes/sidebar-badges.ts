@@ -37,7 +37,7 @@ export function sidebarBadgeRoutes(db: Db) {
       : 0;
 
     const unreadTouchedIssues =
-      req.actor.type === "board"
+      req.actor.type === "board" && req.actor.userId
         ? await issues.countUnreadTouchedByUser(companyId, req.actor.userId, "backlog,todo,in_progress,in_review,blocked,done")
         : 0;
 

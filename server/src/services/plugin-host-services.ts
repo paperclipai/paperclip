@@ -10,6 +10,7 @@ import type {
   Goal,
   PluginWorkspace,
   IssueComment,
+  PluginEvent,
 } from "@paperclipai/plugin-sdk";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -558,8 +559,8 @@ export function buildHostServices(
         }
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
-      async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+      async subscribe(params) {
+        const handler = async (event: PluginEvent) => {
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }
