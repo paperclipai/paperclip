@@ -66,8 +66,8 @@ function getPayloadText(payload: Record<string, unknown> | null | undefined): st
 
 export function approvalLane(approval: Approval): ApprovalLane {
   const raw = getPayloadText(approval.payload as Record<string, unknown> | null | undefined);
-  if (raw.includes("intake") || raw.includes("wind tech") || raw.includes("prospect")) return "intake";
-  if (raw.includes("ops") || raw.includes("trading bot") || raw.includes("rag control") || raw.includes("control tower")) return "ops";
+
+  // Marketing-first so outreach/prospect content does not get misrouted into Intake.
   if (
     raw.includes("linkedin") ||
     raw.includes("x") ||
@@ -76,10 +76,15 @@ export function approvalLane(approval: Approval): ApprovalLane {
     raw.includes("website") ||
     raw.includes("content") ||
     raw.includes("launch") ||
-    raw.includes("outreach")
+    raw.includes("outreach") ||
+    raw.includes("email") ||
+    raw.includes("prospect")
   ) {
     return "marketing";
   }
+
+  if (raw.includes("ops") || raw.includes("trading bot") || raw.includes("rag control") || raw.includes("control tower")) return "ops";
+  if (raw.includes("intake") || raw.includes("wind tech")) return "intake";
   return "unknown";
 }
 
@@ -89,7 +94,8 @@ export function contentTier(approval: Approval): ContentTier {
   if (
     raw.includes("outreach") ||
     raw.includes("linkedin-outreach") ||
-    raw.includes("email")
+    raw.includes("email") ||
+    raw.includes("prospect")
   ) {
     return "outreach";
   }
