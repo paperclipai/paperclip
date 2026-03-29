@@ -424,7 +424,7 @@ export function IssuesList({
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
-                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
+                      onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [], projects: [] })}
                     >
                       Clear
                     </button>
