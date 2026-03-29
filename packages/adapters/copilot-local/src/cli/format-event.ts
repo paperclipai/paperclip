@@ -5,14 +5,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function safeNum(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return fallback;
+}
+
 export function printCopilotStreamEvent(raw: string, debug: boolean): void {
   const line = raw.trim();
   if (!line) return;
 
   let parsed: Record<string, unknown> | null = null;
   try {
-    parsed = JSON.parse(line) as Record<string, unknown>;
+    parsed = asRecord(JSON.parse(line));
   } catch {
+    console.log(line);
+    return;
+  }
+  if (!parsed) {
     console.log(line);
     return;
   }
@@ -99,11 +108,11 @@ export function printCopilotStreamEvent(raw: string, debug: boolean): void {
   // Final result
   if (type === "result") {
     const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : "";
-    const exitCode = Number(parsed.exitCode ?? 0);
+    const exitCode = safeNum(parsed.exitCode);
     const usageObj = asRecord(parsed.usage) ?? {};
-    const premiumRequests = Number(usageObj.premiumRequests ?? 0);
-    const totalApiDurationMs = Number(usageObj.totalApiDurationMs ?? 0);
-    const sessionDurationMs = Number(usageObj.sessionDurationMs ?? 0);
+    const premiumRequests = safeNum(usageObj.premiumRequests);
+    const totalApiDurationMs = safeNum(usageObj.totalApiDurationMs);
+    const sessionDurationMs = safeNum(usageObj.sessionDurationMs);
 
     if (sessionId) console.log(pc.blue(`session: ${sessionId}`));
     console.log(

@@ -112,11 +112,11 @@ export function parseCopilotStdoutLine(line: string, ts: string): TranscriptEntr
     return [];
   }
 
-  // Tool execution start: { toolCallId, toolName, arguments }
+  // Tool execution start is skipped — assistant.message already emits tool_call entries
+  // from toolRequests[]. Emitting here too would produce duplicate transcript rows for
+  // the same tool invocation.
   if (type === "tool.execution_start") {
-    const name = typeof data.toolName === "string" ? data.toolName : "unknown";
-    const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : undefined;
-    return [{ kind: "tool_call", ts, name, toolUseId: toolCallId, input: data.arguments ?? {} }];
+    return [];
   }
 
   // Tool execution complete: { toolCallId, success, result?: { content }, error?: { message, code } }

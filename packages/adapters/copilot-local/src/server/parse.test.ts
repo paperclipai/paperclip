@@ -85,6 +85,43 @@ describe("parseCopilotJsonl", () => {
     expect(result.summary).toBe("ok");
     expect(result.sessionId).toBe("x");
   });
+
+  it("handles Windows-style line endings", () => {
+    const lines = [
+      '{"type":"assistant.message","data":{"content":"win","outputTokens":3}}',
+      '{"type":"result","sessionId":"w","exitCode":0,"usage":{"premiumRequests":1}}',
+    ].join("\r\n");
+    const result = parseCopilotJsonl(lines);
+    expect(result.summary).toBe("win");
+    expect(result.sessionId).toBe("w");
+  });
+
+  it("handles JSON lines that are not objects (arrays, primitives)", () => {
+    const lines = [
+      "42",
+      '"hello"',
+      "[1,2,3]",
+      '{"type":"assistant.message","data":{"content":"ok","outputTokens":1}}',
+    ].join("\n");
+    const result = parseCopilotJsonl(lines);
+    expect(result.summary).toBe("ok");
+  });
+
+  it("last model wins when multiple session.tools_updated events", () => {
+    const lines = [
+      '{"type":"session.tools_updated","data":{"model":"gpt-5.2"}}',
+      '{"type":"session.tools_updated","data":{"model":"gpt-5.4"}}',
+    ].join("\n");
+    const result = parseCopilotJsonl(lines);
+    expect(result.model).toBe("gpt-5.4");
+  });
+
+  it("handles result event with missing usage fields", () => {
+    const lines = '{"type":"result","sessionId":"s","exitCode":0,"usage":{}}';
+    const result = parseCopilotJsonl(lines);
+    expect(result.premiumRequests).toBe(0);
+    expect(result.totalApiDurationMs).toBe(0);
+  });
 });
 
 describe("describeCopilotFailure", () => {
@@ -108,6 +145,23 @@ describe("describeCopilotFailure", () => {
   it("handles null parsed result", () => {
     const msg = describeCopilotFailure(null, "something went wrong");
     expect(msg).toContain("something went wrong");
+  });
+
+  it("extracts first meaningful stderr line when first lines are blank", () => {
+    const msg = describeCopilotFailure(
+      { exitCode: 1 },
+      "\n\n  \nActual error message here\nMore details",
+    );
+    expect(msg).toContain("Actual error message here");
+    expect(msg).not.toContain("More details");
+  });
+
+  it("detects auth required in stdout", () => {
+    const result = detectCopilotAuthRequired({
+      stdout: "not logged in",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
   });
 });
 
