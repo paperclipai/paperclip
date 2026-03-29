@@ -101,13 +101,13 @@ function SortableCompanyItem({
     <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="overflow-visible">
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
-          <a
-            href={`/${company.issuePrefix}/dashboard`}
-            onClick={(e) => {
-              e.preventDefault();
+          <button
+            type="button"
+            onClick={() => {
               onSelect();
             }}
             className="relative flex items-center justify-center group overflow-visible"
+            aria-label={company.name}
           >
             {/* Selection indicator pill */}
             <div
@@ -144,7 +144,7 @@ function SortableCompanyItem({
                 <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 z-10 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-background" />
               )}
             </div>
-          </a>
+          </button>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
           <p>{company.name}</p>
