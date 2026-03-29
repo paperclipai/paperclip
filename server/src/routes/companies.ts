@@ -397,7 +397,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       companyId,
       scopeType: "company",
       scopeId: companyId,
-    });
+    }, "Cancelled due to manual company pause");
     await logActivity(db, {
       companyId,
       actorType: "user",
@@ -416,7 +416,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
     const company = await svc.resume(companyId);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
+      const existing = await svc.getById(companyId);
+      if (!existing) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      res.status(409).json({
+        error: "Cannot resume: company is paused by budget enforcement. Adjust the budget to resume.",
+      });
       return;
     }
     await logActivity(db, {
