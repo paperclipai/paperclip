@@ -12,6 +12,11 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import {
+  defaultProjectWorkspaceIdForProject,
+  projectWorkspaceOptionLabel,
+  selectedProjectWorkspaceForProject,
+} from "../lib/project-workspaces";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { StatusIcon } from "./StatusIcon";
@@ -29,17 +34,6 @@ const EXECUTION_WORKSPACE_OPTIONS = [
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
-
-function defaultProjectWorkspaceIdForProject(project: {
-  workspaces?: Array<{ id: string; isPrimary: boolean }>;
-  executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null;
-} | null | undefined) {
-  if (!project) return null;
-  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
-    ?? project.workspaces?.[0]?.id
-    ?? null;
-}
 
 function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
   const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
@@ -280,6 +274,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const selectedProjectWorkspace = selectedProjectWorkspaceForProject(currentProject, issue.projectWorkspaceId);
   const { data: reusableExecutionWorkspaces } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(companyId!, {
       projectId: issue.projectId ?? undefined,
@@ -681,8 +676,62 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
-        {currentProjectSupportsExecutionWorkspace && (
+        {currentProject && (
           <PropertyRow label="Workspace">
+            <div className="w-full space-y-2">
+              {currentProject.workspaces.length > 1 && (
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={issue.projectWorkspaceId ?? selectedProjectWorkspace?.id ?? ""}
+                  onChange={(e) => {
+                    const nextProjectWorkspaceId = e.target.value || null;
+                    const resetExecutionWorkspace = issue.executionWorkspacePreference === "reuse_existing";
+                    const defaultMode = defaultExecutionWorkspaceModeForProject(currentProject);
+                    onUpdate({
+                      projectWorkspaceId: nextProjectWorkspaceId,
+                      executionWorkspaceId: resetExecutionWorkspace ? null : issue.executionWorkspaceId,
+                      ...(resetExecutionWorkspace
+                        ? {
+                            executionWorkspacePreference: defaultMode,
+                            executionWorkspaceSettings: currentProjectExecutionWorkspacePolicy?.enabled
+                              ? { mode: defaultMode }
+                              : null,
+                          }
+                        : {}),
+                    });
+                  }}
+                >
+                  {currentProject.workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {projectWorkspaceOptionLabel(workspace)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {selectedProjectWorkspace ? (
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <div style={{ overflowWrap: "anywhere" }}>
+                    Base: <BreakablePath text={selectedProjectWorkspace.name} />
+                    {selectedProjectWorkspace.isPrimary ? " · primary" : ""}
+                  </div>
+                  {selectedProjectWorkspace.repoUrl && (
+                    <CopyableValue value={selectedProjectWorkspace.repoUrl} label="Repo:" mono className="text-[11px]" />
+                  )}
+                  {selectedProjectWorkspace.cwd && (
+                    <CopyableValue value={selectedProjectWorkspace.cwd} label="Path:" mono className="text-[11px]" />
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-muted-foreground">
+                  No project workspace is configured for this issue yet.
+                </div>
+              )}
+            </div>
+          </PropertyRow>
+        )}
+
+        {currentProjectSupportsExecutionWorkspace && (
+          <PropertyRow label="Execution">
             <div className="w-full space-y-2">
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -760,9 +809,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
                     <CopyableValue value={issue.currentExecutionWorkspace.repoUrl} label="Repo:" mono className="text-[11px]" />
                   )}
                 </div>
-              )}
-              {!issue.currentExecutionWorkspace && currentProject?.primaryWorkspace?.cwd && (
-                <CopyableValue value={currentProject.primaryWorkspace.cwd} mono className="text-[11px] text-muted-foreground" />
               )}
             </div>
           </PropertyRow>

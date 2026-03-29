@@ -13,6 +13,13 @@ import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import {
+  defaultProjectWorkspaceIdForProject,
+  projectWorkspaceLocation,
+  projectWorkspaceLocationLabel,
+  projectWorkspaceOptionLabel,
+  selectedProjectWorkspaceForProject,
+} from "../lib/project-workspaces";
 import { useToast } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -56,7 +63,6 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
-
 
 interface IssueDraft {
   title: string;
@@ -236,14 +242,6 @@ const EXECUTION_WORKSPACE_MODES = [
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
-
-function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
-  if (!project) return "";
-  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
-    ?? project.workspaces?.[0]?.id
-    ?? "";
-}
 
 function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
   const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
@@ -513,7 +511,7 @@ export function NewIssueDialog() {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject) ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -534,7 +532,7 @@ export function NewIssueDialog() {
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
       setProjectId(restoredProjectId);
-      setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
+      setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject) ?? "");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
@@ -550,7 +548,7 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject) ?? "");
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
@@ -754,6 +752,9 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
+  const selectedProjectWorkspace = selectedProjectWorkspaceForProject(currentProject, projectWorkspaceId);
+  const selectedProjectWorkspaceLocation = projectWorkspaceLocation(selectedProjectWorkspace);
+  const selectedProjectWorkspaceLocationLabel = projectWorkspaceLocationLabel(selectedProjectWorkspace);
   const deduplicatedReusableWorkspaces = useMemo(() => {
     const workspaces = reusableExecutionWorkspaces ?? [];
     const seen = new Map<string, typeof workspaces[number]>();
@@ -819,7 +820,7 @@ export function NewIssueDialog() {
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
-    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
+    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject) ?? "");
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
     setSelectedExecutionWorkspaceId("");
   }, [orderedProjects]);
@@ -831,7 +832,7 @@ export function NewIssueDialog() {
     const project = orderedProjects.find((entry) => entry.id === projectId);
     if (!project) return;
     executionWorkspaceDefaultProjectId.current = projectId;
-    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project));
+    setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(project) ?? "");
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(project));
     setSelectedExecutionWorkspaceId("");
   }, [newIssueOpen, orderedProjects, projectId]);
@@ -1113,6 +1114,60 @@ export function NewIssueDialog() {
             </div>
           </div>
         </div>
+
+        {currentProject && (
+          <div className="px-4 py-3 shrink-0 space-y-2">
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium">Project workspace</div>
+              <div className="text-[11px] text-muted-foreground">
+                This is the repo or local checkout the issue will execute against before any isolated workspace is created.
+              </div>
+              {currentProject.workspaces.length > 1 && (
+                <select
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  value={projectWorkspaceId}
+                  onChange={(e) => {
+                    setProjectWorkspaceId(e.target.value);
+                    setSelectedExecutionWorkspaceId("");
+                    if (executionWorkspaceMode === "reuse_existing") {
+                      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(currentProject));
+                    }
+                  }}
+                >
+                  {currentProject.workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {projectWorkspaceOptionLabel(workspace)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {selectedProjectWorkspace ? (
+                <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-[11px] text-muted-foreground space-y-1">
+                  <div className="font-medium text-foreground">
+                    {selectedProjectWorkspace.name}
+                    {selectedProjectWorkspace.isPrimary ? " · primary" : ""}
+                  </div>
+                  {selectedProjectWorkspaceLocation && selectedProjectWorkspaceLocationLabel && (
+                    <div style={{ overflowWrap: "anywhere" }}>
+                      <span className="text-muted-foreground">{selectedProjectWorkspaceLocationLabel}: </span>
+                      <span className="font-mono">{selectedProjectWorkspaceLocation}</span>
+                    </div>
+                  )}
+                  {selectedProjectWorkspace.repoUrl && selectedProjectWorkspace.cwd && (
+                    <div style={{ overflowWrap: "anywhere" }}>
+                      <span className="text-muted-foreground">Path: </span>
+                      <span className="font-mono">{selectedProjectWorkspace.cwd}</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-border/60 px-2.5 py-2 text-[11px] text-muted-foreground">
+                  No project workspace is configured yet for this project.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {currentProject && currentProjectSupportsExecutionWorkspace && (
           <div className="px-4 py-3 shrink-0 space-y-2">
