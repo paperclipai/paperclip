@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
@@ -6,6 +6,7 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { AgentActivityContext, extractToolActivity, type AgentActivity } from "./AgentActivityContext";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -460,18 +461,38 @@ function handleLiveEvent(
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
   currentActor: { userId: string | null; agentId: string | null },
+  onActivity?: (agentId: string, toolName: string, filePath: string | null) => void,
+  onRunFinished?: (agentId: string) => void,
+  lineBuffer?: Map<string, string>,
 ) {
   if (event.companyId !== expectedCompanyId) return;
 
   const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
   const payload = event.payload ?? {};
   if (event.type === "heartbeat.run.log") {
+    if (onActivity && lineBuffer) {
+      const chunk = readString(payload["chunk"]);
+      const agentId = readString(payload["agentId"]);
+      const runId = readString(payload["runId"]);
+      const stream = readString(payload["stream"]);
+      if (chunk && agentId && runId && stream === "stdout") {
+        const activity = extractToolActivity(chunk, lineBuffer, runId);
+        if (activity) {
+          onActivity(agentId, activity.toolName, activity.filePath);
+        }
+      }
+    }
     return;
   }
 
   if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     if (event.type === "heartbeat.run.status") {
+      const status = readString(payload["status"]);
+      if (status && TERMINAL_RUN_STATUSES.has(status) && onRunFinished) {
+        const agentId = readString(payload["agentId"]);
+        if (agentId) onRunFinished(agentId);
+      }
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast) gatedPushToast(gate, pushToast, "run-status", toast);
     }
@@ -503,6 +524,8 @@ function handleLiveEvent(
   }
 }
 
+const ACTIVITY_THROTTLE_MS = 800;
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -514,6 +537,34 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  // Agent activity tracking — updated from heartbeat.run.log events
+  const [agentActivity, setAgentActivity] = useState<Map<string, AgentActivity>>(new Map());
+  const agentActivityRef = useRef<Map<string, AgentActivity>>(new Map());
+  const activityLineBufferRef = useRef<Map<string, string>>(new Map());
+  const activityThrottleRef = useRef<number | null>(null);
+
+  const flushActivity = () => {
+    setAgentActivity(new Map(agentActivityRef.current));
+    activityThrottleRef.current = null;
+  };
+
+  const onActivity = (agentId: string, toolName: string, filePath: string | null) => {
+    agentActivityRef.current.set(agentId, { toolName, filePath, updatedAt: Date.now() });
+    if (activityThrottleRef.current === null) {
+      activityThrottleRef.current = window.setTimeout(flushActivity, ACTIVITY_THROTTLE_MS);
+    }
+  };
+
+  const onRunFinished = (agentId: string) => {
+    agentActivityRef.current.delete(agentId);
+    setAgentActivity(new Map(agentActivityRef.current));
+  };
+
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
+  const onRunFinishedRef = useRef(onRunFinished);
+  onRunFinishedRef.current = onRunFinished;
 
   // Store callbacks and derived values in refs so the WebSocket effect only
   // reconnects when selectedCompanyId changes — not when callback identities
@@ -568,10 +619,17 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToastRef.current, gateRef.current, {
-            userId: currentUserIdRef.current,
-            agentId: null,
-          });
+          handleLiveEvent(
+            queryClient,
+            selectedCompanyId,
+            parsed,
+            pushToastRef.current,
+            gateRef.current,
+            { userId: currentUserIdRef.current, agentId: null },
+            onActivityRef.current,
+            onRunFinishedRef.current,
+            activityLineBufferRef.current,
+          );
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -602,5 +660,18 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient, selectedCompanyId]);
 
-  return <>{children}</>;
+  // Clean up throttle timer on unmount
+  useEffect(() => {
+    return () => {
+      if (activityThrottleRef.current !== null) {
+        window.clearTimeout(activityThrottleRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <AgentActivityContext.Provider value={agentActivity}>
+      {children}
+    </AgentActivityContext.Provider>
+  );
 }

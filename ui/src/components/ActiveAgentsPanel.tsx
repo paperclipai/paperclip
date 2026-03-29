@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
 import { Identity } from "./Identity";
+import { useAgentActivity, formatActivity, toolColor, type AgentActivity } from "../context/AgentActivityContext";
 
 type FeedTone = "info" | "warn" | "error" | "assistant" | "tool";
 
@@ -195,6 +196,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const agentActivity = useAgentActivity();
   const [feedByRun, setFeedByRun] = useState<Map<string, FeedItem[]>>(new Map());
   const seenKeysRef = useRef(new Set<string>());
   const pendingByRunRef = useRef(new Map<string, string>());
@@ -394,6 +396,7 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
               feed={feedByRun.get(run.id) ?? []}
               isActive={isRunActive(run)}
+              activity={agentActivity.get(run.agentId)}
             />
           ))}
         </div>
@@ -407,11 +410,13 @@ function AgentRunCard({
   issue,
   feed,
   isActive,
+  activity,
 }: {
   run: LiveRunForIssue;
   issue?: Issue;
   feed: FeedItem[];
   isActive: boolean;
+  activity?: import("../context/AgentActivityContext").AgentActivity;
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const recent = feed.slice(-20);
@@ -433,18 +438,20 @@ function AgentRunCard({
       <div className="flex items-center justify-between px-3 py-2 border-b border-border/50">
         <div className="flex items-center gap-2 min-w-0">
           {isActive ? (
-            <span className="relative flex h-2 w-2 shrink-0">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-            </span>
+            <ActivePulseDot activity={activity} />
           ) : (
             <span className="flex h-2 w-2 shrink-0">
               <span className="inline-flex rounded-full h-2 w-2 bg-muted-foreground/40" />
             </span>
           )}
           <Identity name={run.agentName} size="sm" />
-          {isActive && (
+          {isActive && !activity && (
             <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+          )}
+          {isActive && activity && (
+            <span className={cn("text-[10px] font-medium truncate animate-pulse", toolColor(activity.toolName))}>
+              {formatActivity(activity)}
+            </span>
           )}
         </div>
         <Link
@@ -505,5 +512,28 @@ function AgentRunCard({
         ))}
       </div>
     </div>
+  );
+}
+
+const TOOL_PULSE_BG: Record<string, { outer: string; inner: string }> = {
+  Read: { outer: "bg-blue-400", inner: "bg-blue-500" },
+  Edit: { outer: "bg-amber-400", inner: "bg-amber-500" },
+  Write: { outer: "bg-amber-400", inner: "bg-amber-500" },
+  Bash: { outer: "bg-emerald-400", inner: "bg-emerald-500" },
+  Grep: { outer: "bg-cyan-400", inner: "bg-cyan-500" },
+  Glob: { outer: "bg-cyan-400", inner: "bg-cyan-500" },
+  Agent: { outer: "bg-purple-400", inner: "bg-purple-500" },
+  command_execution: { outer: "bg-emerald-400", inner: "bg-emerald-500" },
+};
+
+function ActivePulseDot({ activity }: { activity?: AgentActivity }) {
+  const colors = activity ? (TOOL_PULSE_BG[activity.toolName] ?? null) : null;
+  const outer = colors?.outer ?? "bg-blue-400";
+  const inner = colors?.inner ?? "bg-blue-500";
+  return (
+    <span className="relative flex h-2 w-2 shrink-0">
+      <span className={cn("animate-pulse absolute inline-flex h-full w-full rounded-full opacity-75", outer)} />
+      <span className={cn("relative inline-flex rounded-full h-2 w-2", inner)} />
+    </span>
   );
 }

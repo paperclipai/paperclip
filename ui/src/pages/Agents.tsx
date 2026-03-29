@@ -20,6 +20,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useAgentActivity, formatActivity, toolColor } from "../context/AgentActivityContext";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -74,6 +75,8 @@ export function Agents() {
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const switchAgentUrl = (agent: Agent) => agentSwitchUrl(location.pathname, agent);
+
+  const agentActivity = useAgentActivity();
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -226,14 +229,20 @@ export function Agents() {
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
           {filtered.map((agent) => {
+            const activity = agentActivity.get(agent.id);
             return (
               <EntityRow
                 key={agent.id}
                 title={agent.name}
-                subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+                subtitle={
+                  activity
+                    ? formatActivity(activity)
+                    : `${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`
+                }
+                subtitleClassName={activity ? cn("animate-pulse", toolColor(activity.toolName)) : undefined}
                 to={switchAgentUrl(agent)}
                 leading={
-                  <StatusDot status={agent.status} size="md" />
+                  <StatusDot status={agent.status} size="md" toolName={activity?.toolName} />
                 }
                 trailing={
                   <div className="flex items-center gap-3">
@@ -291,6 +300,7 @@ export function Agents() {
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
               currentPath={location.pathname}
+              agentActivity={agentActivity}
             />
           ))}
         </div>
@@ -317,14 +327,17 @@ function OrgTreeNode({
   agentMap,
   liveRunByAgent,
   currentPath,
+  agentActivity,
 }: {
   node: OrgNode;
   depth: number;
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
   currentPath: string;
+  agentActivity: Map<string, import("../context/AgentActivityContext").AgentActivity>;
 }) {
   const agent = agentMap.get(node.id);
+  const activity = agentActivity.get(node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -332,13 +345,19 @@ function OrgTreeNode({
         to={agent ? agentSwitchUrl(currentPath, agent) : `/agents/${node.id}/dashboard`}
         className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
       >
-        <StatusDot status={node.status} size="md" className="shrink-0" />
+        <StatusDot status={node.status} size="md" className="shrink-0" toolName={activity?.toolName} />
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>
-          <span className="text-xs text-muted-foreground ml-2">
-            {roleLabels[node.role] ?? node.role}
-            {agent?.title ? ` - ${agent.title}` : ""}
-          </span>
+          {activity ? (
+            <span className={cn("text-xs ml-2 animate-pulse", toolColor(activity.toolName))}>
+              {formatActivity(activity)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground ml-2">
+              {roleLabels[node.role] ?? node.role}
+              {agent?.title ? ` - ${agent.title}` : ""}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <span className="sm:hidden">
@@ -386,6 +405,7 @@ function OrgTreeNode({
               agentMap={agentMap}
               liveRunByAgent={liveRunByAgent}
               currentPath={currentPath}
+              agentActivity={agentActivity}
             />
           ))}
         </div>

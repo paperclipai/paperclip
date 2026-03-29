@@ -18,6 +18,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import type { Agent } from "@paperclipai/shared";
+import { useAgentActivity, formatActivity, toolColor } from "../context/AgentActivityContext";
 
 /** BFS sort: roots first (no reportsTo), then their direct reports, etc. */
 function sortByHierarchy(agents: Agent[]): Agent[] {
@@ -75,6 +76,8 @@ export function SidebarAgents() {
     return sortByHierarchy(filtered);
   }, [agents]);
 
+  const agentActivity = useAgentActivity();
+
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)/);
   const activeAgentId = agentMatch?.[1] ?? null;
 
@@ -116,6 +119,7 @@ export function SidebarAgents() {
         <div className="flex flex-col gap-0.5 mt-0.5">
           {visibleAgents.map((agent: Agent) => {
             const runCount = liveCountByAgent.get(agent.id) ?? 0;
+            const activity = agentActivity.get(agent.id);
             return (
               <NavLink
                 key={agent.id}
@@ -131,13 +135,25 @@ export function SidebarAgents() {
                 )}
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
-                <span className="flex-1 truncate">{agent.name}</span>
-                {runCount > 0 && (
+                <div className="flex-1 min-w-0">
+                  <span className="truncate block">{agent.name}</span>
+                  {activity && (
+                    <span className={cn("text-[10px] truncate block animate-pulse", toolColor(activity.toolName))}>
+                      {formatActivity(activity)}
+                    </span>
+                  )}
+                </div>
+                {runCount > 0 && !activity && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
                     <StatusDot status="running" size="sm" />
                     <span className="text-[11px] font-medium text-primary">
                       {runCount} live
                     </span>
+                  </span>
+                )}
+                {runCount > 0 && activity && (
+                  <span className="ml-auto shrink-0">
+                    <StatusDot status="running" size="sm" toolName={activity.toolName} />
                   </span>
                 )}
               </NavLink>
