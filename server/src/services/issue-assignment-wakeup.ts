@@ -28,11 +28,14 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
+  const normalizedIssueStatus = typeof input.issue.status === "string"
+    ? input.issue.status.trim().toLowerCase()
+    : "";
   if (
     !input.issue.assigneeAgentId ||
-    input.issue.status === "backlog" ||
-    input.issue.status === "done" ||
-    input.issue.status === "cancelled"
+    normalizedIssueStatus === "backlog" ||
+    normalizedIssueStatus === "done" ||
+    normalizedIssueStatus === "cancelled"
   ) return;
   if (
     input.requestedByActorType === "agent" &&
