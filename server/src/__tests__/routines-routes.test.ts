@@ -83,8 +83,13 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
   logActivity: mockLogActivity,
   routineService: () => mockRoutineService,
 }));
@@ -115,6 +120,13 @@ describe("routine routes", () => {
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
+    // Default: non-elevated agent (no CEO role, no canCreateAgents)
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId,
+      role: "engineer",
+      permissions: { canCreateAgents: false },
+    });
   });
 
   it("requires tasks:assign permission for non-admin board routine creation", async () => {
@@ -267,5 +279,97 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+  });
+
+  it("allows CEO-role agent to create a routine assigned to another agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId,
+      role: "ceo",
+      permissions: { canCreateAgents: false },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Cross-agent routine",
+        assigneeAgentId: otherAgentId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockRoutineService.create).toHaveBeenCalled();
+  });
+
+  it("allows canCreateAgents agent to create a routine assigned to another agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId,
+      role: "general",
+      permissions: { canCreateAgents: true },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Cross-agent routine",
+        assigneeAgentId: otherAgentId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockRoutineService.create).toHaveBeenCalled();
+  });
+
+  it("blocks a non-elevated agent from creating a routine assigned to another agent", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Cross-agent routine",
+        assigneeAgentId: otherAgentId,
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows CEO-role agent to PATCH a routine assigned to another agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId,
+      role: "ceo",
+      permissions: { canCreateAgents: false },
+    });
+    // Routine is assigned to otherAgentId, actor is agentId (CEO)
+    mockRoutineService.get.mockResolvedValue({ ...routine, assigneeAgentId: otherAgentId });
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ title: "Updated title" });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.update).toHaveBeenCalled();
   });
 });
