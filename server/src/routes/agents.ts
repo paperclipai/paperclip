@@ -1782,6 +1782,24 @@ export function agentRoutes(db: Db) {
       );
     }
 
+    if (Object.prototype.hasOwnProperty.call(patchData, "runtimeConfig")) {
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      const incomingRuntimeConfig = asRecord(patchData.runtimeConfig) ?? {};
+      const mergedRuntimeConfig = { ...existingRuntimeConfig };
+      for (const [key, value] of Object.entries(incomingRuntimeConfig)) {
+        const existingValue = existingRuntimeConfig[key];
+        if (
+          typeof value === "object" && value !== null && !Array.isArray(value) &&
+          typeof existingValue === "object" && existingValue !== null && !Array.isArray(existingValue)
+        ) {
+          mergedRuntimeConfig[key] = { ...existingValue as Record<string, unknown>, ...value as Record<string, unknown> };
+        } else {
+          mergedRuntimeConfig[key] = value;
+        }
+      }
+      patchData.runtimeConfig = mergedRuntimeConfig;
+    }
+
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
