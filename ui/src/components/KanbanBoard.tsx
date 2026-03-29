@@ -4,6 +4,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  TouchSensor,
   useSensor,
   useSensors,
   type DragStartEvent,
@@ -76,8 +77,10 @@ function KanbanColumn({
       </div>
       <div
         ref={setNodeRef}
-        className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors ${
-          isOver ? "bg-accent/40" : "bg-muted/20"
+        className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-all duration-200 ease-out ${
+          isOver
+            ? "bg-accent/40 ring-2 ring-primary/25 ring-inset scale-[1.01]"
+            : "bg-muted/20"
         }`}
       >
         <SortableContext
@@ -122,7 +125,7 @@ function KanbanCard({
 
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition,
+    transition: transition ?? "transform 200ms cubic-bezier(0.2, 0, 0, 1)",
   };
 
   const agentName = (id: string | null) => {
@@ -136,9 +139,18 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
-        isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      className={[
+        "rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing",
+        "transition-all duration-200 ease-out",
+        isDragging && !isOverlay
+          ? "opacity-30 scale-95 shadow-none"
+          : "",
+        isOverlay
+          ? "shadow-xl ring-2 ring-primary/30 scale-105 rotate-[1.5deg]"
+          : "hover:shadow-sm",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
@@ -189,7 +201,10 @@ export function KanbanBoard({
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 8 },
+    })
   );
 
   const columnIssues = useMemo(() => {
@@ -264,7 +279,12 @@ export function KanbanBoard({
           />
         ))}
       </div>
-      <DragOverlay>
+      <DragOverlay
+        dropAnimation={{
+          duration: 250,
+          easing: "cubic-bezier(0.2, 0, 0, 1)",
+        }}
+      >
         {activeIssue ? (
           <KanbanCard issue={activeIssue} agents={agents} isOverlay />
         ) : null}
