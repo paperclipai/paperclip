@@ -599,6 +599,7 @@ class GatewayWsClient {
   private challengePromise: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
+  private closed = false;
 
   constructor(private readonly opts: GatewayClientOptions) {
     this.challengePromise = new Promise<string>((resolve, reject) => {
@@ -611,6 +612,7 @@ class GatewayWsClient {
     buildConnectParams: (nonce: string) => Record<string, unknown>,
     timeoutMs: number,
   ): Promise<Record<string, unknown> | null> {
+    this.closed = false;
     this.ws = new WebSocket(this.opts.url, {
       headers: this.opts.headers,
       maxPayload: 25 * 1024 * 1024,
@@ -623,7 +625,14 @@ class GatewayWsClient {
     });
 
     ws.on("close", (code, reason) => {
+      this.closed = true;
       const reasonText = rawDataToString(reason);
+      const isAbnormal = code === 1006;
+      const logLevel = isAbnormal ? "stderr" : "stdout";
+      void this.opts.onLog(
+        logLevel,
+        `[openclaw-gateway] websocket closed (code=${code}): ${reasonText || "(no reason)"}${isAbnormal ? " [abnormal closure]" : ""}\n`,
+      );
       const err = new Error(`gateway closed (${code}): ${reasonText}`);
       this.failPending(err);
       this.rejectChallenge(err);
@@ -632,6 +641,9 @@ class GatewayWsClient {
     ws.on("error", (err) => {
       const message = err instanceof Error ? err.message : String(err);
       void this.opts.onLog("stderr", `[openclaw-gateway] websocket error: ${message}\n`);
+      // Mark as closed so no further writes are attempted; the 'close' event
+      // will fire after 'error' and clean up pending requests.
+      this.closed = true;
     });
 
     await withTimeout(
@@ -676,7 +688,7 @@ class GatewayWsClient {
     params: unknown,
     opts: GatewayClientRequestOptions,
   ): Promise<T> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.closed) {
       throw new Error("gateway not connected");
     }
 
@@ -706,14 +718,31 @@ class GatewayWsClient {
       });
     });
 
-    this.ws.send(payload);
+    try {
+      this.ws.send(payload);
+    } catch (sendErr) {
+      const entry = this.pending.get(id);
+      if (entry?.timer) clearTimeout(entry.timer);
+      this.pending.delete(id);
+      const message = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      throw new Error(`gateway send failed (${method}): ${message}`);
+    }
     return requestPromise;
   }
 
   close() {
+    this.closed = true;
     if (!this.ws) return;
-    this.ws.close(1000, "paperclip-complete");
+    const ws = this.ws;
     this.ws = null;
+    this.failPending(new Error("gateway client closed"));
+    try {
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        ws.close(1000, "paperclip-complete");
+      }
+    } catch {
+      // Ignore errors during close — the socket may already be destroyed.
+    }
   }
 
   private failPending(err: Error) {

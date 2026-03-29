@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import postgres from "postgres";
 
@@ -150,17 +150,32 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
 
+  // Ensure backup directory exists before creating the file stream
+  mkdirSync(opts.backupDir, { recursive: true });
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+
   try {
     await sql`SELECT 1`;
 
-    const lines: string[] = [];
-    const emit = (line: string) => lines.push(line);
+    // Stream backup output directly to file instead of accumulating in memory.
+    // This avoids the RangeError / OOM that occurs when databases exceed ~250MB,
+    // because the previous approach built a single giant string[] in memory and then
+    // joined it before writing.
+    const stream = createWriteStream(backupFile, { encoding: "utf8" });
+    const emit = (line: string) => { stream.write(line + "\n"); };
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
     };
     const emitStatementBoundary = () => {
       emit(STATEMENT_BREAKPOINT);
+    };
+    // Helper to wait for the stream to drain when back-pressure builds up
+    const drainIfNeeded = (): Promise<void> => {
+      if (stream.writableNeedDrain) {
+        return new Promise((resolve) => stream.once("drain", resolve));
+      }
+      return Promise.resolve();
     };
 
     emit("-- Paperclip database backup");
@@ -447,7 +462,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
-    // Dump data for each table
+    // Dump data for each table using cursors to avoid loading all rows into memory.
+    // This is critical for large databases (>250MB) where the previous approach of
+    // loading all rows into a JS array caused RangeError / OOM crashes.
+    const DATA_BATCH_SIZE = 5000;
     for (const { schema_name, tablename } of tables) {
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
@@ -464,21 +482,27 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
 
-      const rows = await sql.unsafe(`SELECT * FROM ${qualifiedTableName}`).values();
       const nullifiedColumns = nullifiedColumnsByTable.get(tablename) ?? new Set<string>();
-      for (const row of rows) {
-        const values = row.map((rawValue: unknown, index) => {
-          const columnName = cols[index]?.column_name;
-          const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
-          if (val === null || val === undefined) return "NULL";
-          if (typeof val === "boolean") return val ? "true" : "false";
-          if (typeof val === "number") return String(val);
-          if (val instanceof Date) return formatSqlLiteral(val.toISOString());
-          if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
-          return formatSqlLiteral(String(val));
-        });
-        emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
-      }
+
+      // Use cursor-based iteration to fetch rows in batches
+      await sql.unsafe(`SELECT * FROM ${qualifiedTableName}`).cursor(DATA_BATCH_SIZE, async (rows) => {
+        for (const row of rows) {
+          const rowValues = row as unknown[];
+          const values = rowValues.map((rawValue: unknown, index) => {
+            const columnName = cols[index]?.column_name;
+            const val = columnName && nullifiedColumns.has(columnName) ? null : rawValue;
+            if (val === null || val === undefined) return "NULL";
+            if (typeof val === "boolean") return val ? "true" : "false";
+            if (typeof val === "number") return String(val);
+            if (val instanceof Date) return formatSqlLiteral(val.toISOString());
+            if (typeof val === "object") return formatSqlLiteral(JSON.stringify(val));
+            return formatSqlLiteral(String(val));
+          });
+          emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
+        }
+        // Respect stream back-pressure between batches
+        await drainIfNeeded();
+      });
       emit("");
     }
 
@@ -503,10 +527,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    // Write the backup file
-    mkdirSync(opts.backupDir, { recursive: true });
-    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-    await writeFile(backupFile, lines.join("\n"), "utf8");
+    // Close the write stream and wait for all data to be flushed to disk
+    await new Promise<void>((resolve, reject) => {
+      stream.on("finish", resolve);
+      stream.on("error", reject);
+      stream.end();
+    });
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
@@ -516,6 +542,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       sizeBytes,
       prunedCount,
     };
+  } catch (error) {
+    // Clean up partial backup file on failure
+    try {
+      if (existsSync(backupFile)) unlinkSync(backupFile);
+    } catch { /* ignore cleanup errors */ }
+    throw error;
   } finally {
     await sql.end();
   }

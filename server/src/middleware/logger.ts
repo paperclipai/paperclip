@@ -36,9 +36,9 @@ export const logger = pino({
       level: "info",
     },
     {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
+      target: "pino/file",
+      options: { destination: logFile, mkdir: true },
+      level: "info",
     },
   ],
 }));

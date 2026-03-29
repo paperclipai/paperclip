@@ -517,6 +517,107 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("handles abnormal WebSocket close (code 1006) gracefully without crashing", async () => {
+    const server = createServer();
+    const wss = new WebSocketServer({ server });
+
+    wss.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "nonce-123" },
+        }),
+      );
+
+      socket.on("message", (raw) => {
+        const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+        const frame = JSON.parse(text) as {
+          type: string;
+          id: string;
+          method: string;
+          params?: Record<string, unknown>;
+        };
+        if (frame.type !== "req") return;
+
+        if (frame.method === "connect") {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                type: "hello-ok",
+                protocol: 3,
+                server: { version: "test", connId: "conn-1" },
+                features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
+                snapshot: { version: 1, ts: Date.now() },
+                policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+              },
+            }),
+          );
+          return;
+        }
+
+        if (frame.method === "agent") {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: {
+                runId: "run-123",
+                status: "accepted",
+                acceptedAt: Date.now(),
+              },
+            }),
+          );
+          // Simulate abnormal closure: destroy the socket without sending a
+          // close frame. This triggers a code 1006 on the client side.
+          socket.terminate();
+          return;
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Failed to resolve test server address");
+    }
+
+    const url = `ws://127.0.0.1:${(address as { port: number }).port}`;
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      // The adapter should return a failure result, NOT crash the process.
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("openclaw_gateway_request_failed");
+      expect(result.errorMessage).toContain("gateway closed (1006)");
+    } finally {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("auto-approves pairing once and retries the run", async () => {
     const gateway = await createMockGatewayServerWithPairing();
     const logs: string[] = [];
