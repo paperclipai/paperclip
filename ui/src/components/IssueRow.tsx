@@ -16,6 +16,7 @@ interface IssueRowProps {
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   trailingMeta?: ReactNode;
+  secondaryLine?: ReactNode;
   unreadState?: UnreadState | null;
   onMarkRead?: () => void;
   onArchive?: () => void;
@@ -32,6 +33,7 @@ export function IssueRow({
   mobileMeta,
   desktopTrailing,
   trailingMeta,
+  secondaryLine,
   unreadState = null,
   onMarkRead,
   onArchive,
@@ -56,8 +58,18 @@ export function IssueRow({
         {mobileLeading ?? <StatusIcon status={issue.status} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-        <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
-          {issue.title}
+        <span className="sm:order-2 sm:min-w-0 sm:flex-1">
+          <span className="line-clamp-2 text-sm sm:truncate sm:line-clamp-none">
+            {issue.title}
+            {issue.status === "blocked" && issue.needsOwnerAction && (
+              <span className="ml-1.5 inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                Needs you
+              </span>
+            )}
+          </span>
+          {secondaryLine && (
+            <span className="block truncate text-xs text-muted-foreground">{secondaryLine}</span>
+          )}
         </span>
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (

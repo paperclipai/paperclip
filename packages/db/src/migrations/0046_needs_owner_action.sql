@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "needs_owner_action" boolean DEFAULT false NOT NULL;

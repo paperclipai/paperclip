@@ -12,14 +12,18 @@ function statusLabel(status: string): string {
 
 interface StatusIconProps {
   status: string;
+  needsOwnerAction?: boolean;
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({ status, needsOwnerAction, onChange, className, showLabel }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
+  const isOwnerBlocked = status === "blocked" && needsOwnerAction;
+  const colorClass = isOwnerBlocked
+    ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
+    : (issueStatusIcon[status] ?? issueStatusIconDefault);
   const isDone = status === "done";
 
   const circle = (
@@ -33,6 +37,9 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
     >
       {isDone && (
         <span className="absolute inset-0 m-auto h-2 w-2 rounded-full bg-current" />
+      )}
+      {isOwnerBlocked && (
+        <span className="absolute inset-0 flex items-center justify-center text-[10px] leading-none">👤</span>
       )}
     </span>
   );

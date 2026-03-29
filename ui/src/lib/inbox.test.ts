@@ -143,6 +143,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     createdByUserId: null,
     issueNumber: 1,
     identifier: `PAP-${id}`,
+    needsOwnerAction: false,
     requestDepth: 0,
     billingCode: null,
     assigneeAdapterOverrides: null,
