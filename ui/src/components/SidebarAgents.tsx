@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, Link, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Play, Plus } from "lucide-react";
+import { ChevronRight, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -9,7 +9,7 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentSwitchUrl } from "../lib/utils";
-import { SidebarNavItem } from "./SidebarNavItem";
+
 import { AgentIcon } from "./AgentIconPicker";
 import { StatusDot } from "./StatusDot";
 import {
@@ -159,7 +159,6 @@ export function SidebarAgents() {
               </NavLink>
             );
           })}
-          <SidebarNavItem to="/runs" label="Runs" icon={Play} />
         </div>
       </CollapsibleContent>
     </Collapsible>
