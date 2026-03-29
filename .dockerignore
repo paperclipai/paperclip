@@ -8,3 +8,12 @@ coverage
 data
 tmp
 *.log
+.env
+.env.*
+!.env.example
+.vscode
+.idea
+*.tgz
+dist
+docs
+doc
