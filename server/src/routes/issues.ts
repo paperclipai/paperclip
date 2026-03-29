@@ -161,6 +161,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return true;
   }
 
+  async function cancelStaleExecutionRun(input: {
+    runId: string | null | undefined;
+    issueId: string;
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    source: "issue.update" | "issue.release";
+  }) {
+    const runId = input.runId?.trim();
+    if (!runId) return null;
+
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.companyId !== input.companyId) return null;
+    if (run.status !== "queued" && run.status !== "running") return null;
+
+    const cancelled = await heartbeat.cancelRun(run.id, { suppressDeferredPromotion: true });
+    if (!cancelled) return null;
+
+    await logActivity(db, {
+      companyId: cancelled.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "heartbeat.cancelled",
+      entityType: "heartbeat_run",
+      entityId: cancelled.id,
+      details: {
+        agentId: cancelled.agentId,
+        source: input.source,
+        issueId: input.issueId,
+      },
+    });
+
+    return cancelled;
+  }
+
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
@@ -962,6 +998,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
     }
 
+    const statusLeavesInProgress = req.body.status !== undefined && req.body.status !== "in_progress";
+    if (existing.executionRunId && existing.executionRunId !== actor.runId && (assigneeWillChange || statusLeavesInProgress)) {
+      await cancelStaleExecutionRun({
+        runId: existing.executionRunId,
+        issueId: issue.id,
+        companyId: issue.companyId,
+        actor,
+        source: "issue.update",
+      }).catch((err) =>
+        logger.warn({ err, issueId: issue.id, runId: existing.executionRunId }, "failed to cancel stale execution run"));
+    }
+
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};
     for (const key of Object.keys(updateFields)) {
@@ -1216,11 +1264,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
+    let allowAssigneeOverride = false;
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      const actorAgent = await agentsSvc.getById(req.actor.agentId);
+      allowAssigneeOverride = Boolean(
+        actorAgent &&
+        actorAgent.companyId === existing.companyId &&
+        canCreateAgentsLegacy(actorAgent),
+      );
+    }
 
     const released = await svc.release(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
       actorRunId,
+      { allowAssigneeOverride },
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });
@@ -1238,6 +1296,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityType: "issue",
       entityId: released.id,
     });
+
+    if (existing.executionRunId && existing.executionRunId !== actor.runId) {
+      await cancelStaleExecutionRun({
+        runId: existing.executionRunId,
+        issueId: released.id,
+        companyId: released.companyId,
+        actor,
+        source: "issue.release",
+      }).catch((err) =>
+        logger.warn({ err, issueId: released.id, runId: existing.executionRunId }, "failed to cancel stale execution run on release"));
+    }
 
     res.json(released);
   });

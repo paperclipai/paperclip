@@ -12,13 +12,15 @@ dry_run=false
 skip_verify=false
 print_version_only=false
 tag_name=""
+candidate_ref=""
+verification_report_file=""
 
 cleanup_on_exit=false
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version]
+  ./scripts/release.sh <canary|stable> [--date YYYY-MM-DD] [--candidate-ref <git-ref>] [--verification-report-file <path>] [--dry-run] [--skip-verify] [--print-version]
 
 Examples:
   ./scripts/release.sh canary
@@ -26,6 +28,7 @@ Examples:
   ./scripts/release.sh stable
   ./scripts/release.sh stable --date 2026-03-17 --dry-run
   ./scripts/release.sh stable --date 2026-03-18 --print-version
+  ./scripts/release.sh canary --candidate-ref origin/master
 
 Notes:
   - Stable versions use YYYY.MDD.P, where M is the UTC month, DD is the
@@ -96,6 +99,16 @@ while [ $# -gt 0 ]; do
       [ $# -gt 0 ] || release_fail "--date requires YYYY-MM-DD."
       release_date="$1"
       ;;
+    --candidate-ref)
+      shift
+      [ $# -gt 0 ] || release_fail "--candidate-ref requires a git ref or commit."
+      candidate_ref="$1"
+      ;;
+    --verification-report-file)
+      shift
+      [ $# -gt 0 ] || release_fail "--verification-report-file requires a path."
+      verification_report_file="$1"
+      ;;
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
@@ -123,6 +136,8 @@ CURRENT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 LAST_STABLE_TAG="$(get_last_stable_tag)"
 CURRENT_STABLE_VERSION="$(get_current_stable_version)"
 RELEASE_DATE="${release_date:-$(utc_date_iso)}"
+VERIFICATION_REF="${candidate_ref:-$CURRENT_SHA}"
+VERIFICATION_REPORT_FILE="${verification_report_file:-$REPO_ROOT/report/release-verification-substrate.json}"
 
 PUBLIC_PACKAGE_INFO="$(list_public_package_info)"
 PUBLIC_PACKAGE_NAMES=()
@@ -184,6 +199,8 @@ release_info "  Source commit: $CURRENT_SHA"
 release_info "  Last stable tag: ${LAST_STABLE_TAG:-<none>}"
 release_info "  Current stable version: $CURRENT_STABLE_VERSION"
 release_info "  Release date (UTC): $RELEASE_DATE"
+release_info "  Verification candidate ref: $VERIFICATION_REF"
+release_info "  Verification report file: $VERIFICATION_REPORT_FILE"
 release_info "  Target stable version: $TARGET_STABLE_VERSION"
 if [ "$channel" = "canary" ]; then
   release_info "  Canary version: $TARGET_PUBLISH_VERSION"
@@ -201,10 +218,14 @@ set_cleanup_trap
 if [ "$skip_verify" = false ]; then
   release_info ""
   release_info "==> Step 1/7: Verification gate..."
-  cd "$REPO_ROOT"
-  pnpm -r typecheck
-  pnpm test:run
-  pnpm build
+  node "$REPO_ROOT/scripts/candidate-gate-runner.mjs" \
+    --repo-root "$REPO_ROOT" \
+    --candidate-ref "$VERIFICATION_REF" \
+    --report-file "$VERIFICATION_REPORT_FILE" \
+    --command "pnpm -r typecheck" \
+    --command "pnpm test:run" \
+    --command "pnpm build"
+  release_info "  ✓ Verification report: $VERIFICATION_REPORT_FILE"
 else
   release_info ""
   release_info "==> Step 1/7: Verification gate skipped (--skip-verify)"

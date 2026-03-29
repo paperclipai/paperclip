@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -151,6 +152,7 @@ async function importServerEntry(): Promise<StartedServer> {
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const devEntry = path.resolve(projectRoot, "server/src/index.ts");
   if (fs.existsSync(devEntry)) {
+    ensureMonorepoBuildDeps(projectRoot);
     maybeEnableUiDevMiddleware(devEntry);
     const mod = await import(pathToFileURL(devEntry).href);
     return await startServerFromModule(mod, devEntry);
@@ -174,6 +176,25 @@ async function importServerEntry(): Promise<StartedServer> {
       `Paperclip server failed to start.\n` +
         `${formatError(err)}`,
     );
+  }
+}
+
+function ensureMonorepoBuildDeps(projectRoot: string): void {
+  const ensureScriptPath = path.join(projectRoot, "scripts/ensure-plugin-build-deps.mjs");
+  if (!fs.existsSync(ensureScriptPath)) return;
+
+  const result = spawnSync(process.execPath, [ensureScriptPath], {
+    cwd: projectRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error("Failed to prepare local workspace build dependencies.");
   }
 }
 
