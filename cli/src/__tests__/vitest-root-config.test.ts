@@ -24,7 +24,7 @@ describe("vitest root config resolver", () => {
 
     const sourceRoot = resolveVitestSourceRoot({
       repoRoot: root,
-      fileExists: (candidate) => existing.has(candidate),
+      fileExists: (candidate: string) => existing.has(candidate),
     });
 
     expect(sourceRoot).toBe("/repo");
@@ -36,7 +36,7 @@ describe("vitest root config resolver", () => {
 
     const context = resolveVitestRootConfigContext({
       repoRoot: root,
-      fileExists: (candidate) => existing.has(candidate),
+      fileExists: (candidate: string) => existing.has(candidate),
     });
 
     expect(context.projects).toEqual([
@@ -63,7 +63,7 @@ describe("vitest root config resolver", () => {
     expect(() =>
       resolveVitestSourceRoot({
         repoRoot: root,
-        fileExists: (candidate) => existing.has(candidate),
+        fileExists: (candidate: string) => existing.has(candidate),
       }))
       .toThrow("Missing workspace manifests");
   });
@@ -78,7 +78,7 @@ describe("vitest root config resolver", () => {
     expect(() =>
       resolveVitestRootConfigContext({
         repoRoot: root,
-        fileExists: (candidate) => existing.has(candidate),
+        fileExists: (candidate: string) => existing.has(candidate),
       }))
       .toThrow("paperclip-orginal");
   });

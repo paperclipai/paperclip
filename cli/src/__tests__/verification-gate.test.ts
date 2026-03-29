@@ -33,8 +33,8 @@ describe("verification gate preflight", () => {
     const result = evaluateRootGateSafety({
       repoRoot: "/repo",
       gitStatusPorcelain: " M server/src/routes/authz.ts\n?? scratch.txt\n",
-      fileExists: (candidatePath) => existingPaths.has(candidatePath),
-      directoryExists: (candidatePath) => candidatePath === "/repo/paperclip-orginal",
+      fileExists: (candidatePath: string) => existingPaths.has(candidatePath),
+      directoryExists: (candidatePath: string) => candidatePath === "/repo/paperclip-orginal",
     });
 
     expect(result.ok).toBe(false);
@@ -61,7 +61,7 @@ describe("verification gate preflight", () => {
     const result = evaluateRootGateSafety({
       repoRoot: "/repo",
       gitStatusPorcelain: "",
-      fileExists: (candidatePath) => existingPaths.has(candidatePath),
+      fileExists: (candidatePath: string) => existingPaths.has(candidatePath),
       directoryExists: () => false,
     });
 
