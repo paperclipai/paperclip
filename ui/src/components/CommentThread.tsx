@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import type { IssueComment, Agent } from "@paperclipai/shared";
+import type { IssueComment, Agent, ActivityEvent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, ChevronDown, Copy, Paperclip } from "lucide-react";
+import { Activity as ActivityIcon, Check, ChevronDown, Copy, Paperclip } from "lucide-react";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { runMetrics, runSummary } from "../lib/run-utils";
@@ -15,7 +15,7 @@ import { RunLogViewer } from "./RunLogViewer";
 import { StatusBadge } from "./StatusBadge";
 import { StatusIcon } from "./StatusIcon";
 import { AgentIcon } from "./AgentIconPicker";
-import { cn, formatDateTime, formatTokens } from "../lib/utils";
+import { cn, formatDateTime, formatTokens, relativeTime } from "../lib/utils";
 import { invocationSourceLabel, invocationSourceBadge, invocationSourceBadgeDefault } from "../lib/status-colors";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -40,6 +40,7 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
+  activityEvents?: ActivityEvent[];
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -122,7 +123,72 @@ function CopyMarkdownButton({ text }: { text: string }) {
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
-  | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
+  | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem }
+  | { kind: "activity"; id: string; createdAtMs: number; event: ActivityEvent };
+
+const ACTIVITY_ACTION_LABELS: Record<string, string> = {
+  "issue.created": "created the issue",
+  "issue.updated": "updated the issue",
+  "issue.checked_out": "checked out the issue",
+  "issue.released": "released the issue",
+  "issue.comment_added": "added a comment",
+  "issue.attachment_added": "added an attachment",
+  "issue.attachment_removed": "removed an attachment",
+  "issue.deleted": "deleted the issue",
+  "agent.created": "created an agent",
+  "agent.updated": "updated the agent",
+  "agent.paused": "paused the agent",
+  "agent.resumed": "resumed the agent",
+  "agent.terminated": "terminated the agent",
+  "heartbeat.invoked": "invoked a heartbeat",
+  "heartbeat.cancelled": "cancelled a heartbeat",
+  "approval.created": "requested approval",
+  "approval.approved": "approved",
+  "approval.rejected": "rejected",
+  "review_bundle.saved": "saved a review bundle draft",
+  "review_bundle.submitted": "submitted a review bundle",
+  "review_bundle.approved": "approved a review bundle",
+  "review_bundle.changes_requested": "requested review changes",
+  "issue.done_blocked_by_review_bundle": "attempted to mark done without approved review bundle",
+};
+
+function humanizeValue(value: unknown): string {
+  if (typeof value !== "string") return String(value ?? "none");
+  return value.replace(/_/g, " ");
+}
+
+function formatActivityAction(action: string, details?: Record<string, unknown> | null): string {
+  if (action === "issue.updated" && details) {
+    const previous = (details._previous ?? {}) as Record<string, unknown>;
+    const parts: string[] = [];
+    if (details.status !== undefined) {
+      const from = previous.status;
+      parts.push(
+        from
+          ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
+          : `changed status to ${humanizeValue(details.status)}`
+      );
+    }
+    if (details.priority !== undefined) {
+      const from = previous.priority;
+      parts.push(
+        from
+          ? `changed priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
+          : `changed priority to ${humanizeValue(details.priority)}`
+      );
+    }
+    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
+      parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the issue" : "unassigned the issue");
+    }
+    if (details.title !== undefined) parts.push("updated the title");
+    if (details.description !== undefined) parts.push("updated the description");
+    if (parts.length > 0) return parts.join(", ");
+  }
+  return ACTIVITY_ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
+}
+
+// Activity events that duplicate a comment or run entry and should be hidden from the timeline
+const REDUNDANT_ACTIVITY_ACTIONS = new Set(["issue.comment_added", "heartbeat.invoked"]);
 
 /** Inline expandable run card with lazy-loaded transcript */
 function ExpandableRunCard({ run, agentMap }: { run: LinkedRunItem; agentMap?: Map<string, Agent> }) {
@@ -252,6 +318,27 @@ const TimelineList = memo(function TimelineList({
           );
         }
 
+        if (item.kind === "activity") {
+          const evt = item.event;
+          const actorName =
+            evt.actorType === "agent"
+              ? agentMap?.get(evt.actorId)?.name ?? evt.actorId.slice(0, 8)
+              : evt.actorType === "system"
+                ? "System"
+                : "Board";
+          return (
+            <div
+              key={`activity:${evt.id}`}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs text-muted-foreground"
+            >
+              <ActivityIcon className="h-3 w-3 shrink-0" />
+              <Identity name={actorName} size="xs" />
+              <span>{formatActivityAction(evt.action, evt.details)}</span>
+              <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+            </div>
+          );
+        }
+
         const comment = item.comment;
         const isHighlighted = highlightCommentId === comment.id;
         return (
@@ -308,6 +395,7 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   linkedRuns = [],
+  activityEvents = [],
   onAdd,
   issueStatus,
   agentMap,
@@ -348,12 +436,20 @@ export function CommentThread({
       createdAtMs: new Date(run.startedAt ?? run.createdAt).getTime(),
       run,
     }));
-    return [...commentItems, ...runItems].sort((a, b) => {
+    const activityItems: TimelineItem[] = activityEvents
+      .filter((evt) => !REDUNDANT_ACTIVITY_ACTIONS.has(evt.action))
+      .map((evt) => ({
+        kind: "activity",
+        id: evt.id,
+        createdAtMs: new Date(evt.createdAt).getTime(),
+        event: evt,
+      }));
+    return [...commentItems, ...runItems, ...activityItems].sort((a, b) => {
       if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
       if (a.kind === b.kind) return a.id.localeCompare(b.id);
       return a.kind === "comment" ? -1 : 1;
     });
-  }, [comments, linkedRuns]);
+  }, [comments, linkedRuns, activityEvents]);
 
   // Build mention options from agent map (exclude terminated agents)
   const mentions = useMemo<MentionOption[]>(() => {

@@ -38,7 +38,6 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Activity as ActivityIcon,
   ChevronDown,
   ChevronRight,
   EyeOff,
@@ -56,44 +55,12 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment, IssueReviewBundle } from "@paperclipai/shared";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 };
-
-const ACTION_LABELS: Record<string, string> = {
-  "issue.created": "created the issue",
-  "issue.updated": "updated the issue",
-  "issue.checked_out": "checked out the issue",
-  "issue.released": "released the issue",
-  "issue.comment_added": "added a comment",
-  "issue.attachment_added": "added an attachment",
-  "issue.attachment_removed": "removed an attachment",
-  "issue.deleted": "deleted the issue",
-  "agent.created": "created an agent",
-  "agent.updated": "updated the agent",
-  "agent.paused": "paused the agent",
-  "agent.resumed": "resumed the agent",
-  "agent.terminated": "terminated the agent",
-  "heartbeat.invoked": "invoked a heartbeat",
-  "heartbeat.cancelled": "cancelled a heartbeat",
-  "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-  "review_bundle.saved": "saved a review bundle draft",
-  "review_bundle.submitted": "submitted a review bundle",
-  "review_bundle.approved": "approved a review bundle",
-  "review_bundle.changes_requested": "requested review changes",
-  "issue.done_blocked_by_review_bundle": "attempted to mark done without approved review bundle",
-};
-
-function humanizeValue(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "none");
-  return value.replace(/_/g, " ");
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -114,53 +81,6 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + "\u2026";
 }
 
-function formatAction(action: string, details?: Record<string, unknown> | null): string {
-  if (action === "issue.updated" && details) {
-    const previous = (details._previous ?? {}) as Record<string, unknown>;
-    const parts: string[] = [];
-
-    if (details.status !== undefined) {
-      const from = previous.status;
-      parts.push(
-        from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`
-      );
-    }
-    if (details.priority !== undefined) {
-      const from = previous.priority;
-      parts.push(
-        from
-          ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-          : `changed the priority to ${humanizeValue(details.priority)}`
-      );
-    }
-    if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-      parts.push(
-        details.assigneeAgentId || details.assigneeUserId
-          ? "assigned the issue"
-          : "unassigned the issue",
-      );
-    }
-    if (details.title !== undefined) parts.push("updated the title");
-    if (details.description !== undefined) parts.push("updated the description");
-
-    if (parts.length > 0) return parts.join(", ");
-  }
-  return ACTION_LABELS[action] ?? action.replace(/[._]/g, " ");
-}
-
-function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<string, Agent> }) {
-  const id = evt.actorId;
-  if (evt.actorType === "agent") {
-    const agent = agentMap.get(id);
-    return <Identity name={agent?.name ?? id.slice(0, 8)} size="sm" />;
-  }
-  if (evt.actorType === "system") return <Identity name="System" size="sm" />;
-  if (evt.actorType === "user") return <Identity name="Board" size="sm" />;
-  return <Identity name={id || "Unknown"} size="sm" />;
-}
-
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
@@ -172,7 +92,6 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [topTab, setTopTab] = useState("discussion");
-  const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
     linkedIssues: false,
     reviewBundle: false,
@@ -975,6 +894,13 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Discussion
           </TabsTrigger>
+          <TabsTrigger value="subissues" className="gap-1.5">
+            <ListTree className="h-3.5 w-3.5" />
+            Sub-issues
+            {childIssues.length > 0 && (
+              <span className="ml-0.5 text-[10px] tabular-nums text-muted-foreground">({childIssues.length})</span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="details" className="gap-1.5">
             <Info className="h-3.5 w-3.5" />
             Details
@@ -991,114 +917,78 @@ export function IssueDetail() {
           </TabsTrigger>
         </TabsList>
 
-        {/* --- Discussion tab --- */}
+        {/* --- Discussion tab (merged comments + activity timeline) --- */}
         <TabsContent value="discussion" className="space-y-3">
-          <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-            <TabsList variant="line" className="w-full justify-start gap-1">
-              <TabsTrigger value="comments" className="gap-1.5 text-xs">
-                <MessageSquare className="h-3 w-3" />
-                Comments
-              </TabsTrigger>
-              <TabsTrigger value="subissues" className="gap-1.5 text-xs">
-                <ListTree className="h-3 w-3" />
-                Sub-issues
-                {childIssues.length > 0 && (
-                  <span className="ml-0.5 text-[10px] tabular-nums text-muted-foreground">({childIssues.length})</span>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="activity" className="gap-1.5 text-xs">
-                <ActivityIcon className="h-3 w-3" />
-                Activity
-              </TabsTrigger>
-            </TabsList>
+          <CommentThread
+            comments={commentsWithRunMeta}
+            linkedRuns={timelineRuns}
+            issueStatus={issue.status}
+            agentMap={agentMap}
+            draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+            enableReassign
+            reassignOptions={commentReassignOptions}
+            currentAssigneeValue={currentAssigneeValue}
+            mentions={mentionOptions}
+            activityEvents={activity}
+            onStatusChange={(status) => updateIssue.mutate({ status })}
+            onAdd={async (body, reopen, reassignment) => {
+              if (reassignment) {
+                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                return;
+              }
+              await addComment.mutateAsync({ body, reopen });
+            }}
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onAttachImage={async (file) => {
+              await uploadAttachment.mutateAsync(file);
+            }}
+            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+          />
+        </TabsContent>
 
-            <TabsContent value="comments">
-              <CommentThread
-                comments={commentsWithRunMeta}
-                linkedRuns={timelineRuns}
-                issueStatus={issue.status}
-                agentMap={agentMap}
-                draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-                enableReassign
-                reassignOptions={commentReassignOptions}
-                currentAssigneeValue={currentAssigneeValue}
-                mentions={mentionOptions}
-                onStatusChange={(status) => updateIssue.mutate({ status })}
-                onAdd={async (body, reopen, reassignment) => {
-                  if (reassignment) {
-                    await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
-                    return;
-                  }
-                  await addComment.mutateAsync({ body, reopen });
-                }}
-                imageUploadHandler={async (file) => {
-                  const attachment = await uploadAttachment.mutateAsync(file);
-                  return attachment.contentPath;
-                }}
-                onAttachImage={async (file) => {
-                  await uploadAttachment.mutateAsync(file);
-                }}
-                liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
-              />
-            </TabsContent>
-
-            <TabsContent value="subissues">
-              {childIssues.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No sub-issues.</p>
-              ) : (
-                <div className="border border-border rounded-lg divide-y divide-border">
-                  {childIssues.map((child) => (
-                    <div
-                      key={child.id}
-                      className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+        {/* --- Sub-issues tab --- */}
+        <TabsContent value="subissues" className="space-y-3">
+          {childIssues.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No sub-issues.</p>
+          ) : (
+            <div className="border border-border rounded-lg divide-y divide-border">
+              {childIssues.map((child) => (
+                <div
+                  key={child.id}
+                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <StatusIcon
+                        status={child.status}
+                        onChange={(status) => updateChildIssue.mutate({ childId: child.id, data: { status } })}
+                      />
+                    </span>
+                    <PriorityIcon priority={child.priority} />
+                    <Link
+                      to={`/issues/${child.identifier ?? child.id}`}
+                      state={location.state}
+                      className="flex items-center gap-2 min-w-0 hover:underline"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span onClick={(e) => e.stopPropagation()}>
-                          <StatusIcon
-                            status={child.status}
-                            onChange={(status) => updateChildIssue.mutate({ childId: child.id, data: { status } })}
-                          />
-                        </span>
-                        <PriorityIcon priority={child.priority} />
-                        <Link
-                          to={`/issues/${child.identifier ?? child.id}`}
-                          state={location.state}
-                          className="flex items-center gap-2 min-w-0 hover:underline"
-                        >
-                          <span className="font-mono text-muted-foreground shrink-0">
-                            {child.identifier ?? child.id.slice(0, 8)}
-                          </span>
-                          <span className="truncate">{child.title}</span>
-                        </Link>
-                      </div>
-                      {child.assigneeAgentId && (() => {
-                        const name = agentMap.get(child.assigneeAgentId)?.name;
-                        return name
-                          ? <Identity name={name} size="sm" />
-                          : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                      })()}
-                    </div>
-                  ))}
+                      <span className="font-mono text-muted-foreground shrink-0">
+                        {child.identifier ?? child.id.slice(0, 8)}
+                      </span>
+                      <span className="truncate">{child.title}</span>
+                    </Link>
+                  </div>
+                  {child.assigneeAgentId && (() => {
+                    const name = agentMap.get(child.assigneeAgentId)?.name;
+                    return name
+                      ? <Identity name={name} size="sm" />
+                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                  })()}
                 </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="activity">
-              {!activity || activity.length === 0 ? (
-                <p className="text-xs text-muted-foreground">No activity yet.</p>
-              ) : (
-                <div className="space-y-1.5">
-                  {activity.slice(0, 20).map((evt) => (
-                    <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <ActorIdentity evt={evt} agentMap={agentMap} />
-                      <span>{formatAction(evt.action, evt.details)}</span>
-                      <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-          </Tabs>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         {/* --- Details tab --- */}
