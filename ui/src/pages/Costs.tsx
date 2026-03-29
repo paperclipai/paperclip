@@ -2,19 +2,25 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
+  BudgetPolicyUpsertInput,
   CostByAgentModel,
   CostByBiller,
   CostByProviderModel,
+  CostBreakdownGroupBy,
+  CostBreakdownResponse,
   CostWindowSpendRow,
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, BarChart3, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { agentsApi } from "../api/agents";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { projectsApi } from "../api/projects";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { CreateBudgetPolicyForm } from "../components/CreateBudgetPolicyForm";
 import { EmptyState } from "../components/EmptyState";
 import { FinanceBillerCard } from "../components/FinanceBillerCard";
 import { FinanceKindCard } from "../components/FinanceKindCard";
@@ -151,9 +157,10 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance" | "breakdown">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
+  const [breakdownGroupBy, setBreakdownGroupBy] = useState<CostBreakdownGroupBy>("biller");
 
   const {
     preset,
@@ -199,6 +206,18 @@ export function Costs() {
     staleTime: 5_000,
   });
 
+  const { data: agentsList } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projectsList } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!selectedCompanyId,
+  });
+
   const invalidateBudgetViews = () => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
@@ -220,6 +239,12 @@ export function Costs() {
         amount: input.amount,
         windowKind: input.windowKind,
       }),
+    onSuccess: invalidateBudgetViews,
+  });
+
+  const createPolicyMutation = useMutation({
+    mutationFn: (input: BudgetPolicyUpsertInput) =>
+      budgetsApi.upsertPolicy(companyId, input),
     onSuccess: invalidateBudgetViews,
   });
 
@@ -335,6 +360,14 @@ export function Costs() {
     enabled: !!selectedCompanyId && mainTab === "providers",
     refetchInterval: 300_000,
     staleTime: 60_000,
+  });
+
+  const { data: breakdownData, isLoading: breakdownLoading, error: breakdownError } = useQuery({
+    queryKey: queryKeys.costBreakdown(companyId, breakdownGroupBy, from || undefined, to || undefined),
+    queryFn: () => costsApi.breakdown(companyId, breakdownGroupBy, from || undefined, to || undefined),
+    enabled: !!selectedCompanyId && customReady && mainTab === "breakdown",
+    refetchInterval: 30_000,
+    staleTime: 10_000,
   });
 
   const byProvider = useMemo(() => {
@@ -623,6 +656,7 @@ export function Costs() {
           <TabsTrigger value="budgets">예산</TabsTrigger>
           <TabsTrigger value="providers">제공자</TabsTrigger>
           <TabsTrigger value="billers">청구자</TabsTrigger>
+          <TabsTrigger value="breakdown">분석</TabsTrigger>
           <TabsTrigger value="finance">재무</TabsTrigger>
         </TabsList>
 
@@ -939,11 +973,27 @@ export function Costs() {
                 {budgetPolicies.length === 0 ? (
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      아직 예산 정책이 없습니다. 각 에이전트 및 프로젝트 상세 페이지에서 예산을 설정하거나, 기존 회사 월간 예산 제어를 사용하세요.
+                      아직 예산 정책이 없습니다. 아래 양식으로 새 정책을 생성하세요.
                     </CardContent>
                   </Card>
                 ) : null}
               </div>
+
+              {/* Create new policy form */}
+              <CreateBudgetPolicyForm
+                companyId={companyId}
+                agents={agentsList ?? []}
+                projects={projectsList ?? []}
+                onSubmit={(input) => createPolicyMutation.mutate(input)}
+                isSubmitting={createPolicyMutation.isPending}
+              />
+              {createPolicyMutation.isError && (
+                <p className="text-sm text-destructive">
+                  {createPolicyMutation.error instanceof Error
+                    ? createPolicyMutation.error.message
+                    : "정책 생성에 실패했습니다."}
+                </p>
+              )}
             </>
           )}
         </TabsContent>
@@ -1052,6 +1102,143 @@ export function Costs() {
                   );
                 })}
               </Tabs>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="breakdown" className="mt-4 space-y-4">
+          {showCustomPrompt ? (
+            <p className="text-sm text-muted-foreground">데이터를 불러오려면 시작일과 종료일을 선택하세요.</p>
+          ) : (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">그룹:</span>
+                {(["biller", "provider", "model", "agent"] as const).map((g) => (
+                  <Button
+                    key={g}
+                    variant={breakdownGroupBy === g ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => setBreakdownGroupBy(g)}
+                  >
+                    {g === "biller" ? "청구자" : g === "provider" ? "제공자" : g === "model" ? "모델" : "에이전트"}
+                  </Button>
+                ))}
+              </div>
+
+              {breakdownLoading ? (
+                <PageSkeleton variant="costs" />
+              ) : breakdownError ? (
+                <p className="text-sm text-destructive">{(breakdownError as Error).message}</p>
+              ) : !breakdownData || breakdownData.groups.length === 0 ? (
+                <Card>
+                  <CardContent className="px-5 py-8 text-sm text-muted-foreground">
+                    이 기간에 비용 이벤트가 없습니다.
+                  </CardContent>
+                </Card>
+              ) : (
+                <>
+                  <Card>
+                    <CardHeader className="px-5 pt-5 pb-2">
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="h-4 w-4 text-muted-foreground" />
+                        <CardTitle className="text-base">비용 분석</CardTitle>
+                      </div>
+                      <CardDescription>
+                        {breakdownGroupBy === "biller" ? "청구자" : breakdownGroupBy === "provider" ? "제공자" : breakdownGroupBy === "model" ? "모델" : "에이전트"}별
+                        비용 내역 ({breakdownData.groups.length}개 그룹)
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="px-5 pb-5 pt-2">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                              <th className="pb-2 pr-4 font-medium">
+                                {breakdownGroupBy === "biller" ? "청구자" : breakdownGroupBy === "provider" ? "제공자" : breakdownGroupBy === "model" ? "모델" : "에이전트"}
+                              </th>
+                              <th className="pb-2 px-4 text-right font-medium">비용</th>
+                              <th className="pb-2 px-4 text-right font-medium">입력 토큰</th>
+                              <th className="pb-2 px-4 text-right font-medium">출력 토큰</th>
+                              <th className="pb-2 px-4 text-right font-medium">실행 수</th>
+                              {breakdownGroupBy !== "agent" ? (
+                                <th className="pb-2 pl-4 text-right font-medium">청구 유형</th>
+                              ) : null}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {breakdownData.groups.map((group) => {
+                              const sharePct =
+                                breakdownData.totals.totalCostCents > 0
+                                  ? Math.round((group.totalCostCents / breakdownData.totals.totalCostCents) * 100)
+                                  : 0;
+                              return (
+                                <tr
+                                  key={group.key}
+                                  className="border-b border-border/50 last:border-0"
+                                >
+                                  <td className="py-2.5 pr-4">
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate font-medium max-w-[200px]">{providerDisplayName(group.key)}</span>
+                                      <span className="shrink-0 text-xs text-muted-foreground">({sharePct}%)</span>
+                                    </div>
+                                    {breakdownData.totals.totalCostCents > 0 ? (
+                                      <div className="mt-1 h-1 w-full max-w-[160px] overflow-hidden bg-muted">
+                                        <div
+                                          className="h-full bg-foreground/30"
+                                          style={{ width: `${Math.min(100, sharePct)}%` }}
+                                        />
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums font-medium">
+                                    {formatCents(group.totalCostCents)}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                    {formatTokens(group.totalInputTokens)}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                    {formatTokens(group.totalOutputTokens)}
+                                  </td>
+                                  <td className="py-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                    {group.runCount.toLocaleString()}
+                                  </td>
+                                  {breakdownGroupBy !== "agent" ? (
+                                    <td className="py-2.5 pl-4 text-right text-xs text-muted-foreground">
+                                      {group.billingType
+                                        ? group.billingType === "mixed"
+                                          ? "Mixed"
+                                          : billingTypeDisplayName(group.billingType as Parameters<typeof billingTypeDisplayName>[0]) ?? group.billingType
+                                        : "-"}
+                                    </td>
+                                  ) : null}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t border-border font-medium">
+                              <td className="pt-2.5 pr-4">합계</td>
+                              <td className="pt-2.5 px-4 text-right tabular-nums">
+                                {formatCents(breakdownData.totals.totalCostCents)}
+                              </td>
+                              <td className="pt-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                {formatTokens(breakdownData.totals.totalInputTokens)}
+                              </td>
+                              <td className="pt-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                {formatTokens(breakdownData.totals.totalOutputTokens)}
+                              </td>
+                              <td className="pt-2.5 px-4 text-right tabular-nums text-muted-foreground">
+                                {breakdownData.totals.runCount.toLocaleString()}
+                              </td>
+                              {breakdownGroupBy !== "agent" ? <td /> : null}
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
             </>
           )}
         </TabsContent>

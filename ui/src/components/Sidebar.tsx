@@ -18,6 +18,7 @@ import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
+import { budgetsApi } from "../api/budgets";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,16 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
+
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(selectedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+  const budgetAlertCount =
+    (budgetOverview?.activeIncidents?.length ?? 0) +
+    (budgetOverview?.policies?.filter((p) => p.status === "warning" || p.status === "hard_stop").length ?? 0);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -106,7 +117,14 @@ export function Sidebar() {
 
         <SidebarSection label="회사">
           <SidebarNavItem to="/org" label="조직도" icon={Network} />
-          <SidebarNavItem to="/costs" label="비용" icon={DollarSign} />
+          <SidebarNavItem
+            to="/costs"
+            label="비용"
+            icon={DollarSign}
+            badge={budgetAlertCount > 0 ? budgetAlertCount : undefined}
+            badgeTone={budgetOverview?.activeIncidents?.some((i) => i.thresholdType === "hard") ? "danger" : "default"}
+            alert={budgetAlertCount > 0}
+          />
           <SidebarNavItem to="/activity" label="활동" icon={History} />
           <SidebarNavItem to="/company/settings" label="설정" icon={Settings} />
         </SidebarSection>

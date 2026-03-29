@@ -102,6 +102,30 @@ export interface CostWindowSpendRow {
   outputTokens: number;
 }
 
+/** a single row in the cost breakdown report, keyed by the chosen groupBy dimension */
+export interface CostBreakdownGroup {
+  key: string;
+  totalCostCents: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  runCount: number;
+  billingType?: string;
+}
+
+/** the full cost breakdown response returned by GET /costs/breakdown */
+export interface CostBreakdownResponse {
+  groups: CostBreakdownGroup[];
+  totals: {
+    totalCostCents: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    runCount: number;
+  };
+  period: { start: string; end: string };
+}
+
+export type CostBreakdownGroupBy = "biller" | "provider" | "model" | "agent";
+
 /** cost attributed to a project via heartbeat run → activity log → issue → project chain */
 export interface CostByProject {
   projectId: string | null;

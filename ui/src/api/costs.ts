@@ -6,6 +6,8 @@ import type {
   CostByAgentModel,
   CostByProject,
   CostWindowSpendRow,
+  CostBreakdownResponse,
+  CostBreakdownGroupBy,
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
@@ -43,6 +45,13 @@ export const costsApi = {
     api.get<FinanceByKind[]>(`/companies/${companyId}/costs/finance-by-kind${dateParams(from, to)}`),
   financeEvents: (companyId: string, from?: string, to?: string, limit: number = 100) =>
     api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
+  breakdown: (companyId: string, groupBy: CostBreakdownGroupBy, from?: string, to?: string) => {
+    const params = new URLSearchParams();
+    params.set("groupBy", groupBy);
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    return api.get<CostBreakdownResponse>(`/companies/${companyId}/costs/breakdown?${params.toString()}`);
+  },
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>

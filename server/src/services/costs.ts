@@ -311,6 +311,88 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .orderBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model);
     },
 
+    breakdown: async (
+      companyId: string,
+      groupBy: "biller" | "provider" | "model" | "agent",
+      range?: CostDateRange,
+    ) => {
+      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const groupColumn =
+        groupBy === "biller"
+          ? costEvents.biller
+          : groupBy === "provider"
+            ? costEvents.provider
+            : groupBy === "model"
+              ? costEvents.model
+              : costEvents.agentId;
+
+      const keyExpr =
+        groupBy === "agent"
+          ? sql<string>`coalesce(${agents.name}, ${costEvents.agentId}::text)`
+          : groupColumn;
+
+      const baseQuery = db
+        .select({
+          key: keyExpr,
+          totalCostCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          totalInputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          totalOutputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+          billingType: sql<string>`case when count(distinct ${costEvents.billingType}) = 1 then min(${costEvents.billingType}) else 'mixed' end`,
+        })
+        .from(costEvents);
+
+      const query =
+        groupBy === "agent"
+          ? baseQuery.leftJoin(agents, eq(costEvents.agentId, agents.id))
+          : baseQuery;
+
+      const groupByColumns =
+        groupBy === "agent"
+          ? [costEvents.agentId, agents.name]
+          : [groupColumn];
+
+      const groups = await query
+        .where(and(...conditions))
+        .groupBy(...groupByColumns)
+        .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      // compute totals
+      const [totalsRow] = await db
+        .select({
+          totalCostCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          totalInputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+          totalOutputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+          runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+        })
+        .from(costEvents)
+        .where(and(...conditions));
+
+      return {
+        groups: groups.map((g) => ({
+          key: String(g.key ?? "unknown"),
+          totalCostCents: Number(g.totalCostCents),
+          totalInputTokens: Number(g.totalInputTokens),
+          totalOutputTokens: Number(g.totalOutputTokens),
+          runCount: Number(g.runCount),
+          billingType: g.billingType ?? undefined,
+        })),
+        totals: {
+          totalCostCents: Number(totalsRow?.totalCostCents ?? 0),
+          totalInputTokens: Number(totalsRow?.totalInputTokens ?? 0),
+          totalOutputTokens: Number(totalsRow?.totalOutputTokens ?? 0),
+          runCount: Number(totalsRow?.runCount ?? 0),
+        },
+        period: {
+          start: range?.from?.toISOString() ?? "",
+          end: range?.to?.toISOString() ?? "",
+        },
+      };
+    },
+
     byProject: async (companyId: string, range?: CostDateRange) => {
       const issueIdAsText = sql<string>`${issues.id}::text`;
       const runProjectLinks = db

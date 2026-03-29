@@ -128,6 +128,19 @@ export function costRoutes(db: Db) {
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/costs/breakdown", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const range = parseDateRange(req.query);
+    const groupByRaw = (req.query.groupBy as string) ?? "biller";
+    const validGroupBy = ["biller", "provider", "model", "agent"] as const;
+    if (!validGroupBy.includes(groupByRaw as typeof validGroupBy[number])) {
+      throw badRequest(`invalid 'groupBy' value, must be one of: ${validGroupBy.join(", ")}`);
+    }
+    const result = await costs.breakdown(companyId, groupByRaw as typeof validGroupBy[number], range);
+    res.json(result);
+  });
+
   router.get("/companies/:companyId/costs/by-agent-model", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

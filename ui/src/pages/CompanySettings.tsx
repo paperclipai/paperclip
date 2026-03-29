@@ -1,13 +1,22 @@
-import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@/lib/router";
+import type { BudgetPolicyUpsertInput } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { agentsApi } from "../api/agents";
+import { budgetsApi } from "../api/budgets";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
+import { formatCents, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, AlertTriangle, ShieldAlert, Wallet, Plus, ChevronDown, ChevronRight } from "lucide-react";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
+import { CreateBudgetPolicyForm } from "../components/CreateBudgetPolicyForm";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -194,6 +203,66 @@ export function CompanySettings() {
       });
     }
   });
+
+  // Budget queries
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(selectedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
+  const { data: agentsList } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: projectsList } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const invalidateBudgetViews = () => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
+  };
+
+  const budgetPolicyMutation = useMutation({
+    mutationFn: (input: { scopeType: string; scopeId: string; amount: number; windowKind: string }) =>
+      budgetsApi.upsertPolicy(selectedCompanyId!, {
+        scopeType: input.scopeType as "company" | "agent" | "project",
+        scopeId: input.scopeId,
+        amount: input.amount,
+        windowKind: input.windowKind as "calendar_month_utc" | "lifetime",
+      }),
+    onSuccess: invalidateBudgetViews,
+  });
+
+  const createPolicyMutation = useMutation({
+    mutationFn: (input: BudgetPolicyUpsertInput) =>
+      budgetsApi.upsertPolicy(selectedCompanyId!, input),
+    onSuccess: invalidateBudgetViews,
+  });
+
+  const incidentMutation = useMutation({
+    mutationFn: (input: { incidentId: string; action: "keep_paused" | "raise_budget_and_resume"; amount?: number }) =>
+      budgetsApi.resolveIncident(selectedCompanyId!, input.incidentId, input),
+    onSuccess: invalidateBudgetViews,
+  });
+
+  const budgetPolicies = budgetOverview?.policies ?? [];
+  const activeBudgetIncidents = budgetOverview?.activeIncidents ?? [];
+  const budgetPoliciesByScope = useMemo(() => ({
+    company: budgetPolicies.filter((p) => p.scopeType === "company"),
+    agent: budgetPolicies.filter((p) => p.scopeType === "agent"),
+    project: budgetPolicies.filter((p) => p.scopeType === "project"),
+  }), [budgetPolicies]);
+  const [showPolicyForm, setShowPolicyForm] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -458,6 +527,147 @@ export function CompanySettings() {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Budget Policies */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+          <Wallet className="h-3.5 w-3.5" />
+          예산 정책
+        </div>
+
+        {/* Active incidents */}
+        {activeBudgetIncidents.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-red-400">
+              <ShieldAlert className="h-4 w-4" />
+              활성 인시던트 ({activeBudgetIncidents.length}건)
+            </div>
+            <div className="space-y-3">
+              {activeBudgetIncidents.map((incident) => (
+                <BudgetIncidentCard
+                  key={incident.id}
+                  incident={incident}
+                  isMutating={incidentMutation.isPending}
+                  onKeepPaused={() =>
+                    incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })
+                  }
+                  onRaiseAndResume={(amount) =>
+                    incidentMutation.mutate({
+                      incidentId: incident.id,
+                      action: "raise_budget_and_resume",
+                      amount,
+                    })
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Policy overview metrics */}
+        {budgetPolicies.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-3 text-center">
+            <div className="rounded-md border border-border px-3 py-3">
+              <div className="text-2xl font-semibold tabular-nums">{budgetPolicies.length}</div>
+              <div className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">전체 정책</div>
+            </div>
+            <div className="rounded-md border border-border px-3 py-3">
+              <div className="text-2xl font-semibold tabular-nums text-amber-400">
+                {budgetPolicies.filter((p) => p.status === "warning").length}
+              </div>
+              <div className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">경고 상태</div>
+            </div>
+            <div className="rounded-md border border-border px-3 py-3">
+              <div className="text-2xl font-semibold tabular-nums text-red-400">
+                {budgetPolicies.filter((p) => p.status === "hard_stop").length}
+              </div>
+              <div className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">중지됨</div>
+            </div>
+          </div>
+        )}
+
+        {/* Policy list by scope */}
+        {budgetPolicies.length > 0 ? (
+          <div className="space-y-4">
+            {(["company", "agent", "project"] as const).map((scopeType) => {
+              const rows = budgetPoliciesByScope[scopeType];
+              if (rows.length === 0) return null;
+              const scopeLabel = scopeType === "company" ? "회사" : scopeType === "agent" ? "에이전트" : "프로젝트";
+              return (
+                <div key={scopeType} className="space-y-2">
+                  <div className="text-xs font-medium text-muted-foreground">{scopeLabel} 예산</div>
+                  <div className="space-y-3">
+                    {rows.map((summary) => (
+                      <BudgetPolicyCard
+                        key={summary.policyId}
+                        summary={summary}
+                        compact
+                        isSaving={budgetPolicyMutation.isPending}
+                        onSave={(amount) =>
+                          budgetPolicyMutation.mutate({
+                            scopeType: summary.scopeType,
+                            scopeId: summary.scopeId,
+                            amount,
+                            windowKind: summary.windowKind,
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-md border border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            아직 예산 정책이 없습니다. 새 정책을 생성하여 에이전트 및 프로젝트의 지출을 제어하세요.
+          </div>
+        )}
+
+        {/* Create policy toggle + form */}
+        <div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowPolicyForm(!showPolicyForm)}
+            className="gap-2"
+          >
+            {showPolicyForm ? <ChevronDown className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+            {showPolicyForm ? "양식 닫기" : "새 예산 정책 생성"}
+          </Button>
+        </div>
+        {showPolicyForm && (
+          <div className="space-y-2">
+            <CreateBudgetPolicyForm
+              companyId={selectedCompanyId!}
+              agents={(agentsList ?? []) as any}
+              projects={(projectsList ?? []) as any}
+              onSubmit={(input) => {
+                createPolicyMutation.mutate(input, {
+                  onSuccess: () => setShowPolicyForm(false),
+                });
+              }}
+              isSubmitting={createPolicyMutation.isPending}
+            />
+            {createPolicyMutation.isError && (
+              <p className="text-sm text-destructive">
+                {createPolicyMutation.error instanceof Error
+                  ? createPolicyMutation.error.message
+                  : "정책 생성에 실패했습니다."}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Link to full costs page */}
+        <div className="text-xs text-muted-foreground">
+          상세 비용 분석은{" "}
+          <Link to="/costs" className="text-foreground underline underline-offset-2 hover:text-primary">
+            비용 페이지
+          </Link>
+          에서 확인하세요.
         </div>
       </div>
 

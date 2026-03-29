@@ -71,7 +71,7 @@ export type {
   CompanySecret,
   SecretProviderDescriptor,
 } from "./secrets.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject, CostBreakdownGroup, CostBreakdownResponse, CostBreakdownGroupBy } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   HeartbeatRun,
@@ -93,6 +93,26 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export type {
+  MemoryScope,
+  MemorySourceRef,
+  MemorySnippet,
+  MemoryWriteRequest,
+  MemoryQueryRequest,
+  MemoryQueryResult,
+  MemoryBinding,
+  MemoryOperation,
+} from "./memory.js";
+export type {
+  EvalCase,
+  EvalExpectation,
+  EvalExpectationResult,
+  EvalResult,
+  EvalResultStatus,
+  EvalBundle,
+  EvalRunSummary,
+  EvalSummary,
+} from "./eval.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilitySecretRequirement,
