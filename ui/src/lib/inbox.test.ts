@@ -266,6 +266,8 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
 
 const dashboard: DashboardSummary = {
   companyId: "company-1",
+  companyStatus: "active",
+  companyPauseReason: null,
   agents: {
     active: 1,
     running: 0,
