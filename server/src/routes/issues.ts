@@ -38,6 +38,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { suggestIssueFields } from "../services/issue-suggest.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -959,6 +960,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json({ ok: true });
+  });
+
+  router.post("/companies/:companyId/issues/suggest", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const { rawText } = req.body as { rawText?: string };
+    if (!rawText || typeof rawText !== "string" || !rawText.trim()) {
+      res.status(400).json({ error: "rawText is required" });
+      return;
+    }
+    const [agents, projects] = await Promise.all([
+      agentsSvc.list(companyId),
+      projectsSvc.list(companyId),
+    ]);
+    const suggestion = await suggestIssueFields({
+      rawText: rawText.trim(),
+      agents: agents.map((a) => ({ id: a.id, name: a.name, role: a.role, title: a.title })),
+      projects: projects.map((p) => ({ id: p.id, name: p.name, description: p.description })),
+    });
+    res.json(suggestion);
   });
 
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {

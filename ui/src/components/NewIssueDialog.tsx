@@ -46,6 +46,8 @@ import {
   FileText,
   Loader2,
   X,
+  Sparkles,
+  PenLine,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -291,6 +293,8 @@ export function NewIssueDialog() {
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const [issueMode, setIssueMode] = useState<"manual" | "quick">("manual");
+  const [quickRawText, setQuickRawText] = useState("");
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
 
@@ -456,6 +460,26 @@ export function NewIssueDialog() {
     },
   });
 
+  const suggestIssue = useMutation({
+    mutationFn: async (rawText: string) => {
+      if (!effectiveCompanyId) throw new Error("No company selected");
+      return issuesApi.suggest(effectiveCompanyId, rawText);
+    },
+    onSuccess: (suggestion) => {
+      setTitle(suggestion.title);
+      setDescription(suggestion.description);
+      setPriority(suggestion.priority || "medium");
+      setStatus(suggestion.status || "todo");
+      if (suggestion.assigneeAgentId) {
+        setAssigneeValue(assigneeValueFromSelection({ assigneeAgentId: suggestion.assigneeAgentId }));
+      }
+      if (suggestion.projectId) {
+        handleProjectChange(suggestion.projectId);
+      }
+      setIssueMode("manual");
+    },
+  });
+
   // Debounced draft saving
   const scheduleSave = useCallback(
     (draft: IssueDraft) => {
@@ -610,6 +634,8 @@ export function NewIssueDialog() {
     setStagedFiles([]);
     setIsFileDragOver(false);
     setCompanyOpen(false);
+    setIssueMode("manual");
+    setQuickRawText("");
     executionWorkspaceDefaultProjectId.current = null;
   }
 
@@ -956,6 +982,34 @@ export function NewIssueDialog() {
             <span>New issue</span>
           </div>
           <div className="flex items-center gap-1">
+            <div className="flex items-center rounded-md border border-border p-0.5 mr-1">
+              <button
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors",
+                  issueMode === "manual"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setIssueMode("manual")}
+                disabled={createIssue.isPending || suggestIssue.isPending}
+              >
+                <PenLine className="h-3 w-3" />
+                Manual
+              </button>
+              <button
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors",
+                  issueMode === "quick"
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setIssueMode("quick")}
+                disabled={createIssue.isPending || suggestIssue.isPending}
+              >
+                <Sparkles className="h-3 w-3" />
+                Quick
+              </button>
+            </div>
             <Button
               variant="ghost"
               size="icon-xs"
@@ -977,6 +1031,53 @@ export function NewIssueDialog() {
           </div>
         </div>
 
+        {issueMode === "quick" ? (
+          /* ── Quick mode ── */
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="px-4 pt-4 pb-2 shrink-0">
+              <div className="text-sm font-medium mb-2">Describe the issue</div>
+              <div className="text-xs text-muted-foreground mb-3">
+                Paste logs, error messages, or describe the problem. Claude Code will generate the title, description, assignee, and project.
+              </div>
+              <textarea
+                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none resize-none placeholder:text-muted-foreground/50 focus:ring-1 focus:ring-ring"
+                placeholder={"e.g. getting\n  1:{\"saved\":true,\"blocked\":false,\"prescription_id\":\"69c87...\"}\nfor {name: \"dolo\", dose: \"5mg\", frequency: \"ones\"}\nin Prescribe Medication but not adding in row"}
+                rows={expanded ? 14 : 8}
+                value={quickRawText}
+                onChange={(e) => setQuickRawText(e.target.value)}
+                readOnly={suggestIssue.isPending}
+                autoFocus
+              />
+            </div>
+            <div className="flex-1" />
+            <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
+              <div className="min-h-5">
+                {suggestIssue.isError ? (
+                  <span className="text-xs text-destructive">
+                    {suggestIssue.error instanceof Error ? suggestIssue.error.message : "Failed to generate. Try again."}
+                  </span>
+                ) : null}
+              </div>
+              <Button
+                size="sm"
+                className="min-w-[10rem] disabled:opacity-100"
+                disabled={!quickRawText.trim() || suggestIssue.isPending}
+                onClick={() => suggestIssue.mutate(quickRawText)}
+              >
+                <span className="inline-flex items-center justify-center gap-1.5">
+                  {suggestIssue.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  <span>{suggestIssue.isPending ? "Generating..." : "Generate Issue"}</span>
+                </span>
+              </Button>
+            </div>
+          </div>
+        ) : (
+        /* ── Manual mode (existing flow) ── */
+        <>
         {/* Title */}
         <div className="px-4 pt-4 pb-2 shrink-0">
           <textarea
@@ -1469,6 +1570,8 @@ export function NewIssueDialog() {
             </Button>
           </div>
         </div>
+        </>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -66,6 +66,15 @@ export const issuesApi = {
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
+  suggest: (companyId: string, rawText: string) =>
+    api.post<{
+      title: string;
+      description: string;
+      priority: string;
+      assigneeAgentId: string | null;
+      projectId: string | null;
+      status: string;
+    }>(`/companies/${companyId}/issues/suggest`, { rawText }),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
