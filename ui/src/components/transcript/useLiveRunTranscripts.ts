@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
+import { ApiError } from "../../api/client";
 import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
@@ -68,6 +69,7 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const logUnavailableRunsRef = useRef(new Set<string>());
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
@@ -129,6 +131,11 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
+    for (const runId of logUnavailableRunsRef.current) {
+      if (!knownRunIds.has(runId)) {
+        logUnavailableRunsRef.current.delete(runId);
+      }
+    }
   }, [runs]);
 
   useEffect(() => {
@@ -137,6 +144,7 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: LiveRunForIssue) => {
+      if (logUnavailableRunsRef.current.has(run.id)) return;
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
@@ -151,8 +159,12 @@ export function useLiveRunTranscripts({
         if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
-      } catch {
-        // Ignore log read errors while output is initializing.
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          logUnavailableRunsRef.current.add(run.id);
+          return;
+        }
+        // Ignore other transient errors while output is initializing.
       }
     };
 
