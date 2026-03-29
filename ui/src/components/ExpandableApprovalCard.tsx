@@ -61,9 +61,13 @@ export function ExpandableApprovalCard({
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const resolvedDraftText = useMemo(() => resolveCeoPrimaryText(payload ?? {}), [payload]);
   const [editorText, setEditorText] = useState(resolvedDraftText ?? "");
+  const [imageUrl, setImageUrl] = useState("");
+  const [imagePath, setImagePath] = useState("");
 
   useEffect(() => {
     setEditorText(resolvedDraftText ?? "");
+    setImageUrl("");
+    setImagePath("");
   }, [approval.id, resolvedDraftText]);
 
   return (
@@ -142,11 +146,39 @@ export function ExpandableApprovalCard({
               onChange={(e) => setEditorText(e.target.value)}
               className="w-full min-h-40 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
             />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Image weblink (optional)</label>
+                <input
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="https://..."
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">Image file path (optional)</label>
+                <input
+                  value={imagePath}
+                  onChange={(e) => setImagePath(e.target.value)}
+                  placeholder="/path/to/image.jpg or repo-relative path"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+                />
+              </div>
+            </div>
+
             <div className="flex items-center justify-between">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onRequestRevision(editorText.trim() || undefined)}
+                onClick={() => {
+                  const mediaNoteParts: string[] = [];
+                  if (imageUrl.trim()) mediaNoteParts.push(`media_url: ${imageUrl.trim()}`);
+                  if (imagePath.trim()) mediaNoteParts.push(`media_path: ${imagePath.trim()}`);
+                  const combined = [editorText.trim(), mediaNoteParts.length ? `\n\n${mediaNoteParts.join("\n")}` : ""].join("").trim();
+                  onRequestRevision(combined || undefined);
+                }}
                 disabled={isPending || !isActionable}
               >
                 Submit revision
