@@ -122,6 +122,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/runs" label="Runs" icon={Play} />
+        </SidebarSection>
         <SidebarAgents />
 
         <SidebarProjects />

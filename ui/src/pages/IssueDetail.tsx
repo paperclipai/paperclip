@@ -43,11 +43,13 @@ import {
   ChevronRight,
   EyeOff,
   Hexagon,
+  Info,
   Link2,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
+  Play,
   Plus,
   Search,
   SlidersHorizontal,
@@ -169,6 +171,7 @@ export function IssueDetail() {
   const location = useLocation();
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [topTab, setTopTab] = useState("discussion");
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
     linkedIssues: false,
@@ -963,183 +966,200 @@ export function IssueDetail() {
         </div>
       )}
 
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-          <div className="flex items-center gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              className="hidden"
-              onChange={handleFilePicked}
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploadAttachment.isPending}
-            >
-              <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-              {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
-            </Button>
-          </div>
-        </div>
-
-        {attachmentError && (
-          <p className="text-xs text-destructive">{attachmentError}</p>
-        )}
-
-        {(!attachments || attachments.length === 0) ? (
-          <p className="text-xs text-muted-foreground">No attachments yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {attachments.map((attachment) => (
-              <div key={attachment.id} className="border border-border rounded-md p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <a
-                    href={attachment.contentPath}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs hover:underline truncate"
-                    title={attachment.originalFilename ?? attachment.id}
-                  >
-                    {attachment.originalFilename ?? attachment.id}
-                  </a>
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => deleteAttachment.mutate(attachment.id)}
-                    disabled={deleteAttachment.isPending}
-                    title="Delete attachment"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-                </p>
-                {isImageAttachment(attachment) && (
-                  <a href={attachment.contentPath} target="_blank" rel="noreferrer">
-                    <img
-                      src={attachment.contentPath}
-                      alt={attachment.originalFilename ?? "attachment"}
-                      className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
-                      loading="lazy"
-                    />
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
       <Separator />
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
+      {/* Top-level tab bar */}
+      <Tabs value={topTab} onValueChange={setTopTab} className="space-y-4">
+        <TabsList variant="line" className="w-full justify-start gap-2">
+          <TabsTrigger value="discussion" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Comments
+            Discussion
           </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
+          <TabsTrigger value="details" className="gap-1.5">
+            <Info className="h-3.5 w-3.5" />
+            Details
           </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
+          <TabsTrigger value="runs" className="gap-1.5">
+            <Play className="h-3.5 w-3.5" />
+            Runs
+            {hasLiveRuns && (
+              <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-cyan-400" />
+              </span>
+            )}
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="comments">
-          <CommentThread
-            comments={commentsWithRunMeta}
-            linkedRuns={timelineRuns}
-            issueStatus={issue.status}
-            agentMap={agentMap}
-            draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-            enableReassign
-            reassignOptions={commentReassignOptions}
-            currentAssigneeValue={currentAssigneeValue}
-            mentions={mentionOptions}
-            onStatusChange={(status) => updateIssue.mutate({ status })}
-            onAdd={async (body, reopen, reassignment) => {
-              if (reassignment) {
-                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
-                return;
-              }
-              await addComment.mutateAsync({ body, reopen });
-            }}
-            imageUploadHandler={async (file) => {
-              const attachment = await uploadAttachment.mutateAsync(file);
-              return attachment.contentPath;
-            }}
-            onAttachImage={async (file) => {
-              await uploadAttachment.mutateAsync(file);
-            }}
-            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
-          />
-        </TabsContent>
+        {/* --- Discussion tab --- */}
+        <TabsContent value="discussion" className="space-y-3">
+          <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+            <TabsList variant="line" className="w-full justify-start gap-1">
+              <TabsTrigger value="comments" className="gap-1.5 text-xs">
+                <MessageSquare className="h-3 w-3" />
+                Comments
+              </TabsTrigger>
+              <TabsTrigger value="subissues" className="gap-1.5 text-xs">
+                <ListTree className="h-3 w-3" />
+                Sub-issues
+                {childIssues.length > 0 && (
+                  <span className="ml-0.5 text-[10px] tabular-nums text-muted-foreground">({childIssues.length})</span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="activity" className="gap-1.5 text-xs">
+                <ActivityIcon className="h-3 w-3" />
+                Activity
+              </TabsTrigger>
+            </TabsList>
 
-        <TabsContent value="subissues">
-          {childIssues.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No sub-issues.</p>
-          ) : (
-            <div className="border border-border rounded-lg divide-y divide-border">
-              {childIssues.map((child) => (
-                <div
-                  key={child.id}
-                  className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span onClick={(e) => e.stopPropagation()}>
-                      <StatusIcon
-                        status={child.status}
-                        onChange={(status) => updateChildIssue.mutate({ childId: child.id, data: { status } })}
-                      />
-                    </span>
-                    <PriorityIcon priority={child.priority} />
-                    <Link
-                      to={`/issues/${child.identifier ?? child.id}`}
-                      state={location.state}
-                      className="flex items-center gap-2 min-w-0 hover:underline"
+            <TabsContent value="comments">
+              <CommentThread
+                comments={commentsWithRunMeta}
+                linkedRuns={timelineRuns}
+                issueStatus={issue.status}
+                agentMap={agentMap}
+                draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+                enableReassign
+                reassignOptions={commentReassignOptions}
+                currentAssigneeValue={currentAssigneeValue}
+                mentions={mentionOptions}
+                onStatusChange={(status) => updateIssue.mutate({ status })}
+                onAdd={async (body, reopen, reassignment) => {
+                  if (reassignment) {
+                    await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                    return;
+                  }
+                  await addComment.mutateAsync({ body, reopen });
+                }}
+                imageUploadHandler={async (file) => {
+                  const attachment = await uploadAttachment.mutateAsync(file);
+                  return attachment.contentPath;
+                }}
+                onAttachImage={async (file) => {
+                  await uploadAttachment.mutateAsync(file);
+                }}
+                liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+              />
+            </TabsContent>
+
+            <TabsContent value="subissues">
+              {childIssues.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No sub-issues.</p>
+              ) : (
+                <div className="border border-border rounded-lg divide-y divide-border">
+                  {childIssues.map((child) => (
+                    <div
+                      key={child.id}
+                      className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                     >
-                      <span className="font-mono text-muted-foreground shrink-0">
-                        {child.identifier ?? child.id.slice(0, 8)}
-                      </span>
-                      <span className="truncate">{child.title}</span>
-                    </Link>
-                  </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span onClick={(e) => e.stopPropagation()}>
+                          <StatusIcon
+                            status={child.status}
+                            onChange={(status) => updateChildIssue.mutate({ childId: child.id, data: { status } })}
+                          />
+                        </span>
+                        <PriorityIcon priority={child.priority} />
+                        <Link
+                          to={`/issues/${child.identifier ?? child.id}`}
+                          state={location.state}
+                          className="flex items-center gap-2 min-w-0 hover:underline"
+                        >
+                          <span className="font-mono text-muted-foreground shrink-0">
+                            {child.identifier ?? child.id.slice(0, 8)}
+                          </span>
+                          <span className="truncate">{child.title}</span>
+                        </Link>
+                      </div>
+                      {child.assigneeAgentId && (() => {
+                        const name = agentMap.get(child.assigneeAgentId)?.name;
+                        return name
+                          ? <Identity name={name} size="sm" />
+                          : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
+                      })()}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+              )}
+            </TabsContent>
+
+            <TabsContent value="activity">
+              {!activity || activity.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No activity yet.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {activity.slice(0, 20).map((evt) => (
+                    <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <ActorIdentity evt={evt} agentMap={agentMap} />
+                      <span>{formatAction(evt.action, evt.details)}</span>
+                      <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
         </TabsContent>
 
-        <TabsContent value="activity">
-          {!activity || activity.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No activity yet.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {activity.slice(0, 20).map((evt) => (
-                <div key={evt.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <ActorIdentity evt={evt} agentMap={agentMap} />
-                  <span>{formatAction(evt.action, evt.details)}</span>
-                  <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
-                </div>
-              ))}
+        {/* --- Details tab --- */}
+        <TabsContent value="details" className="space-y-4">
+          {/* Attachments */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                <Paperclip className="h-3.5 w-3.5" />
+                Attachments ({(attachments ?? []).length})
+              </span>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => fileInputRef.current?.click()}>
+                <Plus className="h-3 w-3 mr-1" />
+                Upload
+              </Button>
+              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFilePicked} />
             </div>
-          )}
-        </TabsContent>
-      </Tabs>
+            {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
+            {(attachments ?? []).length > 0 && (
+              <div className="space-y-2">
+                {(attachments ?? []).map((attachment: IssueAttachment) => (
+                  <div key={attachment.id} className="rounded border border-border p-2">
+                    <div className="flex items-center gap-2">
+                      <Paperclip className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <a
+                        href={attachment.contentPath}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs hover:underline truncate"
+                        title={attachment.originalFilename ?? attachment.id}
+                      >
+                        {attachment.originalFilename ?? attachment.id}
+                      </a>
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => deleteAttachment.mutate(attachment.id)}
+                        disabled={deleteAttachment.isPending}
+                        title="Delete attachment"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                    </p>
+                    {isImageAttachment(attachment) && (
+                      <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                        <img
+                          src={attachment.contentPath}
+                          alt={attachment.originalFilename ?? "attachment"}
+                          className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                          loading="lazy"
+                        />
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
       <Collapsible
         open={secondaryOpen.reviewBundle}
@@ -1256,8 +1276,7 @@ export function IssueDetail() {
         </CollapsibleContent>
       </Collapsible>
 
-      {issue && (
-        <Collapsible
+      <Collapsible
           open={secondaryOpen.linkedIssues}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, linkedIssues: open }))}
           className="rounded-lg border border-border"
@@ -1397,8 +1416,7 @@ export function IssueDetail() {
               )}
             </div>
           </CollapsibleContent>
-        </Collapsible>
-      ) : null}
+      </Collapsible>
 
       {linkedApprovals && linkedApprovals.length > 0 && (
         <Collapsible
@@ -1600,6 +1618,72 @@ export function IssueDetail() {
           </div>
         </CollapsibleContent>
       </Collapsible>
+        </TabsContent>
+
+        {/* --- Runs tab --- */}
+        <TabsContent value="runs" className="space-y-4">
+          <LiveRunWidget issueId={issueId!} companyId={issue.companyId} />
+
+          {linkedRuns && linkedRuns.length > 0 ? (
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium text-muted-foreground">Run History ({linkedRuns.length})</h3>
+              <div className="border border-border rounded-lg divide-y divide-border">
+                {linkedRuns.map((run) => {
+                  const agent = agentMap.get(run.agentId);
+                  const usage = asRecord(run.usageJson);
+                  const runCost =
+                    usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
+                    usageNumber(asRecord(run.resultJson), "total_cost_usd", "cost_usd", "costUsd");
+                  const runTokens =
+                    usageNumber(usage, "inputTokens", "input_tokens") +
+                    usageNumber(usage, "outputTokens", "output_tokens");
+                  return (
+                    <div
+                      key={run.runId}
+                      className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {agent && <Identity name={agent.name} size="sm" />}
+                        <span className="font-mono text-muted-foreground shrink-0">{run.runId.slice(0, 8)}</span>
+                        <StatusBadge status={run.status} />
+                      </div>
+                      <div className="flex items-center gap-3 text-muted-foreground shrink-0">
+                        {runCost > 0 && <span className="tabular-nums">${runCost.toFixed(4)}</span>}
+                        {runTokens > 0 && <span className="tabular-nums">{formatTokens(runTokens)} tokens</span>}
+                        <span>{relativeTime(run.startedAt ?? run.createdAt)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Cost summary */}
+              {(issueCostSummary.hasCost || issueCostSummary.hasTokens) && (
+                <div className="rounded-lg border border-border px-3 py-2">
+                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
+                    <span className="text-sm font-medium">Total</span>
+                    {issueCostSummary.hasCost && (
+                      <span className="font-medium text-foreground">
+                        ${issueCostSummary.cost.toFixed(4)}
+                      </span>
+                    )}
+                    {issueCostSummary.hasTokens && (
+                      <span>
+                        {formatTokens(issueCostSummary.totalTokens)} tokens
+                        {issueCostSummary.cached > 0
+                          ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
+                          : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">No runs yet.</p>
+          )}
+        </TabsContent>
+      </Tabs>
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
