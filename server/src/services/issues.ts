@@ -1111,18 +1111,24 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
-      if (!isUuidLike(id)) throw notFound("Issue not found");
-      if (!isUuidLike(agentId)) throw unprocessable("Invalid agentId");
-      if (checkoutRunId && !isUuidLike(checkoutRunId)) throw unprocessable("Invalid checkoutRunId");
-      const normalizedCheckoutRunId = checkoutRunId ? checkoutRunId.toLowerCase() : null;
+      const normalizedIssueId = asCanonicalUuid(id);
+      if (!normalizedIssueId) throw notFound("Issue not found");
+      const normalizedAgentId = asCanonicalUuid(agentId);
+      if (!normalizedAgentId) throw unprocessable("Invalid agentId");
+      let normalizedCheckoutRunId: string | null = null;
+      if (checkoutRunId != null) {
+        const parsedCheckoutRunId = asCanonicalUuid(checkoutRunId);
+        if (!parsedCheckoutRunId) throw unprocessable("Invalid checkoutRunId");
+        normalizedCheckoutRunId = parsedCheckoutRunId;
+      }
 
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(eq(issues.id, normalizedIssueId))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      await assertAssignableAgent(issueCompany.companyId, normalizedAgentId);
       const normalizedExpectedStatuses = (Array.isArray(expectedStatuses) ? expectedStatuses : [])
         .filter((status): status is string => typeof status === "string")
         .map((status) => status.trim().toLowerCase())
@@ -1136,17 +1142,17 @@ export function issueService(db: Db) {
       const now = new Date();
       const sameRunAssigneeCondition = normalizedCheckoutRunId
         ? and(
-          eq(issues.assigneeAgentId, agentId),
+          eq(issues.assigneeAgentId, normalizedAgentId),
           or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, normalizedCheckoutRunId)),
         )
-        : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
+        : and(eq(issues.assigneeAgentId, normalizedAgentId), isNull(issues.checkoutRunId));
       const executionLockCondition = normalizedCheckoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, normalizedCheckoutRunId))
         : isNull(issues.executionRunId);
       const updated = await db
         .update(issues)
         .set({
-          assigneeAgentId: agentId,
+          assigneeAgentId: normalizedAgentId,
           assigneeUserId: null,
           checkoutRunId: normalizedCheckoutRunId,
           executionRunId: normalizedCheckoutRunId,
@@ -1156,7 +1162,7 @@ export function issueService(db: Db) {
         })
         .where(
           and(
-            eq(issues.id, id),
+            eq(issues.id, normalizedIssueId),
             inArray(issues.status, normalizedExpectedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
@@ -1179,13 +1185,13 @@ export function issueService(db: Db) {
           executionRunId: issues.executionRunId,
         })
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(eq(issues.id, normalizedIssueId))
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
 
       if (
-        current.assigneeAgentId === agentId &&
+        current.assigneeAgentId === normalizedAgentId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
         normalizedCheckoutRunId
@@ -1219,9 +1225,9 @@ export function issueService(db: Db) {
           })
           .where(
             and(
-              eq(issues.id, id),
+              eq(issues.id, normalizedIssueId),
               eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
+              eq(issues.assigneeAgentId, normalizedAgentId),
               isNull(issues.checkoutRunId),
               executionCondition,
             ),
@@ -1233,19 +1239,19 @@ export function issueService(db: Db) {
 
       if (
         normalizedCheckoutRunId &&
-        current.assigneeAgentId === agentId &&
+        current.assigneeAgentId === normalizedAgentId &&
         current.status === "in_progress" &&
         current.checkoutRunId &&
         current.checkoutRunId !== normalizedCheckoutRunId
       ) {
         const adopted = await adoptStaleCheckoutRun({
-          issueId: id,
-          actorAgentId: agentId,
+          issueId: normalizedIssueId,
+          actorAgentId: normalizedAgentId,
           actorRunId: normalizedCheckoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (adopted) {
-          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+          const row = await db.select().from(issues).where(eq(issues.id, normalizedIssueId)).then((rows) => rows[0]!);
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
         }
@@ -1253,11 +1259,11 @@ export function issueService(db: Db) {
 
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
-        current.assigneeAgentId === agentId &&
+        current.assigneeAgentId === normalizedAgentId &&
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, normalizedCheckoutRunId)
       ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+        const row = await db.select().from(issues).where(eq(issues.id, normalizedIssueId)).then((rows) => rows[0]!);
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
       }
