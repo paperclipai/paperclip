@@ -266,6 +266,44 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+type ObservedWorkspaceGitProvenance = {
+  repoRoot: string | null;
+  branchName: string | null;
+  headSha: string | null;
+};
+
+async function readGitOutput(cwd: string, args: string[]) {
+  try {
+    const { stdout } = await execFile("git", ["-C", cwd, ...args], { cwd });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function observeWorkspaceGitProvenance(cwd: string): Promise<ObservedWorkspaceGitProvenance> {
+  const repoRoot = await readGitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!repoRoot) {
+    return {
+      repoRoot: null,
+      branchName: null,
+      headSha: null,
+    };
+  }
+
+  const [branchName, headSha] = await Promise.all([
+    readGitOutput(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    readGitOutput(cwd, ["rev-parse", "--verify", "HEAD"]),
+  ]);
+
+  return {
+    repoRoot: path.resolve(repoRoot),
+    branchName: readNonEmptyString(branchName),
+    headSha: readNonEmptyString(headSha),
+  };
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -2355,6 +2393,7 @@ export function heartbeatService(db: Db) {
           ]
         : []),
     ];
+    const observedWorkspaceGit = await observeWorkspaceGitProvenance(executionWorkspace.cwd);
     context.paperclipWorkspace = {
       cwd: executionWorkspace.cwd,
       source: executionWorkspace.source,
@@ -2365,6 +2404,9 @@ export function heartbeatService(db: Db) {
       repoUrl: executionWorkspace.repoUrl,
       repoRef: executionWorkspace.repoRef,
       branchName: executionWorkspace.branchName,
+      observedRepoRoot: observedWorkspaceGit.repoRoot,
+      observedBranchName: observedWorkspaceGit.branchName,
+      observedHeadSha: observedWorkspaceGit.headSha,
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
         const home = resolveDefaultAgentWorkspaceDir(agent.id);
