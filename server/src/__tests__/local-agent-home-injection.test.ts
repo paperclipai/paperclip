@@ -19,6 +19,21 @@ type CapturePayload = {
 
 type TestExecute = typeof executeClaude;
 
+const SANITIZED_ENV_KEYS = [
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
+
 async function writeExecutable(commandPath: string, script: string): Promise<void> {
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -26,6 +41,26 @@ async function writeExecutable(commandPath: string, script: string): Promise<voi
 
 async function readCapture(capturePath: string): Promise<CapturePayload> {
   return JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+}
+
+async function withSanitizedEnv<T>(run: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of SANITIZED_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const key of SANITIZED_ENV_KEYS) {
+      const value = previous.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -193,41 +228,43 @@ async function expectAgentHomeInjected(input: {
   config?: Record<string, unknown>;
   context?: Record<string, unknown>;
 }): Promise<CapturePayload> {
-  const result = await input.execute({
-    runId: "run-1",
-    agent: {
-      id: "agent-1",
-      companyId: "company-1",
-      name: "Test Agent",
-      adapterType: "codex_local",
-      adapterConfig: {},
-    },
-    runtime: {
-      sessionId: null,
-      sessionParams: null,
-      sessionDisplayId: null,
-      taskKey: null,
-    },
-    config: {
-      command: input.commandPath,
-      cwd: input.cwd,
-      instructionsFilePath: input.instructionsFilePath,
-      promptTemplate: "Continue your Paperclip work.",
-      env: {
-        PAPERCLIP_TEST_CAPTURE_PATH: input.capturePath,
+  const result = await withSanitizedEnv(() =>
+    input.execute({
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "codex_local",
+        adapterConfig: {},
       },
-      ...input.config,
-    },
-    context: {
-      paperclipWorkspace: {
-        source: "agent_home",
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
       },
-      ...input.context,
-    },
-    authToken: "run-jwt-token",
-    onLog: async () => {},
-    onMeta: async () => {},
-  });
+      config: {
+        command: input.commandPath,
+        cwd: input.cwd,
+        instructionsFilePath: input.instructionsFilePath,
+        promptTemplate: "Continue your Paperclip work.",
+        env: {
+          PAPERCLIP_TEST_CAPTURE_PATH: input.capturePath,
+        },
+        ...input.config,
+      },
+      context: {
+        paperclipWorkspace: {
+          source: "agent_home",
+        },
+        ...input.context,
+      },
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+      onMeta: async () => {},
+    }),
+  );
 
   expect(result.exitCode).toBe(0);
   expect(result.errorMessage).toBeNull();

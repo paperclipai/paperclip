@@ -45,6 +45,24 @@ type CapturePayload = {
 };
 
 const execFileAsync = promisify(execFile);
+const SANITIZED_ENV_KEYS = [
+  "AGENT_HOME",
+  "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_API_KEY",
+  "PAPERCLIP_API_URL",
+  "PAPERCLIP_COMPANY_ID",
+  "PAPERCLIP_RUN_ID",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WORKSPACE_CWD",
+  "PAPERCLIP_WORKSPACE_SOURCE",
+  "PAPERCLIP_WORKSPACE_REPO_REF",
+  "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_HEAD",
+  "PAPERCLIP_WORKSPACES_JSON",
+] as const;
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd, encoding: "utf8" });
@@ -74,6 +92,26 @@ async function createGitWorkspace(root: string) {
     branchName: "feature/live-checkout",
     headSha: await gitStdout(repoRoot, ["rev-parse", "HEAD"]),
   };
+}
+
+async function withSanitizedEnv<T>(run: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of SANITIZED_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const key of SANITIZED_ENV_KEYS) {
+      const value = previous.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -221,7 +259,7 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
   const originalCodexHome = process.env.CODEX_HOME;
 
   beforeAll(async () => {
-    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "paperclip-test-local-agent-jwt-secret";
     delete process.env.BETTER_AUTH_SECRET;
 
     databaseDir = await mkdtemp(join(tmpdir(), "paperclip-heartbeat-auth-"));
@@ -383,33 +421,35 @@ describe("local agent PAPERCLIP_API_KEY injection", () => {
       });
     }
 
-    const wakeup =
-      input.wake.source === "timer"
-        ? await heartbeat().wakeup(agentId, {
-            source: "timer",
-            triggerDetail: "system",
-          })
-        : input.wake.reason === "issue_assigned"
-          ? await heartbeat().wakeup(agentId, {
-              source: "assignment",
-              triggerDetail: "system",
-              reason: "issue_assigned",
-              payload: { issueId, mutation: "create" },
-              contextSnapshot: { issueId, source: "issue.create" },
-            })
-          : await heartbeat().wakeup(agentId, {
-              source: "automation",
-              triggerDetail: "system",
-              reason: "issue_comment_mentioned",
-              payload: { issueId, commentId: "comment-1" },
-              contextSnapshot: { issueId, source: "comment.mention" },
-            });
-
     try {
-      expect(wakeup).not.toBeNull();
-      const run = await waitForRun(heartbeat(), wakeup!.id);
-      const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
-      return { capture, run, issueId };
+      return await withSanitizedEnv(async () => {
+        const wakeup =
+          input.wake.source === "timer"
+            ? await heartbeat().wakeup(agentId, {
+                source: "timer",
+                triggerDetail: "system",
+              })
+            : input.wake.reason === "issue_assigned"
+              ? await heartbeat().wakeup(agentId, {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: "issue_assigned",
+                  payload: { issueId, mutation: "create" },
+                  contextSnapshot: { issueId, source: "issue.create" },
+                })
+              : await heartbeat().wakeup(agentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_comment_mentioned",
+                  payload: { issueId, commentId: "comment-1" },
+                  contextSnapshot: { issueId, source: "comment.mention" },
+                });
+
+        expect(wakeup).not.toBeNull();
+        const run = await waitForRun(heartbeat(), wakeup!.id);
+        const capture = JSON.parse(await readFile(capturePath, "utf8")) as CapturePayload;
+        return { capture, run, issueId };
+      });
     } finally {
       if (input.adapterType === "codex_local") {
         if (previousCodexHome === undefined) {
