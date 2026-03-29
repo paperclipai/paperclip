@@ -21,6 +21,7 @@ import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
+import { OutpostMark } from "./OutpostMark";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -36,7 +37,8 @@ import {
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
-  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { companies, selectedCompanyId, selectedCompany } = useCompany();
+  const showMark = companies.length <= 1;
   const { toggleSidebar, isMobile } = useSidebar();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: liveRuns } = useQuery({
@@ -54,11 +56,15 @@ export function Sidebar() {
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
-        {selectedCompany?.brandColor && (
-          <div
-            className="w-4 h-4 rounded-sm shrink-0 ml-1"
-            style={{ backgroundColor: selectedCompany.brandColor }}
-          />
+        {showMark ? (
+          <OutpostMark size={18} className="text-primary shrink-0 ml-1" />
+        ) : (
+          selectedCompany?.brandColor && (
+            <div
+              className="w-4 h-4 rounded-sm shrink-0 ml-1"
+              style={{ backgroundColor: selectedCompany.brandColor }}
+            />
+          )
         )}
         <span className="flex-1 text-sm font-bold text-foreground truncate pl-1" style={{ fontFamily: "var(--font-family-display)" }}>
           {selectedCompany?.name ?? "Select company"}
