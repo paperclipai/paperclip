@@ -14,6 +14,8 @@ import {
   CalendarClock,
   PanelLeftClose,
   Briefcase,
+  Play,
+  MessageSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
