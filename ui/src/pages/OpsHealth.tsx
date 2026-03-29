@@ -91,7 +91,6 @@ export function OpsHealth() {
   const [agentFilter, setAgentFilter] = useState<"all" | "main" | "katya">("all");
   const [showRedOnly, setShowRedOnly] = useState(false);
   const [showArchitectureOnly, setShowArchitectureOnly] = useState(false);
-  const [showCronTable, setShowCronTable] = useState(false);
   const [dragTypeKey, setDragTypeKey] = useState<string | null>(null);
   const [typeOrder, setTypeOrder] = useState<string[]>([...DEFAULT_TYPE_ORDER]);
 
@@ -201,19 +200,6 @@ export function OpsHealth() {
       .filter((row) => (showArchitectureOnly ? architectureType(row.type.key) : true));
   }, [agentFilter, cronRows, showRedOnly, showArchitectureOnly]);
 
-  const cronSummary = useMemo(() => {
-    const total = cronRows.length;
-    const green = cronRows.filter((row) => row.rag.label === "Green").length;
-    const red = cronRows.filter((row) => row.rag.label === "Red").length;
-    const lastChecked = cronRows.reduce<number | null>((max, row) => {
-      const candidate = row.lastRunAtMs ?? row.nextRunAtMs ?? null;
-      if (candidate === null) return max;
-      if (max === null || candidate > max) return candidate;
-      return max;
-    }, null);
-    return { total, green, red, lastChecked };
-  }, [cronRows]);
-
   const cronGroups = useMemo(() => {
     const sortRows = (rows: typeof filteredCronRows) => [...rows].sort((a, b) => {
       const rankDelta = jobTypeRank(a.type.key, typeOrder) - jobTypeRank(b.type.key, typeOrder);
@@ -251,19 +237,7 @@ export function OpsHealth() {
       )}
 
       <section className="rounded-lg border bg-card overflow-hidden">
-        <button
-          type="button"
-          className="w-full border-b px-3 py-2 text-left text-sm font-semibold flex items-center justify-between"
-          onClick={() => setShowCronTable((v) => !v)}
-        >
-          <span>OpenClaw cron jobs (cross-topic automation)</span>
-          <span className="text-xs text-muted-foreground">{showCronTable ? "▲" : "▼"}</span>
-        </button>
-        <div className="px-3 py-2 text-xs text-muted-foreground border-b bg-muted/10">
-          {cronSummary.total} total · {cronSummary.green} green · {cronSummary.red} red · last checked {cronSummary.lastChecked ? new Date(cronSummary.lastChecked).toLocaleString() : "n/a"}
-        </div>
-        {showCronTable && (
-        <>
+        <div className="border-b px-3 py-2 text-sm font-semibold">OpenClaw cron jobs (cross-topic automation)</div>
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
           <span className="text-muted-foreground">Filter:</span>
           <button className={`rounded border px-2 py-1 ${agentFilter === "all" ? "bg-muted" : ""}`} onClick={() => setAgentFilter("all")}>All</button>
@@ -342,8 +316,6 @@ export function OpsHealth() {
             </>
           )}
         </div>
-        </>
-        )}
       </section>
 
       <section className="rounded-lg border bg-card overflow-hidden">
