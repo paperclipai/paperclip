@@ -137,6 +137,7 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
   const [showQualityScores, setShowQualityScores] = useState(false);
+  const [showDraftPreview, setShowDraftPreview] = useState(false);
 
   const lane = contentLaneFromPayload(payload);
   const channel = typeof payload.channel === "string" ? payload.channel : "—";
@@ -182,8 +183,19 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
       )}
 
       {primaryText && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap max-h-56 overflow-y-auto">
-          {primaryText}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowDraftPreview((v) => !v)}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            {showDraftPreview ? "▴ draft preview" : "▾ draft preview"}
+          </button>
+          {showDraftPreview && (
+            <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap max-h-56 overflow-y-auto">
+              {primaryText}
+            </div>
+          )}
         </div>
       )}
 
