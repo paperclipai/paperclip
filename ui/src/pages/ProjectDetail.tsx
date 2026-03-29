@@ -510,12 +510,22 @@ export function ProjectDetail() {
           />
         </div>
         <div className="min-w-0 space-y-2">
-          <InlineEditor
-            value={project.name}
-            onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
-          />
+          <div className="flex items-center gap-2">
+            <InlineEditor
+              value={project.name}
+              onSave={(name) => updateProject.mutate({ name })}
+              as="h2"
+              className="text-xl font-bold"
+            />
+            <button
+              type="button"
+              className="text-xs font-mono text-muted-foreground/50 hover:text-muted-foreground transition-colors cursor-pointer shrink-0"
+              title="Click to copy project ID"
+              onClick={() => { navigator.clipboard.writeText(project.id); pushToast({ title: "Project ID copied", tone: "success" }); }}
+            >
+              {project.id.slice(0, 8)}
+            </button>
+          </div>
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
