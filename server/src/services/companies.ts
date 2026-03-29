@@ -258,7 +258,7 @@ export function companyService(db: Db) {
         const updated = await tx
           .update(companies)
           .set({ status: "active", pauseReason: null, pausedAt: null, updatedAt: now })
-          .where(eq(companies.id, id))
+          .where(and(eq(companies.id, id), eq(companies.pauseReason, "manual")))
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
