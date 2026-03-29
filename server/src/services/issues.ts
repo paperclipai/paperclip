@@ -1458,6 +1458,12 @@ export function issueService(db: Db) {
       if (typeof data?.color !== "string" || data.color.trim().length === 0) {
         throw unprocessable("Invalid label color");
       }
+      const company = await db
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.id, normalizedCompanyId))
+        .then((rows) => rows[0] ?? null);
+      if (!company) throw notFound("Company not found");
       const [created] = await db
         .insert(labels)
         .values({

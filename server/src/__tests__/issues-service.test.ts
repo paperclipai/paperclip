@@ -1989,6 +1989,15 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("returns not found for non-existent company ids on createLabel", async () => {
+    await expect(
+      svc.createLabel(randomUUID(), { name: "Bug", color: "#FF0000" }),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Company not found",
+    });
+  });
+
   it("returns unprocessable for malformed label names on createLabel", async () => {
     await expect(
       svc.createLabel(randomUUID(), { name: 123 as any, color: "#FF0000" } as any),
