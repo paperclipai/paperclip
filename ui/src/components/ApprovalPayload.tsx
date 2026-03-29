@@ -43,6 +43,34 @@ export const typeIcon: Record<string, typeof UserPlus> = {
 
 export const defaultTypeIcon = ShieldCheck;
 
+function resolveDraftsValue(payload: Record<string, unknown>): string | null {
+  const drafts = payload.drafts;
+  if (Array.isArray(drafts)) {
+    const first = drafts.find((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return first ?? null;
+  }
+  if (drafts && typeof drafts === "object") {
+    const first = Object.values(drafts as Record<string, unknown>).find(
+      (item): item is string => typeof item === "string" && item.trim().length > 0,
+    );
+    return first ?? null;
+  }
+  return null;
+}
+
+export function resolveCeoPrimaryText(payload: Record<string, unknown>): string | null {
+  const summary = typeof payload.summary === "string" ? payload.summary : null;
+  const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
+  const draft = typeof payload.draft === "string" ? payload.draft : null;
+  const firstDraftFromDrafts = resolveDraftsValue(payload);
+
+  return summary
+    ?? (plan ? String(plan) : null)
+    ?? draft
+    ?? firstDraftFromDrafts
+    ?? null;
+}
+
 function PayloadField({ label, value }: { label: string; value: unknown }) {
   if (!value) return null;
   return (
@@ -114,10 +142,7 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
   const channel = typeof payload.channel === "string" ? payload.channel : "—";
   const publishAt = payload.targetPublishAt ? String(payload.targetPublishAt) : "—";
 
-  const summary = typeof payload.summary === "string" ? payload.summary : null;
-  const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
-  const draft = typeof payload.draft === "string" ? payload.draft : null;
-  const primaryText = summary ?? (plan ? String(plan) : null) ?? (draft ? `${draft.slice(0, 900)}${draft.length > 900 ? "…" : ""}` : null);
+  const primaryText = resolveCeoPrimaryText(payload);
 
   const imageUrl = typeof payload.imageUrl === "string" ? payload.imageUrl : null;
   const imageAlt = typeof payload.imageAlt === "string" ? payload.imageAlt : "Approval image";

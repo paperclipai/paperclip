@@ -1,9 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
-import { CeoStrategyPayload, approvalLabel } from "./ApprovalPayload";
+import { CeoStrategyPayload, approvalLabel, resolveCeoPrimaryText } from "./ApprovalPayload";
 import { cn } from "../lib/utils";
 
 interface ExpandableApprovalCardProps {
@@ -59,6 +59,12 @@ export function ExpandableApprovalCard({
     return payloadTitle.length > 0 ? payloadTitle : label;
   }, [payload, label]);
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
+  const resolvedDraftText = useMemo(() => resolveCeoPrimaryText(payload ?? {}), [payload]);
+  const [editorText, setEditorText] = useState(resolvedDraftText ?? "");
+
+  useEffect(() => {
+    setEditorText(resolvedDraftText ?? "");
+  }, [approval.id, resolvedDraftText]);
 
   return (
     <div
@@ -102,37 +108,53 @@ export function ExpandableApprovalCard({
         <div className="border-t border-border px-3 py-3 space-y-3">
           <CeoStrategyPayload payload={payload ?? {}} />
 
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                className="bg-green-700 hover:bg-green-600 text-white"
-                onClick={onApprove}
-                disabled={isPending || !isActionable}
-              >
-                Approve
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={onReject}
-                disabled={isPending || !isActionable}
-              >
-                Reject
-              </Button>
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              size="sm"
+              className="bg-green-700 hover:bg-green-600 text-white"
+              onClick={onApprove}
+              disabled={isPending || !isActionable}
+            >
+              Approve
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={onReject}
+              disabled={isPending || !isActionable}
+            >
+              Reject
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRequestRevision()}
+              disabled={isPending || !isActionable}
+            >
+              Request edits
+            </Button>
+          </div>
+
+          <div className="border-t border-border pt-3 space-y-2">
+            <p className="text-xs text-muted-foreground">Edit before approving</p>
+            <textarea
+              value={editorText}
+              onChange={(e) => setEditorText(e.target.value)}
+              className="w-full min-h-40 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            />
+            <div className="flex items-center justify-between">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onRequestRevision()}
+                onClick={() => onRequestRevision(editorText.trim() || undefined)}
                 disabled={isPending || !isActionable}
               >
-                Request edits
+                Submit revision
               </Button>
+              <Link to={detailLink} className="text-xs text-muted-foreground hover:text-foreground no-underline">
+                Full draft ↗️
+              </Link>
             </div>
-
-            <Link to={detailLink} className="text-xs text-muted-foreground hover:text-foreground no-underline">
-              Full draft ↗️
-            </Link>
           </div>
         </div>
       )}
