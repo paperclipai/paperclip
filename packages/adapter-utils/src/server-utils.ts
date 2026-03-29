@@ -34,6 +34,11 @@ type ChildProcessWithEvents = ChildProcess & {
   ): ChildProcess;
 };
 
+export function commandLooksLike(command: string, expected: string): boolean {
+  const base = path.basename(command).toLowerCase();
+  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+}
+
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -769,7 +774,7 @@ export async function runChildProcess(
         // Special case: if we're running 'gemini', use the current node executable
         // to ensure it runs with the same working environment as the Paperclip server
         // but without the contaminating loaders.
-        if (command === "gemini") {
+        if (commandLooksLike(command, "gemini")) {
           // Resolve real path if it's a symlink to help Node ESM resolution find sibling files
           const realCommandPath = await fs.realpath(target.command).catch(() => target.command);
           finalCommand = process.execPath;

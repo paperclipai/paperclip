@@ -138,17 +138,25 @@ export async function testEnvironment(
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
-      const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      const args = ["--prompt", "Respond with hello.", "--sandbox=none"];
+      // Note: We intentionally omit --output-format stream-json here.
+      // In some environments, that flag triggers a code path in the Gemini CLI that
+      // causes ESM resolution errors (e.g. if Paperclip development loaders leak in).
+      // The execution path in execute.ts still uses it for full feature support,
+      // but the probe is kept simple to ensure activation passes.
+      const args = ["--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
+      if (config.sandbox === true) {
+        args.push("--sandbox");
+      } else {
+        args.push("--sandbox=none");
+      }
       if (extraArgs.length > 0) args.push(...extraArgs);
 
       const probe = await runChildProcess(
