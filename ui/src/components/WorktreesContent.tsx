@@ -1,9 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { GitBranch, MoreHorizontal, RefreshCw, Trash2, ExternalLink } from "lucide-react";
+import {
+  GitBranch, MoreHorizontal, RefreshCw, Trash2, ExternalLink,
+  Play, Eye, CheckCircle2, ArrowLeft, Clipboard, RotateCcw,
+} from "lucide-react";
 import type { GitWorktreeEntry } from "../api/execution-workspaces";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { issuesApi } from "../api/issues";
 import { useToast } from "../context/ToastContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +29,16 @@ import {
 import { cn } from "@/lib/utils";
 
 const STALE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+const STATUS_LABELS: Record<string, string> = {
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  in_review: "In Review",
+  done: "Done",
+  blocked: "Blocked",
+  cancelled: "Cancelled",
+};
 
 type WorktreeDisplayStatus =
   | "active" | "idle" | "stale" | "in_review" | "archived" | "cleanup_failed"
@@ -174,6 +188,25 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
     },
   });
 
+  const issueStatusMutation = useMutation({
+    mutationFn: ({ issueId, status, comment }: { issueId: string; status: string; comment?: string }) =>
+      issuesApi.update(issueId, { status, ...(comment ? { comment } : {}) }),
+    onSuccess: (_result, vars) => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["issues"] });
+      const label = STATUS_LABELS[vars.status] ?? vars.status;
+      pushToast({ title: `Issue moved to ${label}.`, tone: "success" });
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Failed to update issue";
+      pushToast({ title: msg, tone: "error" });
+    },
+  });
+
+  const handleIssueAction = (issueId: string, status: string, comment?: string) => {
+    issueStatusMutation.mutate({ issueId, status, comment });
+  };
+
   const handleConfirm = () => {
     if (!pendingAction) return;
     if (pendingAction.type === "archive" && pendingAction.entry.executionWorkspace) {
@@ -188,7 +221,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
     setPendingAction(null);
   };
 
-  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending || removeMutation.isPending;
+  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending || removeMutation.isPending || issueStatusMutation.isPending;
 
   if (isLoading) {
     return (
@@ -258,6 +291,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
                 onArchive={() => setPendingAction({ type: "archive", entry })}
                 onRetryCleanup={() => setPendingAction({ type: "retry", entry })}
                 onRemove={() => setPendingAction({ type: "remove", entry })}
+                onIssueAction={handleIssueAction}
               />
             ))}
           </tbody>
@@ -307,6 +341,7 @@ function WorktreeRow({
   onArchive,
   onRetryCleanup,
   onRemove,
+  onIssueAction,
 }: {
   entry: GitWorktreeEntry;
   isLast: boolean;
@@ -314,11 +349,17 @@ function WorktreeRow({
   onArchive: () => void;
   onRetryCleanup: () => void;
   onRemove: () => void;
+  onIssueAction: (issueId: string, status: string, comment?: string) => void;
 }) {
   const ws = entry.executionWorkspace;
   const isArchived = ws?.status === "archived";
   const isCleanupFailed = ws?.status === "cleanup_failed";
   const pathBasename = entry.path.split("/").pop() ?? entry.path;
+  const issueStatus = entry.issue?.status;
+
+  const handleCopyPath = () => {
+    navigator.clipboard.writeText(entry.path);
+  };
 
   return (
     <tr className={cn("hover:bg-muted/30 transition-colors", !isLast && "border-b border-border")}>
@@ -395,6 +436,7 @@ function WorktreeRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {/* Navigation links */}
               {entry.issue && (
                 <DropdownMenuItem asChild>
                   <Link to={`/issues/${entry.issue.id}`} className="cursor-pointer">Open issue</Link>
@@ -405,7 +447,63 @@ function WorktreeRow({
                   <Link to={`/agents/${entry.agent.id}`} className="cursor-pointer">Open agent</Link>
                 </DropdownMenuItem>
               )}
-              {(entry.issue || entry.agent) && <DropdownMenuSeparator />}
+
+              {/* Copy path */}
+              <DropdownMenuItem onClick={handleCopyPath}>
+                <Clipboard className="h-4 w-4 mr-2" />
+                Copy path
+              </DropdownMenuItem>
+
+              {/* Status-based issue actions */}
+              {entry.issue && issueStatus && (
+                <>
+                  <DropdownMenuSeparator />
+                  {/* In Review → Mark Done or Request Changes */}
+                  {issueStatus === "in_review" && (
+                    <>
+                      <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "done")}>
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                        Mark done
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "in_progress", "Changes requested — returning to development.")}>
+                        <ArrowLeft className="h-4 w-4 mr-2" />
+                        Request changes
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  {/* In Progress → Move to Review */}
+                  {issueStatus === "in_progress" && (
+                    <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "in_review")}>
+                      <Eye className="h-4 w-4 mr-2" />
+                      Move to review
+                    </DropdownMenuItem>
+                  )}
+                  {/* Todo / Backlog → Start Work */}
+                  {(issueStatus === "todo" || issueStatus === "backlog") && (
+                    <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "in_progress")}>
+                      <Play className="h-4 w-4 mr-2" />
+                      Start work
+                    </DropdownMenuItem>
+                  )}
+                  {/* Blocked → Unblock */}
+                  {issueStatus === "blocked" && (
+                    <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "in_progress", "Unblocked — resuming work.")}>
+                      <Play className="h-4 w-4 mr-2" />
+                      Unblock
+                    </DropdownMenuItem>
+                  )}
+                  {/* Done / Cancelled → Reopen */}
+                  {(issueStatus === "done" || issueStatus === "cancelled") && (
+                    <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "in_progress", "Reopened from worktrees view.")}>
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Reopen
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
+
+              {/* Destructive actions */}
+              <DropdownMenuSeparator />
               {ws && isCleanupFailed ? (
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onRetryCleanup}>
                   <RefreshCw className="h-4 w-4 mr-2" />
