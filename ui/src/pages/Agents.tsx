@@ -219,7 +219,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
+          message="No agents yet"
+          description="Agents are AI-powered team members that handle tasks autonomously. Create your first agent to start delegating work."
           action="New Agent"
           onAction={openNewAgent}
         />

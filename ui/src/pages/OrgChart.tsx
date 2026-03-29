@@ -446,7 +446,13 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return (
+      <EmptyState
+        icon={Network}
+        message="No organizational hierarchy defined."
+        description="Define reporting relationships between agents to build your organizational hierarchy. This helps route escalations and delegation."
+      />
+    );
   }
 
   return (

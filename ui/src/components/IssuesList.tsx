@@ -1198,6 +1198,7 @@ export function IssuesList({
         <EmptyState
           icon={CircleDot}
           message="No issues match the current filters or search."
+          description="Try broadening your search or adjusting filters to find what you're looking for."
           action="Create Issue"
           onAction={() => openNewIssue(newIssueDefaults())}
         />

@@ -184,7 +184,11 @@ export function Runs() {
         {liveRuns.length > 0 && <LiveRunsIndicator count={liveRuns.length} />}
         {filterBar}
         {filtered.length === 0 ? (
-          <EmptyState icon={Play} message="No runs match the current filters." />
+          <EmptyState
+            icon={Play}
+            message="No runs match the current filters."
+            description="Runs are individual agent execution sessions. Try adjusting your filters or wait for agents to start working on assigned issues."
+          />
         ) : (
           <div className="border border-border rounded-lg overflow-x-hidden">
             {filtered.map((run) => (
@@ -210,7 +214,11 @@ export function Runs() {
       {filterBar}
 
       {filtered.length === 0 ? (
-        <EmptyState icon={Play} message="No runs match the current filters." />
+        <EmptyState
+          icon={Play}
+          message="No runs match the current filters."
+          description="Runs are individual agent execution sessions. Try adjusting your filters or wait for agents to start working on assigned issues."
+        />
       ) : (
         <div className="flex gap-0">
           {/* Run list */}

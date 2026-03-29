@@ -155,6 +155,7 @@ export function Dashboard() {
         <EmptyState
           icon={LayoutDashboard}
           message="Welcome to Outpost. Set up your first company and agent to get started."
+          description="Your dashboard shows agent activity, blocked issues, and key metrics at a glance. Start by creating a company and hiring your first agent."
           action="Get Started"
           onAction={openOnboarding}
         />

@@ -651,6 +651,7 @@ export function Inbox() {
                 ? "No recent inbox items."
                 : "No inbox items match these filters."
           }
+          description="Your inbox collects notifications, approvals, and items that need your attention across all projects."
         />
       )}
 

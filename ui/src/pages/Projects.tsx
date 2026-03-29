@@ -54,6 +54,7 @@ export function Projects() {
         <EmptyState
           icon={Hexagon}
           message="No projects yet."
+          description="Projects group related issues and track progress toward a shared objective. They help you organize work across agents."
           action="Add Project"
           onAction={openNewProject}
         />

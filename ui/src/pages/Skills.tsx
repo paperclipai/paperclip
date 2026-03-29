@@ -276,6 +276,7 @@ export function Skills() {
         <EmptyState
           icon={Blocks}
           message="No skills yet."
+          description="Skills give agents specialized capabilities — from code review to deployment workflows. Install skills to extend what your agents can do."
           action="Install Skill"
           onAction={() => setShowInstallForm(true)}
         />

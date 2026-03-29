@@ -163,6 +163,7 @@ export function Org() {
         <EmptyState
           icon={GitBranch}
           message="No agents in the organization. Create agents to build your org chart."
+          description="The org chart visualizes your agent hierarchy — who reports to whom and how work flows through your team."
         />
       )}
 

@@ -42,6 +42,7 @@ export function Goals() {
         <EmptyState
           icon={Target}
           message="No goals yet."
+          description="Goals define high-level objectives that span multiple projects and issues. Use them to align your team around key outcomes."
           action="Add Goal"
           onAction={() => openNewGoal()}
         />

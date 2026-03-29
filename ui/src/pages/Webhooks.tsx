@@ -495,7 +495,11 @@ export function Webhooks() {
           )}
 
           {endpoints.length === 0 ? (
-            <EmptyState icon={Webhook} message="No webhook endpoints yet." />
+            <EmptyState
+              icon={Webhook}
+              message="No webhook endpoints yet."
+              description="Webhooks let external services trigger agent work automatically — like starting a task when a PR is opened or a form is submitted."
+            />
           ) : (
             <div className="border border-border/60 rounded-md overflow-hidden divide-y divide-border/60">
               {endpoints.map((endpoint: WebhookEndpoint) => (
@@ -540,7 +544,11 @@ export function Webhooks() {
         {/* ── Right column: Endpoint detail + rules + events ── */}
         <section className="space-y-4 xl:col-span-2">
           {!selectedEndpoint ? (
-            <EmptyState icon={Webhook} message="Select an endpoint to view rules and events." />
+            <EmptyState
+              icon={Webhook}
+              message="Select an endpoint to view rules and events."
+              description="Each endpoint can have routing rules that determine which agent handles incoming events."
+            />
           ) : (
             <>
               {/* Endpoint detail / edit card */}

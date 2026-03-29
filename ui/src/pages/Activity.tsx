@@ -119,7 +119,11 @@ export function Activity() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {filtered && filtered.length === 0 && (
-        <EmptyState icon={History} message="No activity yet." />
+        <EmptyState
+          icon={History}
+          message="No activity yet."
+          description="Activity tracks every action across your workspace — issue updates, agent runs, comments, and status changes."
+        />
       )}
 
       {filtered && filtered.length > 0 && (

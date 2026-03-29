@@ -249,6 +249,11 @@ export function Schedules() {
               ? "No schedules yet. Create your first one."
               : "No schedules match the current filters."
           }
+          description={
+            (schedules ?? []).length === 0
+              ? "Schedules trigger agent work on a recurring basis — like daily reports or weekly audits. Create one to automate repetitive tasks."
+              : undefined
+          }
           action="New Schedule"
           onAction={() => setComposerOpen(true)}
         />
