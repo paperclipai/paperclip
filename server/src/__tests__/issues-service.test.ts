@@ -2089,6 +2089,38 @@ describe("issueService.list participantAgentId", () => {
     expect(result.sort()).toEqual([explicitValidMentionId, mentionedByNameId].sort());
   });
 
+  it("normalizes findMentionedAgents company and explicit mention uuids for non-route callers", async () => {
+    const companyId = randomUUID();
+    const mentionedByNameId = randomUUID();
+    const explicitValidMentionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: mentionedByNameId,
+      companyId,
+      name: "WakeAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const result = await svc.findMentionedAgents(
+      ` ${companyId.toUpperCase()} `,
+      `[good](agent://${explicitValidMentionId.toUpperCase()}) @WakeAgent`,
+    );
+
+    expect(result.sort()).toEqual([explicitValidMentionId, mentionedByNameId].sort());
+  });
+
   it("returns an empty list for malformed issue ids on getAncestors", async () => {
     await expect(svc.getAncestors("not-a-uuid")).resolves.toEqual([]);
   });

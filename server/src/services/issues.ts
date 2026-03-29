@@ -1861,6 +1861,8 @@ export function issueService(db: Db) {
     },
 
     findMentionedAgents: async (companyId: string, body: string) => {
+      const normalizedCompanyId = asCanonicalUuid(companyId);
+      if (!normalizedCompanyId) return [];
       const re = /\B@([^\s@,!?.]+)/g;
       const tokens = new Set<string>();
       let m: RegExpExecArray | null;
@@ -1869,10 +1871,12 @@ export function issueService(db: Db) {
         if (normalized) tokens.add(normalized.toLowerCase());
       }
 
-      const explicitAgentMentionIds = extractAgentMentionIds(body).filter((agentId) => isUuidLike(agentId));
+      const explicitAgentMentionIds = extractAgentMentionIds(body)
+        .map((agentId) => asCanonicalUuid(agentId))
+        .filter((agentId): agentId is string => agentId != null);
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
-        .from(agents).where(eq(agents.companyId, companyId));
+        .from(agents).where(eq(agents.companyId, normalizedCompanyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
         if (tokens.has(agent.name.toLowerCase())) {
