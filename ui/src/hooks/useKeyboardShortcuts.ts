@@ -4,11 +4,19 @@ interface ShortcutHandlers {
   onNewIssue?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
+  onGlobalComposer?: () => void;
 }
 
-export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel }: ShortcutHandlers) {
+export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePanel, onGlobalComposer }: ShortcutHandlers) {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // Cmd/Ctrl+J → Global Composer (works even in inputs)
+      if (e.key === "j" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        onGlobalComposer?.();
+        return;
+      }
+
       // Don't fire shortcuts when typing in inputs
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
@@ -36,5 +44,5 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onNewIssue, onToggleSidebar, onTogglePanel]);
+  }, [onNewIssue, onToggleSidebar, onTogglePanel, onGlobalComposer]);
 }

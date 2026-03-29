@@ -14,6 +14,8 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { AskCeoButton } from "./AskCeoButton";
+import { GlobalComposer } from "./GlobalComposer";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
@@ -47,7 +49,7 @@ function readRememberedInstanceSettingsPath(): string {
 
 export function Layout() {
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialog();
+  const { openNewIssue, openOnboarding, openGlobalComposer } = useDialog();
   const { togglePanelVisible } = usePanel();
   const {
     companies,
@@ -138,6 +140,7 @@ export function Layout() {
     onNewIssue: () => openNewIssue(),
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
+    onGlobalComposer: () => openGlobalComposer(),
   });
 
   useEffect(() => {
@@ -424,11 +427,13 @@ export function Layout() {
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
+      <GlobalComposer />
       <NewIssueDialog />
       <NewProjectDialog />
       <NewGoalDialog />
       <NewAgentDialog />
       <ToastViewport />
+      {selectedCompanyId && <AskCeoButton />}
     </div>
   );
 }

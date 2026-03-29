@@ -17,6 +17,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
+import { IssueChatView } from "../components/IssueChatView";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { LiveRunWidget } from "../components/LiveRunWidget";
@@ -44,6 +45,7 @@ import {
   EyeOff,
   Hexagon,
   ListTree,
+  MessageCircle,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
@@ -191,6 +193,126 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
+function RunSummaryCard({
+  latest,
+  isLive,
+  totalTk,
+  cost,
+  duration,
+  summaryText,
+  assignedAgent,
+  totalRuns,
+}: {
+  latest: { runId: string; status: string; agentId: string; stdoutExcerpt?: string | null };
+  isLive: boolean;
+  totalTk: number;
+  cost: number;
+  duration: string | null;
+  summaryText: string | null;
+  assignedAgent?: Agent | null;
+  totalRuns: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusLabel: Record<string, string> = {
+    succeeded: "성공",
+    failed: "실패",
+    running: "실행 중",
+    queued: "대기 중",
+    timed_out: "시간 초과",
+    cancelled: "취소됨",
+  };
+
+  const statusColor: Record<string, string> = {
+    succeeded: "text-green-600 dark:text-green-400",
+    failed: "text-red-600 dark:text-red-400",
+    running: "text-cyan-600 dark:text-cyan-400",
+    queued: "text-yellow-600 dark:text-yellow-400",
+    timed_out: "text-orange-600 dark:text-orange-400",
+    cancelled: "text-neutral-500",
+  };
+
+  // Truncate stdout to 3 lines for preview
+  const stdoutPreview = (latest as { stdoutExcerpt?: string | null }).stdoutExcerpt
+    ? (latest as { stdoutExcerpt?: string | null }).stdoutExcerpt!.split("\n").slice(0, 3).join("\n")
+    : null;
+
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-accent/30 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide shrink-0">
+              실행 요약
+            </h3>
+            {isLive && (
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+              </span>
+            )}
+            <span className={cn("text-sm font-medium", statusColor[latest.status] ?? "text-muted-foreground")}>
+              {statusLabel[latest.status] ?? latest.status}
+            </span>
+            {duration && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">{duration}</span>
+            )}
+            {totalTk > 0 && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                {formatTokens(totalTk)} 토큰
+              </span>
+            )}
+            {cost > 0 && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                ${cost.toFixed(4)}
+              </span>
+            )}
+            <span className="text-xs text-muted-foreground">
+              ({totalRuns}건)
+            </span>
+          </div>
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 text-muted-foreground transition-transform shrink-0",
+              expanded && "rotate-180",
+            )}
+          />
+        </CollapsibleTrigger>
+
+        <CollapsibleContent>
+          <div className="border-t border-border px-4 py-3 space-y-3">
+            {assignedAgent && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">실행 에이전트:</span>
+                <Identity name={assignedAgent.name} size="sm" />
+              </div>
+            )}
+
+            {summaryText && (
+              <div className="text-sm text-foreground/80 line-clamp-3">
+                {summaryText}
+              </div>
+            )}
+
+            {stdoutPreview && !summaryText && (
+              <pre className="rounded-md bg-accent/30 p-2 text-xs font-mono whitespace-pre-wrap break-all text-muted-foreground max-h-20 overflow-hidden">
+                {stdoutPreview}
+              </pre>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground tabular-nums">
+              {duration && <span>소요 시간: {duration}</span>}
+              {totalTk > 0 && <span>토큰: {formatTokens(totalTk)}</span>}
+              {cost > 0 && <span>비용: ${cost.toFixed(4)}</span>}
+              <span className="font-mono">{latest.runId.slice(0, 8)}</span>
+            </div>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
@@ -203,7 +325,9 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState("comments");
+  const urlViewParam = new URLSearchParams(location.search).get("view");
+  const [detailTab, setDetailTab] = useState(urlViewParam === "chat" ? "chat" : "comments");
+  const chatTabInitialized = useRef(false);
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     cost: false,
@@ -558,6 +682,17 @@ export function IssueDetail() {
       setAttachmentError(err instanceof Error ? err.message : "Delete failed");
     },
   });
+
+  // Default to chat tab when issue is assigned to an agent (unless user came from explicit URL or already switched)
+  useEffect(() => {
+    if (chatTabInitialized.current) return;
+    if (!issue) return;
+    chatTabInitialized.current = true;
+    if (urlViewParam === "chat") return; // already set
+    if (issue.assigneeAgentId && detailTab === "comments") {
+      setDetailTab("chat");
+    }
+  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
@@ -968,13 +1103,64 @@ export function IssueDetail() {
         </div>
       ) : null}
 
+      {/* Run Summary */}
+      {linkedRuns && linkedRuns.length > 0 && (() => {
+        const sorted = [...linkedRuns].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+        const latest = sorted[0];
+        const isLive = latest.status === "running" || latest.status === "queued";
+        const usageObj = latest.usageJson as Record<string, unknown> | null;
+        const resultObj = latest.resultJson as Record<string, unknown> | null;
+        const inputTk = usageNumber(usageObj, "inputTokens", "input_tokens");
+        const outputTk = usageNumber(usageObj, "outputTokens", "output_tokens");
+        const totalTk = inputTk + outputTk;
+        const cost = visibleRunCostUsd(usageObj, resultObj);
+        const summaryText =
+          typeof resultObj?.summary === "string"
+            ? resultObj.summary
+            : typeof resultObj?.result === "string"
+              ? resultObj.result
+              : null;
+        const duration =
+          latest.startedAt && latest.finishedAt
+            ? (() => {
+                const ms = new Date(latest.finishedAt).getTime() - new Date(latest.startedAt).getTime();
+                if (ms < 60_000) return `${Math.round(ms / 1000)}초`;
+                return `${Math.round(ms / 60_000)}분`;
+              })()
+            : latest.startedAt && isLive
+              ? "실행 중..."
+              : null;
+        const assignedAgent = latest.agentId
+          ? agents?.find((a) => a.id === latest.agentId)
+          : null;
+
+        return (
+          <RunSummaryCard
+            latest={latest}
+            isLive={isLive}
+            totalTk={totalTk}
+            cost={cost}
+            duration={duration}
+            summaryText={summaryText}
+            assignedAgent={assignedAgent}
+            totalRuns={linkedRuns.length}
+          />
+        );
+      })()}
+
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
         <TabsList variant="line" className="w-full justify-start gap-1">
+          <TabsTrigger value="chat" className="gap-1.5">
+            <MessageCircle className="h-3.5 w-3.5" />
+            대화
+          </TabsTrigger>
           <TabsTrigger value="comments" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Comments
+            댓글
           </TabsTrigger>
           <TabsTrigger value="subissues" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
@@ -990,6 +1176,35 @@ export function IssueDetail() {
             </TabsTrigger>
           ))}
         </TabsList>
+
+        <TabsContent value="chat">
+          <IssueChatView
+            comments={commentsWithRunMeta}
+            agentMap={agentMap}
+            isAgentRunning={hasLiveRuns}
+            assigneeAgentId={issue.assigneeAgentId}
+            className="min-h-[400px] max-h-[600px] border border-border rounded-lg overflow-hidden"
+            onSend={async (body) => {
+              await addComment.mutateAsync({ body });
+              // Wakeup the assigned agent if there is one
+              if (issue.assigneeAgentId && selectedCompanyId) {
+                try {
+                  await agentsApi.wakeup(
+                    issue.assigneeAgentId,
+                    {
+                      source: "on_demand",
+                      triggerDetail: "manual",
+                      reason: `New message on issue ${issue.identifier ?? issue.id}`,
+                    },
+                    selectedCompanyId,
+                  );
+                } catch {
+                  // wakeup failure is non-fatal
+                }
+              }
+            }}
+          />
+        </TabsContent>
 
         <TabsContent value="comments">
           <CommentThread

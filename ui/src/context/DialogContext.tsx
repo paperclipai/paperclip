@@ -19,6 +19,13 @@ interface OnboardingOptions {
   companyId?: string;
 }
 
+export type ComposerMode = "ask" | "task" | "decision";
+
+interface GlobalComposerDefaults {
+  mode?: ComposerMode;
+  agentId?: string;
+}
+
 interface DialogContextValue {
   newIssueOpen: boolean;
   newIssueDefaults: NewIssueDefaults;
@@ -38,6 +45,10 @@ interface DialogContextValue {
   onboardingOptions: OnboardingOptions;
   openOnboarding: (options?: OnboardingOptions) => void;
   closeOnboarding: () => void;
+  globalComposerOpen: boolean;
+  globalComposerDefaults: GlobalComposerDefaults;
+  openGlobalComposer: (defaults?: GlobalComposerDefaults) => void;
+  closeGlobalComposer: () => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -51,6 +62,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
+  const [globalComposerOpen, setGlobalComposerOpen] = useState(false);
+  const [globalComposerDefaults, setGlobalComposerDefaults] = useState<GlobalComposerDefaults>({});
 
   const openNewIssue = useCallback((defaults: NewIssueDefaults = {}) => {
     setNewIssueDefaults(defaults);
@@ -98,6 +111,16 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setOnboardingOptions({});
   }, []);
 
+  const openGlobalComposer = useCallback((defaults: GlobalComposerDefaults = {}) => {
+    setGlobalComposerDefaults(defaults);
+    setGlobalComposerOpen(true);
+  }, []);
+
+  const closeGlobalComposer = useCallback(() => {
+    setGlobalComposerOpen(false);
+    setGlobalComposerDefaults({});
+  }, []);
+
   return (
     <DialogContext.Provider
       value={{
@@ -119,6 +142,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         onboardingOptions,
         openOnboarding,
         closeOnboarding,
+        globalComposerOpen,
+        globalComposerDefaults,
+        openGlobalComposer,
+        closeGlobalComposer,
       }}
     >
       {children}

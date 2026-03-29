@@ -28,6 +28,7 @@ import {
   History,
   SquarePen,
   Plus,
+  Sparkles,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
@@ -37,7 +38,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewIssue, openNewAgent, openGlobalComposer } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
 
@@ -114,6 +115,16 @@ export function CommandPalette() {
         <CommandEmpty>검색 결과가 없습니다.</CommandEmpty>
 
         <CommandGroup heading="액션">
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openGlobalComposer();
+            }}
+          >
+            <Sparkles className="mr-2 h-4 w-4" />
+            Board 커맨드
+            <span className="ml-auto text-xs text-muted-foreground">{"\u2318"}J</span>
+          </CommandItem>
           <CommandItem
             onSelect={() => {
               setOpen(false);
