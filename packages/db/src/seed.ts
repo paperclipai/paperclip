@@ -26,8 +26,8 @@ const [ceo] = await db
     role: "ceo",
     title: "Chief Executive Officer",
     status: "idle",
-    adapterType: "process",
-    adapterConfig: { command: "echo", args: ["hello from ceo"] },
+    adapterType: "claude_local",
+    adapterConfig: {},
     budgetMonthlyCents: 15000,
   })
   .returning();
@@ -41,8 +41,8 @@ const [engineer] = await db
     title: "Software Engineer",
     status: "idle",
     reportsTo: ceo!.id,
-    adapterType: "process",
-    adapterConfig: { command: "echo", args: ["hello from engineer"] },
+    adapterType: "claude_local",
+    adapterConfig: {},
     budgetMonthlyCents: 10000,
   })
   .returning();

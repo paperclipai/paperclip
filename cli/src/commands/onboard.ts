@@ -316,7 +316,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.step(pc.bold("LLM Provider"));
     llm = await promptLlm();
 
-    if (llm?.apiKey) {
+    if (llm?.provider === "claude" && !llm.apiKey) {
+      // Subscription mode — validation handled by promptLlm()
+      p.log.message(pc.dim("Claude configured for subscription-based auth (no API key)."));
+    } else if (llm?.apiKey) {
       const s = p.spinner();
       s.start("Validating API key...");
       try {

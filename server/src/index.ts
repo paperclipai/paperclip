@@ -1,5 +1,5 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -72,6 +72,31 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Provision Claude Code OAuth credentials from env var (subscription auth)
+  const credsJson = process.env.CLAUDE_CREDENTIALS_JSON;
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || resolve(process.env.HOME || "/home/node", ".claude");
+  // Ensure CLAUDE_CONFIG_DIR is set in process.env so child processes inherit it
+  if (!process.env.CLAUDE_CONFIG_DIR) {
+    process.env.CLAUDE_CONFIG_DIR = claudeDir;
+  }
+  if (credsJson) {
+    const credsPath = resolve(claudeDir, ".credentials.json");
+    mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
+    writeFileSync(credsPath, credsJson, { mode: 0o600 });
+    console.log(`[claude-creds] whoami=${process.env.USER || "unknown"} HOME=${process.env.HOME} CLAUDE_CONFIG_DIR=${claudeDir}`);
+    console.log(`[claude-creds] Wrote credentials to ${credsPath}`);
+    try {
+      const keys = Object.keys(JSON.parse(credsJson));
+      console.log(`[claude-creds] Credential keys: ${keys.join(", ")}`);
+    } catch { /* skip */ }
+  }
+  // Log auth env vars at startup for debugging
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  console.log(`[claude-auth] CLAUDE_CODE_OAUTH_TOKEN=${oauthToken ? `set (${oauthToken.length} chars, starts ${oauthToken.slice(0, 12)}...)` : "NOT SET"}`);
+  console.log(`[claude-auth] ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY ? "SET" : "not set"}`);
+  console.log(`[claude-auth] CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR}`);
+  console.log(`[claude-auth] HOME=${process.env.HOME}`);
+
   let config = loadConfig();
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;

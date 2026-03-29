@@ -118,6 +118,56 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
   if (canRunProbe) {
+    // Log auth-related env vars visible to child processes (redacted)
+    const authEnvSnapshot: string[] = [];
+    for (const key of Object.keys(process.env).sort()) {
+      if (/^(CLAUDE|ANTHROPIC|HOME|CLAUDE_CONFIG_DIR|NODE_ENV)$/i.test(key) || key.startsWith("CLAUDE_")) {
+        const val = process.env[key] ?? "";
+        const redacted = /TOKEN|KEY|SECRET|PASSWORD/i.test(key) ? `${val.slice(0, 16)}…(${val.length} chars)` : val;
+        authEnvSnapshot.push(`${key}=${redacted}`);
+      }
+    }
+    checks.push({
+      code: "claude_auth_env_snapshot",
+      level: "info",
+      message: "Auth-related env vars visible to child processes.",
+      detail: authEnvSnapshot.join(" | ") || "(none)",
+    });
+
+    // Run `claude auth status` probe before the --print probe
+    if (commandLooksLike(command, "claude")) {
+      try {
+        const authStatusProbe = await runChildProcess(
+          `claude-authstatus-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          command,
+          ["auth", "status"],
+          {
+            cwd,
+            env,
+            timeoutSec: 15,
+            graceSec: 3,
+            onLog: async () => {},
+          },
+        );
+        const authOut = (authStatusProbe.stdout + "\n" + authStatusProbe.stderr).trim();
+        const authExitCode = authStatusProbe.exitCode ?? -1;
+        checks.push({
+          code: "claude_auth_status_probe",
+          level: authExitCode === 0 ? "info" : "warn",
+          message: authExitCode === 0
+            ? "Claude auth status reports logged in."
+            : `Claude auth status exited with code ${authExitCode}.`,
+          detail: authOut.replace(/\s+/g, " ").trim().slice(0, 500) || "(no output)",
+        });
+      } catch (err) {
+        checks.push({
+          code: "claude_auth_status_probe",
+          level: "warn",
+          message: `Claude auth status probe failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
     if (!commandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",

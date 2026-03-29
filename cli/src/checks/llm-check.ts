@@ -1,5 +1,9 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
+
+const execFileAsync = promisify(execFile);
 
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {
@@ -11,6 +15,40 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   }
 
   if (!config.llm.apiKey) {
+    // Claude without API key — verify subscription auth
+    if (config.llm.provider === "claude") {
+      try {
+        const { stdout } = await execFileAsync("claude", ["auth", "status"], {
+          env: process.env,
+          timeout: 5_000,
+          maxBuffer: 1024 * 1024,
+        });
+        const parsed = JSON.parse(stdout) as Record<string, unknown>;
+        if (parsed.loggedIn === true) {
+          const sub = typeof parsed.subscriptionType === "string" ? ` (${parsed.subscriptionType})` : "";
+          return {
+            name: "LLM provider",
+            status: "pass",
+            message: `Claude subscription auth active${sub}`,
+          };
+        }
+        return {
+          name: "LLM provider",
+          status: "warn",
+          message: "Claude is configured but not logged in",
+          canRepair: false,
+          repairHint: "Run `claude login` to authenticate with your subscription",
+        };
+      } catch {
+        return {
+          name: "LLM provider",
+          status: "warn",
+          message: "Could not verify Claude subscription (is Claude Code installed?)",
+          canRepair: false,
+          repairHint: "Install Claude Code (`npm install -g @anthropic-ai/claude-code`) and run `claude login`",
+        };
+      }
+    }
     return {
       name: "LLM provider",
       status: "pass",
@@ -18,6 +56,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
     };
   }
 
+  // API key is set — validate it (legacy path for Claude, standard for OpenAI)
   try {
     if (config.llm.provider === "claude") {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -42,7 +81,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
           status: "fail",
           message: "Claude API key is invalid (401)",
           canRepair: false,
-          repairHint: "Run `paperclipai configure --section llm`",
+          repairHint: "Run `paperclipai configure --section llm` or unset the API key to use subscription auth",
         };
       }
       return {
