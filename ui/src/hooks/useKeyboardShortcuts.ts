@@ -24,7 +24,7 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
         return;
       }
 
-      // C → New Issue
+      // C → New Issue (when not in input)
       if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         onNewIssue?.();
@@ -49,7 +49,19 @@ export function useKeyboardShortcuts({ onNewIssue, onToggleSidebar, onTogglePane
       }
     }
 
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      // Cmd/Ctrl+N → New Issue (works even from inputs)
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        e.preventDefault();
+        onNewIssue?.();
+      }
+    }
+
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleGlobalKeyDown);
+    };
   }, [onNewIssue, onToggleSidebar, onTogglePanel, onToggleContentWidth, onSwitchCompany]);
 }

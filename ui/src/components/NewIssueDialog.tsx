@@ -37,6 +37,7 @@ import {
   Clock3,
   Paperclip,
   Loader2,
+  Settings2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
@@ -197,6 +198,7 @@ export function NewIssueDialog() {
   const [recurringTimezone, setRecurringTimezone] = useState("UTC");
   const [recurringIssueMode, setRecurringIssueMode] = useState<"create_new" | "reuse_existing" | "reopen_existing">("reopen_existing");
   const [expanded, setExpanded] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [clientError, setClientError] = useState<string | null>(null);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -488,6 +490,7 @@ export function NewIssueDialog() {
     setRecurringTimezone("UTC");
     setRecurringIssueMode("reopen_existing");
     setExpanded(false);
+    setAdvancedOpen(false);
     setDialogCompanyId(null);
     setCompanyOpen(false);
     setClientError(null);
@@ -828,7 +831,7 @@ export function NewIssueDialog() {
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
                 e.preventDefault();
-                descriptionEditorRef.current?.focus();
+                assigneeSelectorRef.current?.focus();
               }
               if (e.key === "Tab" && !e.shiftKey) {
                 e.preventDefault();
@@ -839,6 +842,7 @@ export function NewIssueDialog() {
           />
         </div>
 
+        {/* Stage 1: Assignee */}
         <div className="px-4 pb-2 shrink-0">
           <div className="overflow-x-auto overscroll-x-contain">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
@@ -854,7 +858,7 @@ export function NewIssueDialog() {
                 emptyMessage="No assignees found."
                 onChange={(id) => { if (id) trackRecentAssignee(id); setAssigneeId(id); }}
                 onConfirm={() => {
-                  projectSelectorRef.current?.focus();
+                  descriptionEditorRef.current?.focus();
                 }}
                 renderTriggerValue={(option) =>
                   option && currentAssignee ? (
@@ -877,20 +881,81 @@ export function NewIssueDialog() {
                   );
                 }}
               />
-              <span>in</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Stage 1: Description */}
+        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
+          <MarkdownEditor
+            ref={descriptionEditorRef}
+            value={description}
+            onChange={setDescription}
+            placeholder="Add description..."
+            bordered={false}
+            mentions={mentionOptions}
+            contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            imageUploadHandler={async (file) => {
+              const asset = await uploadDescriptionImage.mutateAsync(file);
+              return asset.contentPath;
+            }}
+          />
+        </div>
+
+        {/* Attach image (hidden input, accessible from Stage 1) */}
+        <input
+          ref={attachInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={handleAttachImage}
+        />
+
+        {/* Stage 1: Quick actions bar */}
+        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            onClick={() => attachInputRef.current?.click()}
+            disabled={uploadDescriptionImage.isPending}
+          >
+            <Paperclip className="h-3 w-3" />
+            {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
+          </button>
+
+          <div className="flex-1" />
+
+          <button
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+              advancedOpen
+                ? "border-primary/30 bg-primary/5 text-foreground"
+                : "border-border text-muted-foreground hover:bg-accent/50",
+            )}
+            onClick={() => setAdvancedOpen((open) => !open)}
+            type="button"
+          >
+            <Settings2 className="h-3 w-3" />
+            Advanced
+            {advancedOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          </button>
+        </div>
+
+        {/* Stage 2: Advanced options */}
+        {advancedOpen && (
+          <div className="border-t border-border/60 px-4 py-3 space-y-3 shrink-0 bg-muted/5">
+            {/* Project selector */}
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-muted-foreground">Project</div>
               <InlineEntitySelector
                 ref={projectSelectorRef}
                 value={projectId}
                 options={projectOptions}
-                placeholder="Project"
+                placeholder="No project"
                 disablePortal
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
                 onChange={handleProjectChange}
-                onConfirm={() => {
-                  descriptionEditorRef.current?.focus();
-                }}
                 renderTriggerValue={(option) =>
                   option && currentProject ? (
                     <>
@@ -901,7 +966,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">No project</span>
                   )
                 }
                 renderOption={(option) => {
@@ -919,379 +984,340 @@ export function NewIssueDialog() {
                 }}
               />
             </div>
-          </div>
-        </div>
 
-        {currentProjectSupportsReviewBundles && (
-          <div className="px-4 pb-2 shrink-0">
-            <div className="space-y-1">
-              <div className="text-xs font-medium">Review bundle</div>
-              {currentProjectAllowsReviewBundleOverride ? (
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    type="button"
-                    className={cn(
-                      "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                      reviewBundleMode === "inherit" && "bg-accent",
-                    )}
-                    onClick={() => setReviewBundleMode("inherit")}
-                  >
-                    Use project default
+            {/* Status & Priority row */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Popover open={statusOpen} onOpenChange={setStatusOpen}>
+                <PopoverTrigger asChild>
+                  <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+                    <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
+                    {currentStatus.label}
                   </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                      reviewBundleMode === "optional" && "bg-accent",
-                    )}
-                    onClick={() => setReviewBundleMode("optional")}
-                  >
-                    Optional
-                  </button>
-                  <button
-                    type="button"
-                    className={cn(
-                      "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                      reviewBundleMode === "required" && "bg-accent",
-                    )}
-                    onClick={() => setReviewBundleMode("required")}
-                  >
-                    Required
-                  </button>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground">
-                  This project enforces its default:
-                  {" "}
-                  {currentProjectReviewBundlePolicy?.defaultMode === "required" ? "Required" : "Optional"}.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {currentProjectSupportsExecutionWorkspace && (
-          <div className="px-4 pb-2 shrink-0">
-            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-              <div className="space-y-0.5">
-                <div className="text-xs font-medium">Use isolated issue checkout</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Create an issue-specific execution workspace instead of using the project's primary checkout.
-                </div>
-              </div>
-              <button
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
-                )}
-                onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
-                type="button"
-              >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
-                  )}
-                />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {supportsAssigneeOverrides && (
-          <div className="px-4 pb-2 shrink-0">
-            <button
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setAssigneeOptionsOpen((open) => !open)}
-            >
-              {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              {assigneeOptionsTitle}
-            </button>
-            {assigneeOptionsOpen && (
-              <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model</div>
-                  <InlineEntitySelector
-                    value={assigneeModelOverride}
-                    options={modelOverrideOptions}
-                    placeholder="Default model"
-                    disablePortal
-                    noneLabel="Default model"
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models found."
-                    onChange={setAssigneeModelOverride}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Thinking effort</div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {thinkingEffortOptions.map((option) => (
-                      <button
-                        key={option.value || "default"}
-                        className={cn(
-                          "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                          assigneeThinkingEffort === option.value && "bg-accent"
-                        )}
-                        onClick={() => setAssigneeThinkingEffort(option.value)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {assigneeAdapterType === "claude_local" && (
-                  <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                </PopoverTrigger>
+                <PopoverContent className="w-36 p-1" align="start">
+                  {statuses.map((s) => (
                     <button
+                      key={s.value}
                       className={cn(
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        assigneeChrome ? "bg-green-600" : "bg-muted"
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        s.value === status && "bg-accent"
                       )}
-                      onClick={() => setAssigneeChrome((value) => !value)}
+                      onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                     >
-                      <span
-                        className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                          assigneeChrome ? "translate-x-4.5" : "translate-x-0.5"
-                        )}
-                      />
+                      <CircleDot className={cn("h-3 w-3", s.color)} />
+                      {s.label}
                     </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
+
+              <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
+                <PopoverTrigger asChild>
+                  <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+                    {currentPriority ? (
+                      <>
+                        <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
+                        {currentPriority.label}
+                      </>
+                    ) : (
+                      <>
+                        <Minus className="h-3 w-3 text-muted-foreground" />
+                        Priority
+                      </>
+                    )}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-36 p-1" align="start">
+                  {priorities.map((p) => (
+                    <button
+                      key={p.value}
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        p.value === priority && "bg-accent"
+                      )}
+                      onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
+                    >
+                      <p.icon className={cn("h-3 w-3", p.color)} />
+                      {p.label}
+                    </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
+
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+                <Tag className="h-3 w-3" />
+                Labels
+              </button>
+
+              <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+                <PopoverTrigger asChild>
+                  <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+                    <MoreHorizontal className="h-3 w-3" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-44 p-1" align="start">
+                  <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
+                    <Calendar className="h-3 w-3" />
+                    Start date
+                  </button>
+                  <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
+                    <Calendar className="h-3 w-3" />
+                    Due date
+                  </button>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Review bundle */}
+            {currentProjectSupportsReviewBundles && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium">Review bundle</div>
+                {currentProjectAllowsReviewBundleOverride ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      className={cn(
+                        "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
+                        reviewBundleMode === "inherit" && "bg-accent",
+                      )}
+                      onClick={() => setReviewBundleMode("inherit")}
+                    >
+                      Use project default
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
+                        reviewBundleMode === "optional" && "bg-accent",
+                      )}
+                      onClick={() => setReviewBundleMode("optional")}
+                    >
+                      Optional
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
+                        reviewBundleMode === "required" && "bg-accent",
+                      )}
+                      onClick={() => setReviewBundleMode("required")}
+                    >
+                      Required
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    This project enforces its default:
+                    {" "}
+                    {currentProjectReviewBundlePolicy?.defaultMode === "required" ? "Required" : "Optional"}.
                   </div>
                 )}
               </div>
             )}
-          </div>
-        )}
 
-        {/* Recurring schedule */}
-        <div className="px-4 pb-2 shrink-0">
-          <button
-            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setRecurringSectionOpen((open) => !open)}
-            type="button"
-          >
-            {recurringSectionOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <Clock3 className="h-3 w-3" />
-            Recurring task
-          </button>
-          {recurringSectionOpen && (
-            <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
-              <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                <div className="text-xs text-muted-foreground">Enable recurring schedule</div>
+            {/* Execution workspace */}
+            {currentProjectSupportsExecutionWorkspace && (
+              <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-medium">Use isolated issue checkout</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Create an issue-specific execution workspace instead of using the project's primary checkout.
+                  </div>
+                </div>
                 <button
                   className={cn(
                     "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                    recurringEnabled ? "bg-green-600" : "bg-muted",
+                    useIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
                   )}
-                  onClick={() => setRecurringEnabled((value) => !value)}
+                  onClick={() => setUseIsolatedExecutionWorkspace((value) => !value)}
                   type="button"
                 >
                   <span
                     className={cn(
                       "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                      recurringEnabled ? "translate-x-4.5" : "translate-x-0.5",
+                      useIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
                     )}
                   />
                 </button>
               </div>
-              <div className="space-y-1.5">
-                <div className="text-xs text-muted-foreground">Name</div>
-                <input
-                  className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                  value={recurringName}
-                  onChange={(e) => setRecurringName(e.target.value)}
-                  placeholder="Weekly status report"
-                  disabled={!recurringEnabled}
-                />
-              </div>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Preset</div>
-                  <select
-                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                    value={recurringPresetValue}
-                    onChange={(e) => {
-                      const nextId = e.target.value;
-                      if (nextId === "__custom__") return;
-                      const preset = cronPresetOptions.find((option) => option.id === nextId);
-                      if (!preset) return;
-                      setRecurringExpression(preset.expression);
-                    }}
-                    disabled={!recurringEnabled}
-                  >
-                    <option value="__custom__">Custom expression</option>
-                    {cronPresetOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label} ({option.expression})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Cron expression</div>
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
-                    value={recurringExpression}
-                    onChange={(e) => setRecurringExpression(e.target.value)}
-                    placeholder="0 9 * * 1-5"
-                    disabled={!recurringEnabled}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Timezone</div>
-                  <input
-                    className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                    value={recurringTimezone}
-                    onChange={(e) => setRecurringTimezone(e.target.value)}
-                    placeholder="UTC"
-                    disabled={!recurringEnabled}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <div className="text-xs text-muted-foreground">Issue behavior</div>
-                <select
-                  className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                  value={recurringIssueMode}
-                  onChange={(e) =>
-                    setRecurringIssueMode(e.target.value as "create_new" | "reuse_existing" | "reopen_existing")
-                  }
-                  disabled={!recurringEnabled}
+            )}
+
+            {/* Assignee adapter overrides */}
+            {supportsAssigneeOverrides && (
+              <div>
+                <button
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setAssigneeOptionsOpen((open) => !open)}
                 >
-                  <option value="reopen_existing">Reopen this issue when done</option>
-                  <option value="reuse_existing">Reuse this issue</option>
-                  <option value="create_new">Create a new issue each run</option>
-                </select>
+                  {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  {assigneeOptionsTitle}
+                </button>
+                {assigneeOptionsOpen && (
+                  <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+                    <div className="space-y-1.5">
+                      <div className="text-xs text-muted-foreground">Model</div>
+                      <InlineEntitySelector
+                        value={assigneeModelOverride}
+                        options={modelOverrideOptions}
+                        placeholder="Default model"
+                        disablePortal
+                        noneLabel="Default model"
+                        searchPlaceholder="Search models..."
+                        emptyMessage="No models found."
+                        onChange={setAssigneeModelOverride}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="text-xs text-muted-foreground">Thinking effort</div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {thinkingEffortOptions.map((option) => (
+                          <button
+                            key={option.value || "default"}
+                            className={cn(
+                              "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
+                              assigneeThinkingEffort === option.value && "bg-accent"
+                            )}
+                            onClick={() => setAssigneeThinkingEffort(option.value)}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {assigneeAdapterType === "claude_local" && (
+                      <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+                        <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                        <button
+                          className={cn(
+                            "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                            assigneeChrome ? "bg-green-600" : "bg-muted"
+                          )}
+                          onClick={() => setAssigneeChrome((value) => !value)}
+                        >
+                          <span
+                            className={cn(
+                              "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                              assigneeChrome ? "translate-x-4.5" : "translate-x-0.5"
+                            )}
+                          />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              {recurringEnabled && !assigneeId && (
-                <div className="text-[11px] text-amber-500">
-                  Select an assignee to enable recurring scheduling.
+            )}
+
+            {/* Recurring schedule */}
+            <div>
+              <button
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setRecurringSectionOpen((open) => !open)}
+                type="button"
+              >
+                {recurringSectionOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                <Clock3 className="h-3 w-3" />
+                Recurring task
+              </button>
+              {recurringSectionOpen && (
+                <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+                  <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+                    <div className="text-xs text-muted-foreground">Enable recurring schedule</div>
+                    <button
+                      className={cn(
+                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
+                        recurringEnabled ? "bg-green-600" : "bg-muted",
+                      )}
+                      onClick={() => setRecurringEnabled((value) => !value)}
+                      type="button"
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                          recurringEnabled ? "translate-x-4.5" : "translate-x-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="text-xs text-muted-foreground">Name</div>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringName}
+                      onChange={(e) => setRecurringName(e.target.value)}
+                      placeholder="Weekly status report"
+                      disabled={!recurringEnabled}
+                    />
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <div className="text-xs text-muted-foreground">Preset</div>
+                      <select
+                        className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        value={recurringPresetValue}
+                        onChange={(e) => {
+                          const nextId = e.target.value;
+                          if (nextId === "__custom__") return;
+                          const preset = cronPresetOptions.find((option) => option.id === nextId);
+                          if (!preset) return;
+                          setRecurringExpression(preset.expression);
+                        }}
+                        disabled={!recurringEnabled}
+                      >
+                        <option value="__custom__">Custom expression</option>
+                        {cronPresetOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label} ({option.expression})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="text-xs text-muted-foreground">Cron expression</div>
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs font-mono"
+                        value={recurringExpression}
+                        onChange={(e) => setRecurringExpression(e.target.value)}
+                        placeholder="0 9 * * 1-5"
+                        disabled={!recurringEnabled}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="text-xs text-muted-foreground">Timezone</div>
+                      <input
+                        className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                        value={recurringTimezone}
+                        onChange={(e) => setRecurringTimezone(e.target.value)}
+                        placeholder="UTC"
+                        disabled={!recurringEnabled}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="text-xs text-muted-foreground">Issue behavior</div>
+                    <select
+                      className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                      value={recurringIssueMode}
+                      onChange={(e) =>
+                        setRecurringIssueMode(e.target.value as "create_new" | "reuse_existing" | "reopen_existing")
+                      }
+                      disabled={!recurringEnabled}
+                    >
+                      <option value="reopen_existing">Reopen this issue when done</option>
+                      <option value="reuse_existing">Reuse this issue</option>
+                      <option value="create_new">Create a new issue each run</option>
+                    </select>
+                  </div>
+                  {recurringEnabled && !assigneeId && (
+                    <div className="text-[11px] text-amber-500">
+                      Select an assignee to enable recurring scheduling.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Description */}
-        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}>
-          <MarkdownEditor
-            ref={descriptionEditorRef}
-            value={description}
-            onChange={setDescription}
-            placeholder="Add description..."
-            bordered={false}
-            mentions={mentionOptions}
-            contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
-            imageUploadHandler={async (file) => {
-              const asset = await uploadDescriptionImage.mutateAsync(file);
-              return asset.contentPath;
-            }}
-          />
-        </div>
-
-        {/* Property chips bar */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
-          {/* Status chip */}
-          <Popover open={statusOpen} onOpenChange={setStatusOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
-                {currentStatus.label}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {statuses.map((s) => (
-                <button
-                  key={s.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    s.value === status && "bg-accent"
-                  )}
-                  onClick={() => { setStatus(s.value); setStatusOpen(false); }}
-                >
-                  <CircleDot className={cn("h-3 w-3", s.color)} />
-                  {s.label}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Priority chip */}
-          <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
-                {currentPriority ? (
-                  <>
-                    <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
-                    {currentPriority.label}
-                  </>
-                ) : (
-                  <>
-                    <Minus className="h-3 w-3 text-muted-foreground" />
-                    Priority
-                  </>
-                )}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {priorities.map((p) => (
-                <button
-                  key={p.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    p.value === priority && "bg-accent"
-                  )}
-                  onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
-                >
-                  <p.icon className={cn("h-3 w-3", p.color)} />
-                  {p.label}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-
-          {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button>
-
-          {/* Attach image chip */}
-          <input
-            ref={attachInputRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            className="hidden"
-            onChange={handleAttachImage}
-          />
-          <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
-            onClick={() => attachInputRef.current?.click()}
-            disabled={uploadDescriptionImage.isPending}
-          >
-            <Paperclip className="h-3 w-3" />
-            {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
-          </button>
-
-          {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-                <MoreHorizontal className="h-3 w-3" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
-            </PopoverContent>
-          </Popover>
-        </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
