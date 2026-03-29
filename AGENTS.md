@@ -20,6 +20,11 @@ Before making changes, read in this order:
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
 
+For upstream merge work, also read:
+
+1. `doc/UPSTREAM-MERGE-RUNBOOK.md`
+2. `doc/UI-LOCALIZATION.md`
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
