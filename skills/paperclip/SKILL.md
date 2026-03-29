@@ -62,10 +62,13 @@ Follow these steps every time you wake up:
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
-If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
-If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
+If `PAPERCLIP_WAKE_COMMENT_ID` is set, you MUST read that comment and the full thread first before deciding what to do. This applies to both wake reasons:
+- `issue_comment_mentioned` — you were @-mentioned in a comment, even if the task is not assigned to you.
+- `issue_commented` — a new comment was posted on a task already assigned to you.
+In both cases, treat the triggering comment as the immediate context for this heartbeat.
+If the mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
-If the comment does not direct you to take ownership, do not self-assign.
+If the comment does not direct you to take ownership and the task is not assigned to you, do not self-assign.
 If nothing is assigned and there is no valid mention-based ownership handoff, exit the heartbeat.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
@@ -80,6 +83,7 @@ If already checked out by you, returns normally. If owned by another agent: `409
 
 **Step 6 — Understand context.** `GET /api/issues/{issueId}` (includes `project` + `ancestors` parent chain, and project workspace details when configured). `GET /api/issues/{issueId}/comments`. Read ancestors to understand _why_ this task exists.
 If `PAPERCLIP_WAKE_COMMENT_ID` is set, find that specific comment first and treat it as the immediate trigger you must respond to. Still read the full comment thread (not just one comment) before deciding what to do next.
+**Acknowledgment convention:** When `PAPERCLIP_WAKE_COMMENT_ID` is set (for either `issue_commented` or `issue_comment_mentioned`), post a brief acknowledgment comment before doing the work (e.g. "Picked up — working on this now."). This gives the human a visible signal that their comment was received.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
 
