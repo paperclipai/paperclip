@@ -51,3 +51,7 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { evalResults, evalCaseResults } from "./eval_results.js";
+export { memoryBindings } from "./memory_bindings.js";
+export { memoryEntries } from "./memory_entries.js";
+export { memoryOperations } from "./memory_operations.js";
