@@ -821,6 +821,8 @@ export function AgentDetail() {
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
+              <span className="mx-1.5 opacity-30">·</span>
+              <span className="text-xs">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span>
             </p>
           </div>
         </div>
