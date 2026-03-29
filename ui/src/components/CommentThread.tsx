@@ -8,6 +8,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { StatusIcon } from "./StatusIcon";
 import { AgentIcon } from "./AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import { invocationSourceLabel, invocationSourceBadge, invocationSourceBadgeDefault } from "../lib/status-colors";
@@ -46,6 +47,7 @@ interface CommentThreadProps {
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
   mentions?: MentionOption[];
+  onStatusChange?: (status: string) => void;
 }
 
 const CLOSED_STATUSES = new Set(["done", "cancelled"]);
@@ -237,6 +239,7 @@ export function CommentThread({
   reassignOptions = [],
   currentAssigneeValue = "",
   mentions: providedMentions,
+  onStatusChange,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -409,6 +412,13 @@ export function CommentThread({
               />
               Re-open
             </label>
+          )}
+          {onStatusChange && issueStatus && (
+            <StatusIcon
+              status={issueStatus}
+              onChange={onStatusChange}
+              showLabel
+            />
           )}
           {enableReassign && reassignOptions.length > 0 && (
             <InlineEntitySelector

@@ -466,6 +466,14 @@ export function IssueDetail() {
     },
   });
 
+  const updateChildIssue = useMutation({
+    mutationFn: ({ childId, data }: { childId: string; data: Record<string, unknown> }) =>
+      issuesApi.update(childId, data),
+    onSuccess: () => {
+      invalidateIssue();
+    },
+  });
+
   const addComment = useMutation({
     mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
       issuesApi.addComment(issueId!, body, reopen),
@@ -1005,6 +1013,7 @@ export function IssueDetail() {
             reassignOptions={commentReassignOptions}
             currentAssigneeValue={currentAssigneeValue}
             mentions={mentionOptions}
+            onStatusChange={(status) => updateIssue.mutate({ status })}
             onAdd={async (body, reopen, reassignment) => {
               if (reassignment) {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
@@ -1029,19 +1038,28 @@ export function IssueDetail() {
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {childIssues.map((child) => (
-                <Link
+                <div
                   key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
-                  state={location.state}
                   className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <StatusIcon status={child.status} />
-                    <PriorityIcon priority={child.priority} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {child.identifier ?? child.id.slice(0, 8)}
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <StatusIcon
+                        status={child.status}
+                        onChange={(status) => updateChildIssue.mutate({ childId: child.id, data: { status } })}
+                      />
                     </span>
-                    <span className="truncate">{child.title}</span>
+                    <PriorityIcon priority={child.priority} />
+                    <Link
+                      to={`/issues/${child.identifier ?? child.id}`}
+                      state={location.state}
+                      className="flex items-center gap-2 min-w-0 hover:underline"
+                    >
+                      <span className="font-mono text-muted-foreground shrink-0">
+                        {child.identifier ?? child.id.slice(0, 8)}
+                      </span>
+                      <span className="truncate">{child.title}</span>
+                    </Link>
                   </div>
                   {child.assigneeAgentId && (() => {
                     const name = agentMap.get(child.assigneeAgentId)?.name;
@@ -1049,7 +1067,7 @@ export function IssueDetail() {
                       ? <Identity name={name} size="sm" />
                       : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
                   })()}
-                </Link>
+                </div>
               ))}
             </div>
           )}
