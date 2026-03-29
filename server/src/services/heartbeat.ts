@@ -2167,17 +2167,17 @@ export function heartbeatService(db: Db) {
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
       );
 
-      const issue = await tx
+      const lockedIssues = await tx
         .select({
           id: issues.id,
           companyId: issues.companyId,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
-        .then((rows) => rows[0] ?? null);
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
 
-      if (!issue) return;
+      if (lockedIssues.length === 0) return;
 
+      // Clear execution lock on ALL issues owned by this run
       await tx
         .update(issues)
         .set({
@@ -2186,7 +2186,10 @@ export function heartbeatService(db: Db) {
           executionLockedAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(issues.id, issue.id));
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+
+      // Promote deferred wakeups for the primary issue
+      const issue = lockedIssues[0];
 
       while (true) {
         const deferred = await tx
