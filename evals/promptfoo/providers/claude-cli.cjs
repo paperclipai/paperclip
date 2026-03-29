@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 
 class ClaudeCliProvider {
   constructor() {
-    this.providerId = 'claude-code-local';
+    this.providerId = 'claude-code-cli';
   }
 
   id() {
@@ -26,7 +26,7 @@ class ClaudeCliProvider {
 
       return { output };
     } catch (err) {
-      return { error: err.message };
+      return { error: `${err.message}${err.stderr ? `\n${err.stderr}` : ''}` };
     }
   }
 }
