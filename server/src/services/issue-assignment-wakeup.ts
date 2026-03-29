@@ -31,6 +31,12 @@ export function queueIssueAssignmentWakeup(input: {
   const normalizedIssueStatus = typeof input.issue.status === "string"
     ? input.issue.status.trim().toLowerCase()
     : "";
+  const normalizedAssigneeAgentId = typeof input.issue.assigneeAgentId === "string"
+    ? input.issue.assigneeAgentId.trim().toLowerCase()
+    : null;
+  const normalizedRequestedByActorId = typeof input.requestedByActorId === "string"
+    ? input.requestedByActorId.trim().toLowerCase()
+    : null;
   if (
     !input.issue.assigneeAgentId ||
     normalizedIssueStatus === "backlog" ||
@@ -39,8 +45,9 @@ export function queueIssueAssignmentWakeup(input: {
   ) return;
   if (
     input.requestedByActorType === "agent" &&
-    input.requestedByActorId &&
-    input.requestedByActorId === input.issue.assigneeAgentId
+    normalizedRequestedByActorId &&
+    normalizedAssigneeAgentId &&
+    normalizedRequestedByActorId === normalizedAssigneeAgentId
   ) {
     return;
   }
