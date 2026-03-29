@@ -112,4 +112,14 @@ describe("issues list query parsing", () => {
     expect(res.body.error).toContain("originId");
     expect(mockIssueService.list).not.toHaveBeenCalled();
   });
+
+  it("returns 400 for invalid includeRoutineExecutions query values", async () => {
+    const res = await request(createApp()).get(
+      `/api/companies/${COMPANY_ID}/issues?includeRoutineExecutions=maybe`,
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("includeRoutineExecutions");
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
 });

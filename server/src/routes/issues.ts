@@ -287,6 +287,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(400).json({ error: "Invalid originId filter for routine_execution originKind" });
       return;
     }
+    const normalizedIncludeRoutineExecutions = includeRoutineExecutionsFilter?.trim().toLowerCase();
+    if (
+      normalizedIncludeRoutineExecutions &&
+      normalizedIncludeRoutineExecutions !== "true" &&
+      normalizedIncludeRoutineExecutions !== "1" &&
+      normalizedIncludeRoutineExecutions !== "false" &&
+      normalizedIncludeRoutineExecutions !== "0"
+    ) {
+      res.status(400).json({ error: "Invalid includeRoutineExecutions filter. Use true/false or 1/0." });
+      return;
+    }
     const statusFilterNormalized = normalizedStatuses.length > 0 ? Array.from(new Set(normalizedStatuses)).join(",") : undefined;
 
     const assigneeUserId =
@@ -348,7 +359,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       originKind: originKindFilter,
       originId: originIdFilter,
       includeRoutineExecutions:
-        includeRoutineExecutionsFilter === "true" || includeRoutineExecutionsFilter === "1",
+        normalizedIncludeRoutineExecutions === "true" || normalizedIncludeRoutineExecutions === "1",
       q: searchFilter,
     });
     res.json(result);
