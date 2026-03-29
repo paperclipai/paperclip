@@ -298,8 +298,8 @@ export function CommentThread({
       run,
     }));
     return [...commentItems, ...runItems].sort((a, b) => {
-      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
-      if (a.kind === b.kind) return a.id.localeCompare(b.id);
+      if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+      if (a.kind === b.kind) return b.id.localeCompare(a.id);
       return a.kind === "comment" ? -1 : 1;
     });
   }, [comments, linkedRuns]);
