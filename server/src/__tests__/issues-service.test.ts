@@ -314,3 +314,76 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]));
   });
 });
+
+describeEmbeddedPostgres("issueService.findMentionedAgents — multi-word name matching", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId: string;
+  let ctoAgentId: string;
+  let ctoKoreanAgentId: string;
+  let designerAgentId: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-mention-match-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+
+    companyId = randomUUID();
+    ctoAgentId = randomUUID();
+    ctoKoreanAgentId = randomUUID();
+    designerAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: "TC",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: ctoAgentId, companyId, name: "CTO", role: "cto",
+        status: "active", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      },
+      {
+        id: ctoKoreanAgentId, companyId, name: "CTO 박서준", role: "engineer",
+        status: "active", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      },
+      {
+        id: designerAgentId, companyId, name: "Designer 김민지", role: "designer",
+        status: "active", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      },
+    ]);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("exact @CTO resolves only single-word CTO, not CTO 박서준", async () => {
+    const result = await svc.findMentionedAgents(companyId, "@CTO please review this");
+    expect(result).toEqual([ctoAgentId]);
+  });
+
+  it("@박서준 resolves CTO 박서준 via name-part match", async () => {
+    const result = await svc.findMentionedAgents(companyId, "@박서준 이거 확인해줘");
+    expect(result).toEqual([ctoKoreanAgentId]);
+  });
+
+  it("full name @CTO 박서준 resolves via body substring match", async () => {
+    const result = await svc.findMentionedAgents(companyId, "Hey @CTO 박서준 check this");
+    // Should resolve both: CTO by exact token, CTO 박서준 by full-name substring
+    expect(new Set(result)).toEqual(new Set([ctoAgentId, ctoKoreanAgentId]));
+  });
+
+  it("@Designer resolves only Designer 김민지 (no exact single-word agent)", async () => {
+    const result = await svc.findMentionedAgents(companyId, "@Designer please help");
+    expect(result).toEqual([designerAgentId]);
+  });
+
+  it("returns empty for unrecognized mentions", async () => {
+    const result = await svc.findMentionedAgents(companyId, "@UnknownAgent do something");
+    expect(result).toEqual([]);
+  });
+});

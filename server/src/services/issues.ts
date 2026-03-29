@@ -1644,22 +1644,30 @@ export function issueService(db: Db) {
       }
 
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      const bodyLower = body.toLowerCase();
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
-      const bodyLower = body.toLowerCase();
+
+      // Pass 1: exact token match (highest priority)
+      const exactMatchedTokens = new Set<string>();
       for (const agent of rows) {
         const nameLower = agent.name.toLowerCase();
-        // Exact token match (single-word names)
         if (tokens.has(nameLower)) {
           resolved.add(agent.id);
-          continue;
+          exactMatchedTokens.add(nameLower);
         }
-        // Partial match: @token appears as part of agent name (e.g. @CTO matches "CTO 박서준")
-        // or agent name words individually appear as @tokens (e.g. @박서준 matches "CTO 박서준")
+      }
+
+      // Pass 2: for tokens not consumed by exact match, try partial name-part match
+      // and full-name substring match in body
+      const unmatchedTokens = new Set([...tokens].filter((t) => !exactMatchedTokens.has(t)));
+      for (const agent of rows) {
+        if (resolved.has(agent.id)) continue;
+        const nameLower = agent.name.toLowerCase();
+        // Name-part match: e.g. @박서준 matches "CTO 박서준" (only if 박서준 wasn't an exact match for another agent)
         const nameParts = nameLower.split(/\s+/);
-        if (nameParts.some((part) => tokens.has(part))) {
+        if (nameParts.some((part) => unmatchedTokens.has(part))) {
           resolved.add(agent.id);
           continue;
         }
