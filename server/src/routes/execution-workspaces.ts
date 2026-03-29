@@ -11,6 +11,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { readQueryString } from "./query-utils.js";
 
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
@@ -18,15 +19,6 @@ export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
   const svc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
-
-  function readQueryString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      const first = value.find((entry): entry is string => typeof entry === "string");
-      return first;
-    }
-    return undefined;
-  }
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;

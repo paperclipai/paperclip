@@ -11,21 +11,13 @@ import {
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { readQueryString } from "./query-utils.js";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function routineRoutes(db: Db) {
   const router = Router();
   const svc = routineService(db);
   const access = accessService(db);
-
-  function readQueryString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      const first = value.find((entry): entry is string => typeof entry === "string");
-      return first;
-    }
-    return undefined;
-  }
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);

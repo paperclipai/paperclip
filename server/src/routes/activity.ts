@@ -6,6 +6,7 @@ import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/index.js";
+import { readQueryString } from "./query-utils.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -22,15 +23,6 @@ export function activityRoutes(db: Db) {
   const router = Router();
   const svc = activityService(db);
   const issueSvc = issueService(db);
-
-  function readQueryString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      const first = value.find((entry): entry is string => typeof entry === "string");
-      return first;
-    }
-    return undefined;
-  }
 
   async function resolveIssueByRef(rawId: string) {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
