@@ -1488,6 +1488,59 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("returns not found for unknown issue ids on markRead", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.markRead(companyId, randomUUID(), "user-1", new Date()),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Issue not found",
+    });
+  });
+
+  it("returns not found when markRead company/issue do not match", async () => {
+    const issueCompanyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: issueCompanyId,
+        name: "Paperclip Issue Company",
+        issuePrefix: `T${issueCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Paperclip Other Company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: issueCompanyId,
+      title: "markRead company mismatch",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.markRead(otherCompanyId, issueId, "user-1", new Date()),
+    ).rejects.toMatchObject({
+      status: 404,
+      message: "Issue not found",
+    });
+  });
+
   it("returns unprocessable for malformed user ids on markRead", async () => {
     await expect(
       svc.markRead(randomUUID(), randomUUID(), { bad: true } as any, new Date()),

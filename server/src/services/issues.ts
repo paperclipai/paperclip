@@ -788,6 +788,12 @@ export function issueService(db: Db) {
       if (!normalizedIssueId) throw notFound("Issue not found");
       if (typeof userId !== "string" || userId.trim().length === 0) throw unprocessable("Invalid userId");
       if (!(readAt instanceof Date) || Number.isNaN(readAt.getTime())) throw unprocessable("Invalid readAt");
+      const issue = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, normalizedIssueId), eq(issues.companyId, normalizedCompanyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
       const normalizedUserId = userId.trim();
       const now = new Date();
       const [row] = await db
