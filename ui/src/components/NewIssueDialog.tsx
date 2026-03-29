@@ -466,6 +466,8 @@ export function NewIssueDialog() {
       return issuesApi.suggest(effectiveCompanyId, rawText);
     },
     onSuccess: (suggestion) => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      clearDraft();
       setTitle(suggestion.title);
       setDescription(suggestion.description);
       setPriority(suggestion.priority || "medium");
