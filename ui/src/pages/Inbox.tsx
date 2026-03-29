@@ -697,7 +697,7 @@ export function Inbox() {
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
     if (tab === "mine") return joinRequests.filter((jr) => !dismissed.has(`join:${jr.id}`));
-    if (tab === "action") return joinRequests;
+    if (tab === "action") return [];
     return joinRequests;
   }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
 
@@ -961,6 +961,7 @@ export function Inbox() {
     !isIssuesLoading &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
+    !isActionIssuesLoading &&
     !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
