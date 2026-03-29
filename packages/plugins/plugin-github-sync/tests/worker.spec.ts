@@ -56,14 +56,20 @@ describe("worker", () => {
         },
       });
 
+      // Pre-seed repos state to skip initial sync (which would call GitHub API)
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: "repos" },
+        ["test-org/repo"],
+      );
+
       await plugin.definition.setup(harness.ctx);
 
-      // Verify data handlers registered
+      // Verify data handlers registered by calling getData
+      // This triggers ensureInitialized but repos already exist so no API call
       const syncStatus = await harness.getData("sync-status", {});
       expect(syncStatus).toBeDefined();
-
-      // Verify actions registered
-      // (testConnection would fail since no real GitHub, but it should be registered)
+      expect((syncStatus as any).orgName).toBe("test-org");
+      expect((syncStatus as any).trackedRepos).toBe(1);
     });
   });
 
