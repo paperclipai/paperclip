@@ -668,7 +668,7 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId) {
+      if (!filters?.includeRoutineExecutions && !filters?.originKind && !filters?.originId && !filters?.assigneeAgentId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
       conditions.push(isNull(issues.hiddenAt));
