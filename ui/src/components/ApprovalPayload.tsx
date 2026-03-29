@@ -59,15 +59,15 @@ function resolveDraftsValue(payload: Record<string, unknown>): string | null {
 }
 
 export function resolveCeoPrimaryText(payload: Record<string, unknown>): string | null {
-  const summary = typeof payload.summary === "string" ? payload.summary : null;
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
   const draft = typeof payload.draft === "string" ? payload.draft : null;
   const firstDraftFromDrafts = resolveDraftsValue(payload);
+  const summary = typeof payload.summary === "string" ? payload.summary : null;
 
-  return summary
-    ?? (plan ? String(plan) : null)
-    ?? draft
+  return draft
     ?? firstDraftFromDrafts
+    ?? (plan ? String(plan) : null)
+    ?? summary
     ?? null;
 }
 
@@ -143,6 +143,7 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
   const publishAt = payload.targetPublishAt ? String(payload.targetPublishAt) : "—";
 
   const primaryText = resolveCeoPrimaryText(payload);
+  const summary = typeof payload.summary === "string" ? payload.summary : null;
 
   const imageUrl = typeof payload.imageUrl === "string" ? payload.imageUrl : null;
   const imageAlt = typeof payload.imageAlt === "string" ? payload.imageAlt : "Approval image";
@@ -175,6 +176,10 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
         <span>•</span>
         <span>Publish: <span className="text-foreground">{publishAt}</span></span>
       </div>
+
+      {summary && (
+        <p className="text-xs italic text-muted-foreground/80">{summary}</p>
+      )}
 
       {primaryText && (
         <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap max-h-56 overflow-y-auto">
