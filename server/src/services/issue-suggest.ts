@@ -78,8 +78,8 @@ function parseClaudeResponse(text: string): IssueSuggestion {
     priority: ["low", "medium", "high", "critical"].includes(parsed.priority)
       ? parsed.priority
       : "medium",
-    assigneeAgentId: parsed.assigneeAgentId ?? null,
-    projectId: parsed.projectId ?? null,
+    assigneeAgentId: typeof parsed.assigneeAgentId === "string" ? parsed.assigneeAgentId : null,
+    projectId: typeof parsed.projectId === "string" ? parsed.projectId : null,
     status: parsed.status ?? "todo",
   };
 }
@@ -132,5 +132,18 @@ export async function suggestIssueFields(input: SuggestIssueInput): Promise<Issu
     proc.stdin.end();
   });
 
-  return parseClaudeResponse(result);
+  const parsed = parseClaudeResponse(result);
+
+  const validAgentIds = new Set(input.agents.map((a) => a.id));
+  const validProjectIds = new Set(input.projects.map((p) => p.id));
+
+  return {
+    ...parsed,
+    assigneeAgentId: parsed.assigneeAgentId && validAgentIds.has(parsed.assigneeAgentId)
+      ? parsed.assigneeAgentId
+      : null,
+    projectId: parsed.projectId && validProjectIds.has(parsed.projectId)
+      ? parsed.projectId
+      : null,
+  };
 }
