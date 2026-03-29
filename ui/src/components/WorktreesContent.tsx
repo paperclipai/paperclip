@@ -3,10 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import {
   GitBranch, MoreHorizontal, RefreshCw, Trash2, ExternalLink,
-  Play, Eye, CheckCircle2, ArrowLeft, Clipboard, RotateCcw,
+  Play, Eye, CheckCircle2, ArrowLeft, Clipboard, RotateCcw, Zap,
 } from "lucide-react";
 import type { GitWorktreeEntry } from "../api/execution-workspaces";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { useToast } from "../context/ToastContext";
 import { Badge } from "@/components/ui/badge";
@@ -207,6 +208,53 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
     issueStatusMutation.mutate({ issueId, status, comment });
   };
 
+  const triggerReviewMutation = useMutation({
+    mutationFn: async (issueId: string) => {
+      // 1. Fetch comments to find last @mention
+      const comments = await issuesApi.listComments(issueId);
+      if (!comments.length) throw new Error("No comments on this issue");
+
+      // Walk backwards through comments to find the last @mention
+      const agents = await agentsApi.list(companyId);
+      const agentByName = new Map(agents.map((a) => [a.name.toLowerCase(), a]));
+
+      for (let i = comments.length - 1; i >= 0; i--) {
+        const body = comments[i]!.body;
+        // Match @Name patterns (multi-word: @Engineering Manager, @QA Lead, etc.)
+        const mentions = [...body.matchAll(/@([\w][\w\s]*[\w])/g)].map((m) => m[1]!.trim().toLowerCase());
+        for (const mention of mentions) {
+          const agent = agentByName.get(mention);
+          if (agent) {
+            await agentsApi.invoke(agent.id, companyId);
+            return { agentName: agent.name };
+          }
+        }
+      }
+
+      // Fallback: if no @mention matched, invoke the assigned agent if present
+      const assignedAgent = agents.find((a) =>
+        comments.some((c) => c.authorAgentId === a.id),
+      );
+      if (assignedAgent) {
+        await agentsApi.invoke(assignedAgent.id, companyId);
+        return { agentName: assignedAgent.name };
+      }
+
+      throw new Error("No @mentioned agent found in comments");
+    },
+    onSuccess: (result) => {
+      pushToast({ title: `Triggered ${result.agentName}'s heartbeat.`, tone: "success" });
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Failed to trigger review";
+      pushToast({ title: msg, tone: "error" });
+    },
+  });
+
+  const handleTriggerReview = (issueId: string) => {
+    triggerReviewMutation.mutate(issueId);
+  };
+
   const handleConfirm = () => {
     if (!pendingAction) return;
     if (pendingAction.type === "archive" && pendingAction.entry.executionWorkspace) {
@@ -221,7 +269,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
     setPendingAction(null);
   };
 
-  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending || removeMutation.isPending || issueStatusMutation.isPending;
+  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending || removeMutation.isPending || issueStatusMutation.isPending || triggerReviewMutation.isPending;
 
   if (isLoading) {
     return (
@@ -292,6 +340,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
                 onRetryCleanup={() => setPendingAction({ type: "retry", entry })}
                 onRemove={() => setPendingAction({ type: "remove", entry })}
                 onIssueAction={handleIssueAction}
+                onTriggerReview={handleTriggerReview}
               />
             ))}
           </tbody>
@@ -342,6 +391,7 @@ function WorktreeRow({
   onRetryCleanup,
   onRemove,
   onIssueAction,
+  onTriggerReview,
 }: {
   entry: GitWorktreeEntry;
   isLast: boolean;
@@ -350,6 +400,7 @@ function WorktreeRow({
   onRetryCleanup: () => void;
   onRemove: () => void;
   onIssueAction: (issueId: string, status: string, comment?: string) => void;
+  onTriggerReview: (issueId: string) => void;
 }) {
   const ws = entry.executionWorkspace;
   const isArchived = ws?.status === "archived";
@@ -461,6 +512,10 @@ function WorktreeRow({
                   {/* In Review → Mark Done or Request Changes */}
                   {issueStatus === "in_review" && (
                     <>
+                      <DropdownMenuItem onClick={() => onTriggerReview(entry.issue!.id)}>
+                        <Zap className="h-4 w-4 mr-2" />
+                        Trigger review
+                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => onIssueAction(entry.issue!.id, "done")}>
                         <CheckCircle2 className="h-4 w-4 mr-2" />
                         Mark done
