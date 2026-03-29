@@ -1222,6 +1222,33 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("normalizes addComment issue uuid inputs for non-route callers", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "addComment uuid normalization",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.addComment(` ${issueId.toUpperCase()} `, "hello", {
+      userId: "operator-1",
+    });
+
+    expect(created.issueId).toBe(issueId);
+    expect(created.authorUserId).toBe("operator-1");
+  });
+
   it("returns not found for malformed issue ids on markRead", async () => {
     await expect(
       svc.markRead(randomUUID(), "not-a-uuid", "user-1", new Date()),

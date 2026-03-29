@@ -1536,14 +1536,19 @@ export function issueService(db: Db) {
     },
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
-      if (!isUuidLike(issueId)) throw notFound("Issue not found");
+      const normalizedIssueId = asCanonicalUuid(issueId);
+      if (!normalizedIssueId) throw notFound("Issue not found");
       if (typeof body !== "string") throw unprocessable("Invalid comment body");
-      if (actor.agentId != null && !isUuidLike(actor.agentId)) throw unprocessable("Invalid authorAgentId");
+      const normalizedAuthorAgentId =
+        actor.agentId == null
+          ? null
+          : asCanonicalUuid(actor.agentId);
+      if (actor.agentId != null && !normalizedAuthorAgentId) throw unprocessable("Invalid authorAgentId");
       if (actor.userId != null && typeof actor.userId !== "string") throw unprocessable("Invalid authorUserId");
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
-        .where(eq(issues.id, issueId))
+        .where(eq(issues.id, normalizedIssueId))
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
@@ -1556,8 +1561,8 @@ export function issueService(db: Db) {
         .insert(issueComments)
         .values({
           companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
+          issueId: normalizedIssueId,
+          authorAgentId: normalizedAuthorAgentId,
           authorUserId: actor.userId ?? null,
           body: redactedBody,
         })
@@ -1567,7 +1572,7 @@ export function issueService(db: Db) {
       await db
         .update(issues)
         .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
+        .where(eq(issues.id, normalizedIssueId));
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
