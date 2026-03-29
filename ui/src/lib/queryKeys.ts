@@ -133,6 +133,7 @@ export const queryKeys = {
   billing: {
     plans: ["billing", "plans"] as const,
     subscription: (companyId: string) => ["billing", "subscription", companyId] as const,
+    eligibility: ["billing", "eligibility"] as const,
   },
   connections: {
     list: (companyId: string) => ["connections", companyId] as const,

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -12,6 +12,8 @@ import { healthApi } from "../api/health";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
+import { billingApi } from "../api/billing";
+import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -56,6 +58,7 @@ import {
   Check,
   ChevronDown,
   Code,
+  CreditCard,
   Eye,
   EyeOff,
   Gem,
@@ -155,6 +158,40 @@ export function OnboardingWizard() {
   const [byokKeyError, setByokKeyError] = useState<string | null>(null);
   const [cloudSandboxEnabled, setCloudSandboxEnabled] = useState(false);
   const [managedInferenceEnabled, setManagedInferenceEnabled] = useState(false);
+
+  // Subscription eligibility (cloud mode only)
+  const eligibilityQuery = useQuery({
+    queryKey: queryKeys.billing.eligibility,
+    queryFn: () => billingApi.checkCompanyCreationEligibility(),
+    enabled: effectiveOnboardingOpen && step === 1 && !existingCompanyId,
+    staleTime: 10_000,
+  });
+
+  const plansQuery = useQuery({
+    queryKey: queryKeys.billing.plans,
+    queryFn: () => billingApi.listPlans(),
+    enabled: effectiveOnboardingOpen,
+  });
+
+  const inlineCheckoutMutation = useMutation({
+    mutationFn: ({ companyId, planId }: { companyId: string; planId: string }) =>
+      billingApi.createCheckoutSession(companyId, planId, {
+        successPath: "/onboarding?billing=success",
+        cancelPath: "/onboarding?billing=canceled",
+      }),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+
+  // Handle return from Stripe checkout
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("billing") === "success") {
+      queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
+      navigate(location.pathname, { replace: true });
+    }
+  }, [location.search, queryClient, navigate, location.pathname]);
 
   // Step 3 (task + launch)
   const [taskTitle, setTaskTitle] = useState(
@@ -489,7 +526,12 @@ export function OnboardingWizard() {
 
       setStep(2);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      if (err instanceof ApiError && err.status === 402) {
+        // Refetch eligibility to show the subscribe gate instead of raw error
+        await queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create company");
+      }
     } finally {
       setLoading(false);
     }
@@ -819,7 +861,76 @@ export function OnboardingWizard() {
               </div>
 
               {/* Step content */}
-              {step === 1 && (
+              {step === 1 && eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && (
+                <div key="subscribe-gate" className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
+                  <div className="flex items-center gap-3 mb-1">
+                    <div className="bg-muted/50 p-2">
+                      <CreditCard className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium">Subscribe to continue</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Subscribe to your existing companies before creating a new one.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {eligibilityQuery.data.unpaidCompanies.map((company) => {
+                      const paidPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0);
+                      return (
+                        <div
+                          key={company.companyId}
+                          className="flex items-center justify-between rounded-md border border-border px-4 py-3"
+                        >
+                          <div>
+                            <p className="text-sm font-medium">{company.companyName}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {company.status === "trialing"
+                                ? "Free trial"
+                                : company.status === "trial_expired"
+                                  ? "Trial expired"
+                                  : company.status === "canceled"
+                                    ? "Canceled"
+                                    : company.status}
+                            </p>
+                          </div>
+                          {paidPlan && (
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                inlineCheckoutMutation.mutate({
+                                  companyId: company.companyId,
+                                  planId: paidPlan.id,
+                                })
+                              }
+                              disabled={inlineCheckoutMutation.isPending}
+                            >
+                              {inlineCheckoutMutation.isPending ? (
+                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                              ) : (
+                                <CreditCard className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              Subscribe — ${(paidPlan.monthlyPriceCents / 100).toFixed(0)}/mo
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {inlineCheckoutMutation.isError && (
+                    <p className="text-xs text-destructive">
+                      {inlineCheckoutMutation.error instanceof Error
+                        ? inlineCheckoutMutation.error.message
+                        : "Failed to start checkout"}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Each company is $15/mo. You'll be redirected to Stripe to complete payment.
+                  </p>
+                </div>
+              )}
+
+              {step === 1 && (!eligibilityQuery.data || eligibilityQuery.data.canCreateCompany) && (
                 <div key={1} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -920,6 +1031,14 @@ export function OnboardingWizard() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Trial info — only show in cloud mode */}
+                  {cloudSandboxEnabled && (
+                    <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                      <Sparkles className="h-3 w-3 shrink-0" />
+                      14-day free trial included. $15/mo per company after.
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1636,7 +1755,7 @@ export function OnboardingWizard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (
+                  {step === 1 && (!eligibilityQuery.data || eligibilityQuery.data.canCreateCompany) && (
                     <Button
                       size="sm"
                       disabled={!companyName.trim() || loading}

@@ -32,7 +32,7 @@ function trialDaysRemaining(trialEndsAt: string | null | undefined): number | nu
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
-function PlanCard({
+export function PlanCard({
   plan,
   isCurrent,
   onUpgrade,
