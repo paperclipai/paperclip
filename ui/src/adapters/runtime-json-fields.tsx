@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import type { AdapterConfigFieldsProps } from "./types";
 import { Field, help } from "../components/agent-config-primitives";
 
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
+// [실험적 기능] 이슈 워크트리 UI — 워크트리 생성/관리 워크플로우가 아직 완성되지 않음.
+// 서버 측 워크트리 라이프사이클(생성, 정리, 에러 복구)이 구현되면 true로 변경할 것.
+// 관련 이슈: issue-worktree-support
 const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 const inputClass =

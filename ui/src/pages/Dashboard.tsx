@@ -19,7 +19,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Activity } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -282,6 +282,100 @@ export function Dashboard() {
               }
             />
           </div>
+
+          {/* Operational Summary - who is active, what are they doing */}
+          {agents && agents.length > 0 && (() => {
+            const activeAgents = agents.filter(
+              (a) => a.status === "active" || a.status === "running" || a.status === "error",
+            );
+            const pausedAgents = agents.filter((a) => a.status === "paused");
+            const agentIssueMap = new Map<string, Issue[]>();
+            for (const issue of issues ?? []) {
+              if (!issue.assigneeAgentId) continue;
+              const list = agentIssueMap.get(issue.assigneeAgentId) ?? [];
+              list.push(issue);
+              agentIssueMap.set(issue.assigneeAgentId, list);
+            }
+
+            const runningRuns = (runs ?? []).filter(
+              (r) => r.status === "running" || r.status === "queued",
+            );
+            const runAgentIds = new Set(runningRuns.map((r) => r.agentId));
+
+            return (
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+                    <Activity className="h-4 w-4" />
+                    운영 현황
+                  </h3>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-flex h-2 w-2 rounded-full bg-green-400" />
+                      활동 중 {activeAgents.length}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-flex h-2 w-2 rounded-full bg-yellow-400" />
+                      일시정지 {pausedAgents.length}
+                    </span>
+                    {runningRuns.length > 0 && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400" />
+                        </span>
+                        실행 중 {runningRuns.length}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {activeAgents.length > 0 ? (
+                  <div className="divide-y divide-border">
+                    {activeAgents.slice(0, 8).map((agent) => {
+                      const agentIssues = agentIssueMap.get(agent.id) ?? [];
+                      const inProgressIssue = agentIssues.find(
+                        (i) => i.status === "in_progress" || i.status === "in_review",
+                      );
+                      const isRunning = runAgentIds.has(agent.id);
+
+                      return (
+                        <Link
+                          key={agent.id}
+                          to={`/agents/${agent.urlKey || agent.id}`}
+                          className="flex items-center gap-3 py-2 text-sm hover:bg-accent/30 transition-colors rounded px-2 -mx-2 no-underline text-inherit"
+                        >
+                          <span className={cn(
+                            "inline-flex h-2 w-2 rounded-full shrink-0",
+                            isRunning ? "bg-cyan-400 animate-pulse" : agent.status === "error" ? "bg-red-400" : "bg-green-400",
+                          )} />
+                          <Identity name={agent.name} size="sm" />
+                          <span className="flex-1 truncate text-xs text-muted-foreground">
+                            {isRunning
+                              ? inProgressIssue
+                                ? `실행 중: ${inProgressIssue.title}`
+                                : "하트비트 실행 중"
+                              : inProgressIssue
+                                ? `작업 중: ${inProgressIssue.title}`
+                                : agent.status === "error"
+                                  ? "오류 발생"
+                                  : "대기 중"}
+                          </span>
+                          {agent.lastHeartbeatAt && (
+                            <span className="text-[11px] text-muted-foreground shrink-0">
+                              {timeAgo(agent.lastHeartbeatAt)}
+                            </span>
+                          )}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">현재 활동 중인 에이전트가 없습니다.</p>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="실행 활동" subtitle="최근 14일">

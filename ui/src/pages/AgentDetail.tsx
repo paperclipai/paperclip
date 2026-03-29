@@ -701,8 +701,8 @@ export function AgentDetail() {
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+      } else if (activeView === "skills") {
+        crumbs.push({ label: "스킬" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -862,7 +862,7 @@ export function AgentDetail() {
             items={[
               { value: "dashboard", label: "Dashboard" },
               { value: "configuration", label: "Configuration" },
-              // { value: "skills", label: "Skills" }, // TODO: bring back later
+              { value: "skills", label: "스킬" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
@@ -955,11 +955,11 @@ export function AgentDetail() {
         />
       )}
 
-      {/* {activeView === "skills" && (
+      {activeView === "skills" && (
         <SkillsTab
           agent={agent}
         />
-      )} */}{/* TODO: bring back later */}
+      )}
 
       {activeView === "runs" && (
         <RunsTab
@@ -1066,6 +1066,111 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   );
 }
 
+/* ---- Agent Status Summary Card ---- */
+
+function AgentStatusSummary({
+  agent,
+  runs,
+  assignedIssues,
+}: {
+  agent: Agent;
+  runs: HeartbeatRun[];
+  assignedIssues: { id: string; title: string; status: string; identifier?: string | null }[];
+}) {
+  const now = Date.now();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const runsToday = runs.filter(
+    (r) => new Date(r.createdAt).getTime() >= todayStart.getTime(),
+  );
+  const costToday = runsToday.reduce((sum, r) => {
+    const metrics = runMetrics(r);
+    return sum + metrics.cost;
+  }, 0);
+
+  const activeIssue = assignedIssues.find(
+    (i) => i.status === "in_progress" || i.status === "in_review",
+  );
+
+  const latestRun = [...runs].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )[0];
+  const isRunning = latestRun?.status === "running" || latestRun?.status === "queued";
+
+  const statusLabel =
+    agent.status === "paused"
+      ? "일시정지"
+      : isRunning
+        ? "실행 중"
+        : agent.status === "active"
+          ? "활성"
+          : agent.status === "error"
+            ? "오류"
+            : agent.status === "terminated"
+              ? "종료됨"
+              : "대기 중";
+
+  const summaryLine = isRunning
+    ? `진행 중: ${activeIssue?.title ?? "하트비트 실행 중"}`
+    : activeIssue
+      ? `할당됨: ${activeIssue.title}`
+      : latestRun?.status === "succeeded"
+        ? "작업 완료"
+        : latestRun?.status === "failed"
+          ? "마지막 실행 실패"
+          : "대기 중";
+
+  const dotColor = agentStatusDot[agent.status] ?? agentStatusDotDefault;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          현재 상태
+        </h3>
+        <div className="flex items-center gap-2">
+          <span className={cn("inline-flex h-2.5 w-2.5 rounded-full shrink-0", dotColor)} />
+          <span className="text-sm font-medium">{statusLabel}</span>
+        </div>
+      </div>
+
+      <p className="text-sm text-foreground/80 truncate">{summaryLine}</p>
+
+      {activeIssue && (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">현재 이슈:</span>
+          <Link
+            to={`/issues/${activeIssue.identifier ?? activeIssue.id}`}
+            className="text-foreground hover:underline truncate"
+          >
+            {activeIssue.identifier ?? activeIssue.id.slice(0, 8)} - {activeIssue.title}
+          </Link>
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-3 pt-1 border-t border-border">
+        <div className="text-center">
+          <span className="block text-lg font-semibold tabular-nums">{runsToday.length}</span>
+          <span className="text-[11px] text-muted-foreground">오늘 실행</span>
+        </div>
+        <div className="text-center">
+          <span className="block text-lg font-semibold tabular-nums">
+            {costToday > 0 ? `$${costToday.toFixed(2)}` : "$0"}
+          </span>
+          <span className="text-[11px] text-muted-foreground">오늘 비용</span>
+        </div>
+        <div className="text-center">
+          <span className="block text-lg font-semibold tabular-nums">
+            {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "-"}
+          </span>
+          <span className="text-[11px] text-muted-foreground">마지막 활동</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---- Agent Overview (main single-page view) ---- */
 
 function AgentOverview({
@@ -1085,6 +1190,9 @@ function AgentOverview({
 }) {
   return (
     <div className="space-y-8">
+      {/* Current Status Summary */}
+      <AgentStatusSummary agent={agent} runs={runs} assignedIssues={assignedIssues} />
+
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
 

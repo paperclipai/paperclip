@@ -163,7 +163,9 @@ export interface PluginLoaderOptions {
   /**
    * Future: URL of the remote plugin registry to query.
    * When set, the loader will also fetch available plugins from this endpoint.
-   * Registry support is not yet implemented; this field is reserved.
+   *
+   * [미구현] 원격 레지스트리 지원은 아직 구현되지 않았습니다.
+   * 현재는 로컬 플러그인(enableLocalDir)이나 npm 패키지(enableNpmDiscovery)를 사용하세요.
    */
   registryUrl?: string;
 }
@@ -1030,7 +1032,7 @@ export function pluginLoader(
         sources.push("registry");
         log.warn(
           { registryUrl: options.registryUrl },
-          "plugin-loader: remote registry discovery is not yet implemented",
+          "plugin-loader: 원격 레지스트리는 아직 지원되지 않습니다. 로컬 플러그인 디렉토리(enableLocalDir) 또는 npm 패키지(enableNpmDiscovery)를 사용하세요.",
         );
       }
 
