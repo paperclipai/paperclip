@@ -2,7 +2,6 @@ import {
   Inbox,
   CircleDot,
   Target,
-  Play,
   LayoutDashboard,
   DollarSign,
   History,
@@ -102,6 +101,7 @@ export function Sidebar() {
             <span className="truncate">New Issue</span>
           </button>
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
@@ -112,19 +112,17 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+        <SidebarAgents />
+
+        <SidebarProjects />
+
+        <SidebarSection label="Planning">
           <SidebarNavItem to="/chat" label="Chat" icon={MessageSquare} badge={inboxBadge.unreadChatSessions} />
-          <SidebarNavItem to="/runs" label="Runs" icon={Play} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/schedules" label="Schedules" icon={CalendarClock} />
         </SidebarSection>
 
-        <SidebarProjects />
-
-        <SidebarAgents />
-
-        <SidebarSection label="Company">
+        <SidebarSection label="Company" defaultOpen={false}>
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
