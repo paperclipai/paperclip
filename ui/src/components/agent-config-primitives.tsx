@@ -141,6 +141,18 @@ export function ToggleField({
   );
 }
 
+export const INTERVAL_PRESETS: { label: string; seconds: number }[] = [
+  { label: "15 min", seconds: 900 },
+  { label: "30 min", seconds: 1800 },
+  { label: "1 hr", seconds: 3600 },
+  { label: "2 hr", seconds: 7200 },
+  { label: "4 hr", seconds: 14400 },
+  { label: "8 hr", seconds: 28800 },
+  { label: "12 hr", seconds: 43200 },
+  { label: "24 hr", seconds: 86400 },
+  { label: "2 days", seconds: 172800 },
+];
+
 export function ToggleWithNumber({
   label,
   hint,
@@ -152,6 +164,7 @@ export function ToggleWithNumber({
   numberHint,
   numberPrefix,
   showNumber,
+  presets,
 }: {
   label: string;
   hint?: string;
@@ -163,6 +176,7 @@ export function ToggleWithNumber({
   numberHint?: string;
   numberPrefix?: string;
   showNumber: boolean;
+  presets?: { label: string; seconds: number }[];
 }) {
   return (
     <div className="space-y-2">
@@ -187,17 +201,38 @@ export function ToggleWithNumber({
         </button>
       </div>
       {showNumber && (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {numberPrefix && <span>{numberPrefix}</span>}
-          <input
-            type="number"
-            className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
-            value={number}
-            onChange={(e) => onNumberChange(Number(e.target.value))}
-          />
-          <span>{numberLabel}</span>
-          {numberHint && <HintIcon text={numberHint} />}
-        </div>
+        <>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {numberPrefix && <span>{numberPrefix}</span>}
+            <input
+              type="number"
+              className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
+              value={number}
+              onChange={(e) => onNumberChange(Number(e.target.value))}
+            />
+            <span>{numberLabel}</span>
+            {numberHint && <HintIcon text={numberHint} />}
+          </div>
+          {presets && presets.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {presets.map((p) => (
+                <button
+                  key={p.seconds}
+                  type="button"
+                  className={cn(
+                    "px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors",
+                    number === p.seconds
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  )}
+                  onClick={() => onNumberChange(p.seconds)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

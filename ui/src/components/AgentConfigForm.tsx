@@ -34,6 +34,7 @@ import {
   CollapsibleSection,
   DraftInput,
   DraftNumberInput,
+  INTERVAL_PRESETS,
   help,
   adapterLabels,
 } from "./agent-config-primitives";
@@ -901,6 +902,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberPrefix="Run heartbeat every"
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
+              presets={INTERVAL_PRESETS}
             />
             <div className="border-t border-border pt-3 space-y-3">
               <ToggleField
@@ -986,6 +988,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberPrefix="Run heartbeat every"
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled !== false)}
+                presets={INTERVAL_PRESETS}
               />
               <div className="border-t border-border pt-3 space-y-3">
                 <ToggleField
