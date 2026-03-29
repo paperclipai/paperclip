@@ -43,13 +43,16 @@ import {
   ChevronRight,
   EyeOff,
   Hexagon,
+  Link2,
   ListTree,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
   Plus,
+  Search,
   SlidersHorizontal,
   Trash2,
+  X,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment, IssueReviewBundle } from "@paperclipai/shared";
@@ -168,6 +171,7 @@ export function IssueDetail() {
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
+    linkedIssues: false,
     reviewBundle: false,
     approvals: false,
     cost: false,
@@ -242,6 +246,12 @@ export function IssueDetail() {
   const { data: recurringSchedules } = useQuery({
     queryKey: queryKeys.taskCrons.byIssue(issueId!),
     queryFn: () => taskCronsApi.listIssueSchedules(issueId!, selectedCompanyId ?? undefined),
+    enabled: !!issueId,
+  });
+
+  const { data: issueLinks } = useQuery({
+    queryKey: queryKeys.issues.links(issueId!),
+    queryFn: () => issuesApi.listLinks(issueId!),
     enabled: !!issueId,
   });
 
@@ -621,6 +631,47 @@ export function IssueDetail() {
       setRecurringError(err instanceof Error ? err.message : "Failed to delete recurring schedule");
     },
   });
+
+  const [linkSearchOpen, setLinkSearchOpen] = useState(false);
+  const [linkSearchQuery, setLinkSearchQuery] = useState("");
+  const [linkError, setLinkError] = useState<string | null>(null);
+
+  const { data: linkSearchResults } = useQuery({
+    queryKey: queryKeys.issues.search(selectedCompanyId!, linkSearchQuery),
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: linkSearchQuery }),
+    enabled: !!selectedCompanyId && linkSearchOpen && linkSearchQuery.length > 1,
+  });
+
+  const createLink = useMutation({
+    mutationFn: (targetId: string) => issuesApi.createLink(issueId!, targetId),
+    onSuccess: () => {
+      setLinkError(null);
+      setLinkSearchQuery("");
+      setLinkSearchOpen(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.links(issueId!) });
+    },
+    onError: (err) => {
+      setLinkError(err instanceof Error ? err.message : "Failed to create link");
+    },
+  });
+
+  const deleteLink = useMutation({
+    mutationFn: (linkId: string) => issuesApi.deleteLink(linkId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.links(issueId!) });
+    },
+  });
+
+  const linkSearchFiltered = useMemo(() => {
+    if (!linkSearchResults || !issue) return [];
+    const existingIds = new Set<string>();
+    existingIds.add(issue.id);
+    for (const l of issueLinks?.outgoing ?? []) existingIds.add(l.targetId);
+    for (const l of issueLinks?.incoming ?? []) existingIds.add(l.sourceId);
+    return linkSearchResults.filter((i) => !existingIds.has(i.id)).slice(0, 10);
+  }, [linkSearchResults, issue, issueLinks]);
+
+  const totalLinks = (issueLinks?.outgoing?.length ?? 0) + (issueLinks?.incoming?.length ?? 0);
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
@@ -1186,6 +1237,150 @@ export function IssueDetail() {
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {issue && (
+        <Collapsible
+          open={secondaryOpen.linkedIssues}
+          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, linkedIssues: open }))}
+          className="rounded-lg border border-border"
+        >
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+            <span className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+              <Link2 className="h-3.5 w-3.5" />
+              Linked Issues ({totalLinks})
+            </span>
+            <ChevronDown
+              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.linkedIssues && "rotate-180")}
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="border-t border-border">
+              {(issueLinks?.outgoing?.length ?? 0) > 0 && (
+                <div>
+                  <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 bg-muted/30">
+                    Triggers
+                  </div>
+                  <div className="divide-y divide-border">
+                    {issueLinks!.outgoing.map((link) => (
+                      <div key={link.id} className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors group">
+                        <Link
+                          to={`/issues/${link.targetIdentifier ?? link.targetId}`}
+                          className="flex items-center gap-2 min-w-0 flex-1"
+                        >
+                          <StatusBadge status={link.targetStatus} />
+                          <span className="font-mono text-muted-foreground shrink-0">{link.targetIdentifier}</span>
+                          <span className="truncate">{link.targetTitle}</span>
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => deleteLink.mutate(link.id)}
+                          className="opacity-0 group-hover:opacity-100 ml-2 p-0.5 text-muted-foreground hover:text-destructive transition-all"
+                          title="Remove link"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(issueLinks?.incoming?.length ?? 0) > 0 && (
+                <div>
+                  <div className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70 bg-muted/30">
+                    Triggered by
+                  </div>
+                  <div className="divide-y divide-border">
+                    {issueLinks!.incoming.map((link) => (
+                      <div key={link.id} className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors group">
+                        <Link
+                          to={`/issues/${link.sourceIdentifier ?? link.sourceId}`}
+                          className="flex items-center gap-2 min-w-0 flex-1"
+                        >
+                          <StatusBadge status={link.sourceStatus} />
+                          <span className="font-mono text-muted-foreground shrink-0">{link.sourceIdentifier}</span>
+                          <span className="truncate">{link.sourceTitle}</span>
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => deleteLink.mutate(link.id)}
+                          className="opacity-0 group-hover:opacity-100 ml-2 p-0.5 text-muted-foreground hover:text-destructive transition-all"
+                          title="Remove link"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {totalLinks === 0 && !linkSearchOpen && (
+                <div className="px-3 py-3 text-xs text-muted-foreground">
+                  No linked issues yet.
+                </div>
+              )}
+
+              {linkSearchOpen ? (
+                <div className="border-t border-border p-2 space-y-2">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={linkSearchQuery}
+                      onChange={(e) => setLinkSearchQuery(e.target.value)}
+                      placeholder="Search issues by title or identifier..."
+                      className="w-full pl-7 pr-7 py-1.5 text-xs rounded-md border border-input bg-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { setLinkSearchOpen(false); setLinkSearchQuery(""); setLinkError(null); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  {linkError && (
+                    <p className="text-xs text-destructive px-1">{linkError}</p>
+                  )}
+                  {linkSearchQuery.length > 1 && linkSearchFiltered.length > 0 && (
+                    <div className="rounded-md border border-border divide-y divide-border max-h-48 overflow-auto">
+                      {linkSearchFiltered.map((result) => (
+                        <button
+                          key={result.id}
+                          type="button"
+                          onClick={() => createLink.mutate(result.id)}
+                          disabled={createLink.isPending}
+                          className="flex items-center gap-2 w-full px-2.5 py-2 text-xs text-left hover:bg-accent/30 transition-colors disabled:opacity-50"
+                        >
+                          <StatusBadge status={result.status} />
+                          <span className="font-mono text-muted-foreground shrink-0">{result.identifier}</span>
+                          <span className="truncate">{result.title}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {linkSearchQuery.length > 1 && linkSearchFiltered.length === 0 && (
+                    <p className="text-xs text-muted-foreground px-1 py-1">No matching issues found.</p>
+                  )}
+                </div>
+              ) : (
+                <div className="border-t border-border px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setLinkSearchOpen(true)}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Add dependency
+                  </button>
+                </div>
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
 
       {linkedApprovals && linkedApprovals.length > 0 && (
         <Collapsible

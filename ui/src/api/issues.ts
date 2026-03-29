@@ -1,4 +1,4 @@
-import type { Approval, Issue, IssueAttachment, IssueComment, IssueLabel } from "@paperclipai/shared";
+import type { Approval, Issue, IssueAttachment, IssueComment, IssueLabel, IssueLinksByDirection } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const issuesApi = {
@@ -73,4 +73,8 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  listLinks: (id: string) => api.get<IssueLinksByDirection>(`/issues/${id}/links`),
+  createLink: (id: string, targetId: string, linkType: string = "triggers") =>
+    api.post<IssueLinksByDirection>(`/issues/${id}/links`, { targetId, linkType }),
+  deleteLink: (linkId: string) => api.delete<{ ok: true }>(`/issue-links/${linkId}`),
 };
