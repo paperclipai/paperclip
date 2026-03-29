@@ -235,6 +235,76 @@ describe("issues routes UUID validation", () => {
     expect(mockHeartbeat.wakeup).not.toHaveBeenCalled();
   });
 
+  it("treats equivalent assignee ids as checkout no-op even when request id casing differs", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const assigneeLower = "33333333-3333-4333-8333-333333333333";
+    const assigneeUpper = assigneeLower.toUpperCase();
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueId,
+      companyId: COMPANY_ID,
+      status: "in_progress",
+      assigneeAgentId: assigneeLower,
+      checkoutRunId: null,
+    });
+    mockIssueService.checkout.mockResolvedValueOnce({
+      id: issueId,
+      companyId: COMPANY_ID,
+      status: "in_progress",
+      assigneeAgentId: assigneeLower,
+      checkoutRunId: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: assigneeUpper, expectedStatuses: ["in_progress"] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      assigneeLower,
+      ["in_progress"],
+      null,
+    );
+    expect(mockHeartbeat.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows agent checkout as self when ids differ only by case/whitespace", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueId,
+      companyId: COMPANY_ID,
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+    });
+    mockIssueService.checkout.mockResolvedValueOnce({
+      id: issueId,
+      companyId: COMPANY_ID,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: "44444444-4444-4444-8444-444444444444",
+    });
+    const app = createApp({
+      type: "agent",
+      companyId: COMPANY_ID,
+      agentId: ` ${agentId.toUpperCase()} `,
+      runId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      agentId,
+      ["todo"],
+      "44444444-4444-4444-8444-444444444444",
+    );
+  });
+
   it("returns 400 for invalid attachment ids before attachment lookup", async () => {
     const res = await request(createApp()).get("/api/attachments/not-a-uuid/content");
     expect(res.status).toBe(400);

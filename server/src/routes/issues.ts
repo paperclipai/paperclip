@@ -1182,6 +1182,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
+    const requestedAgentId = typeof req.body.agentId === "string" ? req.body.agentId.trim().toLowerCase() : "";
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -1202,18 +1203,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
-    if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
-      res.status(403).json({ error: "Agent can only checkout as itself" });
-      return;
+    if (req.actor.type === "agent") {
+      const actorAgentId = typeof req.actor.agentId === "string" ? req.actor.agentId.trim().toLowerCase() : "";
+      if (!actorAgentId || actorAgentId !== requestedAgentId) {
+        res.status(403).json({ error: "Agent can only checkout as itself" });
+        return;
+      }
     }
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+    const currentAssigneeAgentId = typeof issue.assigneeAgentId === "string"
+      ? issue.assigneeAgentId.trim().toLowerCase()
+      : null;
     const checkoutAlreadyOwnedByRequestedAssignee =
-      issue.assigneeAgentId === req.body.agentId &&
+      currentAssigneeAgentId === requestedAgentId &&
       issue.status === "in_progress" &&
       (checkoutRunId ? issue.checkoutRunId === checkoutRunId : issue.checkoutRunId == null);
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(id, requestedAgentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -1225,7 +1232,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       action: "issue.checked_out",
       entityType: "issue",
       entityId: issue.id,
-      details: { agentId: req.body.agentId },
+      details: { agentId: requestedAgentId },
     });
 
     if (
@@ -1233,12 +1240,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       shouldWakeAssigneeOnCheckout({
         actorType: req.actor.type,
         actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
-        checkoutAgentId: req.body.agentId,
+        checkoutAgentId: requestedAgentId,
         checkoutRunId,
       })
     ) {
       void heartbeat
-        .wakeup(req.body.agentId, {
+        .wakeup(requestedAgentId, {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_checked_out",
