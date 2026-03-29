@@ -89,6 +89,14 @@ All browser work must be done using the **Playwright MCP tools** (`mcp__playwrig
 - **Clean up** screenshots after their content has been documented.
 - **Special characters (Polish diacritics):** Never use `keyboard.type()` for text with diacritics. Use clipboard paste via `page.evaluate()` + `Control+v`.
 
+## Browser Platform Verification Protocol
+
+When starting a browser session for a task, follow this protocol to establish context:
+
+1. **Tab 0 — Navigate to the Paperclip issue URL:**
+   Open (or reuse) Tab 0 and navigate to `{PAPERCLIP_API_URL}/{company-prefix}/issues/{issue-identifier}` (e.g., `http://127.0.0.1:3100/DSPA/issues/DSPA-42`). This anchors the session to the active task.
+2. **Proceed with task work** in subsequent tabs. Tab 0 stays on the issue page as a persistent reference for the current task context.
+
 ## Waiting for User Input
 
 When you need the user to take an action (login, MFA, confirm something), use the `wait-for-user` skill. **Never exit your process** if you can poll and wait instead — this keeps browser state alive.
