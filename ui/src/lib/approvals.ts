@@ -61,7 +61,9 @@ function getPayloadText(payload: Record<string, unknown> | null | undefined): st
   const requestedAction = typeof payload.requestedAction === "string" ? payload.requestedAction : "";
   const draft = typeof payload.draft === "string" ? payload.draft : "";
   const drafts = payload.drafts && typeof payload.drafts === "object" ? Object.keys(payload.drafts as Record<string, unknown>).join(" ") : "";
-  return `${lane} ${channel} ${category} ${title} ${summary} ${strategy} ${requestedAction} ${drafts} ${draft}`.toLowerCase();
+  const draftPath = typeof payload.draft_path === "string" ? payload.draft_path : "";
+  const draftPaths = Array.isArray(payload.draft_paths) ? payload.draft_paths.filter((v): v is string => typeof v === "string").join(" ") : "";
+  return `${lane} ${channel} ${category} ${title} ${summary} ${strategy} ${requestedAction} ${drafts} ${draft} ${draftPath} ${draftPaths}`.toLowerCase();
 }
 
 export function approvalLane(approval: Approval): ApprovalLane {

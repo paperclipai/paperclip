@@ -18,8 +18,6 @@ import {
   approvalNeedsReminder,
   compareApprovalsByStatusThenCreated,
   contentTier,
-  CONTENT_TIER_LABELS,
-  CONTENT_TIER_ORDER,
   type ApprovalLane,
   type ContentTier,
 } from "../lib/approvals";
@@ -28,11 +26,24 @@ type StatusFilter = "pending" | "all";
 
 type ColumnKey = ContentTier | "intake" | "ops";
 
-const TIER_DOT: Record<ContentTier, string> = {
-  blog: "bg-blue-500",
-  social: "bg-purple-500",
-  outreach: "bg-emerald-500",
+const TIER_DOT: Record<string, string> = {
+  blue: "bg-blue-500",
+  purple: "bg-purple-500",
+  green: "bg-emerald-500",
+  amber: "bg-amber-500",
+  gray: "bg-muted-foreground/50",
 };
+
+const MARKETING_TIERS: { key: ContentTier; label: string; tier: string; color: "blue" | "purple" | "green" }[] = [
+  { key: "blog", label: "Blog", tier: "Tier 1", color: "blue" },
+  { key: "social", label: "Social", tier: "Tier 2", color: "purple" },
+  { key: "outreach", label: "Outreach", tier: "Tier 3", color: "green" },
+];
+
+const SECONDARY_LANES: { key: ApprovalLane; label: string; color: "amber" | "gray" }[] = [
+  { key: "intake", label: "Intake", color: "amber" },
+  { key: "ops", label: "Ops", color: "gray" },
+];
 
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
@@ -51,8 +62,8 @@ export function Approvals() {
     intake: null,
     ops: null,
   });
-  const [intakeOpen, setIntakeOpen] = useState(false);
-  const [opsOpen, setOpsOpen] = useState(false);
+  const [laneOpen, setLaneOpen] = useState<Record<string, boolean>>({ intake: false, ops: false });
+  const [dismissingIds, setDismissingIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals" }]);
@@ -72,30 +83,41 @@ export function Approvals() {
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
 
+  const dismissThenRefresh = (id: string) => {
+    setDismissingIds((prev) => new Set(prev).add(id));
+    window.setTimeout(() => {
+      invalidate();
+      setDismissingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 220);
+  };
+
   const approveMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.approve(id),
     onSuccess: (_approval, id) => {
       setActionError(null);
-      invalidate();
-      navigate(`/approvals/${id}?resolved=approved`);
+      dismissThenRefresh(id);
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to approve"),
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.reject(id),
-    onSuccess: () => {
+    onSuccess: (_approval, id) => {
       setActionError(null);
-      invalidate();
+      dismissThenRefresh(id);
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to reject"),
   });
 
   const requestRevisionMutation = useMutation({
     mutationFn: ({ id, note }: { id: string; note?: string }) => approvalsApi.requestRevision(id, note),
-    onSuccess: () => {
+    onSuccess: (_approval, vars) => {
       setActionError(null);
-      invalidate();
+      dismissThenRefresh(vars.id);
     },
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to request edits"),
   });
@@ -170,15 +192,15 @@ export function Approvals() {
         <>
           {/* Marketing tiers */}
           <div className="grid grid-cols-3 gap-3 items-start">
-            {CONTENT_TIER_ORDER.map((tier) => {
-              const items = marketingByTier[tier];
+            {MARKETING_TIERS.map((tierDef) => {
+              const items = marketingByTier[tierDef.key];
               const pending = pendingFor(items);
               return (
-                <section key={tier} className="rounded-lg border border-border bg-card min-h-[200px]">
+                <section key={tierDef.key} className="rounded-lg border border-border bg-card min-h-[200px]">
                   <div className="sticky top-0 z-10 border-b border-border bg-card px-3 py-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className={cn("inline-flex h-2 w-2 rounded-full", TIER_DOT[tier])} />
-                      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground">{CONTENT_TIER_LABELS[tier]}</h3>
+                      <span className={cn("inline-flex h-2 w-2 rounded-full", TIER_DOT[tierDef.color])} />
+                      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground">{tierDef.label} · {tierDef.tier}</h3>
                     </div>
                     <span
                       className={cn(
@@ -198,8 +220,8 @@ export function Approvals() {
                           key={approval.id}
                           approval={approval}
                           requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
-                          expanded={expandedByColumn[tier] === approval.id}
-                          onToggle={() => toggleExpanded(tier, approval.id)}
+                          expanded={expandedByColumn[tierDef.key] === approval.id}
+                          onToggle={() => toggleExpanded(tierDef.key, approval.id)}
                           onApprove={() => approveMutation.mutate(approval.id)}
                           onReject={() => rejectMutation.mutate(approval.id)}
                           onRequestRevision={(note) => requestRevisionMutation.mutate({ id: approval.id, note })}
@@ -207,6 +229,7 @@ export function Approvals() {
                           needsReminder={approvalNeedsReminder(approval)}
                           ageHours={approvalAgeHours(approval)}
                           muted={statusFilter === "all" && isResolved}
+                          dismissing={dismissingIds.has(approval.id)}
                           detailLink={`/approvals/${approval.id}`}
                         />
                       );
@@ -219,37 +242,37 @@ export function Approvals() {
 
           {/* Intake + Ops */}
           <div className="grid grid-cols-2 gap-3 items-start">
-            {([
-              { key: "intake" as const, title: "Intake", open: intakeOpen, setOpen: setIntakeOpen, items: intakeItems },
-              { key: "ops" as const, title: "Ops", open: opsOpen, setOpen: setOpsOpen, items: opsItems },
-            ]).map((lane) => {
-              const pending = pendingFor(lane.items);
+            {SECONDARY_LANES.map((laneDef) => {
+              const laneItems = laneDef.key === "intake" ? intakeItems : opsItems;
+              const pending = pendingFor(laneItems);
               const dimmed = pending === 0;
+              const open = laneOpen[laneDef.key] ?? false;
               return (
-                <section key={lane.key} className={cn("rounded-lg border border-border bg-card", dimmed && "opacity-70")}>
+                <section key={laneDef.key} className={cn("rounded-lg border border-border bg-card", dimmed && "opacity-70")}>
                   <button
                     type="button"
                     className="w-full flex items-center justify-between border-b border-border px-3 py-2"
-                    onClick={() => lane.setOpen(!lane.open)}
+                    onClick={() => setLaneOpen((prev) => ({ ...prev, [laneDef.key]: !open }))}
                   >
                     <div className="flex items-center gap-2">
-                      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground">{lane.title}</h3>
+                      <span className={cn("inline-flex h-2 w-2 rounded-full", TIER_DOT[laneDef.color])} />
+                      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground">{laneDef.label}</h3>
                       <span className={cn("rounded px-1.5 py-0.5 text-[10px]", pending > 0 ? "bg-yellow-500/20 text-yellow-600 dark:text-yellow-400" : "bg-muted text-muted-foreground")}>{pending}</span>
                     </div>
-                    <span className="text-xs text-muted-foreground">{lane.open ? "▴" : "▾"}</span>
+                    <span className="text-xs text-muted-foreground">{open ? "▴" : "▾"}</span>
                   </button>
 
-                  {lane.open && (
+                  {open && (
                     <div className="p-2 space-y-2">
-                      {lane.items.map((approval) => {
+                      {laneItems.map((approval) => {
                         const isResolved = approval.status !== "pending" && approval.status !== "revision_requested";
                         return (
                           <ExpandableApprovalCard
                             key={approval.id}
                             approval={approval}
                             requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
-                            expanded={expandedByColumn[lane.key] === approval.id}
-                            onToggle={() => toggleExpanded(lane.key, approval.id)}
+                            expanded={expandedByColumn[laneDef.key as ColumnKey] === approval.id}
+                            onToggle={() => toggleExpanded(laneDef.key as ColumnKey, approval.id)}
                             onApprove={() => approveMutation.mutate(approval.id)}
                             onReject={() => rejectMutation.mutate(approval.id)}
                             onRequestRevision={(note) => requestRevisionMutation.mutate({ id: approval.id, note })}
@@ -257,6 +280,7 @@ export function Approvals() {
                             needsReminder={approvalNeedsReminder(approval)}
                             ageHours={approvalAgeHours(approval)}
                             muted={statusFilter === "all" && isResolved}
+                            dismissing={dismissingIds.has(approval.id)}
                             detailLink={`/approvals/${approval.id}`}
                           />
                         );

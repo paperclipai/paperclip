@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ interface ExpandableApprovalCardProps {
   needsReminder?: boolean;
   ageHours?: number | null;
   muted?: boolean;
+  dismissing?: boolean;
   detailLink: string;
 }
 
@@ -47,19 +48,24 @@ export function ExpandableApprovalCard({
   needsReminder = false,
   ageHours = null,
   muted = false,
+  dismissing = false,
   detailLink,
 }: ExpandableApprovalCardProps) {
   const payload = (approval.payload ?? null) as Record<string, unknown> | null;
-  const [revisionNote, setRevisionNote] = useState("");
 
   const label = useMemo(() => approvalLabel(approval.type, payload), [approval.type, payload]);
+  const title = useMemo(() => {
+    const payloadTitle = payload && typeof payload.title === "string" ? payload.title.trim() : "";
+    return payloadTitle.length > 0 ? payloadTitle : label;
+  }, [payload, label]);
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
 
   return (
     <div
       className={cn(
-        "rounded-md border border-border bg-card",
+        "rounded-md border border-border bg-card transition-all duration-200",
         muted && "opacity-60",
+        dismissing && "opacity-0 translate-y-1",
         needsReminder && isActionable && "border-rose-300/60",
       )}
     >
@@ -74,7 +80,7 @@ export function ExpandableApprovalCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className={cn("inline-flex h-2 w-2 rounded-full", statusDot(approval, needsReminder))} />
-              <p className="text-sm font-medium truncate">{label}</p>
+              <p className="text-sm font-medium truncate">{title}</p>
             </div>
             <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
               <span className="truncate">{channelLabel(payload)}</span>
@@ -95,16 +101,6 @@ export function ExpandableApprovalCard({
       {expanded && (
         <div className="border-t border-border px-3 py-3 space-y-3">
           <CeoStrategyPayload payload={payload ?? {}} />
-
-          <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">Editor override for Katya (optional)</label>
-            <textarea
-              value={revisionNote}
-              onChange={(e) => setRevisionNote(e.target.value)}
-              className="w-full min-h-20 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
-              placeholder="Paste your final wording/changes for Katya here"
-            />
-          </div>
 
           <div className="flex items-center justify-between gap-2 pt-1">
             <div className="flex gap-2">
@@ -127,7 +123,7 @@ export function ExpandableApprovalCard({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onRequestRevision(revisionNote.trim() || undefined)}
+                onClick={() => onRequestRevision()}
                 disabled={isPending || !isActionable}
               >
                 Request edits
