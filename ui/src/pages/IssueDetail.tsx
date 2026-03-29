@@ -486,6 +486,13 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
     },
+    onError: (error: unknown) => {
+      pushToast({
+        title: "Failed to update issue",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const addComment = useMutation({

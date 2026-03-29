@@ -119,8 +119,69 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
     if (runId) return runId;
+    logger.warn(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        actorType: req.actor.type,
+        actorAgentId: req.actor.agentId ?? null,
+        actorUserId: null,
+        source: req.actor.source,
+        issueId: typeof req.params.id === "string" ? req.params.id : null,
+      },
+      "agent request missing run id",
+    );
     res.status(401).json({ error: "Agent run id required" });
     return null;
+  }
+
+  function rejectImplicitBoardForAgentIssueMutation(
+    req: Request,
+    res: Response,
+    issue: { id: string; assigneeAgentId: string | null; executionRunId: string | null; companyId: string; status?: string },
+    reason: string,
+    options?: { allowHiddenAtOnly?: boolean },
+  ) {
+    if (req.actor.type !== "board" || req.actor.source !== "local_implicit") return false;
+    if (options?.allowHiddenAtOnly) return false;
+    if (!issue.assigneeAgentId && !issue.executionRunId) return false;
+    logger.info(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        issueId: issue.id,
+        companyId: issue.companyId,
+        issueStatus: issue.status ?? null,
+        assigneeAgentId: issue.assigneeAgentId,
+        executionRunId: issue.executionRunId,
+        actorType: req.actor.type,
+        actorUserId: req.actor.userId ?? null,
+        actorAgentId: null,
+        actorRunId: req.actor.runId ?? null,
+        source: req.actor.source,
+        hasAuthorization: Boolean(req.header("authorization")),
+        hasRunIdHeader: Boolean(req.header("x-paperclip-run-id")),
+        reason,
+      },
+      "evaluating implicit board mutation guard for issue route",
+    );
+    logger.warn(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        issueId: issue.id,
+        companyId: issue.companyId,
+        assigneeAgentId: issue.assigneeAgentId,
+        executionRunId: issue.executionRunId,
+        actorType: req.actor.type,
+        actorUserId: req.actor.userId ?? null,
+        source: req.actor.source,
+        reason,
+      },
+      "rejected local implicit board mutation on agent-owned issue path",
+    );
+    res.status(401).json({ error: "Agent authentication required for issue mutation on agent-owned issue" });
+    return true;
   }
 
   async function assertAgentRunCheckoutOwnership(
@@ -895,6 +956,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    const requestKeys = Object.keys(req.body as Record<string, unknown>);
+    const hiddenAtOnlyMutation =
+      requestKeys.length > 0 &&
+      requestKeys.every((key) => key === "hiddenAt") &&
+      Object.prototype.hasOwnProperty.call(req.body, "hiddenAt");
+
+    if (
+      rejectImplicitBoardForAgentIssueMutation(req, res, existing, "issue_patch", {
+        allowHiddenAtOnly: hiddenAtOnlyMutation,
+      })
+    ) {
+      return;
+    }
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
