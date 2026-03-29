@@ -209,6 +209,12 @@ export function Dashboard() {
 
       <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
+      {selectedCompanyId && (
+        <div className="rounded-lg border bg-card p-4 shadow-sm">
+          <ContentPipelineWidget companyId={selectedCompanyId} />
+        </div>
+      )}
+
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
@@ -298,12 +304,6 @@ export function Dashboard() {
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
-
-          {selectedCompanyId && (
-            <div className="rounded-lg border bg-card p-4 shadow-sm">
-              <ContentPipelineWidget companyId={selectedCompanyId} />
-            </div>
-          )}
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
