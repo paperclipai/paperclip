@@ -507,7 +507,7 @@ export function agentRoutes(db: Db) {
   }
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
-    return adapterType !== "claude_local";
+    return adapterType !== "claude_local" && adapterType !== "copilot_cli";
   }
 
   async function buildRuntimeSkillConfig(

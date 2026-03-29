@@ -231,6 +231,31 @@ describe("agent skill routes", () => {
     );
   });
 
+  it("skips runtime materialization when listing Copilot skills", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("copilot_cli"));
+    mockAdapter.listSkills.mockResolvedValue({
+      adapterType: "copilot_cli",
+      supported: true,
+      mode: "ephemeral",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      entries: [],
+      warnings: [],
+    });
+
+    const res = await request(createApp())
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: false,
+    });
+    expect(mockAdapter.listSkills).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adapterType: "copilot_cli",
+      }),
+    );
+  });
+
   it("keeps runtime materialization for persistent skill adapters", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("codex_local"));
     mockAdapter.listSkills.mockResolvedValue({
