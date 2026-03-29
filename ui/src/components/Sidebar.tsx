@@ -15,6 +15,7 @@ import {
   MessageSquare,
   CalendarClock,
   PanelLeftClose,
+  Briefcase,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -110,6 +111,7 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/my-work" label="My Work" icon={Briefcase} />
         </div>
 
         <SidebarSection label="Work">
