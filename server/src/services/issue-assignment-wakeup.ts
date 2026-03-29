@@ -41,6 +41,7 @@ export function queueIssueAssignmentWakeup(input: {
     ? input.requestedByActorId.trim().toLowerCase()
     : null;
   if (
+    !normalizedIssueId ||
     !normalizedAssigneeAgentId ||
     normalizedIssueStatus === "backlog" ||
     normalizedIssueStatus === "done" ||
