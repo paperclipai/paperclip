@@ -1005,6 +1005,12 @@ export function issueService(db: Db) {
       assertOptionalUuidField(issueData.assigneeAgentId, "assigneeAgentId");
       assertOptionalUuidField(issueData.projectWorkspaceId, "projectWorkspaceId");
       assertOptionalUuidField(issueData.executionWorkspaceId, "executionWorkspaceId");
+      if (issueData.projectId) issueData.projectId = issueData.projectId.trim().toLowerCase();
+      if (issueData.parentId) issueData.parentId = issueData.parentId.trim().toLowerCase();
+      if (issueData.goalId) issueData.goalId = issueData.goalId.trim().toLowerCase();
+      if (issueData.assigneeAgentId) issueData.assigneeAgentId = issueData.assigneeAgentId.trim().toLowerCase();
+      if (issueData.projectWorkspaceId) issueData.projectWorkspaceId = issueData.projectWorkspaceId.trim().toLowerCase();
+      if (issueData.executionWorkspaceId) issueData.executionWorkspaceId = issueData.executionWorkspaceId.trim().toLowerCase();
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
