@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
@@ -107,17 +108,60 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
+  const [showQualityScores, setShowQualityScores] = useState(false);
+
+  const lane = contentLaneFromPayload(payload);
+  const channel = typeof payload.channel === "string" ? payload.channel : "—";
+  const publishAt = payload.targetPublishAt ? String(payload.targetPublishAt) : "—";
+
+  const summary = typeof payload.summary === "string" ? payload.summary : null;
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
+  const draft = typeof payload.draft === "string" ? payload.draft : null;
+  const primaryText = summary ?? (plan ? String(plan) : null) ?? (draft ? `${draft.slice(0, 900)}${draft.length > 900 ? "…" : ""}` : null);
+
   const imageUrl = typeof payload.imageUrl === "string" ? payload.imageUrl : null;
   const imageAlt = typeof payload.imageAlt === "string" ? payload.imageAlt : "Approval image";
   const imageLicense = typeof payload.imageLicense === "string" ? payload.imageLicense : null;
 
+  const metadata = (payload.metadata && typeof payload.metadata === "object")
+    ? (payload.metadata as Record<string, unknown>)
+    : null;
+
+  const tierClass = lane === "Blog"
+    ? "bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30"
+    : lane === "Social"
+      ? "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30"
+      : lane === "Outreach"
+        ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
+        : "bg-muted text-muted-foreground border-border";
+
   return (
-    <div className="mt-3 space-y-1.5 text-sm">
+    <div className="mt-3 space-y-2 text-sm">
       <PayloadField label="Title" value={payload.title} />
-      <PayloadField label="Channel" value={payload.channel} />
-      <PayloadField label="Category" value={payload.category} />
-      <PayloadField label="Publish" value={payload.targetPublishAt} />
+
+      <div className="flex items-center gap-2">
+        <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${tierClass}`}>
+          {lane ?? "Content"}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>Channel: <span className="text-foreground">{channel}</span></span>
+        <span>•</span>
+        <span>Publish: <span className="text-foreground">{publishAt}</span></span>
+      </div>
+
+      {primaryText && (
+        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap max-h-56 overflow-y-auto">
+          {primaryText}
+        </div>
+      )}
+
+      {!primaryText && (
+        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+          {JSON.stringify(payload, null, 2)}
+        </pre>
+      )}
 
       {imageUrl && (
         <div className="mt-2 rounded-md border border-border/70 p-2 bg-background/40 space-y-2">
@@ -125,7 +169,7 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
             src={imageUrl}
             alt={imageAlt}
             loading="lazy"
-            className="w-full max-h-72 object-cover rounded-md border border-border/60"
+            className="w-full max-h-48 object-cover rounded-md border border-border/60"
           />
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">{imageAlt}</p>
@@ -136,16 +180,24 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
         </div>
       )}
 
-      {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
-          {String(plan)}
-        </div>
-      )}
-      {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
-          {JSON.stringify(payload, null, 2)}
-        </pre>
-      )}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowQualityScores((v) => !v)}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          {showQualityScores ? "▲ quality scores" : "▼ quality scores"}
+        </button>
+        {showQualityScores && (
+          <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-muted-foreground rounded-md border border-border/60 p-2 bg-background/40">
+            <div>voice_gate: {String(metadata?.voice_gate ?? "—")}</div>
+            <div>template_risk: {String(metadata?.template_risk ?? "—")}</div>
+            <div>evidence_points: {String(metadata?.evidence_points ?? "—")}</div>
+            <div>anti_pattern_violations: {String(metadata?.anti_pattern_violations ?? "—")}</div>
+            <div>human_rewrite_pass_done: {String(metadata?.human_rewrite_pass_done ?? "—")}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

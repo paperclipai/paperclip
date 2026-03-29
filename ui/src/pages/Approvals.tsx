@@ -12,8 +12,21 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import {
+  approvalAgeHours,
+  approvalLane,
+  approvalLaneLabel,
+  approvalNeedsReminder,
+  compareApprovalsByStatusThenCreated,
+  contentTier,
+  CONTENT_TIER_LABELS,
+  CONTENT_TIER_ORDER,
+  type ApprovalLane,
+} from "../lib/approvals";
 
 type StatusFilter = "pending" | "all";
+type LaneFilter = "all" | ApprovalLane;
+const LANE_ORDER: ApprovalLane[] = ["marketing", "intake", "ops", "unknown"];
 
 export function Approvals() {
   const { selectedCompanyId } = useCompany();
@@ -23,7 +36,13 @@ export function Approvals() {
   const location = useLocation();
   const pathSegment = location.pathname.split("/").pop() ?? "pending";
   const statusFilter: StatusFilter = pathSegment === "all" ? "all" : "pending";
+  const [laneFilter, setLaneFilter] = useState<LaneFilter>("all");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [marketingTierOpen, setMarketingTierOpen] = useState<Record<string, boolean>>({
+    blog: true,
+    social: true,
+    outreach: true,
+  });
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals" }]);
@@ -64,15 +83,24 @@ export function Approvals() {
     },
   });
 
-  const filtered = (data ?? [])
+  const statusFiltered = (data ?? [])
     .filter(
       (a) => statusFilter === "all" || a.status === "pending" || a.status === "revision_requested",
     )
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort(compareApprovalsByStatusThenCreated);
+  const filtered = statusFiltered.filter(
+    (approval) => laneFilter === "all" || approvalLane(approval) === laneFilter,
+  );
 
   const pendingCount = (data ?? []).filter(
     (a) => a.status === "pending" || a.status === "revision_requested",
   ).length;
+  const stalePendingCount = (data ?? []).filter((approval) => approvalNeedsReminder(approval)).length;
+  const groupedByLane = LANE_ORDER.map((lane) => ({
+    lane,
+    label: approvalLaneLabel(lane),
+    items: filtered.filter((approval) => approvalLane(approval) === lane),
+  })).filter((group) => laneFilter === "all" ? group.items.length > 0 : true);
 
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select a company first.</p>;
@@ -99,9 +127,31 @@ export function Approvals() {
           ]} />
         </Tabs>
       </div>
+      <div className="flex flex-wrap gap-2">
+        {(["all", ...LANE_ORDER] as LaneFilter[]).map((lane) => (
+          <button
+            key={lane}
+            type="button"
+            onClick={() => setLaneFilter(lane)}
+            className={cn(
+              "rounded-full border px-2.5 py-1 text-xs transition-colors",
+              laneFilter === lane
+                ? "border-primary bg-primary/10 text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {lane === "all" ? "All lanes" : approvalLaneLabel(lane)}
+          </button>
+        ))}
+      </div>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {stalePendingCount > 0 && (
+        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          {stalePendingCount} approval{stalePendingCount === 1 ? "" : "s"} pending for more than 24h. Review to avoid stale queue drift.
+        </p>
+      )}
 
       {filtered.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -113,18 +163,83 @@ export function Approvals() {
       )}
 
       {filtered.length > 0 && (
-        <div className="grid gap-3">
-          {filtered.map((approval) => (
-            <ApprovalCard
-              key={approval.id}
-              approval={approval}
-              requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
-              onApprove={() => approveMutation.mutate(approval.id)}
-              onReject={() => rejectMutation.mutate(approval.id)}
-              detailLink={`/approvals/${approval.id}`}
-              isPending={approveMutation.isPending || rejectMutation.isPending}
-            />
-          ))}
+        <div className="space-y-4">
+          {groupedByLane.map((group) => {
+            const staleCount = group.items.filter((approval) => approvalNeedsReminder(approval)).length;
+            return (
+              <section key={group.lane} className="space-y-2">
+                {laneFilter === "all" && (
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.label} queue</h3>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{group.items.length}</span>
+                    {staleCount > 0 && (
+                      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">
+                        {staleCount} stale
+                      </span>
+                    )}
+                  </div>
+                )}
+                {group.lane === "marketing" ? (
+                  <div className="space-y-3">
+                    {CONTENT_TIER_ORDER.map((tier) => {
+                      const tierItems = group.items.filter((approval) => contentTier(approval) === tier);
+                      const isOpen = marketingTierOpen[tier] ?? true;
+                      if (tierItems.length === 0) return null;
+
+                      return (
+                        <div key={tier} className="rounded-md border border-border/60">
+                          <button
+                            type="button"
+                            className="w-full flex items-center justify-between px-3 py-2 text-xs"
+                            onClick={() => setMarketingTierOpen((prev) => ({ ...prev, [tier]: !isOpen }))}
+                          >
+                            <span className="font-semibold text-muted-foreground">{CONTENT_TIER_LABELS[tier]}</span>
+                            <span className="inline-flex items-center gap-2">
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{tierItems.length}</span>
+                              <span className="text-muted-foreground">{isOpen ? "▲" : "▼"}</span>
+                            </span>
+                          </button>
+                          {isOpen && (
+                            <div className="grid gap-3 border-t border-border/60 p-3">
+                              {tierItems.map((approval) => (
+                                <ApprovalCard
+                                  key={approval.id}
+                                  approval={approval}
+                                  requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
+                                  onApprove={() => approveMutation.mutate(approval.id)}
+                                  onReject={() => rejectMutation.mutate(approval.id)}
+                                  detailLink={`/approvals/${approval.id}`}
+                                  isPending={approveMutation.isPending || rejectMutation.isPending}
+                                  needsReminder={approvalNeedsReminder(approval)}
+                                  ageHours={approvalAgeHours(approval)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    {group.items.map((approval) => (
+                      <ApprovalCard
+                        key={approval.id}
+                        approval={approval}
+                        requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
+                        onApprove={() => approveMutation.mutate(approval.id)}
+                        onReject={() => rejectMutation.mutate(approval.id)}
+                        detailLink={`/approvals/${approval.id}`}
+                        isPending={approveMutation.isPending || rejectMutation.isPending}
+                        needsReminder={approvalNeedsReminder(approval)}
+                        ageHours={approvalAgeHours(approval)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
     </div>
