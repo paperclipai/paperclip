@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -25,7 +25,6 @@ import { Skills } from "./pages/Skills";
 import { Webhooks } from "./pages/Webhooks";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
-import { Chat } from "./pages/Chat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { DesignGuide } from "./pages/DesignGuide";
 import { OrgChart } from "./pages/OrgChart";
@@ -152,14 +151,20 @@ function boardRoutes() {
       <Route path="inbox/unread" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/new" element={<Navigate to="/inbox/recent" replace />} />
-      <Route path="chat" element={<Chat />} />
-      <Route path="chat/:agentId" element={<Chat />} />
+      <Route path="chat" element={<Navigate to="/agents/all" replace />} />
+      <Route path="chat/:agentId" element={<ChatRedirect />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="skills" element={<Skills />} />
       <Route path="webhooks" element={<Webhooks />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
     </>
   );
+}
+
+/** Redirect legacy /chat/:agentId to /agents/:agentId/chat */
+function ChatRedirect() {
+  const { agentId } = useParams<{ agentId: string }>();
+  return <Navigate to={`/agents/${agentId}/chat`} replace />;
 }
 
 function InboxRootRedirect() {

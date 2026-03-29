@@ -12,7 +12,6 @@ import {
   Settings,
   Blocks,
   Webhook,
-  MessageSquare,
   CalendarClock,
   PanelLeftClose,
 } from "lucide-react";
@@ -114,7 +113,6 @@ export function Sidebar() {
 
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/chat" label="Chat" icon={MessageSquare} badge={inboxBadge.unreadChatSessions} />
           <SidebarNavItem to="/runs" label="Runs" icon={Play} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/schedules" label="Schedules" icon={CalendarClock} />
