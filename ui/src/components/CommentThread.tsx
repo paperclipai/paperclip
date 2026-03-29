@@ -1,16 +1,21 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { Check, ChevronDown, Copy, Paperclip } from "lucide-react";
+import { heartbeatsApi } from "../api/heartbeats";
+import { queryKeys } from "../lib/queryKeys";
+import { runMetrics, runSummary } from "../lib/run-utils";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
+import { RunLogViewer } from "./RunLogViewer";
 import { StatusBadge } from "./StatusBadge";
 import { StatusIcon } from "./StatusIcon";
 import { AgentIcon } from "./AgentIconPicker";
-import { cn, formatDateTime } from "../lib/utils";
+import { cn, formatDateTime, formatTokens } from "../lib/utils";
 import { invocationSourceLabel, invocationSourceBadge, invocationSourceBadgeDefault } from "../lib/status-colors";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -119,6 +124,112 @@ type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
 
+/** Inline expandable run card with lazy-loaded transcript */
+function ExpandableRunCard({ run, agentMap }: { run: LinkedRunItem; agentMap?: Map<string, Agent> }) {
+  const [expanded, setExpanded] = useState(false);
+  const agent = agentMap?.get(run.agentId);
+
+  // Lazy-fetch full run details only when expanded
+  const { data: fullRun } = useQuery({
+    queryKey: queryKeys.runDetail(run.runId),
+    queryFn: () => heartbeatsApi.get(run.runId),
+    enabled: expanded,
+    refetchInterval: run.status === "running" || run.status === "queued" ? 3000 : false,
+  });
+
+  const metrics = fullRun ? runMetrics(fullRun) : null;
+  const summary = fullRun ? runSummary(fullRun) : null;
+
+  const toggle = useCallback(() => setExpanded((v) => !v), []);
+
+  return (
+    <div className="border border-border bg-accent/20 overflow-hidden min-w-0 rounded-sm">
+      <div className="p-3">
+        <div className="flex items-center justify-between mb-2">
+          <Link to={`/agents/${run.agentId}`} className="hover:underline">
+            <Identity
+              name={agent?.name ?? run.agentId.slice(0, 8)}
+              size="sm"
+            />
+          </Link>
+          <span className="text-xs text-muted-foreground">
+            {formatDateTime(run.startedAt ?? run.createdAt)}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Run</span>
+          <Link
+            to={`/agents/${run.agentId}/runs/${run.runId}`}
+            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+          >
+            {run.runId.slice(0, 8)}
+          </Link>
+          <StatusBadge status={run.status} />
+          {run.invocationSource && (
+            <span className={cn(
+              "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+              invocationSourceBadge[run.invocationSource] ?? invocationSourceBadgeDefault,
+            )}>
+              {invocationSourceLabel[run.invocationSource] ?? run.invocationSource}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={toggle}
+            className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+          >
+            {expanded ? "Hide" : "See details"}
+            <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          </button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border/60 p-3 space-y-3">
+          {/* Summary & metrics */}
+          {fullRun && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {metrics?.totalTokens ? (
+                <span>Tokens: {formatTokens(metrics.totalTokens)}</span>
+              ) : null}
+              {metrics?.cost ? (
+                <span>Cost: ${metrics.cost.toFixed(4)}</span>
+              ) : null}
+              {fullRun.error && (
+                <span className="text-red-500">Error: {fullRun.error}</span>
+              )}
+            </div>
+          )}
+          {summary && (
+            <div className="text-xs text-foreground/80 bg-accent/30 rounded-md p-2 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+              {summary}
+            </div>
+          )}
+
+          {/* Inline transcript */}
+          {fullRun && agent?.adapterType ? (
+            <RunLogViewer
+              run={fullRun}
+              adapterType={agent.adapterType}
+              compact
+              maxHeight="24rem"
+            />
+          ) : fullRun && !agent?.adapterType ? (
+            <RunLogViewer
+              run={fullRun}
+              adapterType="claude_local"
+              compact
+              maxHeight="24rem"
+            />
+          ) : (
+            <div className="text-xs text-muted-foreground">Loading run details...</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
@@ -136,39 +247,8 @@ const TimelineList = memo(function TimelineList({
     <div className="space-y-3">
       {timeline.map((item) => {
         if (item.kind === "run") {
-          const run = item.run;
           return (
-            <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
-              <div className="flex items-center justify-between mb-2">
-                <Link to={`/agents/${run.agentId}`} className="hover:underline">
-                  <Identity
-                    name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
-                    size="sm"
-                  />
-                </Link>
-                <span className="text-xs text-muted-foreground">
-                  {formatDateTime(run.startedAt ?? run.createdAt)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">Run</span>
-                <Link
-                  to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
-                >
-                  {run.runId.slice(0, 8)}
-                </Link>
-                <StatusBadge status={run.status} />
-                {run.invocationSource && (
-                  <span className={cn(
-                    "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                    invocationSourceBadge[run.invocationSource] ?? invocationSourceBadgeDefault,
-                  )}>
-                    {invocationSourceLabel[run.invocationSource] ?? run.invocationSource}
-                  </span>
-                )}
-              </div>
-            </div>
+            <ExpandableRunCard key={`run:${item.run.runId}`} run={item.run} agentMap={agentMap} />
           );
         }
 
