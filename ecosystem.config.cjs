@@ -3,9 +3,8 @@ module.exports = {
     {
       name: "paperclip-v2",
       cwd: "./server",
-      script: "/opt/homebrew/opt/node@22/bin/node",
-      args: "dist/index.js",
-      interpreter: "none",
+      script: "src/index.ts",
+      interpreter: "/opt/homebrew/bin/tsx",
       max_memory_restart: "600M",
       env: {
         PORT: 3050,
