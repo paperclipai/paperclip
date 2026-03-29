@@ -747,10 +747,11 @@ export function issueService(db: Db) {
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
       if (!isUuidLike(companyId)) return 0;
       if (typeof userId !== "string" || userId.trim().length === 0) return 0;
+      const normalizedUserId = userId.trim();
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
-        unreadForUserCondition(companyId, userId),
+        unreadForUserCondition(companyId, normalizedUserId),
         ne(issues.originKind, "routine_execution"),
       ];
       const normalizedStatus = asNonEmptyString(status)?.toLowerCase();
