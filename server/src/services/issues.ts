@@ -1216,6 +1216,54 @@ export function issueService(db: Db) {
         }
       }
 
+      if (current.executionRunId && (!checkoutRunId || current.executionRunId !== checkoutRunId)) {
+        const staleExecutionLock = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
+        if (staleExecutionLock) {
+          await db
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.executionRunId, current.executionRunId),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              ),
+            );
+
+          const retried = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              status: "in_progress",
+              startedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+
+          if (retried) {
+            const [enriched] = await withIssueLabels(db, [retried]);
+            return enriched;
+          }
+        }
+      }
+
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&

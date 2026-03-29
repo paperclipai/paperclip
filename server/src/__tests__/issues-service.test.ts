@@ -453,6 +453,213 @@ describeEmbeddedPostgres("issueService checkout/execution lock lifecycle", () =>
     expect(released?.executionLockedAt).toBeNull();
   });
 
+  it("recovers stale execution lock on checkout when referenced run is terminal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date(),
+      },
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock",
+      status: "todo",
+      priority: "medium",
+      executionRunId: staleRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo"], checkoutRunId);
+
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.assigneeAgentId).toBe(agentId);
+    expect(checkedOut.checkoutRunId).toBe(checkoutRunId);
+    expect(checkedOut.executionRunId).toBe(checkoutRunId);
+    expect(checkedOut.executionAgentNameKey).toBeNull();
+    expect(checkedOut.executionLockedAt).toBeNull();
+  });
+
+  it("keeps execution lock when checkout sees an active run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const activeExecutionRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeExecutionRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+      },
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Active lock",
+      status: "todo",
+      priority: "medium",
+      executionRunId: activeExecutionRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], checkoutRunId)).rejects.toThrow("Issue checkout conflict");
+
+    const latest = await svc.getById(issueId);
+    expect(latest?.executionRunId).toBe(activeExecutionRunId);
+  });
+
+  it("does not steal issue assigned to another agent during stale lock recovery", async () => {
+    const companyId = randomUUID();
+    const callerAgentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: callerAgentId,
+        companyId,
+        name: "Caller",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId: assigneeAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date(),
+      },
+      {
+        id: checkoutRunId,
+        companyId,
+        agentId: callerAgentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: new Date(),
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Assigned elsewhere",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "assignee",
+      executionLockedAt: new Date(),
+    });
+
+    await expect(svc.checkout(issueId, callerAgentId, ["todo", "in_progress"], checkoutRunId)).rejects.toThrow(
+      "Issue checkout conflict",
+    );
+
+    const latest = await svc.getById(issueId);
+    expect(latest?.assigneeAgentId).toBe(assigneeAgentId);
+    expect(latest?.status).toBe("in_progress");
+    expect(latest?.executionRunId).toBe(staleRunId);
+  });
+
   it("allows release override when assignee override is enabled", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
