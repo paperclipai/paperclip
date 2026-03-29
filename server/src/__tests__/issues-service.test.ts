@@ -386,6 +386,44 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("normalizes checkout expected statuses for non-route callers", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "NormalizeCheckoutStatuses",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout expected status normalization",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const updated = await svc.checkout(issueId, agentId, [" TODO "], null);
+    expect(updated?.id).toBe(issueId);
+    expect(updated?.status).toBe("in_progress");
+    expect(updated?.assigneeAgentId).toBe(agentId);
+  });
+
   it("returns not found for malformed issue ids on checkout", async () => {
     await expect(
       svc.checkout("not-a-uuid", randomUUID(), ["todo"], null),

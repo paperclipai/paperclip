@@ -1100,7 +1100,7 @@ export function issueService(db: Db) {
       await assertAssignableAgent(issueCompany.companyId, agentId);
       const normalizedExpectedStatuses = (Array.isArray(expectedStatuses) ? expectedStatuses : [])
         .filter((status): status is string => typeof status === "string")
-        .map((status) => status.trim())
+        .map((status) => status.trim().toLowerCase())
         .filter((status): status is (typeof ALL_ISSUE_STATUSES)[number] =>
           ALL_ISSUE_STATUSES.includes(status as (typeof ALL_ISSUE_STATUSES)[number]),
         );
