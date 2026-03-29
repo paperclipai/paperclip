@@ -73,6 +73,7 @@ function StatusBadge({ entry }: { entry: GitWorktreeEntry }) {
 type ConfirmAction =
   | { type: "archive"; entry: GitWorktreeEntry }
   | { type: "retry"; entry: GitWorktreeEntry }
+  | { type: "remove"; entry: GitWorktreeEntry }
   | { type: "prune"; count: number; ids: string[] };
 
 interface WorktreesContentProps {
@@ -128,19 +129,33 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
     },
   });
 
+  const removeMutation = useMutation({
+    mutationFn: (path: string) => executionWorkspacesApi.removeGitWorktree(companyId, projectId, path),
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Worktree removed.", tone: "success" });
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Failed to remove worktree";
+      pushToast({ title: msg, tone: "error" });
+    },
+  });
+
   const handleConfirm = () => {
     if (!pendingAction) return;
     if (pendingAction.type === "archive" && pendingAction.entry.executionWorkspace) {
       archiveMutation.mutate(pendingAction.entry.executionWorkspace.id);
     } else if (pendingAction.type === "retry" && pendingAction.entry.executionWorkspace) {
       archiveMutation.mutate(pendingAction.entry.executionWorkspace.id);
+    } else if (pendingAction.type === "remove") {
+      removeMutation.mutate(pendingAction.entry.path);
     } else if (pendingAction.type === "prune") {
       pruneAllMutation.mutate(pendingAction.ids);
     }
     setPendingAction(null);
   };
 
-  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending;
+  const isMutating = archiveMutation.isPending || pruneAllMutation.isPending || removeMutation.isPending;
 
   if (isLoading) {
     return (
@@ -209,6 +224,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
                 isMutating={isMutating}
                 onArchive={() => setPendingAction({ type: "archive", entry })}
                 onRetryCleanup={() => setPendingAction({ type: "retry", entry })}
+                onRemove={() => setPendingAction({ type: "remove", entry })}
               />
             ))}
           </tbody>
@@ -221,6 +237,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
             <DialogTitle>
               {pendingAction?.type === "archive" && "Archive worktree?"}
               {pendingAction?.type === "retry" && "Retry cleanup?"}
+              {pendingAction?.type === "remove" && "Remove worktree?"}
               {pendingAction?.type === "prune" && `Prune ${pendingAction.count} stale worktree${pendingAction.count === 1 ? "" : "s"}?`}
             </DialogTitle>
             <DialogDescription>
@@ -230,6 +247,9 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
               {pendingAction?.type === "retry" && (
                 <>Re-run cleanup for <strong>{pendingAction.entry.branch ?? pendingAction.entry.path}</strong>. The worktree directory will be removed from disk.</>
               )}
+              {pendingAction?.type === "remove" && (
+                <>The worktree at <strong>{pendingAction.entry.path}</strong> (branch: <strong>{pendingAction.entry.branch ?? "detached"}</strong>) will be permanently removed from disk. This cannot be undone.</>
+              )}
               {pendingAction?.type === "prune" && (
                 <>{pendingAction.count} idle {pendingAction.count === 1 ? "worktree" : "worktrees"} unused for over 7 days will be archived and removed from disk. This cannot be undone.</>
               )}
@@ -238,7 +258,7 @@ export function WorktreesContent({ companyId, projectId }: WorktreesContentProps
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingAction(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleConfirm}>
-              {pendingAction?.type === "prune" ? "Prune all" : pendingAction?.type === "retry" ? "Retry cleanup" : "Archive & clean up"}
+              {pendingAction?.type === "prune" ? "Prune all" : pendingAction?.type === "retry" ? "Retry cleanup" : pendingAction?.type === "remove" ? "Remove worktree" : "Archive & clean up"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -253,12 +273,14 @@ function WorktreeRow({
   isMutating,
   onArchive,
   onRetryCleanup,
+  onRemove,
 }: {
   entry: GitWorktreeEntry;
   isLast: boolean;
   isMutating: boolean;
   onArchive: () => void;
   onRetryCleanup: () => void;
+  onRemove: () => void;
 }) {
   const ws = entry.executionWorkspace;
   const isArchived = ws?.status === "archived";
@@ -331,7 +353,7 @@ function WorktreeRow({
 
       {/* Actions */}
       <td className="px-2 py-3 text-right">
-        {ws && !isArchived && (
+        {!isArchived && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="h-7 w-7" disabled={isMutating}>
@@ -351,15 +373,20 @@ function WorktreeRow({
                 </DropdownMenuItem>
               )}
               {(entry.issue || entry.agent) && <DropdownMenuSeparator />}
-              {isCleanupFailed ? (
+              {ws && isCleanupFailed ? (
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onRetryCleanup}>
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retry cleanup
                 </DropdownMenuItem>
-              ) : (
+              ) : ws ? (
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onArchive}>
                   <Trash2 className="h-4 w-4 mr-2" />
                   Archive & clean up
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onRemove}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Remove worktree
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

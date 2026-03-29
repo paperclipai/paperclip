@@ -45,6 +45,8 @@ export const executionWorkspacesApi = {
   },
   listGitWorktrees: (companyId: string, projectId: string) =>
     api.get<GitWorktreeEntry[]>(`/companies/${companyId}/projects/${projectId}/git-worktrees`),
+  removeGitWorktree: (companyId: string, projectId: string, path: string) =>
+    api.post<{ ok: boolean }>(`/companies/${companyId}/projects/${projectId}/git-worktrees/remove`, { path }),
   get: (id: string) => api.get<ExecutionWorkspace>(`/execution-workspaces/${id}`),
   update: (id: string, data: Record<string, unknown>) => api.patch<ExecutionWorkspace>(`/execution-workspaces/${id}`, data),
 };

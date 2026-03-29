@@ -3,7 +3,7 @@ import { Router } from "express";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
-import { agents, executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, companies, executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { updateExecutionWorkspaceSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
@@ -231,6 +231,7 @@ export function executionWorkspaceRoutes(db: Db) {
   // GET /companies/:companyId/projects/:projectId/git-worktrees
   // Reads live git worktrees from the project's primary workspace cwd and enriches
   // with DB execution_workspace records for status/issue/agent info.
+  // Falls back to matching by issue identifier extracted from branch/path.
   router.get("/companies/:companyId/projects/:projectId/git-worktrees", async (req, res) => {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
     assertCompanyAccess(req, companyId);
@@ -280,7 +281,15 @@ export function executionWorkspaceRoutes(db: Db) {
     }
     if (current?.path) parsed.push(current as GitWorktreeEntry);
 
-    // Fetch all non-archived execution_workspaces for this project to enrich
+    // Get company issue prefix for identifier extraction
+    const [company] = await db
+      .select({ issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    const prefix = company?.issuePrefix ?? "";
+
+    // Fetch execution_workspaces for this project to enrich
     const dbWorkspaces = await db
       .select({
         ew: executionWorkspaces,
@@ -300,25 +309,158 @@ export function executionWorkspaceRoutes(db: Db) {
       .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
       .where(and(eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.projectId, projectId)));
 
-    const byBranch = new Map(dbWorkspaces.map((r) => [r.ew.branchName, r]));
-    const byCwd = new Map(dbWorkspaces.map((r) => [r.ew.cwd, r]));
+    // Build lookup maps — by exact branch, branch-without-prefix, and cwd
+    const byBranch = new Map<string, (typeof dbWorkspaces)[number]>();
+    const byCwd = new Map<string, (typeof dbWorkspaces)[number]>();
+    for (const r of dbWorkspaces) {
+      if (r.ew.branchName) byBranch.set(r.ew.branchName, r);
+      if (r.ew.cwd) byCwd.set(r.ew.cwd, r);
+    }
+
+    // Also fetch all project issues by identifier for fallback matching
+    const projectIssues = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        identifier: issues.identifier,
+        status: issues.status,
+        agentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId)));
+
+    const issueByIdentifier = new Map(
+      projectIssues.filter((i) => i.identifier).map((i) => [i.identifier!, i]),
+    );
+
+    // Build a set of agent IDs we need and fetch them
+    const agentIds = new Set(projectIssues.map((i) => i.agentId).filter(Boolean) as string[]);
+    let agentMap = new Map<string, { id: string; name: string }>();
+    if (agentIds.size > 0) {
+      const agentRows = await db
+        .select({ id: agents.id, name: agents.name })
+        .from(agents)
+        .where(inArray(agents.id, [...agentIds]));
+      agentMap = new Map(agentRows.map((a) => [a.id, a]));
+    }
+
+    // Extract issue identifier from branch name or path basename
+    const extractIdentifier = (branch: string | null, path: string): string | null => {
+      if (!prefix) return null;
+      const re = new RegExp(`(${prefix}-\\d+)`, "i");
+      const branchMatch = branch?.match(re);
+      if (branchMatch) return branchMatch[1].toUpperCase();
+      const basename = path.split("/").pop() ?? "";
+      const pathMatch = basename.match(re);
+      return pathMatch ? pathMatch[1].toUpperCase() : null;
+    };
 
     const result = parsed
       .filter((wt) => !wt.bare)
       .map((wt) => {
-        const dbRow = byBranch.get(wt.branch ?? "") ?? byCwd.get(wt.path);
+        // Try matching: exact branch → branch contained in DB → cwd → issue identifier
+        let dbRow = byBranch.get(wt.branch ?? "");
+        if (!dbRow && wt.branch) {
+          // Try stripping common prefixes like "feat/", "fix/", "bugfix/"
+          const stripped = wt.branch.replace(/^(?:feat|fix|bugfix|feature|hotfix)\//, "");
+          dbRow = byBranch.get(stripped);
+        }
+        if (!dbRow) dbRow = byCwd.get(wt.path);
+
+        // If we found a DB record, use it
+        if (dbRow) {
+          return {
+            path: wt.path,
+            head: wt.head,
+            branch: wt.branch,
+            isMainWorktree: wt.path === pw.cwd,
+            executionWorkspace: toExecutionWorkspace(dbRow.ew),
+            issue: dbRow.issue?.id
+              ? { id: dbRow.issue.id, title: dbRow.issue.title, identifier: dbRow.issue.identifier, status: dbRow.issue.status }
+              : null,
+            agent: dbRow.agent?.id ? { id: dbRow.agent.id, name: dbRow.agent.name } : null,
+          };
+        }
+
+        // Fallback: extract issue identifier from the branch/path and look up directly
+        const identifier = extractIdentifier(wt.branch, wt.path);
+        const issue = identifier ? issueByIdentifier.get(identifier) ?? null : null;
+        const agent = issue?.agentId ? agentMap.get(issue.agentId) ?? null : null;
+
         return {
           path: wt.path,
           head: wt.head,
           branch: wt.branch,
           isMainWorktree: wt.path === pw.cwd,
-          executionWorkspace: dbRow ? toExecutionWorkspace(dbRow.ew) : null,
-          issue: dbRow?.issue?.id ? dbRow.issue : null,
-          agent: dbRow?.agent?.id ? dbRow.agent : null,
+          executionWorkspace: null,
+          issue: issue
+            ? { id: issue.id, title: issue.title, identifier: issue.identifier, status: issue.status }
+            : null,
+          agent,
         };
       });
 
     res.json(result);
+  });
+
+  // POST /companies/:companyId/projects/:projectId/git-worktrees/remove
+  // Removes a git worktree by path using `git worktree remove --force`.
+  router.post("/companies/:companyId/projects/:projectId/git-worktrees/remove", async (req, res) => {
+    const { companyId, projectId } = req.params as { companyId: string; projectId: string };
+    assertCompanyAccess(req, companyId);
+
+    const worktreePath = req.body?.path as string | undefined;
+    if (!worktreePath) {
+      res.status(400).json({ error: "Missing 'path' in request body" });
+      return;
+    }
+
+    // Verify project workspace exists and get cwd
+    const [pw] = await db
+      .select({ cwd: projectWorkspaces.cwd })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.companyId, companyId),
+          eq(projectWorkspaces.projectId, projectId),
+          eq(projectWorkspaces.isPrimary, true),
+        ),
+      )
+      .limit(1);
+
+    if (!pw?.cwd) {
+      res.status(404).json({ error: "Project workspace not found" });
+      return;
+    }
+
+    // Prevent removing the primary worktree
+    if (worktreePath === pw.cwd) {
+      res.status(400).json({ error: "Cannot remove the primary worktree" });
+      return;
+    }
+
+    try {
+      await execFileAsync("git", ["worktree", "remove", "--force", worktreePath], { cwd: pw.cwd });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to remove worktree";
+      res.status(500).json({ error: msg });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "execution_workspace.worktree_removed",
+      entityType: "project",
+      entityId: projectId,
+      details: { path: worktreePath },
+    });
+
+    res.json({ ok: true });
   });
 
   return router;
