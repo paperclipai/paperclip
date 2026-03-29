@@ -37,6 +37,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { readQueryString } from "./query-utils.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 
@@ -61,15 +62,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
-
-  function readQueryString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      const first = value.find((entry): entry is string => typeof entry === "string");
-      return first;
-    }
-    return undefined;
-  }
 
   function isNonEmptyUuid(value: string | null | undefined): value is string {
     return typeof value === "string" && value.trim().length > 0 && isUuidLike(value.trim());

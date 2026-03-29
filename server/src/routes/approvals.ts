@@ -19,6 +19,7 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { readQueryString } from "./query-utils.js";
 import { redactEventPayload } from "../redaction.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -36,15 +37,6 @@ export function approvalRoutes(db: Db) {
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const APPROVAL_STATUS_SET = new Set(APPROVAL_STATUSES);
-
-  function readQueryString(value: unknown): string | undefined {
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      const first = value.find((entry): entry is string => typeof entry === "string");
-      return first;
-    }
-    return undefined;
-  }
 
   function parseApprovalId(rawId: string, res: Response) {
     if (!isUuidLike(rawId)) {
