@@ -7,8 +7,29 @@ const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const FRIENDLY_PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
 
 function expandHomePrefix(value: string): string {
-  if (value === "~") return os.homedir();
-  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  if (value === "~") return validateHomedir(os.homedir());
+  if (value.startsWith("~/")) return path.resolve(validateHomedir(os.homedir()), value.slice(2));
+  return value;
+}
+
+/**
+ * Bug #1841A: Validate that the home directory is a real, non-empty path.
+ * When os.homedir() returns an empty string, undefined-like value, or the
+ * literal "[]" (observed on some container runtimes), path.resolve will
+ * produce a malformed path like "/Users/[]/...".  Throw a clear error so
+ * the caller can diagnose instead of silently creating wrong directories.
+ */
+function validateHomedir(value: string): string {
+  if (!value || value === "[]" || value === "undefined" || value === "null") {
+    const fallback = os.homedir();
+    if (!fallback || fallback === "[]" || fallback === "undefined" || fallback === "null") {
+      throw new Error(
+        `Cannot resolve home directory: os.homedir() returned "${fallback || ""}". ` +
+          "Set PAPERCLIP_HOME to an explicit absolute path.",
+      );
+    }
+    return fallback;
+  }
   return value;
 }
 

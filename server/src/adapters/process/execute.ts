@@ -48,7 +48,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
-      errorMessage: `Timed out after ${timeoutSec}s`,
+      errorMessage: `Timed out after ${timeoutSec || "default"}s`,
+    };
+  }
+
+  if (proc.idledOut) {
+    return {
+      exitCode: proc.exitCode,
+      signal: proc.signal,
+      timedOut: true,
+      errorMessage: `Killed due to idle (no output received)`,
     };
   }
 

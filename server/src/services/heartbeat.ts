@@ -206,6 +206,61 @@ interface WakeupOptions {
   contextSnapshot?: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------------------
+// Transient error & refusal detection helpers (Bug #1763, #1861, #1979)
+// ---------------------------------------------------------------------------
+
+const TRANSIENT_ERROR_PATTERNS = [
+  /\b429\b/,
+  /\brate.?limit/i,
+  /\boverloaded\b/i,
+  /\b529\b/,
+  /\btoo many requests\b/i,
+  /\bcapacity\b/i,
+  /\bserver_error\b/i,
+  /\binternal.?server.?error\b/i,
+];
+
+const REFUSAL_PATTERNS = [
+  /\bI cannot\b/i,
+  /\bI can'?t\b/i,
+  /\bI'?m unable\b/i,
+  /\bI refuse\b/i,
+  /\bnot able to\b/i,
+  /\boutside my scope\b/i,
+  /\bI don'?t have access\b/i,
+  /\bunable to (assist|help|complete|perform)\b/i,
+  /\bcannot (assist|help|complete|perform)\b/i,
+];
+
+/**
+ * Returns true when stderr / errorMessage contains patterns that indicate
+ * a transient upstream failure (429 rate-limit, 529 overload, etc.)
+ * even though the adapter process itself may have exited with code 0.
+ */
+function isTransientError(
+  stderrOrError: string | null | undefined,
+  _exitCode: number | null | undefined,
+): boolean {
+  const text = stderrOrError ?? "";
+  if (!text) return false;
+  return TRANSIENT_ERROR_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * Returns true when the agent's output looks like a refusal to do work
+ * (e.g. "I cannot", "I'm unable") without having produced any meaningful
+ * side-effects such as issue status changes or comments.
+ */
+function isAgentRefusal(
+  stdoutExcerpt: string | null | undefined,
+  stderrExcerpt: string | null | undefined,
+): boolean {
+  const combined = `${stdoutExcerpt ?? ""} ${stderrExcerpt ?? ""}`;
+  if (!combined.trim()) return false;
+  return REFUSAL_PATTERNS.some((re) => re.test(combined));
+}
+
 type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
@@ -1118,6 +1173,34 @@ export function heartbeatService(db: Db) {
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
           workspaceHints,
           warnings: [],
+        };
+      }
+    }
+
+    // Bug #1841B: Before falling through to the agent home directory, check if the
+    // adapter has a configured cwd.  Timer heartbeats that lack project context
+    // would otherwise land in an empty fallback directory even though the adapter
+    // knows where it should be working.
+    const adapterCwd = readNonEmptyString(
+      parseObject(agent.adapterConfig).cwd,
+    );
+    if (adapterCwd) {
+      const adapterCwdExists = await fs
+        .stat(adapterCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (adapterCwdExists) {
+        return {
+          cwd: adapterCwd,
+          source: "agent_home" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings: [
+            `No project or session workspace was resolved. Using adapter cwd "${adapterCwd}" for this run.`,
+          ],
         };
       }
     }
@@ -2061,9 +2144,17 @@ export function heartbeatService(db: Db) {
           },
         });
       };
+      // Bug #1841C: Log workspace resolution warnings at info level via the
+      // structured logger and as lifecycle events instead of writing them to the
+      // run stdout/stderr streams where they create noise for the user.
       for (const warning of runtimeWorkspaceWarnings) {
-        const logEntry = formatRuntimeWorkspaceWarningLog(warning);
-        await onLog(logEntry.stream, logEntry.chunk);
+        logger.info({ runId: run.id, agentId: agent.id }, `workspace: ${warning}`);
+        await appendRunEvent(run, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `[workspace] ${warning}`,
+        });
       }
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
@@ -2219,14 +2310,47 @@ export function heartbeatService(db: Db) {
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      let outcomeErrorCode: string | null = null;
+      let transientRetry = false;
       const latestRun = await getRun(run.id);
+
       if (latestRun?.status === "cancelled") {
         outcome = "cancelled";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        // Exit code 0 & no explicit error — but check for hidden failures.
+
+        // Bug #1763 / #1861: Transient LLM errors (429, 529, overloaded) may
+        // still produce exit-code 0 while stderr contains the real error.
+        const combinedErrorText = `${stderrExcerpt ?? ""} ${adapterResult.errorMessage ?? ""}`;
+        if (isTransientError(combinedErrorText, adapterResult.exitCode)) {
+          outcome = "failed";
+          outcomeErrorCode = "transient_llm_error";
+          transientRetry = true;
+          await onLog(
+            "stderr",
+            `[paperclip] Detected transient LLM error in output — marking as failed (will retry)\n`,
+          );
+        // Bug #1979: Agent refused to do work but exited cleanly.
+        } else if (isAgentRefusal(stdoutExcerpt, stderrExcerpt)) {
+          outcome = "failed";
+          outcomeErrorCode = "agent_refused";
+          await onLog(
+            "stderr",
+            `[paperclip] Agent appears to have refused the task — marking as failed\n`,
+          );
+        } else {
+          outcome = "succeeded";
+        }
       } else {
+        // Non-zero exit or explicit errorMessage.
+        // Still check if it's transient so we can schedule a retry.
+        const combinedErrorText = `${stderrExcerpt ?? ""} ${adapterResult.errorMessage ?? ""}`;
+        if (isTransientError(combinedErrorText, adapterResult.exitCode)) {
+          outcomeErrorCode = "transient_llm_error";
+          transientRetry = true;
+        }
         outcome = "failed";
       }
 
@@ -2284,7 +2408,7 @@ export function heartbeatService(db: Db) {
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
+                ? (outcomeErrorCode ?? adapterResult.errorCode ?? "adapter_failed")
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -2343,6 +2467,53 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Bug #1861 / #1763: Schedule automatic retry for transient LLM errors
+      // with exponential backoff based on consecutive transient failure count.
+      if (transientRetry && issueId) {
+        try {
+          const MAX_TRANSIENT_RETRIES = 5;
+          const contextSnapshot = (run.contextSnapshot ?? {}) as Record<string, unknown>;
+          const prevRetries = typeof contextSnapshot._transientRetryCount === "number"
+            ? contextSnapshot._transientRetryCount
+            : 0;
+          if (prevRetries < MAX_TRANSIENT_RETRIES) {
+            const retryCount = prevRetries + 1;
+            const backoffMs = Math.min(30_000 * Math.pow(2, prevRetries), 10 * 60_000); // 30s, 60s, 120s, 240s, 480s — capped at 10min
+            logger.info(
+              { runId, agentId: agent.id, issueId, retryCount, backoffMs },
+              "scheduling transient-error retry",
+            );
+            setTimeout(() => {
+              enqueueWakeup(agent.id, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: `transient_retry_${retryCount}`,
+                contextSnapshot: {
+                  issueId,
+                  _transientRetryCount: retryCount,
+                },
+                requestedByActorType: "system",
+              }).catch((retryErr) => {
+                logger.warn(
+                  { err: retryErr, runId, agentId: agent.id },
+                  "failed to enqueue transient-error retry",
+                );
+              });
+            }, backoffMs);
+          } else {
+            logger.warn(
+              { runId, agentId: agent.id, issueId, retryCount: prevRetries },
+              "max transient retries reached — not scheduling further retries",
+            );
+          }
+        } catch (retryScheduleErr) {
+          logger.warn(
+            { err: retryScheduleErr, runId },
+            "failed to schedule transient retry",
+          );
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(err instanceof Error ? err.message : "Unknown adapter failure");
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -3423,17 +3594,47 @@ export function heartbeatService(db: Db) {
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // Bug #1844: Query the agent's currently assigned in_progress issues so the
+        // wakeup contextSnapshot includes issueId/projectId.  Without this, timer
+        // heartbeats land in the empty fallback directory because
+        // resolveWorkspaceForRun has no project context.
+        const contextSnapshot: Record<string, unknown> = {
+          source: "scheduler",
+          reason: "interval_elapsed",
+          now: now.toISOString(),
+        };
+        try {
+          const [assignedIssue] = await db
+            .select({ id: issues.id, projectId: issues.projectId })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.assigneeAgentId, agent.id),
+                eq(issues.status, "in_progress"),
+              ),
+            )
+            .orderBy(desc(issues.updatedAt))
+            .limit(1);
+          if (assignedIssue) {
+            contextSnapshot.issueId = assignedIssue.id;
+            if (assignedIssue.projectId) {
+              contextSnapshot.projectId = assignedIssue.projectId;
+            }
+          }
+        } catch (err) {
+          logger.debug(
+            { agentId: agent.id, err: err instanceof Error ? err.message : String(err) },
+            "timer tick: failed to query assigned issues for context enrichment",
+          );
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
           reason: "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
+          contextSnapshot,
         });
         if (run) enqueued += 1;
         else skipped += 1;

@@ -332,6 +332,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
+  const idleTimeoutSec = typeof config.idleTimeoutSec === "number" ? config.idleTimeoutSec : undefined;
+  const maxTimeoutSec = typeof config.maxTimeoutSec === "number" ? config.maxTimeoutSec : undefined;
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -454,6 +456,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      idleTimeoutSec,
+      maxTimeoutSec,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);
@@ -476,7 +480,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; idledOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -484,7 +488,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorMessage: `Timed out after ${timeoutSec || "default"}s`,
+        clearSession: clearSessionOnMissingSession,
+      };
+    }
+    if (attempt.proc.idledOut) {
+      return {
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        timedOut: true,
+        errorMessage: `Killed due to idle (no output for ${idleTimeoutSec ?? "default"}s)`,
         clearSession: clearSessionOnMissingSession,
       };
     }

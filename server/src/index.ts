@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -16,10 +16,13 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  agents,
   authUsers,
   companies,
   companyMemberships,
+  heartbeatRuns,
   instanceUserRoles,
+  issues,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -532,6 +535,83 @@ export async function startServer(): Promise<StartedServer> {
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.resumeQueuedRuns())
+      .then(async () => {
+        // Bug #1845: After orphan recovery, find agents that have assigned
+        // in_progress issues but no active or queued runs.  These agents were
+        // working on something before the server restarted and need a wakeup
+        // to resume.
+        try {
+          const assignedIssues = await (db as any)
+            .select({
+              agentId: issues.assigneeAgentId,
+              issueId: issues.id,
+              projectId: issues.projectId,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.status, "in_progress"),
+                sql`${issues.assigneeAgentId} IS NOT NULL`,
+              ),
+            );
+
+          if (assignedIssues.length === 0) return;
+
+          // Gather agents that already have active/queued runs — they don't need recovery
+          const activeRuns = await (db as any)
+            .select({ agentId: heartbeatRuns.agentId })
+            .from(heartbeatRuns)
+            .where(
+              inArray(heartbeatRuns.status, ["running", "queued"]),
+            );
+          const agentsWithRuns = new Set(activeRuns.map((r: any) => r.agentId));
+
+          let recovered = 0;
+          // Deduplicate by agent — pick the most recently updated issue per agent
+          const byAgent = new Map<string, { issueId: string; projectId: string | null }>();
+          for (const row of assignedIssues) {
+            if (!row.agentId) continue;
+            // First seen wins (query order doesn't matter, we just need one)
+            if (!byAgent.has(row.agentId)) {
+              byAgent.set(row.agentId, { issueId: row.issueId, projectId: row.projectId });
+            }
+          }
+
+          for (const [agentId, ctx] of byAgent) {
+            if (agentsWithRuns.has(agentId)) continue;
+            try {
+              await heartbeat.wakeup(agentId, {
+                source: "assignment",
+                triggerDetail: "system",
+                reason: "crash_recovery",
+                requestedByActorType: "system",
+                requestedByActorId: "crash_recovery",
+                contextSnapshot: {
+                  source: "crash_recovery",
+                  reason: "server_restart_with_assigned_issue",
+                  issueId: ctx.issueId,
+                  projectId: ctx.projectId,
+                },
+              });
+              recovered += 1;
+            } catch (err) {
+              logger.debug(
+                { agentId, err: err instanceof Error ? err.message : String(err) },
+                "crash recovery: failed to enqueue wakeup for agent with assigned issue",
+              );
+            }
+          }
+
+          if (recovered > 0) {
+            logger.info(
+              { recovered },
+              "crash recovery: enqueued wakeups for agents with assigned in-progress issues",
+            );
+          }
+        } catch (err) {
+          logger.error({ err }, "crash recovery: failed to check for agents with assigned issues");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });

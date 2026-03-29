@@ -6,6 +6,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  idledOut: boolean;
   stdout: string;
   stderr: string;
 }
@@ -31,6 +32,12 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+
+/** Default maximum timeout (1 hour) applied when timeoutSec is 0/undefined/null. */
+export const DEFAULT_MAX_TIMEOUT_SEC = 3600;
+
+/** Default idle timeout (10 minutes) – process is killed if no stdout/stderr output for this long. */
+export const DEFAULT_IDLE_TIMEOUT_SEC = 600;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -421,6 +428,8 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    idleTimeoutSec?: number;
+    maxTimeoutSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     stdin?: string;
@@ -464,26 +473,67 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec });
 
         let timedOut = false;
+        let idledOut = false;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
 
-        const timeout =
+        // --- Graceful kill helper used by both timeout and idle detection ---
+        const gracefulKill = (reason: "timeout" | "idle") => {
+          if (reason === "timeout") timedOut = true;
+          if (reason === "idle") idledOut = true;
+          console.warn(
+            `[runChildProcess] Killing process ${runId} due to ${reason}` +
+              (reason === "timeout"
+                ? ` (limit: ${effectiveTimeoutSec}s)`
+                : ` (no output for ${effectiveIdleTimeoutSec}s)`),
+          );
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            if (!child.killed) {
+              child.kill("SIGKILL");
+            }
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+
+        // --- Absolute timeout ---
+        // If the caller explicitly set timeoutSec > 0, honour it.
+        // Otherwise fall back to maxTimeoutSec (configurable) or DEFAULT_MAX_TIMEOUT_SEC.
+        const effectiveTimeoutSec =
           opts.timeoutSec > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                child.kill("SIGTERM");
-                setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
-                  }
-                }, Math.max(1, opts.graceSec) * 1000);
-              }, opts.timeoutSec * 1000)
-            : null;
+            ? opts.timeoutSec
+            : (opts.maxTimeoutSec ?? DEFAULT_MAX_TIMEOUT_SEC);
+
+        const timeout = setTimeout(
+          () => gracefulKill("timeout"),
+          effectiveTimeoutSec * 1000,
+        );
+
+        // --- Idle detection ---
+        // Kill the process if no stdout/stderr data arrives within the idle window.
+        const effectiveIdleTimeoutSec =
+          opts.idleTimeoutSec !== undefined && opts.idleTimeoutSec >= 0
+            ? opts.idleTimeoutSec
+            : DEFAULT_IDLE_TIMEOUT_SEC;
+
+        let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const resetIdleTimer = () => {
+          if (effectiveIdleTimeoutSec <= 0) return; // idle detection disabled
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(
+            () => gracefulKill("idle"),
+            effectiveIdleTimeoutSec * 1000,
+          );
+        };
+
+        // Start the idle timer immediately (catches processes that never produce output).
+        resetIdleTimer();
 
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          resetIdleTimer();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
@@ -492,13 +542,15 @@ export async function runChildProcess(
         child.stderr?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          resetIdleTimer();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
         });
 
         child.on("error", (err: Error) => {
-          if (timeout) clearTimeout(timeout);
+          clearTimeout(timeout);
+          if (idleTimer) clearTimeout(idleTimer);
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -510,13 +562,15 @@ export async function runChildProcess(
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
+          clearTimeout(timeout);
+          if (idleTimer) clearTimeout(idleTimer);
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({
               exitCode: code,
               signal,
               timedOut,
+              idledOut,
               stdout,
               stderr,
             });
