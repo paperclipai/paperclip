@@ -1989,6 +1989,24 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("returns unprocessable for malformed label names on createLabel", async () => {
+    await expect(
+      svc.createLabel(randomUUID(), { name: 123 as any, color: "#FF0000" } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid label name",
+    });
+  });
+
+  it("returns unprocessable for malformed label colors on createLabel", async () => {
+    await expect(
+      svc.createLabel(randomUUID(), { name: "Bug", color: null as any } as any),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Invalid label color",
+    });
+  });
+
   it("returns an empty list for malformed issue ids on findMentionedProjectIds", async () => {
     await expect(svc.findMentionedProjectIds("not-a-uuid")).resolves.toEqual([]);
   });

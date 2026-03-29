@@ -1452,12 +1452,18 @@ export function issueService(db: Db) {
     createLabel: async (companyId: string, data: Pick<typeof labels.$inferInsert, "name" | "color">) => {
       const normalizedCompanyId = asCanonicalUuid(companyId);
       if (!normalizedCompanyId) throw unprocessable("Invalid companyId");
+      if (typeof data?.name !== "string" || data.name.trim().length === 0) {
+        throw unprocessable("Invalid label name");
+      }
+      if (typeof data?.color !== "string" || data.color.trim().length === 0) {
+        throw unprocessable("Invalid label color");
+      }
       const [created] = await db
         .insert(labels)
         .values({
           companyId: normalizedCompanyId,
           name: data.name.trim(),
-          color: data.color,
+          color: data.color.trim(),
         })
         .returning();
       return created;
