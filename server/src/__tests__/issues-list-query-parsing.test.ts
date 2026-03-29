@@ -75,6 +75,21 @@ describe("issues list query parsing", () => {
     );
   });
 
+  it("prefers first non-empty duplicate query values", async () => {
+    const res = await request(createApp()).get(
+      `/api/companies/${COMPANY_ID}/issues?status=&status=done&q=&q=beta`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({
+        status: "done",
+        q: "beta",
+      }),
+    );
+  });
+
   it("normalizes comma-separated status filters before calling service", async () => {
     const res = await request(createApp()).get(`/api/companies/${COMPANY_ID}/issues?status=todo,,in_progress,`);
 

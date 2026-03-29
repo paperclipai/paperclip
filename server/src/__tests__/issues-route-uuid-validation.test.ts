@@ -159,6 +159,21 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
   });
 
+  it("uses the first non-empty duplicate after cursor value", async () => {
+    const cursor = "22222222-2222-4222-8222-222222222222";
+    const res = await request(createApp()).get(
+      `/api/issues/11111111-1111-4111-8111-111111111111/comments?after=&after=${cursor}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        afterCommentId: cursor,
+      }),
+    );
+  });
+
   it("returns 400 when after and afterCommentId cursors conflict", async () => {
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/comments?after=22222222-2222-4222-8222-222222222222&afterCommentId=33333333-3333-4333-8333-333333333333",
