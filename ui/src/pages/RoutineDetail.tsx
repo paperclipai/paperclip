@@ -612,6 +612,14 @@ export function RoutineDetail() {
     <div className="max-w-2xl space-y-6">
       {/* Header: editable title + actions */}
       <div className="flex items-start gap-4">
+        <button
+          type="button"
+          className="text-xs font-mono text-muted-foreground/50 hover:text-muted-foreground transition-colors cursor-pointer shrink-0 pt-2"
+          title="Click to copy routine ID"
+          onClick={() => { navigator.clipboard.writeText(routine.id); pushToast({ title: "Routine ID copied", tone: "success" }); }}
+        >
+          {routine.id.slice(0, 8)}
+        </button>
         <textarea
           ref={titleInputRef}
           className="flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
