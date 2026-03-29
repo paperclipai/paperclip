@@ -316,6 +316,136 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]));
   });
 
+  it("clears execution lock fields when issue leaves in_progress", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const assigneeRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "AssigneeAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: assigneeRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    for (const status of ["blocked", "todo"] as const) {
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: `Lock cleanup (${status})`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId,
+        checkoutRunId: assigneeRunId,
+        executionRunId: assigneeRunId,
+        executionAgentNameKey: "assigneeagent",
+        executionLockedAt: new Date("2026-03-30T04:00:00.000Z"),
+      });
+
+      const updated = await svc.update(issueId, { status });
+      expect(updated).toMatchObject({
+        id: issueId,
+        status,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      });
+    }
+  });
+
+  it("clears execution lock fields when assignee changes", async () => {
+    const companyId = randomUUID();
+    const currentAssigneeAgentId = randomUUID();
+    const nextAssigneeAgentId = randomUUID();
+    const assigneeRunId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: currentAssigneeAgentId,
+        companyId,
+        name: "CurrentAssignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAssigneeAgentId,
+        companyId,
+        name: "NextAssignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: assigneeRunId,
+      companyId,
+      agentId: currentAssigneeAgentId,
+      invocationSource: "assignment",
+      triggerDetail: null,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Lock cleanup on reassignment",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: currentAssigneeAgentId,
+      checkoutRunId: assigneeRunId,
+      executionRunId: assigneeRunId,
+      executionAgentNameKey: "currentassignee",
+      executionLockedAt: new Date("2026-03-30T04:01:00.000Z"),
+    });
+
+    const updated = await svc.update(issueId, { assigneeAgentId: nextAssigneeAgentId });
+    expect(updated).toMatchObject({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: nextAssigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("clears execution lock fields on release", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
