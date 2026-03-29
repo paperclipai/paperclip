@@ -1400,28 +1400,33 @@ export function issueService(db: Db) {
       return enriched;
     },
 
-    listLabels: (companyId: string) =>
-      !isUuidLike(companyId)
-        ? Promise.resolve([])
-        :
-      db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
-
-    getLabelById: (id: string) =>
-      !isUuidLike(id)
-        ? Promise.resolve(null)
-        :
-      db
+    listLabels: (companyId: string) => {
+      const normalizedCompanyId = asCanonicalUuid(companyId);
+      if (!normalizedCompanyId) return Promise.resolve([]);
+      return db
         .select()
         .from(labels)
-        .where(eq(labels.id, id))
-        .then((rows) => rows[0] ?? null),
+        .where(eq(labels.companyId, normalizedCompanyId))
+        .orderBy(asc(labels.name), asc(labels.id));
+    },
+
+    getLabelById: (id: string) => {
+      const normalizedId = asCanonicalUuid(id);
+      if (!normalizedId) return Promise.resolve(null);
+      return db
+        .select()
+        .from(labels)
+        .where(eq(labels.id, normalizedId))
+        .then((rows) => rows[0] ?? null);
+    },
 
     createLabel: async (companyId: string, data: Pick<typeof labels.$inferInsert, "name" | "color">) => {
-      if (!isUuidLike(companyId)) throw unprocessable("Invalid companyId");
+      const normalizedCompanyId = asCanonicalUuid(companyId);
+      if (!normalizedCompanyId) throw unprocessable("Invalid companyId");
       const [created] = await db
         .insert(labels)
         .values({
-          companyId,
+          companyId: normalizedCompanyId,
           name: data.name.trim(),
           color: data.color,
         })
@@ -1429,15 +1434,15 @@ export function issueService(db: Db) {
       return created;
     },
 
-    deleteLabel: async (id: string) =>
-      !isUuidLike(id)
-        ? null
-        :
-      db
+    deleteLabel: async (id: string) => {
+      const normalizedId = asCanonicalUuid(id);
+      if (!normalizedId) return null;
+      return db
         .delete(labels)
-        .where(eq(labels.id, id))
+        .where(eq(labels.id, normalizedId))
         .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     listComments: async (
       issueId: string,

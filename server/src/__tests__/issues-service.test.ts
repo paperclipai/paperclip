@@ -1856,6 +1856,29 @@ describe("issueService.list participantAgentId", () => {
     await expect(svc.deleteLabel("not-a-uuid")).resolves.toBeNull();
   });
 
+  it("normalizes label company and id uuid inputs for non-route callers", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.createLabel(` ${companyId.toUpperCase()} `, { name: "Ops", color: "#00AAFF" });
+    expect(created.companyId).toBe(companyId);
+
+    const listed = await svc.listLabels(` ${companyId.toUpperCase()} `);
+    expect(listed.map((label) => label.id)).toContain(created.id);
+
+    const fetched = await svc.getLabelById(` ${created.id.toUpperCase()} `);
+    expect(fetched?.id).toBe(created.id);
+
+    const removed = await svc.deleteLabel(` ${created.id.toUpperCase()} `);
+    expect(removed?.id).toBe(created.id);
+  });
+
   it("returns an empty label list when companyId is malformed", async () => {
     await expect(svc.listLabels("not-a-uuid")).resolves.toEqual([]);
   });
