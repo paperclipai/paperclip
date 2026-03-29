@@ -1174,6 +1174,47 @@ describe("issueService.list participantAgentId", () => {
     });
   });
 
+  it("normalizes attachment issue/attachment uuid inputs for non-route callers", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Attachment uuid normalization",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.createAttachment({
+      issueId: ` ${issueId.toUpperCase()} `,
+      provider: "local",
+      objectKey: `issues/${issueId}/file.txt`,
+      contentType: "text/plain",
+      byteSize: 10,
+      sha256: "abc123",
+    });
+    expect(created.issueId).toBe(issueId);
+
+    const listed = await svc.listAttachments(` ${issueId.toUpperCase()} `);
+    expect(listed.map((attachment) => attachment.id)).toContain(created.id);
+
+    await expect(svc.getAttachmentById(` ${created.id.toUpperCase()} `)).resolves.toEqual(
+      expect.objectContaining({ id: created.id }),
+    );
+
+    await expect(svc.removeAttachment(` ${created.id.toUpperCase()} `)).resolves.toEqual(
+      expect.objectContaining({ id: created.id }),
+    );
+  });
+
   it("returns an empty attachment list for malformed issue ids", async () => {
     await expect(svc.listAttachments("not-a-uuid")).resolves.toEqual([]);
   });

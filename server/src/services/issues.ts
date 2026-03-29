@@ -1589,25 +1589,29 @@ export function issueService(db: Db) {
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
     }) => {
-      if (!isUuidLike(input.issueId)) {
+      const normalizedIssueId = asCanonicalUuid(input.issueId);
+      if (!normalizedIssueId) {
         throw notFound("Issue not found");
       }
-      if (input.issueCommentId && !isUuidLike(input.issueCommentId)) {
+      const normalizedIssueCommentId = input.issueCommentId == null
+        ? null
+        : asCanonicalUuid(input.issueCommentId);
+      if (input.issueCommentId && !normalizedIssueCommentId) {
         throw notFound("Issue comment not found");
       }
 
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
-        .where(eq(issues.id, input.issueId))
+        .where(eq(issues.id, normalizedIssueId))
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
 
-      if (input.issueCommentId) {
+      if (normalizedIssueCommentId) {
         const comment = await db
           .select({ id: issueComments.id, companyId: issueComments.companyId, issueId: issueComments.issueId })
           .from(issueComments)
-          .where(eq(issueComments.id, input.issueCommentId))
+          .where(eq(issueComments.id, normalizedIssueCommentId))
           .then((rows) => rows[0] ?? null);
         if (!comment) throw notFound("Issue comment not found");
         if (comment.companyId !== issue.companyId || comment.issueId !== issue.id) {
@@ -1637,7 +1641,7 @@ export function issueService(db: Db) {
             companyId: issue.companyId,
             issueId: issue.id,
             assetId: asset.id,
-            issueCommentId: input.issueCommentId ?? null,
+            issueCommentId: normalizedIssueCommentId,
           })
           .returning();
 
@@ -1662,7 +1666,8 @@ export function issueService(db: Db) {
     },
 
     listAttachments: async (issueId: string) => {
-      if (!isUuidLike(issueId)) return [];
+      const normalizedIssueId = asCanonicalUuid(issueId);
+      if (!normalizedIssueId) return [];
       return db
         .select({
           id: issueAttachments.id,
@@ -1683,12 +1688,13 @@ export function issueService(db: Db) {
         })
         .from(issueAttachments)
         .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
-        .where(eq(issueAttachments.issueId, issueId))
+        .where(eq(issueAttachments.issueId, normalizedIssueId))
         .orderBy(desc(issueAttachments.createdAt));
     },
 
     getAttachmentById: async (id: string) => {
-      if (!isUuidLike(id)) return null;
+      const normalizedId = asCanonicalUuid(id);
+      if (!normalizedId) return null;
       return db
         .select({
           id: issueAttachments.id,
@@ -1709,12 +1715,13 @@ export function issueService(db: Db) {
         })
         .from(issueAttachments)
         .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
-        .where(eq(issueAttachments.id, id))
+        .where(eq(issueAttachments.id, normalizedId))
         .then((rows) => rows[0] ?? null);
     },
 
     removeAttachment: async (id: string) => {
-      if (!isUuidLike(id)) return null;
+      const normalizedId = asCanonicalUuid(id);
+      if (!normalizedId) return null;
       return db.transaction(async (tx) => {
         const existing = await tx
           .select({
@@ -1736,11 +1743,11 @@ export function issueService(db: Db) {
           })
           .from(issueAttachments)
           .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
-          .where(eq(issueAttachments.id, id))
+          .where(eq(issueAttachments.id, normalizedId))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
+        await tx.delete(issueAttachments).where(eq(issueAttachments.id, normalizedId));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
         return existing;
       });
