@@ -47,15 +47,10 @@ import { createPluginHostServiceCleanup } from "./services/plugin-host-service-c
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import { resolveViteHmrPort } from "./vite-hmr-port.js";
 
 type UiMode = "none" | "static" | "vite-dev";
-
-export function resolveViteHmrPort(serverPort: number): number {
-  if (serverPort <= 55_535) {
-    return serverPort + 10_000;
-  }
-  return Math.max(1_024, serverPort - 10_000);
-}
+export { resolveViteHmrPort };
 
 export async function createApp(
   db: Db,
