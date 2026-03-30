@@ -177,6 +177,16 @@ export function CompanySettings() {
     setSnippetCopyDelightId(0);
   }, [selectedCompanyId]);
 
+  const signOutMutation = useMutation({
+    mutationFn: () => authApi.signOut(),
+    onSuccess: () => {
+      window.location.href = "/auth";
+    },
+    onError: () => {
+      pushToast("Sign out failed. Please try again.", "error");
+    },
+  });
+
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
@@ -503,13 +513,11 @@ export function CompanySettings() {
           <Button
             size="sm"
             variant="outline"
-            onClick={async () => {
-              await authApi.signOut();
-              window.location.href = "/auth";
-            }}
+            disabled={signOutMutation.isPending}
+            onClick={() => signOutMutation.mutate()}
           >
             <LogOut className="mr-1.5 h-3.5 w-3.5" />
-            Sign out
+            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
           </Button>
         </div>
       </div>
