@@ -26,7 +26,9 @@ COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-lo
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY packages/plugins/plugin-sentry/package.json packages/plugins/plugin-sentry/
+COPY packages/plugins/plugin-knowledge-base/package.json packages/plugins/plugin-knowledge-base/
 COPY packages/plugins/plugin-obsidian/package.json packages/plugins/plugin-obsidian/
+COPY packages/plugins/plugin-telegram/package.json packages/plugins/plugin-telegram/
 COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
@@ -39,6 +41,8 @@ RUN git rev-parse --short HEAD > .git-commit 2>/dev/null || echo "unknown" > .gi
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/plugin-sentry build
 RUN pnpm --filter @paperclipai/plugin-obsidian build
+RUN pnpm --filter @paperclipai/plugin-knowledge-base build
+RUN pnpm --filter @paperclipai/plugin-telegram build
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
