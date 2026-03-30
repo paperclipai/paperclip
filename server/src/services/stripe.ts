@@ -8,6 +8,7 @@ import {
   companies,
   companyMemberships,
   authUsers,
+  agents,
 } from "@paperclipai/db";
 import type { SubscriptionPlan, CompanySubscription } from "@paperclipai/shared";
 
@@ -311,6 +312,9 @@ export function stripeService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(companySubscriptions.companyId, companyId));
+
+          // Resume agents that were paused by the system (subscription expiry)
+          await resumeSystemPausedAgents(db, companyId);
           break;
         }
 
@@ -394,9 +398,49 @@ export function stripeService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(companySubscriptions.stripeCustomerId, customerId));
+
+          // Resume agents if they were paused due to subscription issues
+          const subRow = await db
+            .select({ companyId: companySubscriptions.companyId })
+            .from(companySubscriptions)
+            .where(eq(companySubscriptions.stripeCustomerId, customerId))
+            .then((rows) => rows[0] ?? null);
+          if (subRow) {
+            await resumeSystemPausedAgents(db, subRow.companyId);
+          }
           break;
         }
       }
     },
   };
+}
+
+/**
+ * Resume agents that were paused by the system due to subscription expiry.
+ * Only resumes agents with pauseReason "system" to avoid unpausing
+ * manually paused or budget-paused agents.
+ */
+async function resumeSystemPausedAgents(db: Db, companyId: string): Promise<void> {
+  const resumed = await db
+    .update(agents)
+    .set({
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        eq(agents.status, "paused"),
+        eq(agents.pauseReason, "system"),
+      ),
+    )
+    .returning({ id: agents.id });
+
+  if (resumed.length > 0) {
+    console.info(
+      `[stripe] Resumed ${resumed.length} system-paused agent(s) for company ${companyId}`,
+    );
+  }
 }

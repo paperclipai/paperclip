@@ -163,7 +163,7 @@ export function OnboardingWizard() {
   const eligibilityQuery = useQuery({
     queryKey: queryKeys.billing.eligibility,
     queryFn: () => billingApi.checkCompanyCreationEligibility(),
-    enabled: effectiveOnboardingOpen && step === 1 && !existingCompanyId,
+    enabled: effectiveOnboardingOpen && !existingCompanyId,
     staleTime: 10_000,
   });
 
@@ -183,15 +183,6 @@ export function OnboardingWizard() {
       window.location.href = data.url;
     },
   });
-
-  // Handle return from Stripe checkout
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get("billing") === "success") {
-      queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
-      navigate(location.pathname, { replace: true });
-    }
-  }, [location.search, queryClient, navigate, location.pathname]);
 
   // Step 3 (task + launch)
   const [taskTitle, setTaskTitle] = useState(
@@ -223,6 +214,26 @@ export function OnboardingWizard() {
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
+
+  // Handle return from Stripe checkout — refresh eligibility and auto-launch
+  const [pendingLaunchAfterPayment, setPendingLaunchAfterPayment] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("billing") === "success") {
+      queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
+      navigate(location.pathname, { replace: true });
+      if (step === 3 && createdCompanyId && createdAgentId) {
+        setPendingLaunchAfterPayment(true);
+      }
+    }
+  }, [location.search, queryClient, navigate, location.pathname, step, createdCompanyId, createdAgentId]);
+
+  useEffect(() => {
+    if (pendingLaunchAfterPayment) {
+      setPendingLaunchAfterPayment(false);
+      handleStep3Launch();
+    }
+  }, [pendingLaunchAfterPayment]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setRouteDismissed(false);
@@ -861,76 +872,7 @@ export function OnboardingWizard() {
               </div>
 
               {/* Step content */}
-              {step === 1 && eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && (
-                <div key="subscribe-gate" className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <CreditCard className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Subscribe to continue</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Subscribe to your existing companies before creating a new one.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    {eligibilityQuery.data.unpaidCompanies.map((company) => {
-                      const paidPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0);
-                      return (
-                        <div
-                          key={company.companyId}
-                          className="flex items-center justify-between rounded-md border border-border px-4 py-3"
-                        >
-                          <div>
-                            <p className="text-sm font-medium">{company.companyName}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {company.status === "trialing"
-                                ? "Free trial"
-                                : company.status === "trial_expired"
-                                  ? "Trial expired"
-                                  : company.status === "canceled"
-                                    ? "Canceled"
-                                    : company.status}
-                            </p>
-                          </div>
-                          {paidPlan && (
-                            <Button
-                              size="sm"
-                              onClick={() =>
-                                inlineCheckoutMutation.mutate({
-                                  companyId: company.companyId,
-                                  planId: paidPlan.id,
-                                })
-                              }
-                              disabled={inlineCheckoutMutation.isPending}
-                            >
-                              {inlineCheckoutMutation.isPending ? (
-                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                              ) : (
-                                <CreditCard className="h-3.5 w-3.5 mr-1" />
-                              )}
-                              Subscribe — ${(paidPlan.monthlyPriceCents / 100).toFixed(0)}/mo
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {inlineCheckoutMutation.isError && (
-                    <p className="text-xs text-destructive">
-                      {inlineCheckoutMutation.error instanceof Error
-                        ? inlineCheckoutMutation.error.message
-                        : "Failed to start checkout"}
-                    </p>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    Each company is $15/mo. You'll be redirected to Stripe to complete payment.
-                  </p>
-                </div>
-              )}
-
-              {step === 1 && (!eligibilityQuery.data || eligibilityQuery.data.canCreateCompany) && (
+              {step === 1 && (
                 <div key={1} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1755,7 +1697,7 @@ export function OnboardingWizard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (!eligibilityQuery.data || eligibilityQuery.data.canCreateCompany) && (
+                  {step === 1 && (
                     <Button
                       size="sm"
                       disabled={!companyName.trim() || loading}
@@ -1788,20 +1730,52 @@ export function OnboardingWizard() {
                       {loading ? "Creating agent..." : "Next"}
                     </Button>
                   )}
-                  {step === 3 && (
-                    <Button
-                      size="sm"
-                      disabled={!taskTitle.trim() || loading}
-                      onClick={handleStep3Launch}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <Rocket className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Launching..." : "Launch"}
-                    </Button>
-                  )}
+                  {step === 3 && (() => {
+                    // Check if this company needs payment before launch.
+                    // The eligibility query tells us if the user has already
+                    // used a trial — if so, this new company needs a subscription.
+                    const needsPayment = eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany;
+                    const paidPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0);
+
+                    if (needsPayment && paidPlan && createdCompanyId) {
+                      return (
+                        <Button
+                          size="sm"
+                          disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending}
+                          onClick={() => {
+                            inlineCheckoutMutation.mutate({
+                              companyId: createdCompanyId,
+                              planId: paidPlan.id,
+                            });
+                          }}
+                        >
+                          {inlineCheckoutMutation.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          ) : (
+                            <CreditCard className="h-3.5 w-3.5 mr-1" />
+                          )}
+                          {inlineCheckoutMutation.isPending
+                            ? "Redirecting..."
+                            : `Subscribe & Launch — $${(paidPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
+                        </Button>
+                      );
+                    }
+
+                    return (
+                      <Button
+                        size="sm"
+                        disabled={!taskTitle.trim() || loading}
+                        onClick={handleStep3Launch}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <Rocket className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Launching..." : "Launch"}
+                      </Button>
+                    );
+                  })()}
                 </div>
               </div>
             </div>

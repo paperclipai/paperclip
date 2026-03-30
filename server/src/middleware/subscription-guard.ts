@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions } from "@paperclipai/db";
+import { companySubscriptions, agents, heartbeatRuns, agentWakeupRequests } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
+import { logger } from "./logger.js";
 
 export type SubscriptionStatus = {
   status: string;
@@ -12,7 +13,8 @@ export type SubscriptionStatus = {
 /**
  * Look up the subscription status for a company. Returns null if no
  * subscription record exists (self-hosted free tier).
- * Also lazily transitions "trialing" → "trial_expired" when the trial window has passed.
+ * Also lazily transitions "trialing" → "trial_expired" when the trial window has passed,
+ * and pauses all agents + cancels active runs when this happens.
  */
 export async function getSubscriptionStatus(
   db: Db,
@@ -39,6 +41,11 @@ export async function getSubscriptionStatus(
       .update(companySubscriptions)
       .set({ status: "trial_expired", updatedAt: new Date() })
       .where(eq(companySubscriptions.companyId, companyId));
+
+    // Pause all agents and cancel active runs (async, don't block the request)
+    void pauseCompanyAgents(db, companyId).catch((err) => {
+      logger.error({ err, companyId }, "Failed to pause agents on trial expiry");
+    });
 
     return { status: "trial_expired", trialEndsAt: sub.trialEndsAt, canWrite: false };
   }
@@ -77,4 +84,61 @@ export async function assertWriteAccess(db: Db, companyId: string): Promise<void
         : "Subscription is not active. Please update your billing.";
 
   throw new HttpError(402, message, { code, canRead: true, canWrite: false });
+}
+
+/**
+ * Pause all running/idle agents in a company and cancel active heartbeat runs.
+ * Called when a trial expires or subscription is canceled.
+ */
+async function pauseCompanyAgents(db: Db, companyId: string): Promise<void> {
+  const now = new Date();
+
+  // Pause all non-terminated agents
+  const paused = await db
+    .update(agents)
+    .set({
+      status: "paused",
+      pauseReason: "system",
+      pausedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        inArray(agents.status, ["idle", "running"]),
+      ),
+    )
+    .returning({ id: agents.id });
+
+  // Cancel all queued and running heartbeat runs
+  await db
+    .update(heartbeatRuns)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      ),
+    );
+
+  // Detach wakeup requests from heartbeat runs
+  await db
+    .update(heartbeatRuns)
+    .set({ wakeupRequestId: null })
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, companyId),
+        isNotNull(heartbeatRuns.wakeupRequestId),
+      ),
+    );
+
+  // Delete pending wakeup requests
+  await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+
+  if (paused.length > 0) {
+    logger.info(
+      { companyId, pausedAgents: paused.length },
+      "Paused agents due to subscription expiry",
+    );
+  }
 }

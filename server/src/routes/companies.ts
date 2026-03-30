@@ -1,7 +1,5 @@
 import express, { Router, type Request } from "express";
-import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions, companyMemberships, companies as companiesTable } from "@paperclipai/db";
 import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -224,42 +222,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const isAuthenticated = process.env.PAPERCLIP_DEPLOYMENT_MODE === "authenticated";
     if (!isAuthenticated && !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
-    }
-
-    // Trial abuse protection: in authenticated (SaaS) mode, require all existing
-    // companies to be on a paid subscription before allowing a new company (which
-    // gets its own 14-day trial). This prevents infinite trial cycling.
-    if (isAuthenticated && req.actor.userId) {
-      const userSubs = await db
-        .select({
-          subStatus: companySubscriptions.status,
-          companyStatus: companiesTable.status,
-        })
-        .from(companySubscriptions)
-        .innerJoin(
-          companyMemberships,
-          eq(companySubscriptions.companyId, companyMemberships.companyId),
-        )
-        .innerJoin(companiesTable, eq(companySubscriptions.companyId, companiesTable.id))
-        .where(
-          and(
-            eq(companyMemberships.principalId, req.actor.userId),
-            eq(companyMemberships.principalType, "user"),
-          ),
-        );
-
-      // Only consider non-archived companies for trial abuse check
-      const hasUnpaid = userSubs.some(
-        (s) => s.companyStatus !== "archived" && s.subStatus !== "active" && s.subStatus !== "free",
-      );
-
-      if (hasUnpaid) {
-        res.status(402).json({
-          error: "Please subscribe to your existing companies before creating a new one. Each company is $15/mo after the 14-day free trial.",
-          code: "TRIAL_LIMIT_REACHED",
-        });
-        return;
-      }
     }
 
     const company = await svc.create(req.body);
