@@ -438,6 +438,21 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  /**
+   * Resolve a run ID to use as a FK reference into heartbeat_runs.
+   * If the run doesn't exist in the table (e.g. a synthetic pcli emulation ID),
+   * returns null so the FK column is cleared rather than violating the constraint.
+   */
+  async function resolveHeartbeatRunIdOrNull(runId: string | null): Promise<string | null> {
+    if (!runId) return null;
+    const exists = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows.length > 0);
+    return exists ? runId : null;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -447,12 +462,16 @@ export function issueService(db: Db) {
     const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
     if (!stale) return null;
 
+    // Guard: the actor's run ID must exist in heartbeat_runs or FK write will fail.
+    // Synthetic/emulation run IDs (e.g. from pcli) are not in the table — use null.
+    const safeActorRunId = await resolveHeartbeatRunIdOrNull(input.actorRunId);
+
     const now = new Date();
     const adopted = await db
       .update(issues)
       .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
+        checkoutRunId: safeActorRunId,
+        executionRunId: safeActorRunId,
         executionLockedAt: now,
         updatedAt: now,
       })
@@ -931,23 +950,27 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
+      // Guard: only write a run ID to FK columns if it actually exists in heartbeat_runs.
+      // Synthetic/emulation run IDs (e.g. from pcli) are not in the table.
+      const safeCheckoutRunId = await resolveHeartbeatRunIdOrNull(checkoutRunId);
+
       const now = new Date();
-      const sameRunAssigneeCondition = checkoutRunId
+      const sameRunAssigneeCondition = safeCheckoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
-          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
+          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, safeCheckoutRunId)),
         )
         : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
-      const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
+      const executionLockCondition = safeCheckoutRunId
+        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, safeCheckoutRunId))
         : isNull(issues.executionRunId);
       const updated = await db
         .update(issues)
         .set({
           assigneeAgentId: agentId,
           assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
+          checkoutRunId: safeCheckoutRunId,
+          executionRunId: safeCheckoutRunId,
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -986,14 +1009,14 @@ export function issueService(db: Db) {
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
-        checkoutRunId
+        (current.executionRunId == null || current.executionRunId === safeCheckoutRunId) &&
+        safeCheckoutRunId
       ) {
         const adopted = await db
           .update(issues)
           .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
+            checkoutRunId: safeCheckoutRunId,
+            executionRunId: safeCheckoutRunId,
             updatedAt: new Date(),
           })
           .where(
@@ -1002,7 +1025,7 @@ export function issueService(db: Db) {
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, safeCheckoutRunId)),
             ),
           )
           .returning()
