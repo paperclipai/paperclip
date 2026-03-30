@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
-import { HermesIcon } from "./HermesIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -30,8 +29,7 @@ type AdvancedAdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
-  | "openclaw_gateway"
-  | "hermes_local";
+  | "http";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
@@ -55,6 +53,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     recommended: true,
   },
   {
+    value: "http",
+    label: "Remote Agent (HTTP)",
+    icon: Bot,
+    desc: "Generic remote HTTP or webhook bridge",
+  },
+  {
     value: "gemini_local",
     label: "Gemini CLI",
     icon: Gem,
@@ -64,12 +68,6 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     value: "opencode_local",
     label: "OpenCode",
     icon: OpenCodeLogoIcon,
-    desc: "Local multi-provider agent",
-  },
-  {
-    value: "hermes_local",
-    label: "Hermes Agent",
-    icon: HermesIcon,
     desc: "Local multi-provider agent",
   },
   {
@@ -83,12 +81,6 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "Cursor",
     icon: MousePointer2,
     desc: "Local Cursor agent",
-  },
-  {
-    value: "openclaw_gateway",
-    label: "OpenClaw Gateway",
-    icon: Bot,
-    desc: "Invoke OpenClaw via gateway protocol",
   },
 ];
 

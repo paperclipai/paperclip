@@ -395,13 +395,15 @@ pnpm paperclipai dashboard get
 
 See full command reference in `doc/CLI.md`.
 
-## OpenClaw Invite Onboarding Endpoints
+## Agent Invite Onboarding Endpoints
 
 Agent-oriented invite onboarding now exposes machine-readable API docs:
 
 - `GET /api/invites/:token` returns invite summary plus onboarding and skills index links.
-- `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
+- `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints, recommended adapter type, and onboarding template).
 - `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
+- Generic invites now default to remote-agent guidance with `adapterType=http`.
+- The legacy `POST /api/companies/:companyId/openclaw/invite-prompt` route still stamps invites with an explicit OpenClaw onboarding template so existing gateway flows keep their WebSocket/token instructions.
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
 

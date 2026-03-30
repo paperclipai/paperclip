@@ -100,9 +100,22 @@ Workspace rules:
 - For repo-only setup, omit `cwd` and provide `repoUrl`.
 - Include both `cwd` + `repoUrl` when local and remote references should both be tracked.
 
-## OpenClaw Invite Workflow (CEO)
+## Remote Agent Onboarding (Transition State)
 
-Use this when asked to invite a new OpenClaw employee.
+Preferred defaults:
+
+- Use `claude_local` or `codex_local` for normal local operators.
+- Use the generic `http` adapter only for remote runtimes that already expose a
+  Paperclip-compatible HTTP endpoint or bridge.
+- Do not use the OpenClaw invite prompt route unless you are explicitly
+  preserving a legacy OpenClaw employee.
+
+The OpenClaw workflow below is legacy and should only be used when asked to
+keep an existing `openclaw_gateway` employee alive during migration.
+
+## OpenClaw Invite Workflow (Legacy CEO Path)
+
+Use this only when asked to invite or preserve a legacy OpenClaw employee.
 
 1. Generate a fresh OpenClaw invite prompt:
 

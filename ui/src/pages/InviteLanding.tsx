@@ -10,7 +10,12 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 
 type JoinType = "human" | "agent";
-const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
+const joinAdapterOptions: AgentAdapterType[] = AGENT_ADAPTER_TYPES.filter(
+  (type): type is AgentAdapterType =>
+    type !== "process" &&
+    type !== "hermes_local" &&
+    type !== "openclaw_gateway"
+);
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
@@ -18,14 +23,21 @@ const adapterLabels: Record<string, string> = {
   gemini_local: "Gemini CLI (local)",
   opencode_local: "OpenCode (local)",
   pi_local: "Pi (local)",
-  openclaw_gateway: "OpenClaw Gateway",
+  openclaw_gateway: "Legacy OpenClaw Gateway",
   cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
   process: "Process",
-  http: "HTTP",
+  http: "Remote Agent (HTTP)",
 };
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
+const ENABLED_INVITE_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "http",
+]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -47,6 +59,7 @@ export function InviteLandingPage() {
   const [joinType, setJoinType] = useState<JoinType>("human");
   const [agentName, setAgentName] = useState("");
   const [adapterType, setAdapterType] = useState<AgentAdapterType>("claude_local");
+  const [remoteWebhookUrl, setRemoteWebhookUrl] = useState("");
   const [capabilities, setCapabilities] = useState("");
   const [result, setResult] = useState<{ kind: "bootstrap" | "join"; payload: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +114,14 @@ export function InviteLandingPage() {
         agentName: agentName.trim(),
         adapterType,
         capabilities: capabilities.trim() || null,
+        agentDefaultsPayload:
+          adapterType === "http"
+            ? {
+                url: remoteWebhookUrl.trim(),
+                method: "POST",
+                timeoutMs: 15000,
+              }
+            : undefined,
       });
     },
     onSuccess: async (payload) => {
@@ -167,6 +188,9 @@ export function InviteLandingPage() {
     };
     const claimSecret = typeof payload.claimSecret === "string" ? payload.claimSecret : null;
     const claimApiKeyPath = typeof payload.claimApiKeyPath === "string" ? payload.claimApiKeyPath : null;
+    const joinedAdapterType =
+      typeof payload.adapterType === "string" ? payload.adapterType : null;
+    const isLegacyOpenClawJoin = joinedAdapterType === "openclaw_gateway";
     const onboardingSkillUrl = readNestedString(payload.onboarding, ["skill", "url"]);
     const onboardingSkillPath = readNestedString(payload.onboarding, ["skill", "path"]);
     const onboardingInstallPath = readNestedString(payload.onboarding, ["skill", "installPath"]);
@@ -183,6 +207,13 @@ export function InviteLandingPage() {
           <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
             Request ID: <span className="font-mono">{payload.id}</span>
           </div>
+          {joinedAdapterType === "http" && (
+            <div className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+              Remote agent join submitted with the provided webhook URL. Configure
+              any extra headers or bootstrap details in agent settings after
+              approval.
+            </div>
+          )}
           {claimSecret && claimApiKeyPath && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">One-time claim secret (save now)</p>
@@ -190,7 +221,8 @@ export function InviteLandingPage() {
               <p className="font-mono break-all">POST {claimApiKeyPath}</p>
             </div>
           )}
-          {(onboardingSkillUrl || onboardingSkillPath || onboardingInstallPath) && (
+          {isLegacyOpenClawJoin &&
+            (onboardingSkillUrl || onboardingSkillPath || onboardingInstallPath) && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Paperclip skill bootstrap</p>
               {onboardingSkillUrl && <p className="font-mono break-all">GET {onboardingSkillUrl}</p>}
@@ -198,14 +230,14 @@ export function InviteLandingPage() {
               {onboardingInstallPath && <p className="font-mono break-all">Install to {onboardingInstallPath}</p>}
             </div>
           )}
-          {(onboardingTextUrl || onboardingTextPath) && (
+          {isLegacyOpenClawJoin && (onboardingTextUrl || onboardingTextPath) && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Agent-readable onboarding text</p>
               {onboardingTextUrl && <p className="font-mono break-all">GET {onboardingTextUrl}</p>}
               {!onboardingTextUrl && onboardingTextPath && <p className="font-mono break-all">GET {onboardingTextPath}</p>}
             </div>
           )}
-          {diagnostics.length > 0 && (
+          {isLegacyOpenClawJoin && diagnostics.length > 0 && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Connectivity diagnostics</p>
               {diagnostics.map((diag, idx) => (
@@ -269,11 +301,27 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    {adapterLabels[type]}
+                    {!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                   </option>
                 ))}
               </select>
             </label>
+            {adapterType === "http" && (
+              <label className="block text-sm">
+                <span className="mb-1 block text-muted-foreground">Webhook URL</span>
+                <input
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="https://agent.example/webhook"
+                  value={remoteWebhookUrl}
+                  onChange={(event) => setRemoteWebhookUrl(event.target.value)}
+                />
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Use the inbound HTTP or bridge URL for the remote agent.
+                  Additional headers can be configured after approval.
+                </span>
+              </label>
+            )}
             <label className="block text-sm">
               <span className="mb-1 block text-muted-foreground">Capabilities (optional)</span>
               <textarea
@@ -304,6 +352,10 @@ export function InviteLandingPage() {
           disabled={
             acceptMutation.isPending ||
             (joinType === "agent" && invite.inviteType !== "bootstrap_ceo" && agentName.trim().length === 0) ||
+            (joinType === "agent" &&
+              invite.inviteType !== "bootstrap_ceo" &&
+              adapterType === "http" &&
+              remoteWebhookUrl.trim().length === 0) ||
             requiresAuthForHuman
           }
           onClick={() => acceptMutation.mutate()}

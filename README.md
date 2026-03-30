@@ -27,7 +27,7 @@
 
 # Open-source orchestration for zero-human companies
 
-**If OpenClaw is an _employee_, Paperclip is the _company_**
+**Paperclip is the company. Claude, Codex, and your other agents are the employees.**
 
 Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
 
@@ -51,7 +51,6 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 <table>
   <tr>
     <td align="center"><strong>Works<br/>with</strong></td>
-    <td align="center"><img src="doc/assets/logos/openclaw.svg" width="32" alt="OpenClaw" /><br/><sub>OpenClaw</sub></td>
     <td align="center"><img src="doc/assets/logos/claude.svg" width="32" alt="Claude" /><br/><sub>Claude Code</sub></td>
     <td align="center"><img src="doc/assets/logos/codex.svg" width="32" alt="Codex" /><br/><sub>Codex</sub></td>
     <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
@@ -69,7 +68,7 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 ## Paperclip is right for you if
 
 - ✅ You want to build **autonomous AI companies**
-- ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
+- ✅ You **coordinate many different agents** (Codex, Claude, Cursor, remote runtimes) toward a common goal
 - ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
 - ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
 - ✅ You want to **monitor costs** and enforce budgets
@@ -204,16 +203,16 @@ If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the g
 **Can I run multiple companies?**
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
 
-**How is Paperclip different from agents like OpenClaw or Claude Code?**
+**How is Paperclip different from agents like Claude Code or Codex?**
 Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
 
-**Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
+**Why should I use Paperclip instead of wiring Codex straight into Asana or Trello?**
 Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
 
 (Bring-your-own-ticket-system is on the Roadmap)
 
 **Do agents run continuously?**
-By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
+By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). Paperclip promotes local Claude and Codex paths first, while other runtimes remain advanced/manual integrations. You bring your agent and Paperclip coordinates.
 
 <br/>
 

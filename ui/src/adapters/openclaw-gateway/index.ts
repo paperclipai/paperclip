@@ -5,7 +5,7 @@ import { OpenClawGatewayConfigFields } from "./config-fields";
 
 export const openClawGatewayUIAdapter: UIAdapterModule = {
   type: "openclaw_gateway",
-  label: "OpenClaw Gateway",
+  label: "Legacy OpenClaw Gateway",
   parseStdoutLine: parseOpenClawGatewayStdoutLine,
   ConfigFields: OpenClawGatewayConfigFields,
   buildAdapterConfig: buildOpenClawGatewayConfig,

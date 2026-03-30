@@ -20,14 +20,14 @@ When a heartbeat fires, Paperclip:
 |---------|----------|-------------|
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
-| [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally |
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Hermes Local | `hermes_local` | Runs Hermes CLI locally |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi Local | `pi_local` | Runs an embedded Pi agent locally |
-| OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
+| OpenClaw Gateway (legacy) | `openclaw_gateway` | Legacy gateway adapter retained only for migration of older OpenClaw installs |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
-| [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
+| [HTTP](/adapters/http) | `http` | Sends Paperclip's JSON wake payload to generic remote HTTP endpoints and bridge services |
 
 ## Adapter Architecture
 
@@ -58,7 +58,9 @@ Three registries consume these modules:
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, or `hermes_local`
+- **Promoted paths:** use `claude_local` or `codex_local` first
+- **Need another coding agent?** Use `gemini_local`, `opencode_local`, or `hermes_local`
+- **Need a generic remote HTTP endpoint or bridge?** Use `http` in advanced/manual configuration
 - **Need to run a script or command?** Use `process`
-- **Need to call an external service?** Use `http`
+- **Need to keep an old OpenClaw install alive during migration?** Use `openclaw_gateway` only as a temporary bridge
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)

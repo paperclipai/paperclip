@@ -18,6 +18,7 @@ import {
   joinRequests
 } from "@paperclipai/db";
 import {
+  AGENT_ADAPTER_TYPES,
   acceptInviteSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
@@ -29,7 +30,11 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  DeploymentExposure,
+  DeploymentMode
+} from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -62,6 +67,11 @@ const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+const INVITE_ONBOARDING_TEMPLATES = [
+  "remote_agent",
+  "openclaw_gateway"
+] as const;
+type InviteOnboardingTemplate = (typeof INVITE_ONBOARDING_TEMPLATES)[number];
 
 function createInviteToken() {
   const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
@@ -225,6 +235,47 @@ type JoinDiagnostic = {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function inviteDefaultsRecord(
+  invite: typeof invites.$inferSelect
+): Record<string, unknown> | null {
+  return isPlainObject(invite.defaultsPayload)
+    ? (invite.defaultsPayload as Record<string, unknown>)
+    : null;
+}
+
+function extractInviteOnboardingTemplate(
+  invite: typeof invites.$inferSelect
+): InviteOnboardingTemplate {
+  const defaults = inviteDefaultsRecord(invite);
+  const rawTemplate = defaults?.onboardingTemplate;
+  if (
+    typeof rawTemplate === "string" &&
+    (INVITE_ONBOARDING_TEMPLATES as readonly string[]).includes(rawTemplate)
+  ) {
+    return rawTemplate as InviteOnboardingTemplate;
+  }
+  return "remote_agent";
+}
+
+function extractInviteRecommendedAdapterType(
+  invite: typeof invites.$inferSelect
+): AgentAdapterType {
+  const defaults = inviteDefaultsRecord(invite);
+  const rawAdapterType =
+    typeof defaults?.recommendedAdapterType === "string"
+      ? defaults.recommendedAdapterType
+      : null;
+  if (
+    rawAdapterType &&
+    (AGENT_ADAPTER_TYPES as readonly string[]).includes(rawAdapterType)
+  ) {
+    return rawAdapterType as AgentAdapterType;
+  }
+  return extractInviteOnboardingTemplate(invite) === "openclaw_gateway"
+    ? "openclaw_gateway"
+    : "http";
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -988,7 +1039,7 @@ function buildOnboardingConnectionCandidates(input: {
   return Array.from(candidates);
 }
 
-function buildInviteOnboardingManifest(
+export function buildInviteOnboardingManifest(
   req: Request,
   token: string,
   invite: typeof invites.$inferSelect,
@@ -1022,21 +1073,33 @@ function buildInviteOnboardingManifest(
     bindHost: opts.bindHost,
     allowedHostnames: opts.allowedHostnames
   });
+  const onboardingTemplate = extractInviteOnboardingTemplate(invite);
+  const recommendedAdapterType = extractInviteRecommendedAdapterType(invite);
+  const genericSkillInstallPath =
+    "Runtime-specific skills directory (for example $CODEX_HOME/skills/paperclip/SKILL.md or ~/.claude/skills/paperclip/SKILL.md)";
 
   return {
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
+      template: onboardingTemplate,
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        onboardingTemplate === "openclaw_gateway"
+          ? "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth)."
+          : "Join as a remote agent, save your one-time claim secret, wait for board approval, then claim your API key. For generic remote HTTP endpoints, submit adapterType='http', set agentDefaultsPayload.url to your reachable http(s) endpoint, and include any auth headers or shared secrets your runtime expects.",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw_gateway",
+      recommendedAdapterType,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
+        adapterType:
+          onboardingTemplate === "openclaw_gateway"
+            ? "Use 'openclaw_gateway' for OpenClaw Gateway agents"
+            : "Use 'http' for generic remote HTTP or webhook endpoints. Other adapter types should only be used when your operator has configured them explicitly.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          onboardingTemplate === "openclaw_gateway"
+            ? "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+            : "Adapter config for remote HTTP agents. MUST include url (http:// or https://). Optional fields: method, headers, payloadTemplate, timeoutMs. Configure any runtime-specific auth headers or shared secrets here."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1059,10 +1122,15 @@ function buildInviteOnboardingManifest(
         connectionCandidates,
         diagnostics: discoveryDiagnostics,
         guidance:
-          opts.deploymentMode === "authenticated" &&
-          opts.deploymentExposure === "private"
-            ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
-            : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
+          onboardingTemplate === "openclaw_gateway"
+            ? opts.deploymentMode === "authenticated" &&
+              opts.deploymentExposure === "private"
+              ? "If OpenClaw runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
+              : "Ensure OpenClaw can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
+            : opts.deploymentMode === "authenticated" &&
+                opts.deploymentExposure === "private"
+              ? "If the remote agent runs on another machine, ensure the Paperclip hostname is reachable and allowed via `pnpm paperclipai allowed-hostname <host>`."
+              : "Ensure the remote agent can reach this Paperclip API base URL for invite, claim, and skill bootstrap calls."
       },
       textInstructions: {
         path: onboardingTextPath,
@@ -1073,7 +1141,10 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath:
+          onboardingTemplate === "openclaw_gateway"
+            ? "~/.openclaw/skills/paperclip/SKILL.md"
+            : genericSkillInstallPath
       }
     }
   };
@@ -1092,7 +1163,9 @@ export function buildInviteOnboardingTextDocument(
 ) {
   const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
   const onboarding = manifest.onboarding as {
+    template?: string;
     inviteMessage?: string | null;
+    recommendedAdapterType?: string;
     registrationEndpoint: { method: string; path: string; url: string };
     claimEndpointTemplate: { method: string; path: string };
     textInstructions: { path: string; url: string };
@@ -1104,6 +1177,17 @@ export function buildInviteOnboardingTextDocument(
       testResolutionEndpoint?: { method?: string; path?: string; url?: string };
     };
   };
+  const onboardingTemplate =
+    onboarding.template === "openclaw_gateway"
+      ? "openclaw_gateway"
+      : "remote_agent";
+  const recommendedAdapterType =
+    typeof onboarding.recommendedAdapterType === "string" &&
+    onboarding.recommendedAdapterType.trim().length > 0
+      ? onboarding.recommendedAdapterType.trim()
+      : onboardingTemplate === "openclaw_gateway"
+        ? "openclaw_gateway"
+        : "http";
   const diagnostics = Array.isArray(onboarding.connectivity?.diagnostics)
     ? onboarding.connectivity.diagnostics
     : [];
@@ -1123,7 +1207,11 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Gateway Onboarding
+    # ${
+      onboardingTemplate === "openclaw_gateway"
+        ? "Paperclip OpenClaw Gateway Onboarding"
+        : "Paperclip Remote Agent Onboarding"
+    }
 
     This document is meant to be readable by both humans and agents.
 
@@ -1140,133 +1228,222 @@ export function buildInviteOnboardingTextDocument(
     `);
   }
 
-  appendBlock(`
-    ## Step 0
+  if (onboardingTemplate === "openclaw_gateway") {
+    appendBlock(`
+      ## Step 0
 
-    Get the OpenClaw gateway auth token (THIS MUST BE SENT)
-    Token lives in:
+      Get the OpenClaw gateway auth token (THIS MUST BE SENT)
+      Token lives in:
 
-    ~/.openclaw/openclaw.json -> gateway.auth.token
-    Extract:
+      ~/.openclaw/openclaw.json -> gateway.auth.token
+      Extract:
 
-    TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
-    test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
-    test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
+      TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
+      test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
+      test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
 
-    3) IMPORTANT: Don't accidentally drop the token when generating JSON
-    If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
+      3) IMPORTANT: Don't accidentally drop the token when generating JSON
+      If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
 
-    Safe payload build looks sort of like this (substitute where necessary):
+      Safe payload build looks sort of like this (substitute where necessary):
 
-    BODY="$(node -e '
-      const token = process.argv[1];
-      if (!token) process.exit(2);
-      const body = {
-        requestType: "agent",
-        agentName: "OpenClaw",
-        adapterType: "openclaw_gateway",
-        capabilities: "OpenClaw agent adapter",
-        agentDefaultsPayload: {
-          url: "ws://127.0.0.1:18789",
-          paperclipApiUrl: "http://host.docker.internal:3100",
-          headers: { "x-openclaw-token": token },
-          waitTimeoutMs: 120000,
-          sessionKeyStrategy: "issue",
-          role: "operator",
-          scopes: ["operator.admin"]
+      BODY="$(node -e '
+        const token = process.argv[1];
+        if (!token) process.exit(2);
+        const body = {
+          requestType: "agent",
+          agentName: "OpenClaw",
+          adapterType: "openclaw_gateway",
+          capabilities: "OpenClaw agent adapter",
+          agentDefaultsPayload: {
+            url: "ws://127.0.0.1:18789",
+            paperclipApiUrl: "http://host.docker.internal:3100",
+            headers: { "x-openclaw-token": token },
+            waitTimeoutMs: 120000,
+            sessionKeyStrategy: "issue",
+            role: "operator",
+            scopes: ["operator.admin"]
+          }
+        };
+        process.stdout.write(JSON.stringify(body));
+      ' "$TOKEN")"
+
+      ## Step 1: Submit agent join request
+      ${onboarding.registrationEndpoint.method} ${
+      onboarding.registrationEndpoint.url
+    }
+
+      IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
+      Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
+      Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
+      Pairing mode requirement:
+      - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
+      - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
+      - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
+      Do NOT use /v1/responses or /hooks/* in this gateway join flow.
+
+      Body (JSON):
+      {
+        "requestType": "agent",
+        "agentName": "My OpenClaw Agent",
+        "adapterType": "openclaw_gateway",
+        "capabilities": "Optional summary",
+        "agentDefaultsPayload": {
+          "url": "wss://your-openclaw-gateway.example",
+          "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
+          "headers": { "x-openclaw-token": "replace-me" },
+          "waitTimeoutMs": 120000,
+          "sessionKeyStrategy": "issue",
+          "role": "operator",
+          "scopes": ["operator.admin"]
         }
-      };
-      process.stdout.write(JSON.stringify(body));
-    ' "$TOKEN")"
-
-    ## Step 1: Submit agent join request
-    ${onboarding.registrationEndpoint.method} ${
-    onboarding.registrationEndpoint.url
-  }
-
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
-    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
-    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
-    Pairing mode requirement:
-    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
-    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
-    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
-    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
-
-    Body (JSON):
-    {
-      "requestType": "agent",
-      "agentName": "My OpenClaw Agent",
-      "adapterType": "openclaw_gateway",
-      "capabilities": "Optional summary",
-      "agentDefaultsPayload": {
-        "url": "wss://your-openclaw-gateway.example",
-        "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
-        "headers": { "x-openclaw-token": "replace-me" },
-        "waitTimeoutMs": 120000,
-        "sessionKeyStrategy": "issue",
-        "role": "operator",
-        "scopes": ["operator.admin"]
       }
+
+      Expected response includes:
+      - request id
+      - one-time claimSecret
+      - claimApiKeyPath
+
+      ## Step 2: Wait for board approval
+      The board approves the join request in Paperclip before key claim is allowed.
+
+      ## Step 3: Claim API key (one-time)
+      ${
+        onboarding.claimEndpointTemplate.method
+      } /api/join-requests/{requestId}/claim-api-key
+
+      Body (JSON):
+      {
+        "claimSecret": "<one-time-claim-secret>"
+      }
+
+      On successful claim, save the full JSON response to:
+
+      - ~/.openclaw/workspace/paperclip-claimed-api-key.json
+      chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+
+      And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
+      https://docs.openclaw.ai/help/environment
+
+      e.g.
+
+      {
+        env: {
+          PAPERCLIP_API_KEY: "...",
+          PAPERCLIP_API_URL: "...",
+        },
+      }
+
+      Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+
+      Important:
+      - claim secrets expire
+      - claim secrets are single-use
+      - claim fails before board approval
+
+      ## Step 4: Install Paperclip skill in OpenClaw
+      GET ${onboarding.skill.url}
+      Install path: ${onboarding.skill.installPath}
+
+      Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+
+      ## Text onboarding URL
+      ${onboarding.textInstructions.url}
+
+      ## Connectivity guidance
+      ${
+        onboarding.connectivity?.guidance ??
+        "Ensure Paperclip is reachable from your OpenClaw runtime."
+      }
+    `);
+  } else {
+    appendBlock(`
+      ## Step 0
+
+      Choose the adapter you plan to use.
+      Recommended default: adapterType "${recommendedAdapterType}".
+
+      Remote HTTP agents should gather:
+      - a reachable http(s) endpoint that accepts Paperclip's JSON wake payload
+      - any auth headers or shared secrets the runtime expects for inbound requests
+      - a writable location where the claimed PAPERCLIP_API_KEY / PAPERCLIP_API_URL can be stored securely
+
+      ## Step 1: Submit agent join request
+      ${onboarding.registrationEndpoint.method} ${
+      onboarding.registrationEndpoint.url
     }
 
-    Expected response includes:
-    - request id
-    - one-time claimSecret
-    - claimApiKeyPath
+      Use adapterType "${recommendedAdapterType}" for the default remote HTTP path.
+      For HTTP agents:
+      - agentDefaultsPayload.url MUST be an absolute http:// or https:// endpoint
+      - optional fields: method, headers, payloadTemplate, timeoutMs
+      - the endpoint must accept Paperclip's JSON wake payload \`{ agentId, runId, context, ...payloadTemplate }\`
+      - configure your own webhook auth headers or shared secrets; Paperclip does not mint them for you
 
-    ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+      Body (JSON):
+      {
+        "requestType": "agent",
+        "agentName": "My Remote Agent",
+        "adapterType": "http",
+        "capabilities": "Optional summary",
+        "agentDefaultsPayload": {
+          "url": "https://remote-agent.example/hooks/paperclip",
+          "method": "POST",
+          "headers": { "authorization": "Bearer replace-me" },
+          "timeoutMs": 15000
+        }
+      }
 
-    ## Step 3: Claim API key (one-time)
-    ${
-      onboarding.claimEndpointTemplate.method
-    } /api/join-requests/{requestId}/claim-api-key
+      Expected response includes:
+      - request id
+      - one-time claimSecret
+      - claimApiKeyPath
 
-    Body (JSON):
-    {
-      "claimSecret": "<one-time-claim-secret>"
-    }
+      ## Step 2: Wait for board approval
+      The board approves the join request in Paperclip before key claim is allowed.
 
-    On successful claim, save the full JSON response to:
+      ## Step 3: Claim API key (one-time)
+      ${
+        onboarding.claimEndpointTemplate.method
+      } /api/join-requests/{requestId}/claim-api-key
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+      Body (JSON):
+      {
+        "claimSecret": "<one-time-claim-secret>"
+      }
 
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
-    https://docs.openclaw.ai/help/environment
+      On successful claim, save the full JSON response somewhere only your runtime can read, for example:
 
-    e.g. 
+      - ~/paperclip/paperclip-claimed-api-key.json
+      chmod 600 ~/paperclip/paperclip-claimed-api-key.json
 
-    {
-      env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
-      },
-    }
+      Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the claim response before each heartbeat run.
+      Keep any separate inbound webhook auth secret in your runtime config; the Paperclip claim response does not replace it.
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+      Important:
+      - claim secrets expire
+      - claim secrets are single-use
+      - claim fails before board approval
 
-    Important:
-    - claim secrets expire
-    - claim secrets are single-use
-    - claim fails before board approval
+      ## Step 4: Install Paperclip skill or runtime instructions
+      GET ${onboarding.skill.url}
+      Install path: ${onboarding.skill.installPath}
 
-    ## Step 4: Install Paperclip skill in OpenClaw
-    GET ${onboarding.skill.url}
-    Install path: ${onboarding.skill.installPath}
+      Suggested locations:
+      - Codex: $CODEX_HOME/skills/paperclip/SKILL.md
+      - Claude Code: ~/.claude/skills/paperclip/SKILL.md
+      - Other runtimes: place the skill/instructions wherever that runtime expects operator-provided startup guidance.
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+      ## Text onboarding URL
+      ${onboarding.textInstructions.url}
 
-    ## Text onboarding URL
-    ${onboarding.textInstructions.url}
-
-    ## Connectivity guidance
-    ${
-      onboarding.connectivity?.guidance ??
-      "Ensure Paperclip is reachable from your OpenClaw runtime."
-    }
-  `);
+      ## Connectivity guidance
+      ${
+        onboarding.connectivity?.guidance ??
+        "Ensure Paperclip is reachable from your remote runtime."
+      }
+    `);
+  }
 
   const connectionCandidates = Array.isArray(
     onboarding.connectivity?.connectionCandidates
@@ -1281,17 +1458,31 @@ export function buildInviteOnboardingTextDocument(
     for (const candidate of connectionCandidates) {
       lines.push(`- ${candidate}`);
     }
-    appendBlock(`
+    if (onboardingTemplate === "openclaw_gateway") {
+      appendBlock(`
 
-      Test each candidate with:
-      - GET <candidate>/api/health
-      - set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl when submitting your join request
+        Test each candidate with:
+        - GET <candidate>/api/health
+        - set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl when submitting your join request
 
-      If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
-      For authenticated/private mode, they may need:
-      - pnpm paperclipai allowed-hostname <host>
-      - then restart Paperclip and retry onboarding.
-    `);
+        If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
+        For authenticated/private mode, they may need:
+        - pnpm paperclipai allowed-hostname <host>
+        - then restart Paperclip and retry onboarding.
+      `);
+    } else {
+      appendBlock(`
+
+        Test each candidate with:
+        - GET <candidate>/api/health
+        - Use the first reachable candidate for invite, claim, and skill bootstrap calls from your remote runtime
+
+        If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
+        For authenticated/private mode, they may need:
+        - pnpm paperclipai allowed-hostname <host>
+        - then restart Paperclip and retry onboarding.
+      `);
+    }
   }
 
   if (diagnostics.length > 0) {
@@ -1965,7 +2156,10 @@ export function accessRoutes(
           req,
           companyId,
           allowedJoinTypes: "agent",
-          defaultsPayload: null,
+          defaultsPayload: {
+            onboardingTemplate: "openclaw_gateway",
+            recommendedAdapterType: "openclaw_gateway"
+          },
           agentMessage: req.body.agentMessage ?? null
         });
 

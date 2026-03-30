@@ -1,5 +1,9 @@
 # Running OpenClaw in Docker (Local Development)
 
+Legacy guide: this exists for older OpenClaw adapter testing only. New remote
+agent setups should use the promoted Claude/Codex paths first and treat generic
+remote HTTP work as advanced/manual setup, not this OpenClaw flow.
+
 How to get OpenClaw running in a Docker container for local development and testing the Paperclip OpenClaw adapter integration.
 
 ## Automated Join Smoke Test (Recommended First)

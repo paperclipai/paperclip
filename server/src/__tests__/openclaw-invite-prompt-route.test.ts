@@ -45,25 +45,30 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function createDbStub() {
-  const createdInvite = {
-    id: "invite-1",
-    companyId: "company-1",
-    inviteType: "company_join",
-    allowedJoinTypes: "agent",
-    defaultsPayload: null,
-    expiresAt: new Date("2026-03-07T00:10:00.000Z"),
-    invitedByUserId: null,
-    tokenHash: "hash",
-    revokedAt: null,
-    acceptedAt: null,
-    createdAt: new Date("2026-03-07T00:00:00.000Z"),
-    updatedAt: new Date("2026-03-07T00:00:00.000Z"),
-  };
-  const returning = vi.fn().mockResolvedValue([createdInvite]);
+  const returning = vi.fn().mockImplementation(async () => {
+    const insertValues = values.mock.calls.at(-1)?.[0] ?? {};
+    return [
+      {
+        id: "invite-1",
+        companyId: "company-1",
+        inviteType: "company_join",
+        allowedJoinTypes: "agent",
+        defaultsPayload: insertValues.defaultsPayload ?? null,
+        expiresAt: new Date("2026-03-07T00:10:00.000Z"),
+        invitedByUserId: null,
+        tokenHash: "hash",
+        revokedAt: null,
+        acceptedAt: null,
+        createdAt: new Date("2026-03-07T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-07T00:00:00.000Z"),
+      },
+    ];
+  });
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
   return {
     insert,
+    values,
   };
 }
 
@@ -142,8 +147,22 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.allowedJoinTypes).toBe("agent");
+    expect(res.body.defaultsPayload).toMatchObject({
+      onboardingTemplate: "openclaw_gateway",
+      recommendedAdapterType: "openclaw_gateway",
+      agentMessage: "Join and configure OpenClaw gateway.",
+    });
     expect(typeof res.body.token).toBe("string");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
+    expect(db.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultsPayload: expect.objectContaining({
+          onboardingTemplate: "openclaw_gateway",
+          recommendedAdapterType: "openclaw_gateway",
+          agentMessage: "Join and configure OpenClaw gateway.",
+        }),
+      }),
+    );
   });
 
   it("allows board callers with invite permission", async () => {

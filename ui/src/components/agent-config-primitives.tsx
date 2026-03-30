@@ -24,7 +24,7 @@ export const help: Record<string, string> = {
   role: "Organizational role. Determines position and capabilities.",
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
+  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), a generic remote HTTP endpoint or bridge, or a spawned process.",
   cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
   promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
   model: "Override the default model used by the adapter.",
@@ -46,7 +46,7 @@ export const help: Record<string, string> = {
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
   bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
   payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
+  webhookUrl: "The URL that receives POST requests when the agent is invoked. Use this for a remote HTTP endpoint or bridge that understands Paperclip's wake payload.",
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
   intervalSec: "Seconds between automatic heartbeat invocations.",
   timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
@@ -62,11 +62,11 @@ export const adapterLabels: Record<string, string> = {
   codex_local: "Codex (local)",
   gemini_local: "Gemini CLI (local)",
   opencode_local: "OpenCode (local)",
-  openclaw_gateway: "OpenClaw Gateway",
+  openclaw_gateway: "Legacy OpenClaw Gateway",
   cursor: "Cursor (local)",
   hermes_local: "Hermes Agent",
   process: "Process",
-  http: "HTTP",
+  http: "Remote Agent (HTTP)",
 };
 
 export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;

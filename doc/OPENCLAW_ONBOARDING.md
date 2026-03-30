@@ -1,4 +1,9 @@
-Use this exact checklist.
+Legacy guide: this checklist exists only for migrating older OpenClaw installs.
+New agent setups should prefer `claude_local` or `codex_local`; use the
+generic `http` adapter only for advanced/manual remote bridges.
+
+Use this exact checklist only if you still need to keep an existing OpenClaw
+agent alive during migration.
 
 1. Start Paperclip in auth mode.
 ```bash

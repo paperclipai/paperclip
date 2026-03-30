@@ -5,7 +5,7 @@ import { buildHttpConfig } from "./build-config";
 
 export const httpUIAdapter: UIAdapterModule = {
   type: "http",
-  label: "HTTP Webhook",
+  label: "Remote Agent (HTTP)",
   parseStdoutLine: parseHttpStdoutLine,
   ConfigFields: HttpConfigFields,
   buildAdapterConfig: buildHttpConfig,

@@ -123,9 +123,9 @@ const adapterLabels: Record<string, string> = {
   opencode_local: "OpenCode",
   cursor: "Cursor",
   hermes_local: "Hermes",
-  openclaw_gateway: "OpenClaw Gateway",
+  openclaw_gateway: "Legacy OpenClaw Gateway",
   process: "Process",
-  http: "HTTP",
+  http: "Remote Agent (HTTP)",
 };
 
 const statusDotColor: Record<string, string> = {
