@@ -336,7 +336,9 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const agentName = (paperclipEnv.PAPERCLIP_AGENT_NAME ?? "agent").trim().toLowerCase();
+  const legacyClaimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const perAgentApiKeyPath = `~/.openclaw/workspace/paperclip-agent-keys/${agentName}.json`;
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -367,9 +369,10 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+    `PAPERCLIP_API_KEY=<token from ${perAgentApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    `Load PAPERCLIP_API_KEY from ${perAgentApiKeyPath} for this agent.`,
+    `If that file does not exist, fall back to ${legacyClaimedApiKeyPath}.`,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
