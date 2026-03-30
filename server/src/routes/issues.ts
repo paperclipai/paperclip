@@ -1761,11 +1761,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
     const attachmentId = req.params.attachmentId as string;
-    if (!isUuidLike(attachmentId)) {
+    const normalizedAttachmentId = typeof attachmentId === "string" ? attachmentId.trim().toLowerCase() : "";
+    if (!isUuidLike(normalizedAttachmentId)) {
       res.status(400).json({ error: "Invalid attachmentId" });
       return;
     }
-    const attachment = await svc.getAttachmentById(attachmentId);
+    const attachment = await svc.getAttachmentById(normalizedAttachmentId);
     if (!attachment) {
       res.status(404).json({ error: "Attachment not found" });
       return;
@@ -1787,11 +1788,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   router.delete("/attachments/:attachmentId", async (req, res) => {
     const attachmentId = req.params.attachmentId as string;
-    if (!isUuidLike(attachmentId)) {
+    const normalizedAttachmentId = typeof attachmentId === "string" ? attachmentId.trim().toLowerCase() : "";
+    if (!isUuidLike(normalizedAttachmentId)) {
       res.status(400).json({ error: "Invalid attachmentId" });
       return;
     }
-    const attachment = await svc.getAttachmentById(attachmentId);
+    const attachment = await svc.getAttachmentById(normalizedAttachmentId);
     if (!attachment) {
       res.status(404).json({ error: "Attachment not found" });
       return;
@@ -1801,10 +1803,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);
     } catch (err) {
-      logger.warn({ err, attachmentId }, "storage delete failed while removing attachment");
+      logger.warn({ err, attachmentId: normalizedAttachmentId }, "storage delete failed while removing attachment");
     }
 
-    const removed = await svc.removeAttachment(attachmentId);
+    const removed = await svc.removeAttachment(normalizedAttachmentId);
     if (!removed) {
       res.status(404).json({ error: "Attachment not found" });
       return;

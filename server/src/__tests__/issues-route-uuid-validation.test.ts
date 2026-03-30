@@ -320,6 +320,22 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
   });
 
+  it("trims attachmentId path on attachment content route", async () => {
+    const attachmentId = "33333333-3333-4333-8333-333333333333";
+    const res = await request(createApp()).get(`/api/attachments/%20${attachmentId.toUpperCase()}%20/content`);
+
+    expect(res.status).toBe(404);
+    expect(mockIssueService.getAttachmentById).toHaveBeenCalledWith(attachmentId);
+  });
+
+  it("trims attachmentId path on attachment delete route", async () => {
+    const attachmentId = "33333333-3333-4333-8333-333333333333";
+    const res = await request(createApp()).delete(`/api/attachments/%20${attachmentId.toUpperCase()}%20`);
+
+    expect(res.status).toBe(404);
+    expect(mockIssueService.getAttachmentById).toHaveBeenCalledWith(attachmentId);
+  });
+
   it("returns a comment when the issue id path casing differs from stored canonical id", async () => {
     const issueIdLower = "22222222-2222-4222-8222-222222222222";
     const issueIdUpper = issueIdLower.toUpperCase();
