@@ -1052,6 +1052,57 @@ export function AgentDetail() {
   );
 }
 
+/* ---- Copilot Login Section ---- */
+
+function CopilotLoginSection({ agentId, companyId }: { agentId: string; companyId?: string }) {
+  const [loginResult, setLoginResult] = useState<ClaudeLoginResult | null>(null);
+
+  const runLogin = useMutation({
+    mutationFn: () => agentsApi.loginWithCopilot(agentId, companyId),
+    onSuccess: (data) => {
+      setLoginResult(data);
+    },
+  });
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium">GitHub Copilot Login</h3>
+      <div className="space-y-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 px-2.5 text-xs"
+          onClick={() => runLogin.mutate()}
+          disabled={runLogin.isPending}
+        >
+          {runLogin.isPending ? "Running copilot login..." : "Login with Copilot"}
+        </Button>
+        {runLogin.isError && (
+          <p className="text-xs text-destructive">
+            {runLogin.error instanceof Error
+              ? runLogin.error.message
+              : "Failed to run Copilot login"}
+          </p>
+        )}
+        {loginResult && (
+          <>
+            {!!loginResult.stdout && (
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                {loginResult.stdout}
+              </pre>
+            )}
+            {!!loginResult.stderr && (
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                {loginResult.stderr}
+              </pre>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---- Helper components ---- */
 
 function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -1359,6 +1410,9 @@ function AgentConfigurePage({
         hidePromptTemplate
         hideInstructionsFile
       />
+      {agent.adapterType === "copilot_local" && (
+        <CopilotLoginSection agentId={agentId} companyId={companyId} />
+      )}
       <div>
         <h3 className="text-sm font-medium mb-3">API Keys</h3>
         <KeysTab agentId={agentId} companyId={companyId} />

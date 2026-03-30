@@ -48,5 +48,6 @@ tests/e2e/test-results/
 tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
+.playwright-mcp/
 .superset/
 .claude/worktrees/

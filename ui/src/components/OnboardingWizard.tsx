@@ -63,6 +63,7 @@ type AdapterType =
   | "claude_local"
   | "codex_local"
   | "gemini_local"
+  | "copilot_local"
   | "hermes_local"
   | "opencode_local"
   | "pi_local"
@@ -210,6 +211,7 @@ export function OnboardingWizard() {
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
+    adapterType === "copilot_local" ||
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
@@ -220,6 +222,8 @@ export function OnboardingWizard() {
       ? "codex"
       : adapterType === "gemini_local"
         ? "gemini"
+      : adapterType === "copilot_local"
+        ? "copilot"
       : adapterType === "hermes_local"
         ? "hermes"
       : adapterType === "pi_local"
@@ -849,6 +853,12 @@ export function OnboardingWizard() {
                             desc: "Local Cursor agent"
                           },
                           {
+                            value: "copilot_local" as const,
+                            label: "GitHub Copilot",
+                            icon: Bot,
+                            desc: "Local Copilot agent"
+                          },
+                          {
                             value: "hermes_local" as const,
                             label: "Hermes Agent",
                             icon: HermesIcon,
@@ -913,6 +923,7 @@ export function OnboardingWizard() {
                   {(adapterType === "claude_local" ||
                     adapterType === "codex_local" ||
                     adapterType === "gemini_local" ||
+                    adapterType === "copilot_local" ||
                     adapterType === "hermes_local" ||
                     adapterType === "opencode_local" ||
                     adapterType === "pi_local" ||
@@ -1091,6 +1102,8 @@ export function OnboardingWizard() {
                               ? `${effectiveAdapterCommand} exec --json -`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
+                              : adapterType === "copilot_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --allow-all-tools --output-format json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
@@ -1099,7 +1112,13 @@ export function OnboardingWizard() {
                             Prompt:{" "}
                             <span className="font-mono">Respond with hello.</span>
                           </p>
-                          {adapterType === "cursor" ||
+                          {adapterType === "copilot_local" ? (
+                            <p className="text-muted-foreground">
+                              Requires copilot CLI. Run{" "}
+                              <span className="font-mono">copilot login</span>{" "}
+                              to authenticate.
+                            </p>
+                          ) : adapterType === "cursor" ||
                           adapterType === "codex_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (

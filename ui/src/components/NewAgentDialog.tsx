@@ -30,6 +30,7 @@ type AdvancedAdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
+  | "copilot_local"
   | "openclaw_gateway"
   | "hermes_local";
 
@@ -65,6 +66,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenCode",
     icon: OpenCodeLogoIcon,
     desc: "Local multi-provider agent",
+  },
+  {
+    value: "copilot_local",
+    label: "GitHub Copilot",
+    icon: Bot,
+    desc: "Local Copilot agent",
   },
   {
     value: "hermes_local",

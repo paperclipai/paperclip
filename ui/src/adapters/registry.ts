@@ -8,10 +8,12 @@ import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { processUIAdapter } from "./process";
+import { copilotLocalUIAdapter } from "./copilot-local";
 import { httpUIAdapter } from "./http";
 
 const uiAdapters: UIAdapterModule[] = [
   claudeLocalUIAdapter,
+  copilotLocalUIAdapter,
   codexLocalUIAdapter,
   geminiLocalUIAdapter,
   hermesLocalUIAdapter,

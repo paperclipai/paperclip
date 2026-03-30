@@ -27,6 +27,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_COPILOT_LOCAL_MODEL } from "@paperclipai/adapter-copilot-local";
 
 const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
   "claude_local",
@@ -35,6 +36,7 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "opencode_local",
   "pi_local",
   "cursor",
+  "copilot_local",
   "hermes_local",
   "openclaw_gateway",
 ]);
@@ -52,6 +54,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+  } else if (adapterType === "copilot_local") {
+    nextValues.model = DEFAULT_COPILOT_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
   }

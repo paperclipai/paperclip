@@ -29,6 +29,7 @@ export const AGENT_ADAPTER_TYPES = [
   "opencode_local",
   "pi_local",
   "cursor",
+  "copilot_local",
   "openclaw_gateway",
   "hermes_local",
 ] as const;

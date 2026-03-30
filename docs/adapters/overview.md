@@ -21,6 +21,7 @@ When a heartbeat fires, Paperclip:
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
 | [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [Copilot Local](/adapters/copilot-local) | `copilot_local` | Runs GitHub Copilot CLI locally |
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Hermes Local | `hermes_local` | Runs Hermes CLI locally |
 | Cursor | `cursor` | Runs Cursor in background mode |
@@ -58,7 +59,7 @@ Three registries consume these modules:
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, or `hermes_local`
+- **Need a coding agent?** Use `claude_local`, `codex_local`, `copilot_local`, `opencode_local`, or `hermes_local`
 - **Need to run a script or command?** Use `process`
 - **Need to call an external service?** Use `http`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter)
