@@ -13,7 +13,7 @@ set -euo pipefail
 PAPERCLIP_USER="paperclip"
 PAPERCLIP_HOME="/home/${PAPERCLIP_USER}"
 INSTALL_DIR="/opt/paperclip"
-REPO_URL="${PAPERCLIP_REPO_URL:-https://github.com/paperclipai/paperclip.git}"
+REPO_URL="${PAPERCLIP_REPO_URL:-https://github.com/hcthisen/paperclip.git}"
 REPO_BRANCH="${PAPERCLIP_BRANCH:-master}"
 PAPERCLIP_PORT="${PAPERCLIP_PORT:-3100}"
 NODE_MAJOR=20
