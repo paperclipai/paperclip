@@ -268,6 +268,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const assigneeUserIsMe = assigneeUserFilter?.toLowerCase() === "me";
     const touchedByUserIsMe = touchedByUserFilter?.toLowerCase() === "me";
     const unreadForUserIsMe = unreadForUserFilter?.toLowerCase() === "me";
+    const normalizedBoardUserId = req.actor.type === "board" && typeof req.actor.userId === "string"
+      ? req.actor.userId.trim()
+      : "";
     const projectIdFilter = readQueryString(req.query.projectId);
     const parentIdFilter = readQueryString(req.query.parentId);
     const labelIdFilter = readQueryString(req.query.labelId);
@@ -312,15 +315,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const assigneeUserId =
       assigneeUserIsMe && req.actor.type === "board"
-        ? req.actor.userId
+        ? normalizedBoardUserId
         : assigneeUserFilter;
     const touchedByUserId =
       touchedByUserIsMe && req.actor.type === "board"
-        ? req.actor.userId
+        ? normalizedBoardUserId
         : touchedByUserFilter;
     const unreadForUserId =
       unreadForUserIsMe && req.actor.type === "board"
-        ? req.actor.userId
+        ? normalizedBoardUserId
         : unreadForUserFilter;
 
     if (assigneeUserIsMe && (!assigneeUserId || req.actor.type !== "board")) {

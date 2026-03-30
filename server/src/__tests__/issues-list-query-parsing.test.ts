@@ -35,7 +35,7 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
-function createApp() {
+function createApp(actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -45,6 +45,7 @@ function createApp() {
       companyIds: [COMPANY_ID],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverride,
     };
     next();
   });
@@ -134,6 +135,16 @@ describe("issues list query parsing", () => {
         unreadForUserId: "local-board",
       }),
     );
+  });
+
+  it("returns 403 for me user filters when board user id is malformed", async () => {
+    const res = await request(createApp({ userId: { bad: true } })).get(
+      `/api/companies/${COMPANY_ID}/issues?assigneeUserId=me`,
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("assigneeUserId=me");
+    expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 
   it("returns 400 for invalid status filters instead of passing bad enum values to service", async () => {
