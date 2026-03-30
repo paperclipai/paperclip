@@ -260,11 +260,25 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+type IssueProjectSlice = { id: string; name: string; color: string | null };
+
+async function withIssueProjects<T extends IssueRow>(dbOrTx: any, rows: T[]): Promise<(T & { project: IssueProjectSlice | null })[]> {
+  if (rows.length === 0) return [];
+  const projectIds = [...new Set(rows.map((row) => row.projectId).filter((id): id is string => id != null))];
+  if (projectIds.length === 0) return rows.map((row) => ({ ...row, project: null }));
+  const projectRows: IssueProjectSlice[] = await dbOrTx
+    .select({ id: projects.id, name: projects.name, color: projects.color })
+    .from(projects)
+    .where(inArray(projects.id, projectIds));
+  const projectMap = new Map<string, IssueProjectSlice>(projectRows.map((p) => [p.id, p]));
+  return rows.map((row) => ({ ...row, project: row.projectId ? projectMap.get(row.projectId) ?? null : null }));
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 async function activeRunMapForIssues(
   dbOrTx: any,
-  issueRows: IssueWithLabels[],
+  issueRows: { executionRunId: string | null }[],
 ): Promise<Map<string, IssueActiveRunRow>> {
   const map = new Map<string, IssueActiveRunRow>();
   const runIds = issueRows
@@ -297,10 +311,10 @@ async function activeRunMapForIssues(
   return map;
 }
 
-function withActiveRuns(
-  issueRows: IssueWithLabels[],
+function withActiveRuns<T extends { executionRunId: string | null }>(
+  issueRows: T[],
   runMap: Map<string, IssueActiveRunRow>,
-): IssueWithLabelsAndRun[] {
+): (T & { activeRun: IssueActiveRunRow | null })[] {
   return issueRows.map((row) => ({
     ...row,
     activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
@@ -510,8 +524,9 @@ export function issueService(db: Db) {
         .where(and(...conditions))
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const withProjects = await withIssueProjects(db, withLabels);
+      const runMap = await activeRunMapForIssues(db, withProjects);
+      const withRuns = withActiveRuns(withProjects, runMap);
       if (!contextUserId || withRuns.length === 0) {
         return withRuns;
       }
