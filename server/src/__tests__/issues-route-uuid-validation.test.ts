@@ -243,6 +243,29 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.getComment).toHaveBeenCalledWith(commentId);
   });
 
+  it("trims commentId path values before UUID validation", async () => {
+    const issueIdLower = "22222222-2222-4222-8222-222222222222";
+    const commentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueIdLower,
+      companyId: COMPANY_ID,
+      status: "todo",
+    });
+    mockIssueService.getComment.mockResolvedValueOnce({
+      id: commentId,
+      issueId: issueIdLower,
+      companyId: COMPANY_ID,
+      body: "ok",
+    });
+
+    const res = await request(createApp()).get(
+      `/api/issues/${issueIdLower}/comments/%20${commentId.toUpperCase()}%20`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getComment).toHaveBeenCalledWith(commentId);
+  });
+
   it("returns 401 for agent checkout when runId is malformed non-string", async () => {
     const agentId = "33333333-3333-4333-8333-333333333333";
     const app = createApp({
