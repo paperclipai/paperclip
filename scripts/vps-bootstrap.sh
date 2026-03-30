@@ -136,6 +136,9 @@ install_caddy() {
   systemctl stop caddy 2>/dev/null || true
   systemctl disable caddy 2>/dev/null || true
 
+  # Allow paperclip user to write the Caddyfile and manage caddy via sudo
+  chown "${PAPERCLIP_USER}":"${PAPERCLIP_USER}" /etc/caddy/Caddyfile 2>/dev/null || true
+
   success "Caddy installed (not started -- will activate when domain is configured)"
 }
 
