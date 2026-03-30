@@ -26,12 +26,7 @@
         "groups": [
           {
             "group": "Introduction",
-            "pages": [
-              "start/what-is-paperclip",
-              "start/quickstart",
-              "start/core-concepts",
-              "start/architecture"
-            ]
+            "pages": ["start/what-is-paperclip", "start/quickstart", "start/core-concepts", "start/architecture"]
           }
         ]
       },
@@ -46,9 +41,12 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/delegation",
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
-              "guides/board-operator/activity-log"
+              "guides/board-operator/activity-log",
+              "guides/board-operator/importing-and-exporting"
             ]
           },
           {
@@ -128,11 +126,7 @@
         "groups": [
           {
             "group": "CLI Reference",
-            "pages": [
-              "cli/overview",
-              "cli/setup-commands",
-              "cli/control-plane-commands"
-            ]
+            "pages": ["cli/overview", "cli/setup-commands", "cli/control-plane-commands"]
           }
         ]
       }

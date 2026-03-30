@@ -31,6 +31,9 @@ export { logActivity, type LogActivityInput, setWebhookDb } from "./activity-log
 export { webhookService, dispatchWebhookEvent, processWebhookRetries, type WebhookEvent } from "./webhooks.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
-export { reconcilePersistedRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export {
+  reconcilePersistedRuntimeServicesOnStartup,
+  restartDesiredRuntimeServicesOnStartup,
+} from "./workspace-runtime.js";
 export { githubService } from "./github.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

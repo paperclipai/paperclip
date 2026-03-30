@@ -3,16 +3,14 @@ import express from "express";
 import request from "supertest";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
-function createApp(
-  actorType: "board" | "agent",
-  boardSource: "session" | "local_implicit" | "board_key" = "session",
-) {
+function createApp(actorType: "board" | "agent", boardSource: "session" | "local_implicit" | "board_key" = "session") {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = actorType === "board"
-      ? { type: "board", userId: "board", source: boardSource }
-      : { type: "agent", agentId: "agent-1" };
+    req.actor =
+      actorType === "board"
+        ? { type: "board", userId: "board", source: boardSource }
+        : { type: "agent", agentId: "agent-1" };
     next();
   });
   app.use(boardMutationGuard());
@@ -68,10 +66,7 @@ describe("boardMutationGuard", () => {
 
   it("allows board mutations from trusted origin", async () => {
     const app = createApp("board");
-    const res = await request(app)
-      .post("/mutate")
-      .set("Origin", "http://localhost:3100")
-      .send({ ok: true });
+    const res = await request(app).post("/mutate").set("Origin", "http://localhost:3100").send({ ok: true });
     expect(res.status).toBe(204);
   });
 
@@ -82,6 +77,28 @@ describe("boardMutationGuard", () => {
       .set("Referer", "http://localhost:3100/issues/abc")
       .send({ ok: true });
     expect(res.status).toBe(204);
+  });
+
+  it("allows board mutations when x-forwarded-host matches origin", async () => {
+    const app = createApp("board");
+    const res = await request(app)
+      .post("/mutate")
+      .set("Host", "127.0.0.1")
+      .set("X-Forwarded-Host", "10.90.10.20:3443")
+      .set("Origin", "https://10.90.10.20:3443")
+      .send({ ok: true });
+    expect(res.status).toBe(204);
+  });
+
+  it("blocks board mutations when x-forwarded-host does not match origin", async () => {
+    const app = createApp("board");
+    const res = await request(app)
+      .post("/mutate")
+      .set("Host", "127.0.0.1")
+      .set("X-Forwarded-Host", "10.90.10.20:3443")
+      .set("Origin", "https://evil.example.com")
+      .send({ ok: true });
+    expect(res.status).toBe(403);
   });
 
   it("does not block authenticated agent mutations", async () => {

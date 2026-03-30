@@ -27,6 +27,12 @@ export interface AdapterModel {
   label: string;
 }
 
+export interface DetectedAdapterModel {
+  model: string;
+  provider: string;
+  source: string;
+}
+
 export interface ClaudeLoginResult {
   exitCode: number | null;
   signal: string | null;
@@ -151,6 +157,10 @@ export const agentsApi = {
     api.post<void>(agentPath(id, companyId, "/runtime-state/reset-session"), { taskKey: taskKey ?? null }),
   adapterModels: (companyId: string, type: string) =>
     api.get<AdapterModel[]>(`/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/models`),
+  detectModel: (companyId: string, type: string) =>
+    api.get<DetectedAdapterModel | null>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
+    ),
   testEnvironment: (companyId: string, type: string, data: { adapterConfig: Record<string, unknown> }) =>
     api.post<AdapterEnvironmentTestResult>(`/companies/${companyId}/adapters/${type}/test-environment`, data),
   invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),

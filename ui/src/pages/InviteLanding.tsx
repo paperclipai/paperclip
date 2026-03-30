@@ -20,11 +20,20 @@ const adapterLabels: Record<string, string> = {
   pi_local: "Pi (local)",
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
+  hermes_local: "Hermes Agent",
   process: "Process",
   http: "HTTP",
 };
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+const ENABLED_INVITE_ADAPTERS = new Set([
+  "claude_local",
+  "codex_local",
+  "gemini_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "hermes_local",
+]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -77,14 +86,12 @@ export function InviteLandingPage() {
 
   useEffect(() => {
     if (!availableJoinTypes.includes(joinType)) {
-      setJoinType(availableJoinTypes[0] ?? "human");
+      setJoinType(availableJoinTypes[0] ?? "human"); // eslint-disable-line react-hooks/set-state-in-effect
     }
   }, [availableJoinTypes, joinType]);
 
   const requiresAuthForHuman =
-    joinType === "human" &&
-    healthQuery.data?.deploymentMode === "authenticated" &&
-    !sessionQuery.data;
+    joinType === "human" && healthQuery.data?.deploymentMode === "authenticated" && !sessionQuery.data;
 
   const acceptMutation = useMutation({
     mutationFn: async () => {
@@ -128,9 +135,7 @@ export function InviteLandingPage() {
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Invite not available</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            This invite may be expired, revoked, or already used.
-          </p>
+          <p className="mt-2 text-sm text-muted-foreground">This invite may be expired, revoked, or already used.</p>
         </div>
       </div>
     );
@@ -193,7 +198,9 @@ export function InviteLandingPage() {
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Paperclip skill bootstrap</p>
               {onboardingSkillUrl && <p className="font-mono break-all">GET {onboardingSkillUrl}</p>}
-              {!onboardingSkillUrl && onboardingSkillPath && <p className="font-mono break-all">GET {onboardingSkillPath}</p>}
+              {!onboardingSkillUrl && onboardingSkillPath && (
+                <p className="font-mono break-all">GET {onboardingSkillPath}</p>
+              )}
               {onboardingInstallPath && <p className="font-mono break-all">Install to {onboardingInstallPath}</p>}
             </div>
           )}
@@ -201,7 +208,9 @@ export function InviteLandingPage() {
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
               <p className="font-medium text-foreground">Agent-readable onboarding text</p>
               {onboardingTextUrl && <p className="font-mono break-all">GET {onboardingTextUrl}</p>}
-              {!onboardingTextUrl && onboardingTextPath && <p className="font-mono break-all">GET {onboardingTextPath}</p>}
+              {!onboardingTextUrl && onboardingTextPath && (
+                <p className="font-mono break-all">GET {onboardingTextPath}</p>
+              )}
             </div>
           )}
           {diagnostics.length > 0 && (
@@ -268,7 +277,8 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    {adapterLabels[type]}
+                    {!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                   </option>
                 ))}
               </select>

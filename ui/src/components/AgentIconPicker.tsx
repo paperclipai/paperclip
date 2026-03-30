@@ -1,109 +1,12 @@
-import { useState, useMemo } from "react";
-import {
-  Bot,
-  Cpu,
-  Brain,
-  Zap,
-  Rocket,
-  Code,
-  Terminal,
-  Shield,
-  Eye,
-  Search,
-  Wrench,
-  Hammer,
-  Lightbulb,
-  Sparkles,
-  Star,
-  Heart,
-  Flame,
-  Bug,
-  Cog,
-  Database,
-  Globe,
-  Lock,
-  Mail,
-  MessageSquare,
-  FileCode,
-  GitBranch,
-  Package,
-  Puzzle,
-  Target,
-  Wand2,
-  Atom,
-  CircuitBoard,
-  Radar,
-  Swords,
-  Telescope,
-  Microscope,
-  Crown,
-  Gem,
-  Hexagon,
-  Pentagon,
-  Fingerprint,
-  type LucideIcon,
-} from "lucide-react";
+import { createElement, useState, useMemo } from "react";
+import { type LucideIcon } from "lucide-react";
 import { AGENT_ICON_NAMES, type AgentIconName } from "@paperclipai/shared";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-
-export const AGENT_ICONS: Record<AgentIconName, LucideIcon> = {
-  bot: Bot,
-  cpu: Cpu,
-  brain: Brain,
-  zap: Zap,
-  rocket: Rocket,
-  code: Code,
-  terminal: Terminal,
-  shield: Shield,
-  eye: Eye,
-  search: Search,
-  wrench: Wrench,
-  hammer: Hammer,
-  lightbulb: Lightbulb,
-  sparkles: Sparkles,
-  star: Star,
-  heart: Heart,
-  flame: Flame,
-  bug: Bug,
-  cog: Cog,
-  database: Database,
-  globe: Globe,
-  lock: Lock,
-  mail: Mail,
-  "message-square": MessageSquare,
-  "file-code": FileCode,
-  "git-branch": GitBranch,
-  package: Package,
-  puzzle: Puzzle,
-  target: Target,
-  wand: Wand2,
-  atom: Atom,
-  "circuit-board": CircuitBoard,
-  radar: Radar,
-  swords: Swords,
-  telescope: Telescope,
-  microscope: Microscope,
-  crown: Crown,
-  gem: Gem,
-  hexagon: Hexagon,
-  pentagon: Pentagon,
-  fingerprint: Fingerprint,
-};
+import { AGENT_ICONS, getAgentIcon } from "../lib/agent-icons";
 
 const DEFAULT_ICON: AgentIconName = "bot";
-
-export function getAgentIcon(iconName: string | null | undefined): LucideIcon {
-  if (iconName && AGENT_ICON_NAMES.includes(iconName as AgentIconName)) {
-    return AGENT_ICONS[iconName as AgentIconName];
-  }
-  return AGENT_ICONS[DEFAULT_ICON];
-}
 
 interface AgentIconProps {
   icon: string | null | undefined;
@@ -111,8 +14,7 @@ interface AgentIconProps {
 }
 
 export function AgentIcon({ icon, className }: AgentIconProps) {
-  const Icon = getAgentIcon(icon);
-  return <Icon className={className} />;
+  return createElement(getAgentIcon(icon), { className });
 }
 
 interface AgentIconPickerProps {
@@ -154,7 +56,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
               }}
               className={cn(
                 "flex items-center justify-center h-8 w-8 rounded hover:bg-accent transition-colors",
-                (value ?? DEFAULT_ICON) === name && "bg-accent ring-1 ring-primary"
+                (value ?? DEFAULT_ICON) === name && "bg-accent ring-1 ring-primary",
               )}
               title={name}
             >

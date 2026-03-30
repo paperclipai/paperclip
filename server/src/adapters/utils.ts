@@ -17,11 +17,13 @@ export {
   resolvePathValue,
   renderTemplate,
   redactEnvForLogs,
+  buildInvocationEnvForLogs,
   buildPaperclipEnv,
   defaultPathForPlatform,
   ensurePathInEnv,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
+  resolveCommandForLogs,
 } from "@paperclipai/adapter-utils/server-utils";
 
 // Re-export runChildProcess with the server's pino logger wired in.

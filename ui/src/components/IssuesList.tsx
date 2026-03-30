@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { startTransition, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
@@ -20,7 +21,20 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import {
+  CircleDot,
+  Plus,
+  Filter,
+  ArrowUpDown,
+  Layers,
+  Check,
+  X,
+  ChevronRight,
+  List,
+  Columns3,
+  User,
+  Search,
+} from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -67,12 +81,15 @@ const quickFilterPresets = [
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
+const ISSUE_SEARCH_COMMIT_DELAY_MS = 150;
 
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
     if (raw) return { ...defaultViewState, ...JSON.parse(raw) };
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return { ...defaultViewState };
 }
 
@@ -105,8 +122,10 @@ function applyFilters(issues: Issue[], state: IssueViewState, currentUserId?: st
       return false;
     });
   }
-  if (state.labels.length > 0) result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
-  if (state.projects.length > 0) result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
+  if (state.labels.length > 0)
+    result = result.filter((i) => (i.labelIds ?? []).some((id) => state.labels.includes(id)));
+  if (state.projects.length > 0)
+    result = result.filter((i) => i.projectId != null && state.projects.includes(i.projectId));
   return result;
 }
 
@@ -166,8 +185,49 @@ interface IssuesListProps {
   issueLinkState?: unknown;
   initialAssignees?: string[];
   initialSearch?: string;
+  searchFilters?: {
+    participantAgentId?: string;
+  };
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+}
+
+interface IssuesSearchInputProps {
+  initialValue: string;
+  onValueCommitted: (value: string) => void;
+}
+
+function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInputProps) {
+  const [value, setValue] = useState(initialValue);
+  const onValueCommittedRef = useRef(onValueCommitted);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  useEffect(() => {
+    onValueCommittedRef.current = onValueCommitted;
+  }, [onValueCommitted]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      onValueCommittedRef.current(value);
+    }, ISSUE_SEARCH_COMMIT_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [value]);
+
+  return (
+    <div className="relative w-48 sm:w-64 md:w-80">
+      <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Search issues..."
+        className="pl-7 text-xs sm:text-sm"
+        aria-label="Search issues"
+      />
+    </div>
+  );
 }
 
 export function IssuesList({
@@ -182,6 +242,7 @@ export function IssuesList({
   issueLinkState,
   initialAssignees,
   initialSearch,
+  searchFilters,
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
@@ -205,49 +266,59 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
-  const [debouncedIssueSearch, setDebouncedIssueSearch] = useState(issueSearch);
-  const normalizedIssueSearch = debouncedIssueSearch.trim();
+  const normalizedIssueSearch = issueSearch.trim();
 
   useEffect(() => {
-    setIssueSearch(initialSearch ?? "");
+    setIssueSearch(initialSearch ?? ""); // eslint-disable-line react-hooks/set-state-in-effect
   }, [initialSearch]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedIssueSearch(issueSearch);
-    }, 300);
-    return () => window.clearTimeout(timeoutId);
-  }, [issueSearch]);
 
   // Reload view state from localStorage when company changes (scopedKey changes).
   const prevScopedKey = useRef(scopedKey);
   useEffect(() => {
     if (prevScopedKey.current !== scopedKey) {
       prevScopedKey.current = scopedKey;
-      setViewState(initialAssignees
-        ? { ...defaultViewState, assignees: initialAssignees, statuses: [] }
-        : getViewState(scopedKey));
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setViewState(
+        initialAssignees ? { ...defaultViewState, assignees: initialAssignees, statuses: [] } : getViewState(scopedKey),
+      );
     }
   }, [scopedKey, initialAssignees]);
 
-  const updateView = useCallback((patch: Partial<IssueViewState>) => {
-    setViewState((prev) => {
-      const next = { ...prev, ...patch };
-      saveViewState(scopedKey, next);
-      return next;
-    });
-  }, [scopedKey]);
+  const handleIssueSearchCommit = useCallback(
+    (nextSearch: string) => {
+      startTransition(() => {
+        setIssueSearch(nextSearch);
+      });
+      onSearchChange?.(nextSearch);
+    },
+    [onSearchChange],
+  );
+
+  const updateView = useCallback(
+    (patch: Partial<IssueViewState>) => {
+      setViewState((prev) => {
+        const next = { ...prev, ...patch };
+        saveViewState(scopedKey, next);
+        return next;
+      });
+    },
+    [scopedKey],
+  );
 
   const { data: searchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId }),
+    queryKey: [...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId), searchFilters ?? {}],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    placeholderData: (previousData) => previousData,
   });
 
-  const agentName = useCallback((id: string | null) => {
-    if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
-  }, [agents]);
+  const agentName = useCallback(
+    (id: string | null) => {
+      if (!id || !agents) return null;
+      return agents.find((a) => a.id === id)?.name ?? null;
+    },
+    [agents],
+  );
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
@@ -325,19 +396,7 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
           </Button>
-          <div className="relative w-48 sm:w-64 md:w-80">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={issueSearch}
-              onChange={(e) => {
-                setIssueSearch(e.target.value);
-                onSearchChange?.(e.target.value);
-              }}
-              placeholder="Search issues..."
-              className="pl-7 text-xs sm:text-sm"
-              aria-label="Search issues"
-            />
-          </div>
+          <IssuesSearchInput initialValue={initialSearch ?? ""} onValueCommitted={handleIssueSearchCommit} />
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
@@ -362,9 +421,15 @@ export function IssuesList({
           {/* Filter */}
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}
+              >
                 <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
+                <span className="hidden sm:inline">
+                  {activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
+                </span>
                 {activeFilterCount > 0 && (
                   <span className="sm:hidden text-[10px] font-medium ml-0.5">{activeFilterCount}</span>
                 )}
@@ -425,7 +490,10 @@ export function IssuesList({
                     <span className="text-xs text-muted-foreground">Status</span>
                     <div className="space-y-0.5">
                       {statusOrder.map((s) => (
-                        <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                        <label
+                          key={s}
+                          className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer"
+                        >
                           <Checkbox
                             checked={viewState.statuses.includes(s)}
                             onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
@@ -444,7 +512,10 @@ export function IssuesList({
                       <span className="text-xs text-muted-foreground">Priority</span>
                       <div className="space-y-0.5">
                         {priorityOrder.map((p) => (
-                          <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <label
+                            key={p}
+                            className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer"
+                          >
                             <Checkbox
                               checked={viewState.priorities.includes(p)}
                               onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
@@ -463,7 +534,9 @@ export function IssuesList({
                         <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                           <Checkbox
                             checked={viewState.assignees.includes("__unassigned")}
-                            onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
+                            onCheckedChange={() =>
+                              updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })
+                            }
                           />
                           <span className="text-sm">No assignee</span>
                         </label>
@@ -471,17 +544,24 @@ export function IssuesList({
                           <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                             <Checkbox
                               checked={viewState.assignees.includes("__me")}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
+                              onCheckedChange={() =>
+                                updateView({ assignees: toggleInArray(viewState.assignees, "__me") })
+                              }
                             />
                             <User className="h-3.5 w-3.5 text-muted-foreground" />
                             <span className="text-sm">Me</span>
                           </label>
                         )}
                         {(agents ?? []).map((agent) => (
-                          <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                          <label
+                            key={agent.id}
+                            className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer"
+                          >
                             <Checkbox
                               checked={viewState.assignees.includes(agent.id)}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
+                              onCheckedChange={() =>
+                                updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })
+                              }
                             />
                             <span className="text-sm">{agent.name}</span>
                           </label>
@@ -494,10 +574,15 @@ export function IssuesList({
                         <span className="text-xs text-muted-foreground">Labels</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {labels.map((label) => (
-                            <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                            <label
+                              key={label.id}
+                              className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer"
+                            >
                               <Checkbox
                                 checked={viewState.labels.includes(label.id)}
-                                onCheckedChange={() => updateView({ labels: toggleInArray(viewState.labels, label.id) })}
+                                onCheckedChange={() =>
+                                  updateView({ labels: toggleInArray(viewState.labels, label.id) })
+                                }
                               />
                               <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                               <span className="text-sm">{label.name}</span>
@@ -512,10 +597,15 @@ export function IssuesList({
                         <span className="text-xs text-muted-foreground">Project</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {projects.map((project) => (
-                            <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
+                            <label
+                              key={project.id}
+                              className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer"
+                            >
                               <Checkbox
                                 checked={viewState.projects.includes(project.id)}
-                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
+                                onCheckedChange={() =>
+                                  updateView({ projects: toggleInArray(viewState.projects, project.id) })
+                                }
                               />
                               <span className="text-sm">{project.name}</span>
                             </label>
@@ -540,17 +630,21 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
-                  {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
-                  ] as const).map(([field, label]) => (
+                  {(
+                    [
+                      ["status", "Status"],
+                      ["priority", "Priority"],
+                      ["title", "Title"],
+                      ["created", "Created"],
+                      ["updated", "Updated"],
+                    ] as const
+                  ).map(([field, label]) => (
                     <button
                       key={field}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.sortField === field
+                          ? "bg-accent/50 text-foreground"
+                          : "hover:bg-accent/50 text-muted-foreground"
                       }`}
                       onClick={() => {
                         if (viewState.sortField === field) {
@@ -584,16 +678,20 @@ export function IssuesList({
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
-                  {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Assignee"],
-                    ["none", "None"],
-                  ] as const).map(([value, label]) => (
+                  {(
+                    [
+                      ["status", "Status"],
+                      ["priority", "Priority"],
+                      ["assignee", "Assignee"],
+                      ["none", "None"],
+                    ] as const
+                  ).map(([value, label]) => (
                     <button
                       key={value}
                       className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        viewState.groupBy === value
+                          ? "bg-accent/50 text-foreground"
+                          : "hover:bg-accent/50 text-muted-foreground"
                       }`}
                       onClick={() => updateView({ groupBy: value })}
                     >
@@ -621,12 +719,7 @@ export function IssuesList({
       )}
 
       {viewState.viewMode === "board" ? (
-        <KanbanBoard
-          issues={filtered}
-          agents={agents}
-          liveIssueIds={liveIssueIds}
-          onUpdateIssue={onUpdateIssue}
-        />
+        <KanbanBoard issues={filtered} agents={agents} liveIssueIds={liveIssueIds} onUpdateIssue={onUpdateIssue} />
       ) : (
         groupedContent.map((group) => (
           <Collapsible
@@ -644,9 +737,7 @@ export function IssuesList({
               <div className="flex items-center py-1.5 pl-1 pr-3">
                 <CollapsibleTrigger className="flex items-center gap-1.5">
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                  <span className="text-sm font-semibold uppercase tracking-wide">
-                    {group.label}
-                  </span>
+                  <span className="text-sm font-semibold uppercase tracking-wide">{group.label}</span>
                 </CollapsibleTrigger>
                 <Button
                   variant="ghost"
@@ -665,24 +756,18 @@ export function IssuesList({
                   issue={issue}
                   issueLinkState={issueLinkState}
                   desktopLeadingSpacer
-                  mobileLeading={(
+                  mobileLeading={
                     <span
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
                     >
-                      <StatusIcon
-                        status={issue.status}
-                        onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                      />
+                      <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                     </span>
-                  )}
-                  desktopMetaLeading={(
+                  }
+                  desktopMetaLeading={
                     <>
-                      <span className="hidden sm:inline-flex">
-                        <PriorityIcon priority={issue.priority} />
-                      </span>
                       <span
                         className="hidden shrink-0 sm:inline-flex"
                         onClick={(e) => {
@@ -690,10 +775,7 @@ export function IssuesList({
                           e.stopPropagation();
                         }}
                       >
-                        <StatusIcon
-                          status={issue.status}
-                          onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                        />
+                        <StatusIcon status={issue.status} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                       </span>
                       <span className="shrink-0 font-mono text-xs text-muted-foreground">
                         {issue.identifier ?? issue.id.slice(0, 8)}
@@ -710,9 +792,9 @@ export function IssuesList({
                         </span>
                       )}
                     </>
-                  )}
+                  }
                   mobileMeta={timeAgo(issue.updatedAt)}
-                  desktopTrailing={(
+                  desktopTrailing={
                     <>
                       {(issue.labels ?? []).length > 0 && (
                         <span className="hidden items-center gap-1 overflow-hidden md:flex md:max-w-[240px]">
@@ -722,7 +804,7 @@ export function IssuesList({
                               className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
                               style={{
                                 borderColor: label.color,
-                                color: label.color,
+                                color: pickTextColorForPillBg(label.color, 0.12),
                                 backgroundColor: `${label.color}1f`,
                               }}
                             >
@@ -816,9 +898,7 @@ export function IssuesList({
                             {(agents ?? [])
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
-                                return agent.name
-                                  .toLowerCase()
-                                  .includes(assigneeSearch.toLowerCase());
+                                return agent.name.toLowerCase().includes(assigneeSearch.toLowerCase());
                               })
                               .map((agent) => (
                                 <button
@@ -840,7 +920,7 @@ export function IssuesList({
                         </PopoverContent>
                       </Popover>
                     </>
-                  )}
+                  }
                   trailingMeta={formatDate(issue.createdAt)}
                 />
               ))}

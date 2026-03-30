@@ -27,6 +27,7 @@ COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY packages/plugins/plugin-sentry/package.json packages/plugins/plugin-sentry/
 COPY packages/plugins/plugin-obsidian/package.json packages/plugins/plugin-obsidian/
+COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
 
@@ -39,6 +40,7 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/plugin-sentry build
 RUN pnpm --filter @paperclipai/plugin-obsidian build
 RUN pnpm --filter @paperclipai/ui build
+RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 

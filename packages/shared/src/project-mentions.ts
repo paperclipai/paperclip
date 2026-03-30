@@ -1,14 +1,22 @@
 export const PROJECT_MENTION_SCHEME = "project://";
+export const AGENT_MENTION_SCHEME = "agent://";
 
 const HEX_COLOR_RE = /^[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_RE = /^[0-9a-f]{3}$/i;
 const HEX_COLOR_WITH_HASH_RE = /^#[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_WITH_HASH_RE = /^#[0-9a-f]{3}$/i;
 const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
+const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
+const AGENT_ICON_NAME_RE = /^[a-z0-9-]+$/i;
 
 export interface ParsedProjectMention {
   projectId: string;
   color: string | null;
+}
+
+export interface ParsedAgentMention {
+  agentId: string;
+  icon: string | null;
 }
 
 function normalizeHexColor(input: string | null | undefined): string | null {
@@ -65,6 +73,36 @@ export function parseProjectMentionHref(href: string): ParsedProjectMention | nu
   };
 }
 
+export function buildAgentMentionHref(agentId: string, icon?: string | null): string {
+  const trimmedAgentId = agentId.trim();
+  const normalizedIcon = normalizeAgentIcon(icon ?? null);
+  if (!normalizedIcon) {
+    return `${AGENT_MENTION_SCHEME}${trimmedAgentId}`;
+  }
+  return `${AGENT_MENTION_SCHEME}${trimmedAgentId}?i=${encodeURIComponent(normalizedIcon)}`;
+}
+
+export function parseAgentMentionHref(href: string): ParsedAgentMention | null {
+  if (!href.startsWith(AGENT_MENTION_SCHEME)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "agent:") return null;
+
+  const agentId = `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim();
+  if (!agentId) return null;
+
+  return {
+    agentId,
+    icon: normalizeAgentIcon(url.searchParams.get("i") ?? url.searchParams.get("icon")),
+  };
+}
+
 export function extractProjectMentionIds(markdown: string): string[] {
   if (!markdown) return [];
   const ids = new Set<string>();
@@ -75,4 +113,23 @@ export function extractProjectMentionIds(markdown: string): string[] {
     if (parsed) ids.add(parsed.projectId);
   }
   return [...ids];
+}
+
+export function extractAgentMentionIds(markdown: string): string[] {
+  if (!markdown) return [];
+  const ids = new Set<string>();
+  const re = new RegExp(AGENT_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const parsed = parseAgentMentionHref(match[1]);
+    if (parsed) ids.add(parsed.agentId);
+  }
+  return [...ids];
+}
+
+function normalizeAgentIcon(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed || !AGENT_ICON_NAME_RE.test(trimmed)) return null;
+  return trimmed;
 }

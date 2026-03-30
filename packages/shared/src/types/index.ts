@@ -52,7 +52,16 @@ export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
   ExecutionWorkspace,
+  ExecutionWorkspaceConfig,
+  ExecutionWorkspaceCloseAction,
+  ExecutionWorkspaceCloseActionKind,
+  ExecutionWorkspaceCloseGitReadiness,
+  ExecutionWorkspaceCloseLinkedIssue,
+  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceCloseReadinessState,
+  ProjectWorkspaceRuntimeConfig,
   WorkspaceRuntimeService,
+  WorkspaceRuntimeDesiredState,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -62,11 +71,7 @@ export type {
   ProjectExecutionWorkspaceDefaultMode,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";
-export type {
-  WorkspaceOperation,
-  WorkspaceOperationPhase,
-  WorkspaceOperationStatus,
-} from "./workspace-operation.js";
+export type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "./workspace-operation.js";
 export type {
   IssueWorkProduct,
   IssueWorkProductType,
@@ -119,7 +124,16 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type {
+  CostEvent,
+  CostSummary,
+  CostByAgent,
+  CostByProviderModel,
+  CostByBiller,
+  CostByAgentModel,
+  CostWindowSpendRow,
+  CostByProject,
+} from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   HeartbeatRun,
@@ -146,9 +160,13 @@ export type {
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
+  CompanyPortabilitySidebarOrder,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
+  CompanyPortabilityProjectWorkspaceManifestEntry,
+  CompanyPortabilityIssueRoutineTriggerManifestEntry,
+  CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,

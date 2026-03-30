@@ -1,17 +1,12 @@
 import type { AdapterConfigFieldsProps } from "../types";
-import {
-  Field,
-  ToggleField,
-  DraftInput,
-  help,
-} from "../../components/agent-config-primitives";
+import { Field, ToggleField, DraftInput, help } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
 
 export function CodexLocalConfigFields({
   mode,
@@ -36,12 +31,8 @@ export function CodexLocalConfigFields({
             <DraftInput
               value={
                 isCreate
-                  ? values!.instructionsFilePath ?? ""
-                  : eff(
-                      "adapterConfig",
-                      "instructionsFilePath",
-                      String(config.instructionsFilePath ?? ""),
-                    )
+                  ? (values!.instructionsFilePath ?? "")
+                  : eff("adapterConfig", "instructionsFilePath", String(config.instructionsFilePath ?? ""))
               }
               onCommit={(v) =>
                 isCreate
@@ -62,11 +53,7 @@ export function CodexLocalConfigFields({
         checked={
           isCreate
             ? values!.dangerouslyBypassSandbox
-            : eff(
-                "adapterConfig",
-                "dangerouslyBypassApprovalsAndSandbox",
-                bypassEnabled,
-              )
+            : eff("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", bypassEnabled)
         }
         onChange={(v) =>
           isCreate
@@ -77,16 +64,8 @@ export function CodexLocalConfigFields({
       <ToggleField
         label="Enable search"
         hint={help.search}
-        checked={
-          isCreate
-            ? values!.search
-            : eff("adapterConfig", "search", !!config.search)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ search: v })
-            : mark("adapterConfig", "search", v)
-        }
+        checked={isCreate ? values!.search : eff("adapterConfig", "search", !!config.search)}
+        onChange={(v) => (isCreate ? set!({ search: v }) : mark("adapterConfig", "search", v))}
       />
       <LocalWorkspaceRuntimeFields
         isCreate={isCreate}

@@ -12,10 +12,7 @@ export function InstanceExperimentalSettings() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "Experimental" },
-    ]);
+    setBreadcrumbs([{ label: "Instance Settings" }, { label: "Experimental" }]);
   }, [setBreadcrumbs]);
 
   const experimentalQuery = useQuery({
@@ -84,6 +81,7 @@ export function InstanceExperimentalSettings() {
           </div>
           <button
             type="button"
+            data-slot="toggle"
             aria-label="Toggle isolated workspaces experimental setting"
             disabled={toggleMutation.isPending}
             className={cn(
@@ -113,15 +111,14 @@ export function InstanceExperimentalSettings() {
           </div>
           <button
             type="button"
+            data-slot="toggle"
             aria-label="Toggle guarded dev-server auto-restart"
             disabled={toggleMutation.isPending}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
               autoRestartDevServerWhenIdle ? "bg-green-600" : "bg-muted",
             )}
-            onClick={() =>
-              toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })
-            }
+            onClick={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
           >
             <span
               className={cn(

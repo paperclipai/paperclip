@@ -18,7 +18,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, ChevronRight, Copy, Download, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  FileText,
+  MoreHorizontal,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 
 type DraftState = {
   key: string;
@@ -110,12 +121,7 @@ export function IssueDocumentsSection({
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedDocumentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledToHashRef = useRef(false);
-  const {
-    state: autosaveState,
-    markDirty,
-    reset,
-    runSave,
-  } = useAutosaveIndicator();
+  const { state: autosaveState, markDirty, reset, runSave } = useAutosaveIndicator();
 
   const { data: documents } = useQuery({
     queryKey: queryKeys.issues.documents(issue.id),
@@ -169,10 +175,13 @@ export function IssueDocumentsSection({
     reset();
   }, [reset]);
 
-  const markDocumentDirty = useCallback((key: string) => {
-    setAutosaveDocumentKey(key);
-    markDirty();
-  }, [markDirty]);
+  const markDocumentDirty = useCallback(
+    (key: string) => {
+      setAutosaveDocumentKey(key);
+      markDirty();
+    },
+    [markDirty],
+  );
 
   const beginNewDocument = () => {
     resetAutosaveState();
@@ -193,7 +202,7 @@ export function IssueDocumentsSection({
     const conflictedDraft = documentConflict?.key === key ? documentConflict.localDraft : null;
     setFoldedDocumentKeys((current) => current.filter((entry) => entry !== key));
     resetAutosaveState();
-    setDocumentConflict((current) => current?.key === key ? current : null);
+    setDocumentConflict((current) => (current?.key === key ? current : null));
     setDraft({
       key: conflictedDraft?.key ?? doc.key,
       title: conflictedDraft?.title ?? doc.title ?? "",
@@ -214,167 +223,180 @@ export function IssueDocumentsSection({
     setError(null);
   };
 
-  const commitDraft = useCallback(async (
-    currentDraft: DraftState | null,
-    options?: { clearAfterSave?: boolean; trackAutosave?: boolean; overrideConflict?: boolean },
-  ) => {
-    if (!currentDraft || upsertDocument.isPending) return false;
-    const normalizedKey = currentDraft.key.trim().toLowerCase();
-    const normalizedBody = currentDraft.body.trim();
-    const normalizedTitle = currentDraft.title.trim();
-    const activeConflict = documentConflict?.key === normalizedKey ? documentConflict : null;
+  const commitDraft = useCallback(
+    async (
+      currentDraft: DraftState | null,
+      options?: { clearAfterSave?: boolean; trackAutosave?: boolean; overrideConflict?: boolean },
+    ) => {
+      if (!currentDraft || upsertDocument.isPending) return false;
+      const normalizedKey = currentDraft.key.trim().toLowerCase();
+      const normalizedBody = currentDraft.body.trim();
+      const normalizedTitle = currentDraft.title.trim();
+      const activeConflict = documentConflict?.key === normalizedKey ? documentConflict : null;
 
-    if (activeConflict && !options?.overrideConflict) {
-      if (options?.trackAutosave) {
-        resetAutosaveState();
-      }
-      return false;
-    }
-
-    if (!normalizedKey || !normalizedBody) {
-      if (currentDraft.isNew) {
-        setError("Document key and body are required");
-      } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
-      }
-      if (options?.trackAutosave) {
-        resetAutosaveState();
-      }
-      return false;
-    }
-
-    if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
-      if (options?.trackAutosave) {
-        resetAutosaveState();
-      }
-      return false;
-    }
-
-    const existing = sortedDocuments.find((doc) => doc.key === normalizedKey);
-    if (
-      !currentDraft.isNew &&
-      existing &&
-      existing.body === currentDraft.body &&
-      (existing.title ?? "") === currentDraft.title
-    ) {
-      if (options?.clearAfterSave) {
-        setDraft((value) => (value?.key === normalizedKey ? null : value));
-      }
-      if (options?.trackAutosave) {
-        resetAutosaveState();
-      }
-      return true;
-    }
-
-    const save = async () => {
-      const saved = await upsertDocument.mutateAsync({
-        ...currentDraft,
-        key: normalizedKey,
-        title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
-        body: currentDraft.body,
-        baseRevisionId: options?.overrideConflict
-          ? activeConflict?.serverDocument.latestRevisionId ?? currentDraft.baseRevisionId
-          : currentDraft.baseRevisionId,
-      });
-      setError(null);
-      setDocumentConflict((current) => current?.key === normalizedKey ? null : current);
-      setDraft((value) => {
-        if (!value || value.key !== normalizedKey) return value;
-        if (options?.clearAfterSave) return null;
-        return {
-          key: saved.key,
-          title: saved.title ?? "",
-          body: saved.body,
-          baseRevisionId: saved.latestRevisionId,
-          isNew: false,
-        };
-      });
-      invalidateIssueDocuments();
-    };
-
-    try {
-      if (options?.trackAutosave) {
-        setAutosaveDocumentKey(normalizedKey);
-        await runSave(save);
-      } else {
-        await save();
-      }
-      return true;
-    } catch (err) {
-      if (isDocumentConflictError(err)) {
-        try {
-          const latestDocument = await issuesApi.getDocument(issue.id, normalizedKey);
-          setDocumentConflict({
-            key: normalizedKey,
-            serverDocument: latestDocument,
-            localDraft: {
-              key: normalizedKey,
-              title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
-              body: currentDraft.body,
-              baseRevisionId: currentDraft.baseRevisionId,
-              isNew: false,
-            },
-            showRemote: true,
-          });
-          setFoldedDocumentKeys((current) => current.filter((key) => key !== normalizedKey));
-          setError(null);
+      if (activeConflict && !options?.overrideConflict) {
+        if (options?.trackAutosave) {
           resetAutosaveState();
-          return false;
-        } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
-          return false;
         }
+        return false;
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
-      return false;
-    }
-  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
 
-  const reloadDocumentFromServer = useCallback((key: string) => {
-    if (documentConflict?.key !== key) return;
-    const serverDocument = documentConflict.serverDocument;
-    setDraft({
-      key: serverDocument.key,
-      title: serverDocument.title ?? "",
-      body: serverDocument.body,
-      baseRevisionId: serverDocument.latestRevisionId,
-      isNew: false,
-    });
-    setDocumentConflict(null);
-    resetAutosaveState();
-    setError(null);
-  }, [documentConflict, resetAutosaveState]);
+      if (!normalizedKey || !normalizedBody) {
+        if (currentDraft.isNew) {
+          setError("Document key and body are required");
+        } else if (!normalizedBody) {
+          setError("Document body cannot be empty");
+        }
+        if (options?.trackAutosave) {
+          resetAutosaveState();
+        }
+        return false;
+      }
 
-  const overwriteDocumentFromDraft = useCallback(async (key: string) => {
-    if (documentConflict?.key !== key) return;
-    const sourceDraft =
-      draft && draft.key === key && !draft.isNew
-        ? draft
-        : documentConflict.localDraft;
-    await commitDraft(
-      {
-        ...sourceDraft,
-        baseRevisionId: documentConflict.serverDocument.latestRevisionId,
-      },
-      {
-        clearAfterSave: false,
-        trackAutosave: true,
-        overrideConflict: true,
-      },
-    );
-  }, [commitDraft, documentConflict, draft]);
+      if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
+        setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+        if (options?.trackAutosave) {
+          resetAutosaveState();
+        }
+        return false;
+      }
 
-  const keepConflictedDraft = useCallback((key: string) => {
-    if (documentConflict?.key !== key) return;
-    setDraft(documentConflict.localDraft);
-    setDocumentConflict((current) =>
-      current?.key === key
-        ? { ...current, showRemote: false }
-        : current,
-    );
-    setError(null);
-  }, [documentConflict]);
+      const existing = sortedDocuments.find((doc) => doc.key === normalizedKey);
+      if (
+        !currentDraft.isNew &&
+        existing &&
+        existing.body === currentDraft.body &&
+        (existing.title ?? "") === currentDraft.title
+      ) {
+        if (options?.clearAfterSave) {
+          setDraft((value) => (value?.key === normalizedKey ? null : value));
+        }
+        if (options?.trackAutosave) {
+          resetAutosaveState();
+        }
+        return true;
+      }
+
+      const save = async () => {
+        const saved = await upsertDocument.mutateAsync({
+          ...currentDraft,
+          key: normalizedKey,
+          title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
+          body: currentDraft.body,
+          baseRevisionId: options?.overrideConflict
+            ? (activeConflict?.serverDocument.latestRevisionId ?? currentDraft.baseRevisionId)
+            : currentDraft.baseRevisionId,
+        });
+        setError(null);
+        setDocumentConflict((current) => (current?.key === normalizedKey ? null : current));
+        setDraft((value) => {
+          if (!value || value.key !== normalizedKey) return value;
+          if (options?.clearAfterSave) return null;
+          return {
+            key: saved.key,
+            title: saved.title ?? "",
+            body: saved.body,
+            baseRevisionId: saved.latestRevisionId,
+            isNew: false,
+          };
+        });
+        invalidateIssueDocuments();
+      };
+
+      try {
+        if (options?.trackAutosave) {
+          setAutosaveDocumentKey(normalizedKey);
+          await runSave(save);
+        } else {
+          await save();
+        }
+        return true;
+      } catch (err) {
+        if (isDocumentConflictError(err)) {
+          try {
+            const latestDocument = await issuesApi.getDocument(issue.id, normalizedKey);
+            setDocumentConflict({
+              key: normalizedKey,
+              serverDocument: latestDocument,
+              localDraft: {
+                key: normalizedKey,
+                title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
+                body: currentDraft.body,
+                baseRevisionId: currentDraft.baseRevisionId,
+                isNew: false,
+              },
+              showRemote: true,
+            });
+            setFoldedDocumentKeys((current) => current.filter((key) => key !== normalizedKey));
+            setError(null);
+            resetAutosaveState();
+            return false;
+          } catch {
+            setError("Document changed remotely and the latest version could not be loaded");
+            return false;
+          }
+        }
+        setError(err instanceof Error ? err.message : "Failed to save document");
+        return false;
+      }
+    },
+    [
+      documentConflict,
+      invalidateIssueDocuments,
+      issue.id,
+      resetAutosaveState,
+      runSave,
+      sortedDocuments,
+      upsertDocument,
+    ],
+  );
+
+  const reloadDocumentFromServer = useCallback(
+    (key: string) => {
+      if (documentConflict?.key !== key) return;
+      const serverDocument = documentConflict.serverDocument;
+      setDraft({
+        key: serverDocument.key,
+        title: serverDocument.title ?? "",
+        body: serverDocument.body,
+        baseRevisionId: serverDocument.latestRevisionId,
+        isNew: false,
+      });
+      setDocumentConflict(null);
+      resetAutosaveState();
+      setError(null);
+    },
+    [documentConflict, resetAutosaveState],
+  );
+
+  const overwriteDocumentFromDraft = useCallback(
+    async (key: string) => {
+      if (documentConflict?.key !== key) return;
+      const sourceDraft = draft && draft.key === key && !draft.isNew ? draft : documentConflict.localDraft;
+      await commitDraft(
+        {
+          ...sourceDraft,
+          baseRevisionId: documentConflict.serverDocument.latestRevisionId,
+        },
+        {
+          clearAfterSave: false,
+          trackAutosave: true,
+          overrideConflict: true,
+        },
+      );
+    },
+    [commitDraft, documentConflict, draft],
+  );
+
+  const keepConflictedDraft = useCallback(
+    (key: string) => {
+      if (documentConflict?.key !== key) return;
+      setDraft(documentConflict.localDraft);
+      setDocumentConflict((current) => (current?.key === key ? { ...current, showRemote: false } : current));
+      setError(null);
+    },
+    [documentConflict],
+  );
 
   const copyDocumentBody = useCallback(async (key: string, body: string) => {
     try {
@@ -384,7 +406,7 @@ export function IssueDocumentsSection({
         clearTimeout(copiedDocumentTimerRef.current);
       }
       copiedDocumentTimerRef.current = setTimeout(() => {
-        setCopiedDocumentKey((current) => current === key ? null : current);
+        setCopiedDocumentKey((current) => (current === key ? null : current));
       }, 1400);
     } catch {
       setError("Could not copy document");
@@ -415,7 +437,7 @@ export function IssueDocumentsSection({
   };
 
   useEffect(() => {
-    setFoldedDocumentKeys(loadFoldedDocumentKeys(issue.id));
+    setFoldedDocumentKeys(loadFoldedDocumentKeys(issue.id)); // eslint-disable-line react-hooks/set-state-in-effect
   }, [issue.id]);
 
   useEffect(() => {
@@ -424,6 +446,7 @@ export function IssueDocumentsSection({
 
   useEffect(() => {
     const validKeys = new Set(sortedDocuments.map((doc) => doc.key));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFoldedDocumentKeys((current) => {
       const next = current.filter((key) => validKeys.has(key));
       if (next.length !== current.length) {
@@ -441,27 +464,28 @@ export function IssueDocumentsSection({
     if (!documentConflict) return;
     const latest = sortedDocuments.find((doc) => doc.key === documentConflict.key);
     if (!latest || latest.latestRevisionId === documentConflict.serverDocument.latestRevisionId) return;
-    setDocumentConflict((current) =>
-      current?.key === latest.key
-        ? { ...current, serverDocument: latest }
-        : current,
-    );
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDocumentConflict((current) => (current?.key === latest.key ? { ...current, serverDocument: latest } : current));
   }, [documentConflict, sortedDocuments]);
 
   useEffect(() => {
     const hash = location.hash;
     if (!hash.startsWith("#document-")) return;
     const documentKey = decodeURIComponent(hash.slice("#document-".length));
-    const targetExists = sortedDocuments.some((doc) => doc.key === documentKey)
-      || (documentKey === "plan" && Boolean(issue.legacyPlanDocument));
+    const targetExists =
+      sortedDocuments.some((doc) => doc.key === documentKey) ||
+      (documentKey === "plan" && Boolean(issue.legacyPlanDocument));
     if (!targetExists || hasScrolledToHashRef.current) return;
-    setFoldedDocumentKeys((current) => current.filter((key) => key !== documentKey));
+    setFoldedDocumentKeys((current) => current.filter((key) => key !== documentKey)); // eslint-disable-line react-hooks/set-state-in-effect
     const element = document.getElementById(`document-${documentKey}`);
     if (!element) return;
     hasScrolledToHashRef.current = true;
     setHighlightDocumentKey(documentKey);
     element.scrollIntoView({ behavior: "smooth", block: "center" });
-    const timer = setTimeout(() => setHighlightDocumentKey((current) => current === documentKey ? null : current), 3000);
+    const timer = setTimeout(
+      () => setHighlightDocumentKey((current) => (current === documentKey ? null : current)),
+      3000,
+    );
     return () => clearTimeout(timer);
   }, [issue.legacyPlanDocument, location.hash, sortedDocuments]);
 
@@ -481,12 +505,10 @@ export function IssueDocumentsSection({
     if (documentConflict?.key === draft.key) return;
     const existing = sortedDocuments.find((doc) => doc.key === draft.key);
     if (!existing) return;
-    const hasChanges =
-      existing.body !== draft.body ||
-      (existing.title ?? "") !== draft.title;
+    const hasChanges = existing.body !== draft.body || (existing.title ?? "") !== draft.title;
     if (!hasChanges) {
       if (autosaveState !== "saved") {
-        resetAutosaveState();
+        resetAutosaveState(); // eslint-disable-line react-hooks/set-state-in-effect
       }
       return;
     }
@@ -510,30 +532,30 @@ export function IssueDocumentsSection({
   const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7";
   const toggleFoldedDocument = (key: string) => {
     setFoldedDocumentKeys((current) =>
-      current.includes(key)
-        ? current.filter((entry) => entry !== key)
-        : [...current, key],
+      current.includes(key) ? current.filter((entry) => entry !== key) : [...current, key],
     );
   };
 
   return (
     <div className="space-y-3">
       {isEmpty && !draft?.isNew ? (
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-2 min-w-0">
           {extraActions}
-          <Button variant="outline" size="sm" onClick={beginNewDocument}>
+          <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New document
+            <span className="hidden sm:inline">New document</span>
+            <span className="sm:hidden">New</span>
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Documents</h3>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <h3 className="text-sm font-medium text-muted-foreground shrink-0">Documents</h3>
+          <div className="flex items-center gap-2 min-w-0">
             {extraActions}
-            <Button variant="outline" size="sm" onClick={beginNewDocument}>
+            <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              New document
+              <span className="hidden sm:inline">New document</span>
+              <span className="sm:hidden">New</span>
             </Button>
           </div>
         </div>
@@ -551,27 +573,23 @@ export function IssueDocumentsSection({
             autoFocus
             value={draft.key}
             onChange={(event) =>
-              setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
+              setDraft((current) => (current ? { ...current, key: event.target.value.toLowerCase() } : current))
             }
             placeholder="Document key"
           />
-          {newDocumentKeyError && (
-            <p className="text-xs text-destructive">{newDocumentKeyError}</p>
-          )}
+          {newDocumentKeyError && <p className="text-xs text-destructive">{newDocumentKeyError}</p>}
           {!isPlanKey(draft.key) && (
             <Input
               value={draft.title}
               onChange={(event) =>
-                setDraft((current) => current ? { ...current, title: event.target.value } : current)
+                setDraft((current) => (current ? { ...current, title: event.target.value } : current))
               }
               placeholder="Optional title"
             />
           )}
           <MarkdownEditor
             value={draft.body}
-            onChange={(body) =>
-              setDraft((current) => current ? { ...current, body } : current)
-            }
+            onChange={(body) => setDraft((current) => (current ? { ...current, body } : current))}
             placeholder="Markdown body"
             bordered={false}
             className="bg-transparent"
@@ -634,29 +652,29 @@ export function IssueDocumentsSection({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <button
                       type="button"
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
                       aria-label={isFolded ? `Expand ${doc.key} document` : `Collapse ${doc.key} document`}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
-                    <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
                     <a
                       href={`#document-${encodeURIComponent(doc.key)}`}
-                      className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                      className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
                       rev {doc.latestRevisionNumber} • updated {relativeTime(doc.updatedAt)}
                     </a>
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -675,28 +693,18 @@ export function IssueDocumentsSection({
                   </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="text-muted-foreground"
-                        title="Document actions"
-                      >
+                      <Button variant="ghost" size="icon-xs" className="text-muted-foreground" title="Document actions">
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}
-                      >
+                      <DropdownMenuItem onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}>
                         <Download className="h-3.5 w-3.5" />
                         Download document
                       </DropdownMenuItem>
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
                       {canDeleteDocuments ? (
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setConfirmDeleteKey(doc.key)}
-                        >
+                        <DropdownMenuItem variant="destructive" onClick={() => setConfirmDeleteKey(doc.key)}>
                           <Trash2 className="h-3.5 w-3.5" />
                           Delete document
                         </DropdownMenuItem>
@@ -731,7 +739,8 @@ export function IssueDocumentsSection({
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-amber-200">Out of date</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            This document changed while you were editing. Your local draft is preserved and autosave is
+                            paused.
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -740,26 +749,16 @@ export function IssueDocumentsSection({
                             size="sm"
                             onClick={() =>
                               setDocumentConflict((current) =>
-                                current?.key === doc.key
-                                  ? { ...current, showRemote: !current.showRemote }
-                                  : current,
+                                current?.key === doc.key ? { ...current, showRemote: !current.showRemote } : current,
                               )
                             }
                           >
                             {activeConflict.showRemote ? "Hide remote" : "Review remote"}
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => keepConflictedDraft(doc.key)}
-                          >
+                          <Button variant="outline" size="sm" onClick={() => keepConflictedDraft(doc.key)}>
                             Keep my draft
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => reloadDocumentFromServer(doc.key)}
-                          >
+                          <Button variant="outline" size="sm" onClick={() => reloadDocumentFromServer(doc.key)}>
                             Reload remote
                           </Button>
                           <Button
@@ -791,7 +790,7 @@ export function IssueDocumentsSection({
                       value={activeDraft.title}
                       onChange={(event) => {
                         markDocumentDirty(doc.key);
-                        setDraft((current) => current ? { ...current, title: event.target.value } : current);
+                        setDraft((current) => (current ? { ...current, title: event.target.value } : current));
                       }}
                       placeholder="Optional title"
                     />
@@ -824,7 +823,9 @@ export function IssueDocumentsSection({
                       contentClassName={documentBodyContentClassName}
                       mentions={mentions}
                       imageUploadHandler={imageUploadHandler}
-                      onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
+                      onSubmit={() =>
+                        void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })
+                      }
                     />
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
@@ -857,9 +858,7 @@ export function IssueDocumentsSection({
 
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
-                  <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
-                  </p>
+                  <p className="text-sm text-destructive font-medium">Delete this document? This cannot be undone.</p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
                       variant="ghost"

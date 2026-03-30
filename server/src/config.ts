@@ -3,6 +3,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
+import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import {
   AUTH_BASE_URL_MODES,
   DEPLOYMENT_EXPOSURES,
@@ -36,6 +37,8 @@ const isSameFile =
 if (!isSameFile && existsSync(CWD_ENV_PATH)) {
   loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
 }
+
+maybeRepairLegacyWorktreeConfigAndEnvFiles();
 
 type DatabaseMode = "embedded-postgres" | "postgres";
 

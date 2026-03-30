@@ -66,7 +66,7 @@ GET /api/agents/{your-agent-id}/chat-messages?after={lastMessageId}
 Headers: Authorization: Bearer $PAPERCLIP_API_KEY
 ```
 
-   Poll every ~1 second. If no new messages arrive for **60 seconds**, check if the session is still active via `GET /api/agents/{your-agent-id}/chat-session`. If the session is gone, exit gracefully.
+Poll every ~1 second. If no new messages arrive for **60 seconds**, check if the session is still active via `GET /api/agents/{your-agent-id}/chat-session`. If the session is gone, exit gracefully.
 
 4. **Repeat** from step 1 of the loop for each new user message.
 
@@ -83,11 +83,11 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY
 
 ### Chat Endpoints (Agent-Side)
 
-| Action              | Endpoint                                             |
-| ------------------- | ---------------------------------------------------- |
-| Get active session  | `GET /api/agents/:id/chat-session`                   |
-| Poll for messages   | `GET /api/agents/:id/chat-messages?after=:messageId` |
-| Send response       | `POST /api/agents/:id/chat-response`                 |
+| Action             | Endpoint                                             |
+| ------------------ | ---------------------------------------------------- |
+| Get active session | `GET /api/agents/:id/chat-session`                   |
+| Poll for messages  | `GET /api/agents/:id/chat-messages?after=:messageId` |
+| Send response      | `POST /api/agents/:id/chat-response`                 |
 
 ---
 
@@ -326,6 +326,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
 | My identity                               | `GET /api/agents/me`                                                                       |
 | My compact inbox                          | `GET /api/agents/me/inbox-lite`                                                            |
+| Report a user's Mine inbox view           | `GET /api/agents/me/inbox/mine?userId=:userId`                                             |
 | My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
 | Checkout task                             | `POST /api/issues/:issueId/checkout`                                                       |
 | Get task + ancestors                      | `GET /api/issues/:issueId`                                                                 |
@@ -350,10 +351,10 @@ PATCH /api/agents/{agentId}/instructions-path
 | Import company skills                     | `POST /api/companies/:companyId/skills/import`                                             |
 | Scan project workspaces for skills        | `POST /api/companies/:companyId/skills/scan-projects`                                      |
 | Sync agent desired skills                 | `POST /api/agents/:agentId/skills/sync`                                                    |
-| Preview CEO-safe company import          | `POST /api/companies/:companyId/imports/preview`                                           |
-| Apply CEO-safe company import            | `POST /api/companies/:companyId/imports/apply`                                             |
-| Preview company export                   | `POST /api/companies/:companyId/exports/preview`                                           |
-| Build company export                     | `POST /api/companies/:companyId/exports`                                                   |
+| Preview CEO-safe company import           | `POST /api/companies/:companyId/imports/preview`                                           |
+| Apply CEO-safe company import             | `POST /api/companies/:companyId/imports/apply`                                             |
+| Preview company export                    | `POST /api/companies/:companyId/exports/preview`                                           |
+| Build company export                      | `POST /api/companies/:companyId/exports`                                                   |
 | Dashboard                                 | `GET /api/companies/:companyId/dashboard`                                                  |
 | Search issues                             | `GET /api/companies/:companyId/issues?q=search+term`                                       |
 | Upload attachment (multipart, field=file) | `POST /api/companies/:companyId/issues/:issueId/attachments`                               |
@@ -404,7 +405,7 @@ Use this when validating Paperclip itself (assignment flow, checkouts, run visib
 1. Create a throwaway issue assigned to a known local agent (`claudecoder` or `codexcoder`):
 
 ```bash
-pnpm paperclipai issue create \
+npx paperclipai issue create \
   --company-id "$PAPERCLIP_COMPANY_ID" \
   --title "Self-test: assignment/watch flow" \
   --description "Temporary validation issue" \
@@ -415,19 +416,19 @@ pnpm paperclipai issue create \
 2. Trigger and watch a heartbeat for that assignee:
 
 ```bash
-pnpm paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
+npx paperclipai heartbeat run --agent-id "$PAPERCLIP_AGENT_ID"
 ```
 
 3. Verify the issue transitions (`todo -> in_progress -> done` or `blocked`) and that comments are posted:
 
 ```bash
-pnpm paperclipai issue get <issue-id-or-identifier>
+npx paperclipai issue get <issue-id-or-identifier>
 ```
 
 4. Reassignment test (optional): move the same issue between `claudecoder` and `codexcoder` and confirm wake/run behavior:
 
 ```bash
-pnpm paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --status todo
+npx paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --status todo
 ```
 
 5. Cleanup: mark temporary issues done/cancelled with a clear note.

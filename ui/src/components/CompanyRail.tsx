@@ -4,7 +4,7 @@ import { useQueries } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
-  PointerSensor,
+  MouseSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -205,10 +205,10 @@ export function CompanyRail() {
   // and subsequent refetches triggered by live updates.
   useEffect(() => {
     if (sidebarCompanies.length === 0) {
-      setOrderedIds([]);
+      setOrderedIds([]); // eslint-disable-line react-hooks/set-state-in-effect
       return;
     }
-    setOrderedIds(sortByStoredOrder(sidebarCompanies).map((c) => c.id));
+    setOrderedIds(sortByStoredOrder(sidebarCompanies).map((c) => c.id));  
   }, [sidebarCompanies]);
 
   // Sync order across tabs via the native storage event
@@ -244,7 +244,8 @@ export function CompanyRail() {
 
   // Require 8px of movement before starting a drag to avoid interfering with clicks
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
+    useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     })
   );

@@ -346,6 +346,13 @@
       "breakpoints": true
     },
     {
+      "idx": 45,
+      "version": "7",
+      "when": 1774530504348,
+      "tag": "0045_workable_shockwave",
+      "breakpoints": true
+    },
+    {
       "idx": 49,
       "version": "7",
       "when": 1774656000000,

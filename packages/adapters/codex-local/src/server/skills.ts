@@ -1,10 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  AdapterSkillContext,
-  AdapterSkillEntry,
-  AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+import type { AdapterSkillContext, AdapterSkillEntry, AdapterSkillSnapshot } from "@paperclipai/adapter-utils";
 import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
@@ -12,9 +8,7 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-async function buildCodexSkillSnapshot(
-  config: Record<string, unknown>,
-): Promise<AdapterSkillSnapshot> {
+async function buildCodexSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
   const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
@@ -31,7 +25,7 @@ async function buildCodexSkillSnapshot(
     sourcePath: entry.source,
     targetPath: null,
     detail: desiredSet.has(entry.key)
-      ? "Will be linked into the workspace .agents/skills directory on the next run."
+      ? "Will be linked into the effective CODEX_HOME/skills/ directory on the next run."
       : null,
     required: Boolean(entry.required),
     requiredReason: entry.requiredReason ?? null,

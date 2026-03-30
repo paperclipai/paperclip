@@ -1,27 +1,49 @@
 ## Thinking Path
 
+<!--
+  Required. Trace your reasoning from the top of the project down to this
+  specific change. Start with what Paperclip is, then narrow through the
+  subsystem, the problem, and why this PR exists. Use blockquote style.
+  Aim for 5–8 steps. See CONTRIBUTING.md for full examples.
+-->
+
 > - Paperclip orchestrates AI agents for zero-human companies
-> - [Describe the area of the system this touches]
-> - [Describe the problem or gap]
-> - [Describe what this PR does about it]
-> - [Describe the benefit]
+> - [Which subsystem or capability is involved]
+> - [What problem or gap exists]
+> - [Why it needs to be addressed]
+> - This pull request ...
+> - The benefit is ...
 
 ## What Changed
 
-<!-- Describe what you changed and why. -->
+<!-- Bullet list of concrete changes. One bullet per logical unit. -->
 
-## How to Verify
+-
 
-<!-- Steps to test this manually, or note which automated tests cover it. -->
+## Verification
 
-## Screenshots
+<!--
+  How can a reviewer confirm this works? Include test commands, manual
+  steps, or both. For UI changes, include before/after screenshots.
+-->
 
-<!-- Before/after screenshots for UI changes. Remove this section if not applicable. -->
+-
+
+## Risks
+
+<!--
+  What could go wrong? Mention migration safety, breaking changes,
+  behavioral shifts, or "Low risk" if genuinely minor.
+-->
+
+-
 
 ## Checklist
 
-- [ ] `pnpm -r typecheck` passes
-- [ ] `pnpm test:run` passes
-- [ ] `pnpm build` succeeds
-- [ ] Commit messages are clear and descriptive
-- [ ] No new lint warnings introduced
+- [ ] I have included a thinking path that traces from project context to this change
+- [ ] I have run tests locally and they pass
+- [ ] I have added or updated tests where applicable
+- [ ] If this change affects the UI, I have included before/after screenshots
+- [ ] I have updated relevant documentation to reflect my changes
+- [ ] I have considered and documented any risks above
+- [ ] I will address all Greptile and reviewer comments before requesting merge

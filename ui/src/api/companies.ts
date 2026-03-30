@@ -1,5 +1,6 @@
 import type {
   Company,
+  CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
   CompanyPortabilityImportRequest,
@@ -16,67 +17,34 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
-  create: (data: {
-    name: string;
-    description?: string | null;
-    budgetMonthlyCents?: number;
-  }) =>
+  create: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
     api.post<Company>("/companies", data),
   update: (
     companyId: string,
     data: Partial<
       Pick<
         Company,
-        "name" | "description" | "status" | "budgetMonthlyCents" | "requireBoardApprovalForNewAgents" | "brandColor" | "logoAssetId"
+        | "name"
+        | "description"
+        | "status"
+        | "budgetMonthlyCents"
+        | "requireBoardApprovalForNewAgents"
+        | "brandColor"
+        | "logoAssetId"
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
-  pause: (companyId: string, reason = "manual") =>
-    api.post<Company>(`/companies/${companyId}/pause`, { reason }),
-  resume: (companyId: string) =>
-    api.post<Company>(`/companies/${companyId}/resume`, {}),
+  pause: (companyId: string, reason = "manual") => api.post<Company>(`/companies/${companyId}/pause`, { reason }),
+  resume: (companyId: string) => api.post<Company>(`/companies/${companyId}/resume`, {}),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
-  exportBundle: (
-    companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
-  ) =>
+  exportBundle: (companyId: string, data: CompanyPortabilityExportRequest) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
-  exportPreview: (
-    companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
-  ) =>
+  exportPreview: (companyId: string, data: CompanyPortabilityExportRequest) =>
     api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
-  exportPackage: (
-    companyId: string,
-    data: {
-      include?: { company?: boolean; agents?: boolean; projects?: boolean; issues?: boolean };
-      agents?: string[];
-      skills?: string[];
-      projects?: string[];
-      issues?: string[];
-      projectIssues?: string[];
-      selectedFiles?: string[];
-    },
-  ) =>
+  exportPackage: (companyId: string, data: CompanyPortabilityExportRequest) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/exports`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),

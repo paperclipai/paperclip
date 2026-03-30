@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -38,6 +39,9 @@ import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const updateIssueRouteSchema = updateIssueSchema.extend({
+  interrupt: z.boolean().optional(),
+});
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -174,6 +178,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return true;
   }
 
+  async function resolveActiveIssueRun(issue: {
+    id: string;
+    assigneeAgentId: string | null;
+    executionRunId?: string | null;
+  }) {
+    let runToInterrupt = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+
+    if ((!runToInterrupt || runToInterrupt.status !== "running") && issue.assigneeAgentId) {
+      const activeRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
+      const activeIssueId =
+        activeRun &&
+        activeRun.contextSnapshot &&
+        typeof activeRun.contextSnapshot === "object" &&
+        typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+          ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+          : null;
+      if (activeRun && activeRun.status === "running" && activeIssueId === issue.id) {
+        runToInterrupt = activeRun;
+      }
+    }
+
+    return runToInterrupt?.status === "running" ? runToInterrupt : null;
+  }
+
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
@@ -182,6 +210,33 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
     return rawId;
+  }
+
+  async function resolveIssueProjectAndGoal(issue: {
+    companyId: string;
+    projectId: string | null;
+    goalId: string | null;
+  }) {
+    const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
+    const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
+    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+
+    if (directGoal) {
+      return { project, goal: directGoal };
+    }
+
+    const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
+    if (projectGoalId) {
+      const projectGoal = await goalsSvc.getById(projectGoalId);
+      return { project, goal: projectGoal };
+    }
+
+    if (!issue.projectId) {
+      const defaultGoal = await goalsSvc.getDefaultCompanyGoal(issue.companyId);
+      return { project, goal: defaultGoal };
+    }
+
+    return { project, goal: null };
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
@@ -216,11 +271,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
+    const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board" ? req.actor.userId : assigneeUserFilterRaw;
     const touchedByUserId =
       touchedByUserFilterRaw === "me" && req.actor.type === "board" ? req.actor.userId : touchedByUserFilterRaw;
+    const inboxArchivedByUserId =
+      inboxArchivedByUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : inboxArchivedByUserFilterRaw;
     const unreadForUserId =
       unreadForUserFilterRaw === "me" && req.actor.type === "board" ? req.actor.userId : unreadForUserFilterRaw;
 
@@ -230,6 +290,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "touchedByUserId=me requires board authentication" });
+      return;
+    }
+    if (inboxArchivedByUserFilterRaw === "me" && (!inboxArchivedByUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "inboxArchivedByUserId=me requires board authentication" });
       return;
     }
     if (unreadForUserFilterRaw === "me" && (!unreadForUserId || req.actor.type !== "board")) {
@@ -242,10 +306,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
+      inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
@@ -321,14 +388,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const [ancestors, project, goal, mentionedProjectIds, documentPayload] = await Promise.all([
+    const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.findMentionedProjectIds(issue.id),
       documentsSvc.getIssueDocumentPayload(issue),
     ]);
@@ -365,14 +427,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [ancestors, project, goal, commentCursor, wakeComment] = await Promise.all([
+    const [{ project, goal }, ancestors, commentCursor, wakeComment] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
-      issue.projectId ? projectsSvc.getById(issue.projectId) : null,
-      issue.goalId
-        ? goalsSvc.getById(issue.goalId)
-        : !issue.projectId
-          ? goalsSvc.getDefaultCompanyGoal(issue.companyId)
-          : null,
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
     ]);
@@ -708,6 +765,102 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(readState);
   });
 
+  router.delete("/issues/:id/read", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const removed = await svc.markUnread(issue.companyId, issue.id, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.read_unmarked",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId },
+    });
+    res.json({ id: issue.id, removed });
+  });
+
+  router.post("/issues/:id/inbox-archive", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, req.actor.userId, new Date());
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.inbox_archived",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId, archivedAt: archiveState.archivedAt },
+    });
+    res.json(archiveState);
+  });
+
+  router.delete("/issues/:id/inbox-archive", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "Board user context required" });
+      return;
+    }
+    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, req.actor.userId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.inbox_unarchived",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { userId: req.actor.userId },
+    });
+    res.json(removed ?? { ok: true });
+  });
+
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -818,7 +971,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
+  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -852,9 +1005,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
       comment: commentBody,
       questionData: questionDataBody,
       reopen: reopenRequested,
+      interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    let interruptedRunId: string | null = null;
+
+    if (interruptRequested) {
+      if (!commentBody) {
+        res.status(400).json({ error: "Interrupt is only supported when posting a comment" });
+        return;
+      }
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+        return;
+      }
+
+      const runToInterrupt = await resolveActiveIssueRun(existing);
+      if (runToInterrupt) {
+        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        if (cancelled) {
+          interruptedRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
+          });
+        }
+      }
+    }
+
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -929,6 +1115,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
@@ -956,6 +1143,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
           identifier: issue.identifier,
           issueTitle: issue.title,
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
@@ -974,10 +1162,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "update" },
+          payload: {
+            issueId: issue.id,
+            mutation: "update",
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.update" },
+          contextSnapshot: {
+            issueId: issue.id,
+            source: "issue.update",
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
         });
       }
 
@@ -986,10 +1182,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_status_changed",
-          payload: { issueId: issue.id, mutation: "update" },
+          payload: {
+            issueId: issue.id,
+            mutation: "update",
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
+          contextSnapshot: {
+            issueId: issue.id,
+            source: "issue.status_change",
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
         });
       }
 
@@ -1304,23 +1508,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
         return;
       }
 
-      let runToInterrupt = currentIssue.executionRunId ? await heartbeat.getRun(currentIssue.executionRunId) : null;
-
-      if ((!runToInterrupt || runToInterrupt.status !== "running") && currentIssue.assigneeAgentId) {
-        const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
-        const activeIssueId =
-          activeRun &&
-          activeRun.contextSnapshot &&
-          typeof activeRun.contextSnapshot === "object" &&
-          typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
-            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
-            : null;
-        if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
-          runToInterrupt = activeRun;
-        }
-      }
-
-      if (runToInterrupt && runToInterrupt.status === "running") {
+      const runToInterrupt = await resolveActiveIssueRun(currentIssue);
+      if (runToInterrupt) {
         const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
         if (cancelled) {
           interruptedRunId = cancelled.id;

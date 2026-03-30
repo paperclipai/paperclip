@@ -2,19 +2,24 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
+  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
@@ -104,8 +109,9 @@ export async function ensureCursorSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCursorSkillsInjectedOptions = {},
 ) {
-  const skillsEntries = options.skillsEntries
-    ?? (options.skillsDir
+  const skillsEntries =
+    options.skillsEntries ??
+    (options.skillsDir
       ? (await fs.readdir(options.skillsDir, { withFileTypes: true }))
           .filter((entry) => entry.isDirectory())
           .map((entry) => ({
@@ -131,10 +137,7 @@ export async function ensureCursorSkillsInjected(
     skillsEntries.map((entry) => entry.runtimeName),
   );
   for (const skillName of removedSkills) {
-    await onLog(
-      "stderr",
-      `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`,
-    );
+    await onLog("stderr", `[paperclip] Removed maintainer-only Cursor skill "${skillName}" from ${skillsHome}\n`);
   }
   const linkSkill = options.linkSkill ?? ((source: string, target: string) => fs.symlink(source, target));
   for (const entry of skillsEntries) {
@@ -200,17 +203,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
     null;
   const wakeReason =
-    typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
-      ? context.wakeReason.trim()
-      : null;
+    typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0 ? context.wakeReason.trim() : null;
   const wakeCommentId =
-    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
+    (typeof context.wakeCommentId === "string" &&
+      context.wakeCommentId.trim().length > 0 &&
+      context.wakeCommentId.trim()) ||
     (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
     null;
   const approvalId =
-    typeof context.approvalId === "string" && context.approvalId.trim().length > 0
-      ? context.approvalId.trim()
-      : null;
+    typeof context.approvalId === "string" && context.approvalId.trim().length > 0 ? context.approvalId.trim() : null;
   const approvalStatus =
     typeof context.approvalStatus === "string" && context.approvalStatus.trim().length > 0
       ? context.approvalStatus.trim()
@@ -271,6 +272,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveCursorBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -307,10 +314,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
-      await onLog(
-        "stdout",
-        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
-      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -387,11 +390,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "cursor",
-        command,
+        command: resolvedCommand,
         cwd,
         commandNotes,
         commandArgs: args,
-        env: redactEnvForLogs(env),
+        env: loggedEnv,
         prompt,
         promptMetrics,
         context,
@@ -482,19 +485,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const fallbackErrorMessage =
-      parsedError ||
-      stderrLine ||
-      `Cursor exited with code ${attempt.proc.exitCode ?? -1}`;
+    const fallbackErrorMessage = parsedError || stderrLine || `Cursor exited with code ${attempt.proc.exitCode ?? -1}`;
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
-          ? null
-          : fallbackErrorMessage,
+      errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

@@ -12,15 +12,15 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 ## Configuration Fields
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Model to use |
-| `promptTemplate` | string | No | Prompt used for all runs |
-| `env` | object | No | Environment variables (supports secret refs) |
-| `timeoutSec` | number | No | Process timeout (0 = no timeout) |
-| `graceSec` | number | No | Grace period before force-kill |
-| `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+| Field                                  | Type    | Required | Description                                                                                                      |
+| -------------------------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `cwd`                                  | string  | Yes      | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `model`                                | string  | No       | Model to use                                                                                                     |
+| `promptTemplate`                       | string  | No       | Prompt used for all runs                                                                                         |
+| `env`                                  | object  | No       | Environment variables (supports secret refs)                                                                     |
+| `timeoutSec`                           | number  | No       | Process timeout (0 = no timeout)                                                                                 |
+| `graceSec`                             | number  | No       | Grace period before force-kill                                                                                   |
+| `dangerouslyBypassApprovalsAndSandbox` | boolean | No       | Skip safety checks (dev only)                                                                                    |
 
 ## Session Persistence
 
@@ -39,6 +39,12 @@ pnpm paperclipai agent local-cli codexcoder --company-id <company-id>
 ```
 
 This installs any missing skills, creates an agent API key, and prints shell exports to run as that agent.
+
+## Instructions Resolution
+
+If `instructionsFilePath` is configured, Paperclip reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
+
+This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. Paperclip does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
 
 ## Environment Test
 

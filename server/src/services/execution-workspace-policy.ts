@@ -38,8 +38,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   const defaultMode = asString(parsed.defaultMode, "");
   const defaultProjectWorkspaceId =
     typeof parsed.defaultProjectWorkspaceId === "string" ? parsed.defaultProjectWorkspaceId : undefined;
-  const allowIssueOverride =
-    typeof parsed.allowIssueOverride === "boolean" ? parsed.allowIssueOverride : undefined;
+  const allowIssueOverride = typeof parsed.allowIssueOverride === "boolean" ? parsed.allowIssueOverride : undefined;
   const normalizedDefaultMode = (() => {
     if (
       defaultMode === "shared_workspace" ||
@@ -59,13 +58,17 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
-    ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
+    ...(parsed.workspaceRuntime &&
+    typeof parsed.workspaceRuntime === "object" &&
+    !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
     ...(parsed.branchPolicy && typeof parsed.branchPolicy === "object" && !Array.isArray(parsed.branchPolicy)
       ? { branchPolicy: { ...(parsed.branchPolicy as Record<string, unknown>) } }
       : {}),
-    ...(parsed.pullRequestPolicy && typeof parsed.pullRequestPolicy === "object" && !Array.isArray(parsed.pullRequestPolicy)
+    ...(parsed.pullRequestPolicy &&
+    typeof parsed.pullRequestPolicy === "object" &&
+    !Array.isArray(parsed.pullRequestPolicy)
       ? { pullRequestPolicy: { ...(parsed.pullRequestPolicy as Record<string, unknown>) } }
       : {}),
     ...(parsed.runtimePolicy && typeof parsed.runtimePolicy === "object" && !Array.isArray(parsed.runtimePolicy)
@@ -106,11 +109,11 @@ export function parseIssueExecutionWorkspaceSettings(raw: unknown): IssueExecuti
     return "";
   })();
   return {
-    ...(normalizedMode
-      ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
-      : {}),
+    ...(normalizedMode ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
-    ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
+    ...(parsed.workspaceRuntime &&
+    typeof parsed.workspaceRuntime === "object" &&
+    !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
   };
@@ -130,6 +133,21 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
             ? "agent_default"
             : "shared_workspace",
   };
+}
+
+export function issueExecutionWorkspaceModeForPersistedWorkspace(
+  mode: string | null | undefined,
+): IssueExecutionWorkspaceSettings["mode"] {
+  if (mode === null || mode === undefined) {
+    return "agent_default";
+  }
+  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
+    return mode;
+  }
+  if (mode === "adapter_managed" || mode === "cloud_sandbox") {
+    return "agent_default";
+  }
+  return "shared_workspace";
 }
 
 export function resolveExecutionWorkspaceMode(input: {
@@ -163,11 +181,10 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
   const nextConfig = { ...input.agentConfig };
   const projectHasPolicy = Boolean(input.projectPolicy?.enabled);
   const issueHasWorkspaceOverrides = Boolean(
-    input.issueSettings?.mode ||
-    input.issueSettings?.workspaceStrategy ||
-    input.issueSettings?.workspaceRuntime,
+    input.issueSettings?.mode || input.issueSettings?.workspaceStrategy || input.issueSettings?.workspaceRuntime,
   );
-  const hasWorkspaceControl = projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
+  const hasWorkspaceControl =
+    projectHasPolicy || issueHasWorkspaceOverrides || input.legacyUseProjectWorkspace === false;
 
   if (hasWorkspaceControl) {
     if (input.mode === "isolated_workspace") {
