@@ -399,9 +399,11 @@ configure_firewall() {
 
   info "Configuring firewall..."
   ufw allow 22/tcp >/dev/null 2>&1 || true
+  ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
   ufw allow "${PAPERCLIP_PORT}/tcp" >/dev/null 2>&1 || true
   ufw --force enable >/dev/null 2>&1 || true
-  success "Firewall configured (SSH + port ${PAPERCLIP_PORT})"
+  success "Firewall configured (SSH + HTTP/HTTPS + port ${PAPERCLIP_PORT})"
 }
 
 # ── Phase 12: Caddyfile Template ────────────────────────────────────────────

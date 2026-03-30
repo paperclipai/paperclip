@@ -173,16 +173,16 @@ ${domain} {
 
     // Enable and start/reload Caddy
     try {
-      await execFileAsync("sudo", ["systemctl", "enable", "caddy"]);
-      await execFileAsync("sudo", ["systemctl", "start", "caddy"]);
-      // Give Caddy a moment to start, then reload config
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      await execFileAsync("sudo", ["systemctl", "reload", "caddy"]).catch(() => {
+      await execFileAsync("/usr/bin/sudo", ["/usr/bin/systemctl", "enable", "caddy"]);
+      await execFileAsync("/usr/bin/sudo", ["/usr/bin/systemctl", "start", "caddy"]);
+      // Give Caddy a moment to start and obtain the certificate
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await execFileAsync("/usr/bin/sudo", ["/usr/bin/systemctl", "reload", "caddy"]).catch(() => {
         // reload may fail if caddy just started, which is fine
       });
       logger.info({ domain }, "Caddy started/reloaded");
     } catch (err) {
-      logger.warn({ err, domain }, "Failed to start Caddy via systemctl. You may need to start it manually.");
+      logger.warn({ err, domain }, "Failed to start Caddy via systemctl. You may need to start it manually: sudo systemctl enable --now caddy");
     }
 
     // Save domain to instance settings
