@@ -395,8 +395,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
         // Skip known non-content events (step_finish, tool_use status, init, etc.)
       } catch {
-        // Not JSON - pass through as-is (e.g. non-stream-json output)
-        void ctx.onLog("stdout", line + "\n");
+        // Line is not valid JSON on its own. It may be a fragment of a
+        // pretty-printed JSON object (e.g. opencode `-p -f json` output).
+        // Don't log these fragments — the full stdoutBuffer is parsed
+        // after exec completes and the response is surfaced then.
       }
     }
   }
