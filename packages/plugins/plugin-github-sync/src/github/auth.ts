@@ -1,46 +1,27 @@
+import { createPrivateKey, sign as cryptoSign } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { GitHubInstallationToken, GitHubSyncConfig } from "./types.js";
 import { GITHUB_TOKEN_REFRESH_MARGIN_MS } from "../constants.js";
 
 let cachedToken: GitHubInstallationToken | null = null;
 
-function base64UrlEncode(data: Uint8Array): string {
-  const base64 = Buffer.from(data).toString("base64");
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function base64UrlEncode(data: Buffer | Uint8Array): string {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  return buf.toString("base64url");
 }
 
-async function createJwt(appId: string, privateKeyPem: string): Promise<string> {
+function createJwt(appId: string, privateKeyPem: string): string {
   const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "RS256", typ: "JWT" };
-  const payload = {
-    iat: now - 60,
-    exp: now + 600,
-    iss: appId,
-  };
+  const header = JSON.stringify({ alg: "RS256", typ: "JWT" });
+  const payload = JSON.stringify({ iat: now - 60, exp: now + 600, iss: appId });
 
-  const encoder = new TextEncoder();
-  const headerB64 = base64UrlEncode(encoder.encode(JSON.stringify(header)));
-  const payloadB64 = base64UrlEncode(encoder.encode(JSON.stringify(payload)));
+  const headerB64 = base64UrlEncode(Buffer.from(header));
+  const payloadB64 = base64UrlEncode(Buffer.from(payload));
   const signingInput = `${headerB64}.${payloadB64}`;
 
-  // Import private key
-  const pemContents = privateKeyPem
-    .replace(/-----BEGIN RSA PRIVATE KEY-----/, "")
-    .replace(/-----END RSA PRIVATE KEY-----/, "")
-    .replace(/\s/g, "");
-  const binaryKey = Uint8Array.from(atob(pemContents), (c) => c.charCodeAt(0));
-
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    binaryKey,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const signature = new Uint8Array(
-    await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(signingInput)),
-  );
+  // createPrivateKey handles both PKCS#1 (RSA PRIVATE KEY) and PKCS#8 (PRIVATE KEY)
+  const key = createPrivateKey(privateKeyPem);
+  const signature = cryptoSign("sha256", Buffer.from(signingInput), key);
 
   return `${signingInput}.${base64UrlEncode(signature)}`;
 }
@@ -67,6 +48,7 @@ export async function getInstallationToken(
       headers: {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github+json",
+        "User-Agent": "Paperclip-GitHub-Sync/0.1.0",
         "X-GitHub-Api-Version": "2022-11-28",
       },
     },
