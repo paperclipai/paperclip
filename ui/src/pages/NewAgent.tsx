@@ -103,7 +103,8 @@ export function NewAgent() {
   useEffect(() => {
     if (isFirstAgent) {
       if (!name) setName("CEO"); // eslint-disable-line react-hooks/set-state-in-effect
-      if (!title) setTitle("CEO");  
+       
+      if (!title) setTitle("CEO");
     }
   }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 

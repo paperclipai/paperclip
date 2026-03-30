@@ -209,7 +209,9 @@ export function OrgChart() {
     const chartW = bounds.width * fitZoom;
     const chartH = bounds.height * fitZoom;
 
+     
     setZoom(fitZoom);
+     
     setPan({
       x: (containerW - chartW) / 2,
       y: (containerH - chartH) / 2,

@@ -645,14 +645,17 @@ export function CompanyExport() {
     if (!exportData) return;
     const urlFile = filePathFromLocation(location.pathname);
     if (urlFile && urlFile in exportData.files && urlFile !== selectedFile) {
+       
       setSelectedFile(urlFile);
       // Expand ancestors so the file is visible in the tree
+       
       setExpandedDirs((prev) => {
         const next = new Set(prev);
         for (const dir of expandAncestors(urlFile)) next.add(dir);
         return next;
       });
     } else if (!urlFile && selectedFile) {
+       
       setSelectedFile(null);
     }
   }, [location.pathname, exportData]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -731,6 +734,7 @@ export function CompanyExport() {
   useEffect(() => {
     if (!selectedCompanyId || exportPreviewMutation.isPending) return;
     if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
+     
     setExportData(null);
     exportPreviewMutation.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps

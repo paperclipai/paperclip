@@ -1744,13 +1744,21 @@ function PromptsTab({
 
   useEffect(() => {
     setSelectedFile("AGENTS.md"); // eslint-disable-line react-hooks/set-state-in-effect
-    setShowFilePanel(false);  
-    setDraft(null);  
-    setBundleDraft(null);  
+     
+    setShowFilePanel(false);
+     
+    setDraft(null);
+     
+    setBundleDraft(null);
+     
     setNewFilePath("");
+     
     setShowNewFileInput(false);
+     
     setPendingFiles([]);
+     
     setExpandedDirs(new Set());
+     
     setAwaitingRefresh(false);
     lastFileVersionRef.current = null;
     externalBundleRef.current = null;
@@ -1862,6 +1870,7 @@ function PromptsTab({
     }
     const availablePaths = bundle.files.map((file) => file.path);
     if (availablePaths.length === 0) {
+       
       if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
       return;
     }
@@ -1870,6 +1879,7 @@ function PromptsTab({
       selectedFile !== currentEntryFile &&
       !pendingFiles.includes(selectedFile)
     ) {
+       
       setSelectedFile(availablePaths.includes(bundle.entryFile) ? bundle.entryFile : availablePaths[0]!);
     }
   }, [bundle, bundleMatchesDraft, currentEntryFile, pendingFiles, selectedFile]);
@@ -1896,12 +1906,15 @@ function PromptsTab({
     if (awaitingRefresh) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAwaitingRefresh(false);
+       
       setBundleDraft(null);
+       
       setDraft(null);
       lastFileVersionRef.current = versionKey;
       return;
     }
     if (lastFileVersionRef.current !== versionKey) {
+       
       setDraft(null);
       lastFileVersionRef.current = versionKey;
     }
@@ -2528,6 +2541,7 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSkillDraft([]);
+     
     setLastSavedSkills([]);
     lastSavedSkillsRef.current = [];
     hasHydratedSkillSnapshotRef.current = false;
@@ -2546,8 +2560,10 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
     );
     skipNextSkillAutosaveRef.current = nextState.shouldSkipAutosave;
     hasHydratedSkillSnapshotRef.current = nextState.hasHydratedSnapshot;
+     
     setSkillDraft(nextState.draft);
     lastSavedSkillsRef.current = nextState.lastSaved;
+     
     setLastSavedSkills(nextState.lastSaved);
   }, [skillDraft, skillSnapshot]);
 

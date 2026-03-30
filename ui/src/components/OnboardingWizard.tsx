@@ -138,6 +138,7 @@ export function OnboardingWizard() {
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
 
   useEffect(() => {
+     
     setRouteDismissed(false);
   }, [location.pathname]);
 
@@ -147,12 +148,19 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     const cId = effectiveOnboardingOptions.companyId ?? null;
+     
     setStep(effectiveOnboardingOptions.initialStep ?? 1);
+     
     setCreatedCompanyId(cId);
+     
     setCreatedCompanyPrefix(null);
+     
     setCreatedCompanyGoalId(null);
+     
     setCreatedProjectId(null);
+     
     setCreatedAgentId(null);
+     
     setCreatedIssueRef(null);
   }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId, effectiveOnboardingOptions.initialStep]);
 
@@ -160,6 +168,7 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (!effectiveOnboardingOpen || !createdCompanyId || createdCompanyPrefix) return;
     const company = companies.find((c) => c.id === createdCompanyId);
+     
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
@@ -206,7 +215,9 @@ export function OnboardingWizard() {
 
   useEffect(() => {
     if (step !== 2) return;
+     
     setAdapterEnvResult(null);
+     
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
 

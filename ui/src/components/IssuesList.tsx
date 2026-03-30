@@ -202,6 +202,7 @@ function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInput
   const onValueCommittedRef = useRef(onValueCommitted);
 
   useEffect(() => {
+     
     setValue(initialValue);
   }, [initialValue]);
 

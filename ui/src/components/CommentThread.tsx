@@ -377,6 +377,7 @@ export function CommentThread({
 
   useEffect(() => {
     if (!draftKey) return;
+     
     setBody(loadDraft(draftKey));
   }, [draftKey]);
 
@@ -395,6 +396,7 @@ export function CommentThread({
   }, []);
 
   useEffect(() => {
+     
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
 

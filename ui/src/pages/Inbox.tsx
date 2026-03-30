@@ -575,7 +575,8 @@ export function Inbox() {
 
   useEffect(() => {
     saveLastInboxTab(tab);
-    setSelectedIndex(-1);  
+     
+    setSelectedIndex(-1);
   }, [tab]);
 
   const {
@@ -954,6 +955,7 @@ export function Inbox() {
 
   // Keep selection valid when the list shape changes, but do not auto-select on initial load.
   useEffect(() => {
+     
     setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, workItemsToRender.length));
   }, [workItemsToRender.length]);
 

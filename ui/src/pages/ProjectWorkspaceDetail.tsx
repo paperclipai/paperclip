@@ -247,7 +247,8 @@ export function ProjectWorkspaceDetail() {
   useEffect(() => {
     if (!workspace) return;
     setForm(formStateFromWorkspace(workspace)); // eslint-disable-line react-hooks/set-state-in-effect
-    setErrorMessage(null);  
+     
+    setErrorMessage(null);
   }, [workspace]);
 
   useEffect(() => {

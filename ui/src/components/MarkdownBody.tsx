@@ -61,10 +61,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       })
       .catch((err) => {
         if (!active) return;
-        const message =
-          err instanceof Error && err.message
-            ? err.message
-            : "Failed to render Mermaid diagram.";
+        const message = err instanceof Error && err.message ? err.message : "Failed to render Mermaid diagram.";
         setError(message);
       });
 
@@ -104,9 +101,7 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
     a: ({ href, children: linkChildren }) => {
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
-        const targetHref = parsed.kind === "project"
-          ? `/projects/${parsed.projectId}`
-          : `/agents/${parsed.agentId}`;
+        const targetHref = parsed.kind === "project" ? `/projects/${parsed.projectId}` : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}

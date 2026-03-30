@@ -480,6 +480,7 @@ export function IssueDocumentsSection({
     const element = document.getElementById(`document-${documentKey}`);
     if (!element) return;
     hasScrolledToHashRef.current = true;
+     
     setHighlightDocumentKey(documentKey);
     element.scrollIntoView({ behavior: "smooth", block: "center" });
     const timer = setTimeout(
