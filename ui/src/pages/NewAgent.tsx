@@ -9,11 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
@@ -35,18 +31,16 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "opencode_local",
   "pi_local",
   "cursor",
+  "hermes_local",
   "openclaw_gateway",
 ]);
 
-function createValuesForAdapterType(
-  adapterType: CreateConfigValues["adapterType"],
-): CreateConfigValues {
+function createValuesForAdapterType(adapterType: CreateConfigValues["adapterType"]): CreateConfigValues {
   const { adapterType: _discard, ...defaults } = defaultCreateValues;
   const nextValues: CreateConfigValues = { ...defaults, adapterType };
   if (adapterType === "codex_local") {
     nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-    nextValues.dangerouslyBypassSandbox =
-      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+    nextValues.dangerouslyBypassSandbox = DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
   } else if (adapterType === "cursor") {
@@ -103,15 +97,13 @@ export function NewAgent() {
   const effectiveRole = isFirstAgent ? "ceo" : role;
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
-    ]);
+    setBreadcrumbs([{ label: "Agents", href: "/agents" }, { label: "New Agent" }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
     if (isFirstAgent) {
-      if (!name) setName("CEO");
+      if (!name) setName("CEO"); // eslint-disable-line react-hooks/set-state-in-effect
+       
       if (!title) setTitle("CEO");
     }
   }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -122,6 +114,7 @@ export function NewAgent() {
     if (!SUPPORTED_ADVANCED_ADAPTER_TYPES.has(requested as CreateConfigValues["adapterType"])) {
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
@@ -129,8 +122,7 @@ export function NewAgent() {
   }, [presetAdapterType]);
 
   const createAgent = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      agentsApi.hire(selectedCompanyId!, data),
+    mutationFn: (data: Record<string, unknown>) => agentsApi.hire(selectedCompanyId!, data),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
@@ -157,9 +149,7 @@ export function NewAgent() {
       }
       if (adapterModelsError) {
         setFormError(
-          adapterModelsError instanceof Error
-            ? adapterModelsError.message
-            : "Failed to load OpenCode models.",
+          adapterModelsError instanceof Error ? adapterModelsError.message : "Failed to load OpenCode models.",
         );
         return;
       }
@@ -213,9 +203,7 @@ export function NewAgent() {
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
         <h1 className="text-lg font-semibold">New Agent</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Advanced agent configuration
-        </p>
+        <p className="text-sm text-muted-foreground mt-1">Advanced agent configuration</p>
       </div>
 
       <div className="border border-border">
@@ -247,7 +235,7 @@ export function NewAgent() {
               <button
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  isFirstAgent && "opacity-60 cursor-not-allowed"
+                  isFirstAgent && "opacity-60 cursor-not-allowed",
                 )}
                 disabled={isFirstAgent}
               >
@@ -261,9 +249,12 @@ export function NewAgent() {
                   key={r}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    r === role && "bg-accent"
+                    r === role && "bg-accent",
                   )}
-                  onClick={() => { setRole(r); setRoleOpen(false); }}
+                  onClick={() => {
+                    setRole(r);
+                    setRoleOpen(false);
+                  }}
                 >
                   {roleLabels[r] ?? r}
                 </button>
@@ -271,12 +262,7 @@ export function NewAgent() {
             </PopoverContent>
           </Popover>
 
-          <ReportsToPicker
-            agents={agents ?? []}
-            value={reportsTo}
-            onChange={setReportsTo}
-            disabled={isFirstAgent}
-          />
+          <ReportsToPicker agents={agents ?? []} value={reportsTo} onChange={setReportsTo} disabled={isFirstAgent} />
         </div>
 
         {/* Shared config form */}
@@ -296,9 +282,7 @@ export function NewAgent() {
               </p>
             </div>
             {availableSkills.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
-              </p>
+              <p className="text-xs text-muted-foreground">No optional company skills installed yet.</p>
             ) : (
               <div className="space-y-3">
                 {availableSkills.map((skill) => {
@@ -313,9 +297,7 @@ export function NewAgent() {
                       />
                       <label htmlFor={inputId} className="grid gap-1 leading-none">
                         <span className="text-sm font-medium">{skill.name}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {skill.description ?? skill.key}
-                        </span>
+                        <span className="text-xs text-muted-foreground">{skill.description ?? skill.key}</span>
                       </label>
                     </div>
                   );
@@ -327,21 +309,13 @@ export function NewAgent() {
 
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
-          {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
-          )}
-          {formError && (
-            <p className="text-xs text-destructive mb-2">{formError}</p>
-          )}
+          {isFirstAgent && <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>}
+          {formError && <p className="text-xs text-destructive mb-2">{formError}</p>}
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
               Cancel
             </Button>
-            <Button
-              size="sm"
-              disabled={!name.trim() || createAgent.isPending}
-              onClick={handleSubmit}
-            >
+            <Button size="sm" disabled={!name.trim() || createAgent.isPending} onClick={handleSubmit}>
               {createAgent.isPending ? "Creating…" : "Create agent"}
             </Button>
           </div>

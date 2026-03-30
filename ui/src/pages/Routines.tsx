@@ -26,13 +26,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -90,7 +84,11 @@ export function Routines() {
     setBreadcrumbs([{ label: "Routines" }]);
   }, [setBreadcrumbs]);
 
-  const { data: routines, isLoading, error } = useQuery({
+  const {
+    data: routines,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
     queryFn: () => routinesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -206,16 +204,10 @@ export function Routines() {
       })),
     [projects],
   );
-  const agentById = useMemo(
-    () => new Map((agents ?? []).map((agent) => [agent.id, agent])),
-    [agents],
-  );
-  const projectById = useMemo(
-    () => new Map((projects ?? []).map((project) => [project.id, project])),
-    [projects],
-  );
-  const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
-  const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
+  const agentById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
+  const projectById = useMemo(() => new Map((projects ?? []).map((project) => [project.id, project])), [projects]);
+  const currentAssignee = draft.assigneeAgentId ? (agentById.get(draft.assigneeAgentId) ?? null) : null;
+  const currentProject = draft.projectId ? (projectById.get(draft.projectId) ?? null) : null;
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Repeat} message="Select a company to view routines." />;
@@ -231,7 +223,9 @@ export function Routines() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
             Routines
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Beta</span>
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+              Beta
+            </span>
           </h1>
           <p className="text-sm text-muted-foreground">
             Recurring work definitions that materialize into auditable execution issues.
@@ -333,7 +327,10 @@ export function Routines() {
                     option ? (
                       currentAssignee ? (
                         <>
-                          <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <AgentIcon
+                            icon={currentAssignee.icon}
+                            className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                          />
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
@@ -348,7 +345,9 @@ export function Routines() {
                     const assignee = agentById.get(option.id);
                     return (
                       <>
-                        {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                        {assignee ? (
+                          <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : null}
                         <span className="truncate">{option.label}</span>
                       </>
                     );
@@ -417,9 +416,15 @@ export function Routines() {
               <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                 <div>
                   <p className="text-sm font-medium">Advanced delivery settings</p>
-                  <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                  <p className="text-sm text-muted-foreground">
+                    Keep policy controls secondary to the work definition.
+                  </p>
                 </div>
-                {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                {advancedOpen ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                )}
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-3">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -434,11 +439,15 @@ export function Routines() {
                       </SelectTrigger>
                       <SelectContent>
                         {concurrencyPolicies.map((value) => (
-                          <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                          <SelectItem key={value} value={value}>
+                            {value.replaceAll("_", " ")}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {concurrencyPolicyDescriptions[draft.concurrencyPolicy]}
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
@@ -451,7 +460,9 @@ export function Routines() {
                       </SelectTrigger>
                       <SelectContent>
                         {catchUpPolicies.map((value) => (
-                          <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                          <SelectItem key={value} value={value}>
+                            {value.replaceAll("_", " ")}
+                          </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
@@ -469,12 +480,7 @@ export function Routines() {
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
                 onClick={() => createRoutine.mutate()}
-                disabled={
-                  createRoutine.isPending ||
-                  !draft.title.trim() ||
-                  !draft.projectId ||
-                  !draft.assigneeAgentId
-                }
+                disabled={createRoutine.isPending || !draft.title.trim() || !draft.projectId || !draft.assigneeAgentId}
               >
                 <Plus className="mr-2 h-4 w-4" />
                 {createRoutine.isPending ? "Creating..." : "Create routine"}
@@ -531,9 +537,7 @@ export function Routines() {
                     >
                       <td className="px-3 py-2.5">
                         <div className="min-w-[180px]">
-                          <span className="font-medium">
-                            {routine.title}
-                          </span>
+                          <span className="font-medium">{routine.title}</span>
                           {(isArchived || routine.status === "paused") && (
                             <div className="mt-1 text-xs text-muted-foreground">
                               {isArchived ? "archived" : "paused"}
@@ -555,17 +559,19 @@ export function Routines() {
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        {routine.assigneeAgentId ? (() => {
-                          const agent = agentById.get(routine.assigneeAgentId);
-                          return agent ? (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                              <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
-                              <span className="truncate">{agent.name}</span>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Unknown</span>
-                          );
-                        })() : (
+                        {routine.assigneeAgentId ? (
+                          (() => {
+                            const agent = agentById.get(routine.assigneeAgentId);
+                            return agent ? (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
+                                <span className="truncate">{agent.name}</span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">Unknown</span>
+                            );
+                          })()
+                        ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
@@ -580,6 +586,7 @@ export function Routines() {
                           <button
                             type="button"
                             role="switch"
+                            data-slot="toggle"
                             aria-checked={enabled}
                             aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
                             disabled={isStatusPending || isArchived}

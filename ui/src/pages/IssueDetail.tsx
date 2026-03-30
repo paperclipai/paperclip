@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
@@ -13,13 +14,23 @@ import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { queryKeys } from "../lib/queryKeys";
-import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import { createIssueDetailPath, readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import {
+  applyOptimisticIssueCommentUpdate,
+  createOptimisticIssueComment,
+  isQueuedIssueComment,
+  mergeIssueComments,
+  upsertIssueComment,
+  type IssueCommentReassignment,
+  type OptimisticIssueComment,
+} from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
+import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { GitHubFileEditor } from "../components/GitHubFileEditor";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -55,11 +66,15 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import type { Agent, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
 
-type CommentReassignment = {
-  assigneeAgentId: string | null;
-  assigneeUserId: string | null;
+type CommentReassignment = IssueCommentReassignment;
+type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
+  runId?: string | null;
+  runAgentId?: string | null;
+  interruptedRunId?: string | null;
+  queueState?: "queued";
+  queueTargetRunId?: string | null;
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -112,11 +127,7 @@ function truncate(text: string, max: number): string {
 
 function isMarkdownFile(file: File) {
   const name = file.name.toLowerCase();
-  return (
-    name.endsWith(".md") ||
-    name.endsWith(".markdown") ||
-    file.type === "text/markdown"
-  );
+  return name.endsWith(".md") || name.endsWith(".markdown") || file.type === "text/markdown";
 }
 
 function fileBaseName(filename: string) {
@@ -150,7 +161,7 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       parts.push(
         from
           ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`
+          : `changed the status to ${humanizeValue(details.status)}`,
       );
     }
     if (details.priority !== undefined) {
@@ -158,15 +169,11 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       parts.push(
         from
           ? `changed the priority from ${humanizeValue(from)} to ${humanizeValue(details.priority)}`
-          : `changed the priority to ${humanizeValue(details.priority)}`
+          : `changed the priority to ${humanizeValue(details.priority)}`,
       );
     }
     if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
-      parts.push(
-        details.assigneeAgentId || details.assigneeUserId
-          ? "assigned the issue"
-          : "unassigned the issue",
-      );
+      parts.push(details.assigneeAgentId || details.assigneeUserId ? "assigned the issue" : "unassigned the issue");
     }
     if (details.title !== undefined) parts.push("updated the title");
     if (details.description !== undefined) parts.push("updated the description");
@@ -174,7 +181,9 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
     if (parts.length > 0) return parts.join(", ");
   }
   if (
-    (action === "issue.document_created" || action === "issue.document_updated" || action === "issue.document_deleted") &&
+    (action === "issue.document_created" ||
+      action === "issue.document_updated" ||
+      action === "issue.document_deleted") &&
     details
   ) {
     const key = typeof details.key === "string" ? details.key : "document";
@@ -213,10 +222,15 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
-  const { data: issue, isLoading, error } = useQuery({
+  const {
+    data: issue,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.issues.detail(issueId!),
     queryFn: () => issuesApi.get(issueId!),
     enabled: !!issueId,
@@ -269,9 +283,14 @@ export function IssueDetail() {
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const runningIssueRun = useMemo(
+    () =>
+      activeRun?.status === "running" ? activeRun : ((liveRuns ?? []).find((run) => run.status === "running") ?? null),
+    [activeRun, liveRuns],
+  );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state) ?? { label: "Issues", href: "/issues" },
-    [location.state],
+    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: "Issues", href: "/issues" },
+    [location.state, location.search],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -318,11 +337,12 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId,
   });
   const issuePluginTabItems = useMemo(
-    () => issuePluginDetailSlots.map((slot) => ({
-      value: `plugin:${slot.pluginKey}:${slot.id}`,
-      label: slot.displayName,
-      slot,
-    })),
+    () =>
+      issuePluginDetailSlots.map((slot) => ({
+        value: `plugin:${slot.pluginKey}:${slot.id}`,
+        label: slot.displayName,
+        slot,
+      })),
     [issuePluginDetailSlots],
   );
   const activePluginTab = issuePluginTabItems.find((item) => item.value === detailTab) ?? null;
@@ -343,6 +363,8 @@ export function IssueDetail() {
         id: `agent:${agent.id}`,
         name: agent.name,
         kind: "agent",
+        agentId: agent.id,
+        agentIcon: agent.icon,
       });
     }
     for (const project of orderedProjects) {
@@ -378,18 +400,25 @@ export function IssueDetail() {
     return options;
   }, [agents, currentUserId]);
 
-  const actualAssigneeValue = useMemo(
-    () => assigneeValueFromSelection(issue ?? {}),
-    [issue],
-  );
+  const actualAssigneeValue = useMemo(() => assigneeValueFromSelection(issue ?? {}), [issue]);
 
   const suggestedAssigneeValue = useMemo(
-    () => suggestedCommentAssigneeValue(issue ?? {}, comments, currentUserId),
-    [issue, comments, currentUserId],
+    () =>
+      suggestedCommentAssigneeValue(issue ?? {}, mergeIssueComments(comments ?? [], optimisticComments), currentUserId),
+    [issue, comments, optimisticComments, currentUserId],
   );
 
-  const commentsWithRunMeta = useMemo(() => {
-    const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null }>();
+  const threadComments = useMemo(
+    () => mergeIssueComments(comments ?? [], optimisticComments),
+    [comments, optimisticComments],
+  );
+
+  const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
+    const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+    const runMetaByCommentId = new Map<
+      string,
+      { runId: string; runAgentId: string | null; interruptedRunId: string | null }
+    >();
     const agentIdByRunId = new Map<string, string>();
     for (const run of linkedRuns ?? []) {
       agentIdByRunId.set(run.runId, run.agentId);
@@ -399,16 +428,43 @@ export function IssueDetail() {
       const details = evt.details ?? {};
       const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId || runMetaByCommentId.has(commentId)) continue;
+      const interruptedRunId = typeof details["interruptedRunId"] === "string" ? details["interruptedRunId"] : null;
       runMetaByCommentId.set(commentId, {
         runId: evt.runId,
         runAgentId: evt.agentId ?? agentIdByRunId.get(evt.runId) ?? null,
+        interruptedRunId,
       });
     }
-    return (comments ?? []).map((comment) => {
+    return threadComments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
-      return meta ? { ...comment, ...meta } : comment;
+      const nextComment: IssueDetailComment = meta ? { ...comment, ...meta } : { ...comment };
+      if (
+        isQueuedIssueComment({
+          comment: nextComment,
+          activeRunStartedAt,
+          runId: meta?.runId ?? nextComment.runId ?? null,
+          interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
+        })
+      ) {
+        return {
+          ...nextComment,
+          queueState: "queued" as const,
+          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+        };
+      }
+      return nextComment;
     });
-  }, [activity, comments, linkedRuns]);
+  }, [activity, threadComments, linkedRuns, runningIssueRun]);
+
+  const queuedComments = useMemo(
+    () => commentsWithRunMeta.filter((comment) => comment.queueState === "queued"),
+    [commentsWithRunMeta],
+  );
+
+  const timelineComments = useMemo(
+    () => commentsWithRunMeta.filter((comment) => comment.queueState !== "queued"),
+    [commentsWithRunMeta],
+  );
 
   const issueCostSummary = useMemo(() => {
     let input = 0;
@@ -423,12 +479,7 @@ export function IssueDetail() {
       const result = asRecord(run.resultJson);
       const runInput = usageNumber(usage, "inputTokens", "input_tokens");
       const runOutput = usageNumber(usage, "outputTokens", "output_tokens");
-      const runCached = usageNumber(
-        usage,
-        "cachedInputTokens",
-        "cached_input_tokens",
-        "cache_read_input_tokens",
-      );
+      const runCached = usageNumber(usage, "cachedInputTokens", "cached_input_tokens", "cache_read_input_tokens");
       const runCost = visibleRunCostUsd(usage, result);
       if (runCost > 0) hasCost = true;
       if (runInput + runOutput + runCached > 0) hasTokens = true;
@@ -460,6 +511,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
     if (selectedCompanyId) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
@@ -470,6 +522,7 @@ export function IssueDetail() {
     mutationFn: (id: string) => issuesApi.markRead(id),
     onSuccess: () => {
       if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
@@ -485,9 +538,62 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen),
-    onSuccess: () => {
+    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt),
+    onMutate: async ({ body, reopen, interrupt }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const queuedComment = !interrupt && runningIssueRun;
+      const optimisticComment = issue
+        ? createOptimisticIssueComment({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            body,
+            authorUserId: currentUserId,
+            clientStatus: queuedComment ? "queued" : "pending",
+            queueTargetRunId: queuedComment ? runningIssueRun.id : null,
+          })
+        : null;
+
+      if (optimisticComment) {
+        setOptimisticComments((current) => [...current, optimisticComment]);
+      }
+      if (previousIssue) {
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          applyOptimisticIssueCommentUpdate(previousIssue, { reopen }),
+        );
+      }
+
+      return {
+        optimisticCommentId: optimisticComment?.clientId ?? null,
+        previousIssue,
+      };
+    },
+    onSuccess: (comment, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) => current.filter((entry) => entry.clientId !== context.optimisticCommentId));
+      }
+      queryClient.setQueryData<IssueComment[]>(queryKeys.issues.comments(issueId!), (current) =>
+        upsertIssueComment(current, comment),
+      );
+    },
+    onError: (err, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) => current.filter((entry) => entry.clientId !== context.optimisticCommentId));
+      }
+      if (context?.previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+      }
+      pushToast({
+        title: "Comment failed",
+        body: err instanceof Error ? err.message : "Unable to post comment",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
     },
@@ -497,10 +603,12 @@ export function IssueDetail() {
     mutationFn: ({
       body,
       reopen,
+      interrupt,
       reassignment,
     }: {
       body: string;
       reopen?: boolean;
+      interrupt?: boolean;
       reassignment: CommentReassignment;
     }) =>
       issuesApi.update(issueId!, {
@@ -508,10 +616,88 @@ export function IssueDetail() {
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
+        ...(interrupt ? { interrupt } : {}),
       }),
-    onSuccess: () => {
+    onMutate: async ({ body, reopen, reassignment, interrupt }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      const queuedComment = !interrupt && runningIssueRun;
+      const optimisticComment = issue
+        ? createOptimisticIssueComment({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            body,
+            authorUserId: currentUserId,
+            clientStatus: queuedComment ? "queued" : "pending",
+            queueTargetRunId: queuedComment ? runningIssueRun.id : null,
+          })
+        : null;
+
+      if (optimisticComment) {
+        setOptimisticComments((current) => [...current, optimisticComment]);
+      }
+      if (previousIssue) {
+        queryClient.setQueryData(
+          queryKeys.issues.detail(issueId!),
+          applyOptimisticIssueCommentUpdate(previousIssue, { reopen, reassignment }),
+        );
+      }
+
+      return {
+        optimisticCommentId: optimisticComment?.clientId ?? null,
+        previousIssue,
+      };
+    },
+    onSuccess: (result, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) => current.filter((entry) => entry.clientId !== context.optimisticCommentId));
+      }
+
+      const { comment, ...nextIssue } = result;
+      queryClient.setQueryData(queryKeys.issues.detail(issueId!), nextIssue);
+      if (comment) {
+        queryClient.setQueryData<IssueComment[]>(queryKeys.issues.comments(issueId!), (current) =>
+          upsertIssueComment(current, comment),
+        );
+      }
+    },
+    onError: (err, _variables, context) => {
+      if (context?.optimisticCommentId) {
+        setOptimisticComments((current) => current.filter((entry) => entry.clientId !== context.optimisticCommentId));
+      }
+      if (context?.previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+      }
+      pushToast({
+        title: "Comment failed",
+        body: err instanceof Error ? err.message : "Unable to post comment",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+  });
+
+  const interruptQueuedComment = useMutation({
+    mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
+    onSuccess: () => {
+      invalidateIssue();
+      pushToast({
+        title: "Interrupt requested",
+        body: "The active run is stopping so queued comments can continue next.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Interrupt failed",
+        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        tone: "error",
+      });
     },
   });
 
@@ -568,18 +754,18 @@ export function IssueDetail() {
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
-    setBreadcrumbs([
-      sourceBreadcrumb,
-      { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
-    ]);
+    setBreadcrumbs([sourceBreadcrumb, { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel }]);
   }, [setBreadcrumbs, sourceBreadcrumb, issue, issueId, hasLiveRuns]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
     if (issue?.identifier && issueId !== issue.identifier) {
-      navigate(`/issues/${issue.identifier}`, { replace: true, state: location.state });
+      navigate(createIssueDetailPath(issue.identifier, location.state, location.search), {
+        replace: true,
+        state: location.state,
+      });
     }
-  }, [issue, issueId, navigate, location.state]);
+  }, [issue, issueId, navigate, location.state, location.search]);
 
   useEffect(() => {
     if (!issue?.id) return;
@@ -590,9 +776,7 @@ export function IssueDetail() {
 
   useEffect(() => {
     if (issue) {
-      openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
-      );
+      openPanel(<IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />);
     }
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -666,13 +850,17 @@ export function IssueDetail() {
         size="sm"
         onClick={() => fileInputRef.current?.click()}
         disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
-        className={cn(
-          "shadow-none",
-          attachmentDragActive && "border-primary bg-primary/5",
-        )}
+        className={cn("shadow-none", attachmentDragActive && "border-primary bg-primary/5")}
       >
         <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-        {uploadAttachment.isPending || importMarkdownDocument.isPending ? "Uploading..." : "Upload attachment"}
+        {uploadAttachment.isPending || importMarkdownDocument.isPending ? (
+          "Uploading..."
+        ) : (
+          <>
+            <span className="hidden sm:inline">Upload attachment</span>
+            <span className="sm:hidden">Upload</span>
+          </>
+        )}
       </Button>
     </>
   );
@@ -686,7 +874,7 @@ export function IssueDetail() {
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
               <Link
-                to={`/issues/${ancestor.identifier ?? ancestor.id}`}
+                to={createIssueDetailPath(ancestor.identifier ?? ancestor.id, location.state, location.search)}
                 state={location.state}
                 className="hover:text-foreground transition-colors truncate max-w-[200px]"
                 title={ancestor.title}
@@ -709,15 +897,11 @@ export function IssueDetail() {
 
       <div className="space-y-3">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-          <StatusIcon
-            status={issue.status}
-            onChange={(status) => updateIssue.mutate({ status })}
-          />
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => updateIssue.mutate({ priority })}
-          />
-          <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+          <StatusIcon status={issue.status} onChange={(status) => updateIssue.mutate({ status })} />
+          <PriorityIcon priority={issue.priority} onChange={(priority) => updateIssue.mutate({ priority })} />
+          <span className="text-sm font-mono text-muted-foreground shrink-0">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
@@ -745,7 +929,9 @@ export function IssueDetail() {
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
             >
               <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{(projects ?? []).find((p) => p.id === issue.projectId)?.name ?? issue.projectId.slice(0, 8)}</span>
+              <span className="truncate">
+                {(projects ?? []).find((p) => p.id === issue.projectId)?.name ?? issue.projectId.slice(0, 8)}
+              </span>
             </Link>
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
@@ -762,7 +948,7 @@ export function IssueDetail() {
                   className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium"
                   style={{
                     borderColor: label.color,
-                    color: label.color,
+                    color: pickTextColorForPillBg(label.color, 0.12),
                     backgroundColor: `${label.color}1f`,
                   }}
                 >
@@ -776,31 +962,16 @@ export function IssueDetail() {
           )}
 
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
-            >
+            <Button variant="ghost" size="icon-xs" onClick={copyIssueToClipboard} title="Copy issue as markdown">
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
-            >
+            <Button variant="ghost" size="icon-xs" onClick={() => setMobilePropsOpen(true)} title="Properties">
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
           </div>
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
-            >
+            <Button variant="ghost" size="icon-xs" onClick={copyIssueToClipboard} title="Copy issue as markdown">
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
             <Button
@@ -822,21 +993,21 @@ export function IssueDetail() {
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
+              <PopoverContent className="w-44 p-1" align="end">
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this Issue
+                </button>
+              </PopoverContent>
             </Popover>
           </div>
         </div>
@@ -917,73 +1088,75 @@ export function IssueDetail() {
 
       {hasAttachments ? (
         <div
-        className={cn(
-          "space-y-3 rounded-lg transition-colors",
-        )}
-        onDragEnter={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragOver={(evt) => {
-          evt.preventDefault();
-          setAttachmentDragActive(true);
-        }}
-        onDragLeave={(evt) => {
-          if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-          setAttachmentDragActive(false);
-        }}
-        onDrop={(evt) => void handleAttachmentDrop(evt)}
-      >
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-          {attachmentUploadButton}
-        </div>
+          className={cn("space-y-3 rounded-lg transition-colors")}
+          onDragEnter={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragOver={(evt) => {
+            evt.preventDefault();
+            setAttachmentDragActive(true);
+          }}
+          onDragLeave={(evt) => {
+            if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
+            setAttachmentDragActive(false);
+          }}
+          onDrop={(evt) => void handleAttachmentDrop(evt)}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+            {attachmentUploadButton}
+          </div>
 
-        {attachmentError && (
-          <p className="text-xs text-destructive">{attachmentError}</p>
-        )}
+          {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
 
-        <div className="space-y-2">
-          {attachmentList.map((attachment) => (
-            <div key={attachment.id} className="border border-border rounded-md p-2">
-              <div className="flex items-center justify-between gap-2">
-                <a
-                  href={attachment.contentPath}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs hover:underline truncate"
-                  title={attachment.originalFilename ?? attachment.id}
-                >
-                  {attachment.originalFilename ?? attachment.id}
-                </a>
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-destructive"
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
-                  disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+          <div className="space-y-2">
+            {attachmentList.map((attachment) => (
+              <div key={attachment.id} className="border border-border rounded-md p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <a
+                    href={attachment.contentPath}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs hover:underline truncate"
+                    title={attachment.originalFilename ?? attachment.id}
+                  >
+                    {attachment.originalFilename ?? attachment.id}
+                  </a>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                    disabled={deleteAttachment.isPending}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                </p>
+                {isImageAttachment(attachment) && (
+                  <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                    <img
+                      src={attachment.contentPath}
+                      alt={attachment.originalFilename ?? "attachment"}
+                      className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                      loading="lazy"
+                    />
+                  </a>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-              </p>
-              {isImageAttachment(attachment) && (
-                <a href={attachment.contentPath} target="_blank" rel="noreferrer">
-                  <img
-                    src={attachment.contentPath}
-                    alt={attachment.originalFilename ?? "attachment"}
-                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
-                    loading="lazy"
-                  />
-                </a>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
         </div>
       ) : null}
+
+      <IssueWorkspaceCard
+        issue={issue}
+        project={orderedProjects.find((p) => p.id === issue.projectId) ?? null}
+        onUpdate={(data) => updateIssue.mutate(data)}
+      />
 
       <Separator />
 
@@ -1016,7 +1189,8 @@ export function IssueDetail() {
 
         <TabsContent value="comments">
           <CommentThread
-            comments={commentsWithRunMeta}
+            comments={timelineComments}
+            queuedComments={queuedComments}
             linkedRuns={timelineRuns}
             companyId={issue.companyId}
             projectId={issue.projectId}
@@ -1028,6 +1202,10 @@ export function IssueDetail() {
             currentAssigneeValue={actualAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentionOptions}
+            onInterruptQueued={async (runId) => {
+              await interruptQueuedComment.mutateAsync(runId);
+            }}
+            interruptingQueuedRunId={interruptQueuedComment.isPending ? (runningIssueRun?.id ?? null) : null}
             onAdd={async (body, reopen, reassignment) => {
               if (reassignment) {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
@@ -1054,7 +1232,7 @@ export function IssueDetail() {
               {childIssues.map((child) => (
                 <Link
                   key={child.id}
-                  to={`/issues/${child.identifier ?? child.id}`}
+                  to={createIssueDetailPath(child.identifier ?? child.id, location.state, location.search)}
                   state={location.state}
                   className="flex items-center justify-between px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
                 >
@@ -1066,12 +1244,15 @@ export function IssueDetail() {
                     </span>
                     <span className="truncate">{child.title}</span>
                   </div>
-                  {child.assigneeAgentId && (() => {
-                    const name = agentMap.get(child.assigneeAgentId)?.name;
-                    return name
-                      ? <Identity name={name} size="sm" />
-                      : <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>;
-                  })()}
+                  {child.assigneeAgentId &&
+                    (() => {
+                      const name = agentMap.get(child.assigneeAgentId)?.name;
+                      return name ? (
+                        <Identity name={name} size="sm" />
+                      ) : (
+                        <span className="text-muted-foreground font-mono">{child.assigneeAgentId.slice(0, 8)}</span>
+                      );
+                    })()}
                 </Link>
               ))}
             </div>
@@ -1087,9 +1268,7 @@ export function IssueDetail() {
               ) : (
                 <div className="flex flex-wrap gap-3 text-xs text-muted-foreground tabular-nums">
                   {issueCostSummary.hasCost && (
-                    <span className="font-medium text-foreground">
-                      ${issueCostSummary.cost.toFixed(4)}
-                    </span>
+                    <span className="font-medium text-foreground">${issueCostSummary.cost.toFixed(4)}</span>
                   )}
                   {issueCostSummary.hasTokens && (
                     <span>
@@ -1151,7 +1330,10 @@ export function IssueDetail() {
               Linked Approvals ({linkedApprovals.length})
             </span>
             <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                secondaryOpen.approvals && "rotate-180",
+              )}
             />
           </CollapsibleTrigger>
           <CollapsibleContent>
@@ -1176,7 +1358,6 @@ export function IssueDetail() {
           </CollapsibleContent>
         </Collapsible>
       )}
-
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>

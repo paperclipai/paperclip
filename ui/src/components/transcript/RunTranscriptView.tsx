@@ -2,15 +2,7 @@ import { useMemo, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
-  TerminalSquare,
-  User,
-  Wrench,
-} from "lucide-react";
+import { Check, ChevronDown, ChevronRight, CircleAlert, TerminalSquare, User, Wrench } from "lucide-react";
 
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
@@ -73,6 +65,26 @@ type TranscriptBlock =
       }>;
     }
   | {
+      type: "tool_group";
+      ts: string;
+      endTs?: string;
+      items: Array<{
+        ts: string;
+        endTs?: string;
+        name: string;
+        input: unknown;
+        result?: string;
+        isError?: boolean;
+        status: "running" | "completed" | "error";
+      }>;
+    }
+  | {
+      type: "stderr_group";
+      ts: string;
+      endTs?: string;
+      lines: Array<{ ts: string; text: string }>;
+    }
+  | {
       type: "stdout";
       ts: string;
       text: string;
@@ -108,7 +120,9 @@ function humanizeLabel(value: string): string {
 
 function stripWrappedShell(command: string): string {
   const trimmed = compactWhitespace(command);
-  const shellWrapped = trimmed.match(/^(?:(?:\/bin\/)?(?:zsh|bash|sh)|cmd(?:\.exe)?(?:\s+\/d)?(?:\s+\/s)?(?:\s+\/c)?)\s+(?:-lc|\/c)\s+(.+)$/i);
+  const shellWrapped = trimmed.match(
+    /^(?:(?:\/bin\/)?(?:zsh|bash|sh)|cmd(?:\.exe)?(?:\s+\/d)?(?:\s+\/s)?(?:\s+\/c)?)\s+(?:-lc|\/c)\s+(.+)$/i,
+  );
   const inner = shellWrapped?.[1] ?? trimmed;
   const quoted = inner.match(/^(['"])([\s\S]*)\1$/);
   return compactWhitespace(quoted?.[2] ?? inner);
@@ -138,13 +152,7 @@ function formatToolPayload(value: unknown): string {
 function extractToolUseId(input: unknown): string | undefined {
   const record = asRecord(input);
   if (!record) return undefined;
-  const candidates = [
-    record.toolUseId,
-    record.tool_use_id,
-    record.callId,
-    record.call_id,
-    record.id,
-  ];
+  const candidates = [record.toolUseId, record.tool_use_id, record.callId, record.call_id, record.id];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) {
       return candidate;
@@ -175,19 +183,16 @@ function summarizeToolInput(name: string, input: unknown, density: TranscriptDen
     return serialized ? truncate(serialized, compactMax) : `Inspect ${name} input`;
   }
 
-  const command = typeof record.command === "string"
-    ? record.command
-    : typeof record.cmd === "string"
-      ? record.cmd
-      : null;
+  const command =
+    typeof record.command === "string" ? record.command : typeof record.cmd === "string" ? record.cmd : null;
   if (command && isCommandTool(name, record)) {
     return truncate(stripWrappedShell(command), compactMax);
   }
 
   const direct =
-    summarizeRecord(record, ["command", "cmd", "path", "filePath", "file_path", "query", "url", "prompt", "message"])
-    ?? summarizeRecord(record, ["pattern", "name", "title", "target", "tool"])
-    ?? null;
+    summarizeRecord(record, ["command", "cmd", "path", "filePath", "file_path", "query", "url", "prompt", "message"]) ??
+    summarizeRecord(record, ["pattern", "name", "title", "target", "tool"]) ??
+    null;
   if (direct) return truncate(direct, compactMax);
 
   if (Array.isArray(record.paths) && record.paths.length > 0) {
@@ -217,7 +222,8 @@ function parseStructuredToolResult(result: string | undefined) {
     }
   }
 
-  const body = lines.slice(Math.min(bodyStartIndex + 1, lines.length))
+  const body = lines
+    .slice(Math.min(bodyStartIndex + 1, lines.length))
     .map((line) => compactWhitespace(line))
     .filter(Boolean)
     .join("\n");
@@ -246,7 +252,11 @@ function displayToolName(name: string, input: unknown): string {
   return humanizeLabel(name);
 }
 
-function summarizeToolResult(result: string | undefined, isError: boolean | undefined, density: TranscriptDensity): string {
+function summarizeToolResult(
+  result: string | undefined,
+  isError: boolean | undefined,
+  density: TranscriptDensity,
+): string {
   if (!result) return isError ? "Tool failed" : "Waiting for result";
   const structured = parseStructuredToolResult(result);
   if (structured) {
@@ -266,7 +276,9 @@ function summarizeToolResult(result: string | undefined, isError: boolean | unde
   return truncate(firstLine, density === "compact" ? 84 : 140);
 }
 
-function parseSystemActivity(text: string): { activityId?: string; name: string; status: "running" | "completed" } | null {
+function parseSystemActivity(
+  text: string,
+): { activityId?: string; name: string; status: "running" | "completed" } | null {
   const match = text.match(/^item (started|completed):\s*([a-z0-9_-]+)(?:\s+\(id=([^)]+)\))?$/i);
   if (!match) return null;
   return {
@@ -321,6 +333,48 @@ function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
     grouped.push(block);
   }
 
+  flush();
+  return grouped;
+}
+
+/** Group consecutive non-command tool blocks into a single tool_group accordion. */
+function groupToolBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
+  const grouped: TranscriptBlock[] = [];
+  let pending: Array<Extract<TranscriptBlock, { type: "tool_group" }>["items"][number]> = [];
+  let groupTs: string | null = null;
+  let groupEndTs: string | undefined;
+
+  const flush = () => {
+    if (pending.length === 0 || !groupTs) return;
+    grouped.push({
+      type: "tool_group",
+      ts: groupTs,
+      endTs: groupEndTs,
+      items: pending,
+    });
+    pending = [];
+    groupTs = null;
+    groupEndTs = undefined;
+  };
+
+  for (const block of blocks) {
+    if (block.type === "tool" && !isCommandTool(block.name, block.input)) {
+      if (!groupTs) groupTs = block.ts;
+      groupEndTs = block.endTs ?? block.ts;
+      pending.push({
+        ts: block.ts,
+        endTs: block.endTs,
+        name: block.name,
+        input: block.input,
+        result: block.result,
+        isError: block.isError,
+        status: block.status,
+      });
+      continue;
+    }
+    flush();
+    grouped.push(block);
+  }
   flush();
   return grouped;
 }
@@ -386,8 +440,13 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 
     if (entry.kind === "tool_result") {
       const matched =
-        pendingToolBlocks.get(entry.toolUseId)
-        ?? [...blocks].reverse().find((block): block is Extract<TranscriptBlock, { type: "tool" }> => block.type === "tool" && block.status === "running");
+        pendingToolBlocks.get(entry.toolUseId) ??
+        [...blocks]
+          .reverse()
+          .find(
+            (block): block is Extract<TranscriptBlock, { type: "tool" }> =>
+              block.type === "tool" && block.status === "running",
+          );
 
       if (matched) {
         matched.result = entry.content;
@@ -437,13 +496,19 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       if (shouldHideNiceModeStderr(entry.text)) {
         continue;
       }
-      blocks.push({
-        type: "event",
-        ts: entry.ts,
-        label: "stderr",
-        tone: "error",
-        text: entry.text,
-      });
+      // Batch consecutive stderr entries into a single group
+      const prev = blocks[blocks.length - 1];
+      if (prev && prev.type === "stderr_group") {
+        prev.lines.push({ ts: entry.ts, text: entry.text });
+        prev.endTs = entry.ts;
+      } else {
+        blocks.push({
+          type: "stderr_group",
+          ts: entry.ts,
+          endTs: entry.ts,
+          lines: [{ ts: entry.ts, text: entry.text }],
+        });
+      }
       continue;
     }
 
@@ -485,10 +550,12 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       continue;
     }
 
-    const activeCommandBlock = [...blocks].reverse().find(
-      (block): block is Extract<TranscriptBlock, { type: "tool" }> =>
-        block.type === "tool" && block.status === "running" && isCommandTool(block.name, block.input),
-    );
+    const activeCommandBlock = [...blocks]
+      .reverse()
+      .find(
+        (block): block is Extract<TranscriptBlock, { type: "tool" }> =>
+          block.type === "tool" && block.status === "running" && isCommandTool(block.name, block.input),
+      );
     if (activeCommandBlock) {
       activeCommandBlock.result = activeCommandBlock.result
         ? `${activeCommandBlock.result}${activeCommandBlock.result.endsWith("\n") || entry.text.startsWith("\n") ? entry.text : `\n${entry.text}`}`
@@ -508,7 +575,7 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
     }
   }
 
-  return groupCommandBlocks(blocks);
+  return groupToolBlocks(groupCommandBlocks(blocks));
 }
 
 function TranscriptMessageBlock({
@@ -582,12 +649,7 @@ function TranscriptToolCard({
   const [open, setOpen] = useState(block.status === "error");
   const compact = density === "compact";
   const parsedResult = parseStructuredToolResult(block.result);
-  const statusLabel =
-    block.status === "running"
-      ? "Running"
-      : block.status === "error"
-        ? "Errored"
-        : "Completed";
+  const statusLabel = block.status === "running" ? "Running" : block.status === "error" ? "Errored" : "Completed";
   const statusTone =
     block.status === "running"
       ? "text-cyan-700 dark:text-cyan-300"
@@ -606,11 +668,12 @@ function TranscriptToolCard({
         ? "text-emerald-600 dark:text-emerald-300"
         : "text-cyan-600 dark:text-cyan-300",
   );
-  const summary = block.status === "running"
-    ? summarizeToolInput(block.name, block.input, density)
-    : block.status === "completed" && parsedResult?.body
-      ? truncate(parsedResult.body.split("\n")[0] ?? parsedResult.body, compact ? 84 : 140)
-      : summarizeToolResult(block.result, block.isError, density);
+  const summary =
+    block.status === "running"
+      ? summarizeToolInput(block.name, block.input, density)
+      : block.status === "completed" && parsedResult?.body
+        ? truncate(parsedResult.body.split("\n")[0] ?? parsedResult.body, compact ? 84 : 140)
+        : summarizeToolResult(block.result, block.isError, density);
 
   return (
     <div className={cn(block.status === "error" && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
@@ -631,9 +694,7 @@ function TranscriptToolCard({
               {statusLabel}
             </span>
           </div>
-          <div className={cn("mt-1 break-words text-foreground/80", compact ? "text-xs" : "text-sm")}>
-            {summary}
-          </div>
+          <div className={cn("mt-1 break-words text-foreground/80", compact ? "text-xs" : "text-sm")}>{summary}</div>
         </div>
         <button
           type="button"
@@ -660,10 +721,12 @@ function TranscriptToolCard({
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Result
                 </div>
-                <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
-                )}>
+                <pre
+                  className={cn(
+                    "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                    block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  )}
+                >
                   {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
                 </pre>
               </div>
@@ -699,12 +762,8 @@ function TranscriptCommandGroup({
     : block.items.length === 1
       ? "Executed command"
       : `Executed ${block.items.length} commands`;
-  const subtitle = runningItem
-    ? summarizeToolInput("command_execution", runningItem.input, density)
-    : null;
-  const statusTone = isRunning
-      ? "text-cyan-700 dark:text-cyan-300"
-      : "text-foreground/70";
+  const subtitle = runningItem ? summarizeToolInput("command_execution", runningItem.input, density) : null;
+  const statusTone = isRunning ? "text-cyan-700 dark:text-cyan-300" : "text-foreground/70";
 
   return (
     <div className={cn(showExpandedErrorState && "rounded-xl border border-red-500/20 bg-red-500/[0.04] p-3")}>
@@ -750,9 +809,7 @@ function TranscriptCommandGroup({
             </div>
           )}
           {!subtitle && latestItem?.status === "error" && open && (
-            <div className={cn("mt-1", compact ? "text-xs" : "text-sm", statusTone)}>
-              Command failed
-            </div>
+            <div className={cn("mt-1", compact ? "text-xs" : "text-sm", statusTone)}>Command failed</div>
           )}
         </div>
         <button
@@ -775,14 +832,16 @@ function TranscriptCommandGroup({
           {block.items.map((item, index) => (
             <div key={`${item.ts}-${index}`} className="space-y-2">
               <div className="flex items-center gap-2">
-                <span className={cn(
-                  "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
-                  item.status === "error"
-                    ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
-                    : item.status === "running"
-                      ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
-                      : "border-border/70 bg-background text-foreground/55",
-                )}>
+                <span
+                  className={cn(
+                    "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                    item.status === "error"
+                      ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                      : item.status === "running"
+                        ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                        : "border-border/70 bg-background text-foreground/55",
+                  )}
+                >
                   <TerminalSquare className="h-3 w-3" />
                 </span>
                 <span className={cn("font-mono break-all", compact ? "text-[11px]" : "text-xs")}>
@@ -790,13 +849,174 @@ function TranscriptCommandGroup({
                 </span>
               </div>
               {item.result && (
-                <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
-                )}>
+                <pre
+                  className={cn(
+                    "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                    item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                  )}
+                >
                   {formatToolPayload(item.result)}
                 </pre>
               )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TranscriptToolGroup({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "tool_group" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(false);
+  const compact = density === "compact";
+  const runningItem = [...block.items].reverse().find((item) => item.status === "running");
+  const hasError = block.items.some((item) => item.status === "error");
+  const isRunning = Boolean(runningItem);
+  const uniqueNames = [...new Set(block.items.map((item) => item.name))];
+  const toolLabel = uniqueNames.length === 1 ? humanizeLabel(uniqueNames[0]) : `${uniqueNames.length} tools`;
+  const title = isRunning
+    ? `Using ${toolLabel}`
+    : block.items.length === 1
+      ? `Used ${toolLabel}`
+      : `Used ${toolLabel} (${block.items.length} calls)`;
+  const subtitle = runningItem ? summarizeToolInput(runningItem.name, runningItem.input, density) : null;
+  const statusTone = isRunning ? "text-cyan-700 dark:text-cyan-300" : "text-foreground/70";
+
+  return (
+    <div className="rounded-xl border border-border/40 bg-muted/[0.25]">
+      <div
+        role="button"
+        tabIndex={0}
+        className={cn("flex cursor-pointer gap-2 px-3 py-2.5", subtitle ? "items-start" : "items-center")}
+        onClick={() => {
+          if (hasSelectedText()) return;
+          setOpen((v) => !v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+      >
+        <div className={cn("flex shrink-0 items-center", subtitle && "mt-0.5")}>
+          {block.items.slice(0, Math.min(block.items.length, 3)).map((item, index) => {
+            const isItemRunning = item.status === "running";
+            const isItemError = item.status === "error";
+            return (
+              <span
+                key={`${item.ts}-${index}`}
+                className={cn(
+                  "inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm",
+                  index > 0 && "-ml-1.5",
+                  isItemRunning
+                    ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                    : isItemError
+                      ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                      : "border-border/70 bg-background text-foreground/55",
+                  isItemRunning && "animate-pulse",
+                )}
+              >
+                <Wrench className="h-3.5 w-3.5" />
+              </span>
+            );
+          })}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div
+            className={cn(
+              "font-semibold uppercase leading-none tracking-[0.1em]",
+              compact ? "text-[10px]" : "text-[11px]",
+              "text-muted-foreground/70",
+            )}
+          >
+            {title}
+          </div>
+          {subtitle && (
+            <div className={cn("mt-1 break-words font-mono text-foreground/85", compact ? "text-xs" : "text-sm")}>
+              {subtitle}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground",
+            subtitle && "mt-0.5",
+          )}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((v) => !v);
+          }}
+          aria-label={open ? "Collapse tool details" : "Expand tool details"}
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </button>
+      </div>
+      {open && (
+        <div className={cn("space-y-2 border-t border-border/30 px-3 py-3", hasError && "rounded-b-xl")}>
+          {block.items.map((item, index) => (
+            <div key={`${item.ts}-${index}`} className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                    item.status === "error"
+                      ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
+                      : item.status === "running"
+                        ? "border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-600 dark:text-cyan-300"
+                        : "border-border/70 bg-background text-foreground/55",
+                  )}
+                >
+                  <Wrench className="h-3 w-3" />
+                </span>
+                <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground")}>
+                  {humanizeLabel(item.name)}
+                </span>
+                <span
+                  className={cn(
+                    "text-[10px] font-semibold uppercase tracking-[0.14em]",
+                    item.status === "running"
+                      ? "text-cyan-700 dark:text-cyan-300"
+                      : item.status === "error"
+                        ? "text-red-700 dark:text-red-300"
+                        : "text-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
+                </span>
+              </div>
+              <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
+                <div>
+                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Input
+                  </div>
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
+                    {formatToolPayload(item.input) || "<empty>"}
+                  </pre>
+                </div>
+                {item.result && (
+                  <div>
+                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      Result
+                    </div>
+                    <pre
+                      className={cn(
+                        "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                        item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
+                      )}
+                    >
+                      {formatToolPayload(item.result)}
+                    </pre>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -822,10 +1042,12 @@ function TranscriptActivityRow({
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
         </span>
       )}
-      <div className={cn(
-        "break-words text-foreground/80",
-        density === "compact" ? "text-xs leading-5" : "text-sm leading-6",
-      )}>
+      <div
+        className={cn(
+          "break-words text-foreground/80",
+          density === "compact" ? "text-xs leading-5" : "text-sm leading-6",
+        )}
+      >
         {block.name}
       </div>
     </div>
@@ -861,7 +1083,12 @@ function TranscriptEventRow({
         )}
         <div className="min-w-0 flex-1">
           {block.label === "result" && block.tone !== "error" ? (
-            <div className={cn("whitespace-pre-wrap break-words text-sky-700 dark:text-sky-300", compact ? "text-[11px]" : "text-xs")}>
+            <div
+              className={cn(
+                "whitespace-pre-wrap break-words text-sky-700 dark:text-sky-300",
+                compact ? "text-[11px]" : "text-xs",
+              )}
+            >
               {block.text}
             </div>
           ) : (
@@ -883,6 +1110,48 @@ function TranscriptEventRow({
   );
 }
 
+function TranscriptStderrGroup({
+  block,
+  density,
+}: {
+  block: Extract<TranscriptBlock, { type: "stderr_group" }>;
+  density: TranscriptDensity;
+}) {
+  const [open, setOpen] = useState(false);
+  const compact = density === "compact";
+  return (
+    <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-2 text-amber-700 dark:text-amber-300">
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-center gap-2"
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+      >
+        <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]")}>
+          {block.lines.length} log {block.lines.length === 1 ? "line" : "lines"}
+        </span>
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </div>
+      {open && (
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-amber-700/80 dark:text-amber-300/80 pl-5">
+          {block.lines.map((line, i) => (
+            <span key={`${line.ts}-${i}`}>
+              <span className="select-none text-amber-500/50 dark:text-amber-400/40">{i > 0 ? "\n" : ""}</span>
+              {line.text}
+            </span>
+          ))}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function TranscriptStdoutRow({
   block,
   density,
@@ -897,9 +1166,7 @@ function TranscriptStdoutRow({
   return (
     <div>
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          stdout
-        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">stdout</span>
         <button
           type="button"
           className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
@@ -910,10 +1177,12 @@ function TranscriptStdoutRow({
         </button>
       </div>
       {open && (
-        <pre className={cn(
-          "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-foreground/80",
-          density === "compact" ? "text-[11px]" : "text-xs",
-        )}>
+        <pre
+          className={cn(
+            "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-foreground/80",
+            density === "compact" ? "text-[11px]" : "text-xs",
+          )}
+        >
           {block.text}
         </pre>
       )}
@@ -921,27 +1190,13 @@ function TranscriptStdoutRow({
   );
 }
 
-function RawTranscriptView({
-  entries,
-  density,
-}: {
-  entries: TranscriptEntry[];
-  density: TranscriptDensity;
-}) {
+function RawTranscriptView({ entries, density }: { entries: TranscriptEntry[]; density: TranscriptDensity }) {
   const compact = density === "compact";
   return (
     <div className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
       {entries.map((entry, idx) => (
-        <div
-          key={`${entry.kind}-${entry.ts}-${idx}`}
-          className={cn(
-            "grid gap-x-3",
-            "grid-cols-[auto_1fr]",
-          )}
-        >
-          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-            {entry.kind}
-          </span>
+        <div key={`${entry.kind}-${entry.ts}-${idx}`} className={cn("grid gap-x-3", "grid-cols-[auto_1fr]")}>
+          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{entry.kind}</span>
           <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">
             {entry.kind === "tool_call"
               ? `${entry.name}\n${formatToolPayload(entry.input)}`
@@ -976,7 +1231,12 @@ export function RunTranscriptView({
 
   if (entries.length === 0) {
     return (
-      <div className={cn("rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground", className)}>
+      <div
+        className={cn(
+          "rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground",
+          className,
+        )}
+      >
         {emptyMessage}
       </div>
     );
@@ -995,7 +1255,9 @@ export function RunTranscriptView({
       {visibleBlocks.map((block, index) => (
         <div
           key={`${block.type}-${block.ts}-${index}`}
-          className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
+          className={cn(
+            index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300",
+          )}
         >
           {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
           {block.type === "thinking" && (
@@ -1003,6 +1265,8 @@ export function RunTranscriptView({
           )}
           {block.type === "tool" && <TranscriptToolCard block={block} density={density} />}
           {block.type === "command_group" && <TranscriptCommandGroup block={block} density={density} />}
+          {block.type === "tool_group" && <TranscriptToolGroup block={block} density={density} />}
+          {block.type === "stderr_group" && <TranscriptStderrGroup block={block} density={density} />}
           {block.type === "stdout" && (
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}

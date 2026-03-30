@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -110,11 +111,13 @@ function createDbStub() {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          then: vi.fn().mockResolvedValue([{
-            id: companyId,
-            name: "Paperclip",
-            requireBoardApprovalForNewAgents: false,
-          }]),
+          then: vi.fn().mockResolvedValue([
+            {
+              id: companyId,
+              name: "Paperclip",
+              requireBoardApprovalForNewAgents: false,
+            },
+          ]),
         }),
       }),
     }),
@@ -188,23 +191,15 @@ describe("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const res = await request(app)
-      .post(`/api/companies/${companyId}/agents`)
-      .send({
-        name: "Builder",
-        role: "engineer",
-        adapterType: "process",
-        adapterConfig: {},
-      });
+    const res = await request(app).post(`/api/companies/${companyId}/agents`).send({
+      name: "Builder",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    });
 
     expect(res.status).toBe(201);
-    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(
-      companyId,
-      "agent",
-      agentId,
-      "member",
-      "active",
-    );
+    expect(mockAccessService.ensureMembership).toHaveBeenCalledWith(companyId, "agent", agentId, "member", "active");
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
       "agent",
@@ -274,5 +269,41 @@ describe("agent permission routes", () => {
     );
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
+  });
+
+  it("exposes a dedicated agent route for the inbox mine view", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-910",
+        title: "Inbox follow-up",
+        status: "todo",
+      },
+    ]);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox/mine").query({ userId: "board-user" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      touchedByUserId: "board-user",
+      inboxArchivedByUserId: "board-user",
+      status: INBOX_MINE_ISSUE_STATUS_FILTER,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "issue-1",
+        identifier: "PAP-910",
+        title: "Inbox follow-up",
+        status: "todo",
+      },
+    ]);
   });
 });

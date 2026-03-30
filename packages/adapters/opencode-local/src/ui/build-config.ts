@@ -41,9 +41,7 @@ function parseEnvBindings(bindings: unknown): Record<string, unknown> {
       env[key] = {
         type: "secret_ref",
         secretId: rec.secretId,
-        ...(typeof rec.version === "number" || rec.version === "latest"
-          ? { version: rec.version }
-          : {}),
+        ...(typeof rec.version === "number" || rec.version === "latest" ? { version: rec.version } : {}),
       };
     }
   }
@@ -58,6 +56,7 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
+  ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
   // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)
   // and rely on graceSec for termination handling when a timeout is configured elsewhere.
   ac.timeoutSec = 0;

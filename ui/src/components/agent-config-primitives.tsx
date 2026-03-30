@@ -1,9 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -24,28 +20,38 @@ export const help: Record<string, string> = {
   role: "Organizational role. Determines position and capabilities.",
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
+  adapterType:
+    "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
   cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
+  promptTemplate:
+    "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
   model: "Override the default model used by the adapter.",
   thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
   chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run Claude without permission prompts. Required for unattended operation.",
+  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
   dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
   search: "Enable Codex web search capability during runs.",
-  workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
+  workspaceStrategy:
+    "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
+  workspaceBaseRef:
+    "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
+  workspaceBranchTemplate:
+    "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
+  worktreeParentDir:
+    "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
+  runtimeServicesJson:
+    "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
   maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
   command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
+  localCommand:
+    "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
   args: "Command-line arguments, comma-separated.",
   extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
+  bootstrapPrompt:
+    "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
+  payloadTemplateJson:
+    "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
   webhookUrl: "The URL that receives POST requests when the agent is invoked.",
   heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
   intervalSec: "Seconds between automatic heartbeat invocations.",
@@ -64,6 +70,7 @@ export const adapterLabels: Record<string, string> = {
   opencode_local: "OpenCode (local)",
   openclaw_gateway: "OpenClaw Gateway",
   cursor: "Cursor (local)",
+  hermes_local: "Hermes Agent",
   process: "Process",
   http: "HTTP",
 };
@@ -76,7 +83,10 @@ export function HintIcon({ text }: { text: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+        <button
+          type="button"
+          className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+        >
           <HelpCircle className="h-3 w-3" />
         </button>
       </TooltipTrigger>
@@ -117,16 +127,17 @@ export function ToggleField({
         {hint && <HintIcon text={hint} />}
       </div>
       <button
+        data-slot="toggle"
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
+          checked ? "bg-green-600" : "bg-muted",
         )}
         onClick={() => onChange(!checked)}
       >
         <span
           className={cn(
             "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-            checked ? "translate-x-4.5" : "translate-x-0.5"
+            checked ? "translate-x-4.5" : "translate-x-0.5",
           )}
         />
       </button>
@@ -165,16 +176,17 @@ export function ToggleWithNumber({
           {hint && <HintIcon text={hint} />}
         </div>
         <button
+          data-slot="toggle"
           className={cn(
             "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
-            checked ? "bg-green-600" : "bg-muted"
+            checked ? "bg-green-600" : "bg-muted",
           )}
           onClick={() => onCheckedChange(!checked)}
         >
           <span
             className={cn(
               "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-              checked ? "translate-x-4.5" : "translate-x-0.5"
+              checked ? "translate-x-4.5" : "translate-x-0.5",
             )}
           />
         </button>
@@ -251,7 +263,9 @@ export function AutoExpandTextarea({
     el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
   }, [minHeight]);
 
-  useEffect(() => { adjustHeight(); }, [value, adjustHeight]);
+  useEffect(() => {
+    adjustHeight();
+  }, [value, adjustHeight]);
 
   return (
     <textarea
@@ -283,7 +297,7 @@ export function DraftInput({
   className?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className">) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  useEffect(() => setDraft(value), [value]); // eslint-disable-line react-hooks/set-state-in-effect
 
   return (
     <input
@@ -318,7 +332,7 @@ export function DraftTextarea({
   minRows?: number;
 }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  useEffect(() => setDraft(value), [value]); // eslint-disable-line react-hooks/set-state-in-effect
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const rows = minRows ?? 3;
@@ -332,7 +346,9 @@ export function DraftTextarea({
     el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`;
   }, [minHeight]);
 
-  useEffect(() => { adjustHeight(); }, [draft, adjustHeight]);
+  useEffect(() => {
+    adjustHeight();
+  }, [draft, adjustHeight]);
 
   return (
     <textarea
@@ -368,7 +384,7 @@ export function DraftNumberInput({
   className?: string;
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className" | "type">) {
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
+  useEffect(() => setDraft(String(value)), [value]); // eslint-disable-line react-hooks/set-state-in-effect
 
   return (
     <input
@@ -408,8 +424,8 @@ export function ChoosePathButton() {
           <DialogHeader>
             <DialogTitle>Specify path manually</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              Browser security blocks apps from reading full local paths via a file picker. Copy the absolute path and
+              paste it into the input.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
@@ -417,31 +433,35 @@ export function ChoosePathButton() {
               <p className="font-medium">macOS (Finder)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
+                <li>
+                  Hold <kbd>Option</kbd> and right-click the folder.
+                </li>
                 <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
                 <li>Paste the result into the path input.</li>
               </ol>
-              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                /Users/yourname/Documents/project
-              </p>
+              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">/Users/yourname/Documents/project</p>
             </section>
             <section className="space-y-1.5">
               <p className="font-medium">Windows (File Explorer)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
+                <li>
+                  Hold <kbd>Shift</kbd> and right-click the folder.
+                </li>
                 <li>Click "Copy as path".</li>
                 <li>Paste the result into the path input.</li>
               </ol>
-              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                C:\Users\yourname\Documents\project
-              </p>
+              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">C:\Users\yourname\Documents\project</p>
             </section>
             <section className="space-y-1.5">
               <p className="font-medium">Terminal fallback (macOS/Linux)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
+                <li>
+                  Run <code>cd /path/to/folder</code>.
+                </li>
+                <li>
+                  Run <code>pwd</code>.
+                </li>
                 <li>Copy the output and paste it into the path input.</li>
               </ol>
             </section>

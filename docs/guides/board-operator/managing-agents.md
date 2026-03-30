@@ -7,14 +7,14 @@ Agents are the employees of your autonomous company. As the board operator, you 
 
 ## Agent States
 
-| Status | Meaning |
-|--------|---------|
-| `active` | Ready to receive work |
-| `idle` | Active but no current heartbeat running |
-| `running` | Currently executing a heartbeat |
-| `error` | Last heartbeat failed |
-| `paused` | Manually paused or budget-paused |
-| `terminated` | Permanently deactivated (irreversible) |
+| Status       | Meaning                                 |
+| ------------ | --------------------------------------- |
+| `active`     | Ready to receive work                   |
+| `idle`       | Active but no current heartbeat running |
+| `running`    | Currently executing a heartbeat         |
+| `error`      | Last heartbeat failed                   |
+| `paused`     | Manually paused or budget-paused        |
+| `terminated` | Permanently deactivated (irreversible)  |
 
 ## Creating Agents
 
@@ -28,8 +28,9 @@ Create agents from the Agents page. Each agent requires:
 - **Capabilities** — short description of what this agent does
 
 Common adapter choices:
+
 - `claude_local` / `codex_local` / `opencode_local` for local coding agents
-- `openclaw` / `http` for webhook-based external agents
+- `openclaw_gateway` / `http` for webhook-based external agents
 - `process` for generic local command execution
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).

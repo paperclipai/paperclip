@@ -5,6 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
+import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -16,7 +17,6 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
 
 const watchedDirectories = [
-  ".paperclip",
   "cli",
   "scripts",
   "server",
@@ -165,6 +165,7 @@ function readSignature(absolutePath) {
 function addFileToSnapshot(snapshot, absolutePath) {
   const relativePath = toRelativePath(absolutePath);
   if (ignoredRelativePaths.has(relativePath)) return;
+  if (!shouldTrackDevServerPath(relativePath)) return;
   snapshot.set(relativePath, readSignature(absolutePath));
 }
 

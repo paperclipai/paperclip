@@ -12,10 +12,7 @@ export function InstanceGeneralSettings() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
-    ]);
+    setBreadcrumbs([{ label: "Instance Settings" }, { label: "General" }]);
   }, [setBreadcrumbs]);
 
   const generalQuery = useQuery({
@@ -24,8 +21,7 @@ export function InstanceGeneralSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (enabled: boolean) =>
-      instanceSettingsApi.updateGeneral({ censorUsernameInLogs: enabled }),
+    mutationFn: async (enabled: boolean) => instanceSettingsApi.updateGeneral({ censorUsernameInLogs: enabled }),
     onSuccess: async () => {
       setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
@@ -42,9 +38,7 @@ export function InstanceGeneralSettings() {
   if (generalQuery.error) {
     return (
       <div className="text-sm text-destructive">
-        {generalQuery.error instanceof Error
-          ? generalQuery.error.message
-          : "Failed to load general settings."}
+        {generalQuery.error instanceof Error ? generalQuery.error.message : "Failed to load general settings."}
       </div>
     );
   }
@@ -75,12 +69,12 @@ export function InstanceGeneralSettings() {
             <h2 className="text-sm font-semibold">Censor username in logs</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              username mentions outside of paths are not yet masked in the live transcript view. This is off by default.
             </p>
           </div>
           <button
             type="button"
+            data-slot="toggle"
             aria-label="Toggle username log censoring"
             disabled={toggleMutation.isPending}
             className={cn(

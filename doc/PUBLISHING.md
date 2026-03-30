@@ -51,9 +51,8 @@ Public packages are discovered from:
 
 - `packages/`
 - `server/`
+- `ui/`
 - `cli/`
-
-`ui/` is ignored because it is private.
 
 The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs), which:
 
@@ -64,6 +63,18 @@ The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts
 - updates the CLI's displayed version string
 
 Those rewrites are temporary. The working tree is restored after publish or dry-run.
+
+## `@paperclipai/ui` packaging
+
+The UI package publishes prebuilt static assets, not the source workspace.
+
+The `ui` package uses [`scripts/generate-ui-package-json.mjs`](../scripts/generate-ui-package-json.mjs) during `prepack` to swap in a lean publish manifest that:
+
+- keeps the release-managed `name` and `version`
+- publishes only `dist/`
+- omits the source-only dependency graph from downstream installs
+
+After packing or publishing, `postpack` restores the development manifest automatically.
 
 ## Version formats
 
@@ -135,6 +146,7 @@ This is the fastest way to restore the default install path if a stable release 
 
 - [`scripts/build-npm.sh`](../scripts/build-npm.sh)
 - [`scripts/generate-npm-package-json.mjs`](../scripts/generate-npm-package-json.mjs)
+- [`scripts/generate-ui-package-json.mjs`](../scripts/generate-ui-package-json.mjs)
 - [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)
 - [`cli/esbuild.config.mjs`](../cli/esbuild.config.mjs)
 - [`doc/RELEASING.md`](RELEASING.md)

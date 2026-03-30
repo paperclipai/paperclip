@@ -1,28 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
+  Agent,
   CompanyPortabilityFileEntry,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
   CompanyPortabilityManifest,
+  Project,
 } from "@paperclipai/shared";
 import { useNavigate, useLocation } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
+import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { cn } from "../lib/utils";
+import { queryKeys } from "../lib/queryKeys";
 import { createZipArchive } from "../lib/zip";
+import { buildInitialExportCheckedFiles } from "../lib/company-export-selection";
+import { useAgentOrder } from "../hooks/useAgentOrder";
+import { useProjectOrder } from "../hooks/useProjectOrder";
+import { buildPortableSidebarOrder } from "../lib/company-portability-sidebar";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
-import {
-  Download,
-  Package,
-  Search,
-} from "lucide-react";
+import { Download, Package, Search } from "lucide-react";
 import {
   type FileTreeNode,
   type FrontmatterData,
@@ -33,11 +39,6 @@ import {
   FRONTMATTER_FIELD_LABELS,
   PackageFileTree,
 } from "../components/PackageFileTree";
-
-/** Returns true if the path looks like a task file (e.g. tasks/slug/TASK.md or projects/x/tasks/slug/TASK.md) */
-function isTaskPath(filePath: string): boolean {
-  return /(?:^|\/)tasks\//.test(filePath);
-}
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -50,6 +51,7 @@ function checkedSlugs(checkedFiles: Set<string>): {
   agents: Set<string>;
   projects: Set<string>;
   tasks: Set<string>;
+  routines: Set<string>;
 } {
   const agents = new Set<string>();
   const projects = new Set<string>();
@@ -62,7 +64,7 @@ function checkedSlugs(checkedFiles: Set<string>): {
     const taskMatch = p.match(/^tasks\/([^/]+)\//);
     if (taskMatch) tasks.add(taskMatch[1]);
   }
-  return { agents, projects, tasks };
+  return { agents, projects, tasks, routines: new Set(tasks) };
 }
 
 /**
@@ -77,16 +79,30 @@ function filterPaperclipYaml(yaml: string, checkedFiles: Set<string>): string {
   const out: string[] = [];
 
   // Sections whose entries are slug-keyed and should be filtered
-  const filterableSections = new Set(["agents", "projects", "tasks"]);
+  const filterableSections = new Set(["agents", "projects", "tasks", "routines"]);
+  const sidebarSections = new Set(["agents", "projects"]);
 
   let currentSection: string | null = null; // top-level key (e.g. "agents")
-  let currentEntry: string | null = null;   // slug under that section
+  let currentEntry: string | null = null; // slug under that section
   let includeEntry = true;
+  let currentSidebarList: string | null = null;
+  let currentSidebarHeaderLine: string | null = null;
+  let currentSidebarBuffer: string[] = [];
   // Collect entries per section so we can omit empty section headers
   let sectionHeaderLine: string | null = null;
   let sectionBuffer: string[] = [];
 
+  function flushSidebarSection() {
+    if (currentSidebarHeaderLine !== null && currentSidebarBuffer.length > 0) {
+      sectionBuffer.push(currentSidebarHeaderLine);
+      sectionBuffer.push(...currentSidebarBuffer);
+    }
+    currentSidebarHeaderLine = null;
+    currentSidebarBuffer = [];
+  }
+
   function flushSection() {
+    flushSidebarSection();
     if (sectionHeaderLine !== null && sectionBuffer.length > 0) {
       out.push(sectionHeaderLine);
       out.push(...sectionBuffer);
@@ -109,6 +125,11 @@ function filterPaperclipYaml(yaml: string, checkedFiles: Set<string>): string {
         currentSection = key;
         sectionHeaderLine = line;
         continue;
+      } else if (key === "sidebar") {
+        currentSection = key;
+        currentSidebarList = null;
+        sectionHeaderLine = line;
+        continue;
       } else {
         currentSection = null;
         out.push(line);
@@ -116,10 +137,36 @@ function filterPaperclipYaml(yaml: string, checkedFiles: Set<string>): string {
       }
     }
 
+    if (currentSection === "sidebar") {
+      const sidebarMatch = line.match(/^ {2}([\w-]+):\s*$/);
+      if (sidebarMatch && !line.startsWith("    ")) {
+        flushSidebarSection();
+        const sidebarKey = sidebarMatch[1];
+        currentSidebarList = sidebarKey && sidebarSections.has(sidebarKey) ? sidebarKey : null;
+        currentSidebarHeaderLine = currentSidebarList ? line : null;
+        continue;
+      }
+
+      const sidebarEntryMatch = line.match(/^ {4}- ["']?([^"'\n]+)["']?\s*$/);
+      if (sidebarEntryMatch && currentSidebarList) {
+        const slug = sidebarEntryMatch[1];
+        const sectionSlugs = slugs[currentSidebarList as keyof typeof slugs];
+        if (slug && sectionSlugs.has(slug)) {
+          currentSidebarBuffer.push(line);
+        }
+        continue;
+      }
+
+      if (currentSidebarList) {
+        currentSidebarBuffer.push(line);
+        continue;
+      }
+    }
+
     // Inside a filterable section
     if (currentSection && filterableSections.has(currentSection)) {
       // 2-space indented key = entry slug (slugs may start with digits/hyphens)
-      const entryMatch = line.match(/^  ([\w][\w-]*):\s*(.*)$/);
+      const entryMatch = line.match(/^ {2}([\w][\w-]*):\s*(.*)$/);
       if (entryMatch && !line.startsWith("    ")) {
         const slug = entryMatch[1];
         currentEntry = slug;
@@ -163,14 +210,10 @@ function filterTree(nodes: FileTreeNode[], query: string): FileTreeNode[] {
   return nodes
     .map((node) => {
       if (node.kind === "file") {
-        return node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower)
-          ? node
-          : null;
+        return node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower) ? node : null;
       }
       const filteredChildren = filterTree(node.children, query);
-      return filteredChildren.length > 0
-        ? { ...node, children: filteredChildren }
-        : null;
+      return filteredChildren.length > 0 ? { ...node, children: filteredChildren } : null;
     })
     .filter((n): n is FileTreeNode => n !== null);
 }
@@ -198,20 +241,22 @@ function collectMatchedParentDirs(nodes: FileTreeNode[], query: string): Set<str
 
 /** Sort tree: checked files first, then unchecked */
 function sortByChecked(nodes: FileTreeNode[], checkedFiles: Set<string>): FileTreeNode[] {
-  return nodes.map((node) => {
-    if (node.kind === "dir") {
-      return { ...node, children: sortByChecked(node.children, checkedFiles) };
-    }
-    return node;
-  }).sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "file" ? -1 : 1;
-    if (a.kind === "file" && b.kind === "file") {
-      const aChecked = checkedFiles.has(a.path);
-      const bChecked = checkedFiles.has(b.path);
-      if (aChecked !== bChecked) return aChecked ? -1 : 1;
-    }
-    return a.name.localeCompare(b.name);
-  });
+  return nodes
+    .map((node) => {
+      if (node.kind === "dir") {
+        return { ...node, children: sortByChecked(node.children, checkedFiles) };
+      }
+      return node;
+    })
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "file" ? -1 : 1;
+      if (a.kind === "file" && b.kind === "file") {
+        const aChecked = checkedFiles.has(a.path);
+        const bChecked = checkedFiles.has(b.path);
+        if (aChecked !== bChecked) return aChecked ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
 }
 
 const TASKS_PAGE_SIZE = 10;
@@ -243,11 +288,11 @@ function paginateTaskNodes(
       for (const child of node.children) {
         const childFiles = collectAllPaths([child], "file");
         const isChecked = [...childFiles].some((p) => checkedFiles.has(p));
-        const isSearchMatch = searchQuery && (
-          child.name.toLowerCase().includes(lower) ||
-          child.path.toLowerCase().includes(lower) ||
-          [...childFiles].some((p) => p.toLowerCase().includes(lower))
-        );
+        const isSearchMatch =
+          searchQuery &&
+          (child.name.toLowerCase().includes(lower) ||
+            child.path.toLowerCase().includes(lower) ||
+            [...childFiles].some((p) => p.toLowerCase().includes(lower)));
         if (isChecked || isSearchMatch) {
           pinned.push(child);
         } else {
@@ -293,21 +338,13 @@ function downloadZip(
 
 // ── Frontmatter card (export-specific: skill click support) ──────────
 
-function FrontmatterCard({
-  data,
-  onSkillClick,
-}: {
-  data: FrontmatterData;
-  onSkillClick?: (skill: string) => void;
-}) {
+function FrontmatterCard({ data, onSkillClick }: { data: FrontmatterData; onSkillClick?: (skill: string) => void }) {
   return (
     <div className="rounded-md border border-border bg-accent/20 px-4 py-3 mb-4">
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
         {Object.entries(data).map(([key, value]) => (
           <div key={key} className="contents">
-            <dt className="text-muted-foreground whitespace-nowrap py-0.5">
-              {FRONTMATTER_FIELD_LABELS[key] ?? key}
-            </dt>
+            <dt className="text-muted-foreground whitespace-nowrap py-0.5">{FRONTMATTER_FIELD_LABELS[key] ?? key}</dt>
             <dd className="py-0.5">
               {Array.isArray(value) ? (
                 <div className="flex flex-wrap gap-1.5">
@@ -317,7 +354,9 @@ function FrontmatterCard({
                       type="button"
                       className={cn(
                         "inline-flex items-center rounded-md border border-border bg-background px-2 py-0.5 text-xs",
-                        key === "skills" && onSkillClick && "cursor-pointer hover:bg-accent/50 hover:border-foreground/30 transition-colors",
+                        key === "skills" &&
+                          onSkillClick &&
+                          "cursor-pointer hover:bg-accent/50 hover:border-foreground/30 transition-colors",
                       )}
                       onClick={() => key === "skills" && onSkillClick?.(item)}
                     >
@@ -339,8 +378,15 @@ function FrontmatterCard({
 // ── Client-side README generation ────────────────────────────────────
 
 const ROLE_LABELS: Record<string, string> = {
-  ceo: "CEO", cto: "CTO", cmo: "CMO", cfo: "CFO", coo: "COO",
-  vp: "VP", manager: "Manager", engineer: "Engineer", agent: "Agent",
+  ceo: "CEO",
+  cto: "CTO",
+  cmo: "CMO",
+  cfo: "CFO",
+  coo: "COO",
+  vp: "VP",
+  manager: "Manager",
+  engineer: "Engineer",
+  agent: "Agent",
 };
 
 /**
@@ -360,7 +406,9 @@ function generateReadmeFromSelection(
   const tasks = manifest.issues.filter((t) => slugs.tasks.has(t.slug));
   const skills = manifest.skills.filter((s) => {
     // Skill files live under skills/{key}/...
-    return [...checkedFiles].some((f) => f.startsWith(`skills/${s.key}/`) || f.startsWith(`skills/`) && f.includes(`/${s.slug}/`));
+    return [...checkedFiles].some(
+      (f) => f.startsWith(`skills/${s.key}/`) || (f.startsWith(`skills/`) && f.includes(`/${s.slug}/`)),
+    );
   });
 
   const lines: string[] = [];
@@ -448,9 +496,7 @@ function ExportPreviewPane({
   onSkillClick?: (skill: string) => void;
 }) {
   if (!selectedFile || content === null) {
-    return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
-    );
+    return <EmptyState icon={Package} message="Select a file to preview its contents." />;
   }
 
   const textContent = getPortableFileText(content);
@@ -532,6 +578,20 @@ export function CompanyExport() {
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
+  const { data: session, isFetched: isSessionFetched } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const { data: agents = [], isFetched: areAgentsFetched } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: projects = [], isFetched: areProjectsFetched } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -541,6 +601,30 @@ export function CompanyExport() {
   const [taskLimit, setTaskLimit] = useState(TASKS_PAGE_SIZE);
   const savedExpandedRef = useRef<Set<string> | null>(null);
   const initialFileFromUrl = useRef(filePathFromLocation(location.pathname));
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const visibleAgents = useMemo(() => agents.filter((agent: Agent) => agent.status !== "terminated"), [agents]);
+  const visibleProjects = useMemo(() => projects.filter((project: Project) => !project.archivedAt), [projects]);
+  const { orderedAgents } = useAgentOrder({
+    agents: visibleAgents,
+    companyId: selectedCompanyId,
+    userId: currentUserId,
+  });
+  const { orderedProjects } = useProjectOrder({
+    projects: visibleProjects,
+    companyId: selectedCompanyId,
+    userId: currentUserId,
+  });
+  const sidebarOrder = useMemo(
+    () =>
+      buildPortableSidebarOrder({
+        agents: visibleAgents,
+        orderedAgents,
+        projects: visibleProjects,
+        orderedProjects,
+      }),
+    [orderedAgents, orderedProjects, visibleAgents, visibleProjects],
+  );
+  const sidebarOrderKey = useMemo(() => JSON.stringify(sidebarOrder ?? null), [sidebarOrder]);
 
   // Navigate-aware file selection: updates state + URL without page reload.
   // `replace` = true skips history entry (used for initial load); false = pushes (used for clicks).
@@ -561,40 +645,36 @@ export function CompanyExport() {
     if (!exportData) return;
     const urlFile = filePathFromLocation(location.pathname);
     if (urlFile && urlFile in exportData.files && urlFile !== selectedFile) {
+       
       setSelectedFile(urlFile);
       // Expand ancestors so the file is visible in the tree
+       
       setExpandedDirs((prev) => {
         const next = new Set(prev);
         for (const dir of expandAncestors(urlFile)) next.add(dir);
         return next;
       });
     } else if (!urlFile && selectedFile) {
+       
       setSelectedFile(null);
     }
   }, [location.pathname, exportData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
-      { label: "Export" },
-    ]);
+    setBreadcrumbs([{ label: "Org Chart", href: "/org" }, { label: "Export" }]);
   }, [setBreadcrumbs]);
 
   const exportPreviewMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportPreview(selectedCompanyId!, {
         include: { company: true, agents: true, projects: true, issues: true },
+        sidebarOrder,
       }),
     onSuccess: (result) => {
       setExportData(result);
-      setCheckedFiles((prev) => {
-        const next = new Set<string>();
-        for (const filePath of Object.keys(result.files)) {
-          if (prev.has(filePath)) next.add(filePath);
-          else if (!isTaskPath(filePath)) next.add(filePath);
-        }
-        return next;
-      });
+      setCheckedFiles((prev) =>
+        buildInitialExportCheckedFiles(Object.keys(result.files), result.manifest.issues, prev),
+      );
       // Expand top-level dirs (except tasks — collapsed by default)
       const tree = buildFileTree(result.files);
       const topDirs = new Set<string>();
@@ -610,9 +690,7 @@ export function CompanyExport() {
         setExpandedDirs(new Set([...topDirs, ...ancestors]));
       } else {
         // Default to README.md if present, otherwise fall back to first file
-        const defaultFile = "README.md" in result.files
-          ? "README.md"
-          : Object.keys(result.files)[0];
+        const defaultFile = "README.md" in result.files ? "README.md" : Object.keys(result.files)[0];
         if (defaultFile) {
           selectFile(defaultFile, true);
         }
@@ -633,6 +711,7 @@ export function CompanyExport() {
       companiesApi.exportPackage(selectedCompanyId!, {
         include: { company: true, agents: true, projects: true, issues: true },
         selectedFiles: Array.from(checkedFiles).sort(),
+        sidebarOrder,
       }),
     onSuccess: (result) => {
       const resultCheckedFiles = new Set(Object.keys(result.files));
@@ -654,15 +733,14 @@ export function CompanyExport() {
 
   useEffect(() => {
     if (!selectedCompanyId || exportPreviewMutation.isPending) return;
+    if (!isSessionFetched || !areAgentsFetched || !areProjectsFetched) return;
+     
     setExportData(null);
     exportPreviewMutation.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, isSessionFetched, areAgentsFetched, areProjectsFetched, sidebarOrderKey]);
 
-  const tree = useMemo(
-    () => (exportData ? buildFileTree(exportData.files) : []),
-    [exportData],
-  );
+  const tree = useMemo(() => (exportData ? buildFileTree(exportData.files) : []), [exportData]);
 
   const { displayTree, totalTaskChildren, visibleTaskChildren } = useMemo(() => {
     let result = tree;
@@ -787,9 +865,7 @@ export function CompanyExport() {
 
   function handleSkillClick(skillKey: string) {
     if (!exportData) return;
-    const manifestSkill = exportData.manifest.skills.find(
-      (skill) => skill.key === skillKey || skill.slug === skillKey,
-    );
+    const manifestSkill = exportData.manifest.skills.find((skill) => skill.key === skillKey || skill.slug === skillKey);
     const skillPath = manifestSkill?.path ?? `skills/${skillKey}/SKILL.md`;
     if (!(skillPath in exportData.files)) return;
     selectFile(skillPath);
@@ -835,9 +911,7 @@ export function CompanyExport() {
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-4 text-sm">
-            <span className="font-medium">
-              {selectedCompany?.name ?? "Company"} export
-            </span>
+            <span className="font-medium">{selectedCompany?.name ?? "Company"} export</span>
             <span className="text-muted-foreground">
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
             </span>
@@ -847,11 +921,7 @@ export function CompanyExport() {
               </span>
             )}
           </div>
-          <Button
-            size="sm"
-            onClick={handleDownload}
-            disabled={selectedCount === 0 || downloadMutation.isPending}
-          >
+          <Button size="sm" onClick={handleDownload} disabled={selectedCount === 0 || downloadMutation.isPending}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
               ? "Building export..."
@@ -864,7 +934,9 @@ export function CompanyExport() {
       {warnings.length > 0 && (
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
           {warnings.map((w) => (
-            <div key={w} className="text-xs text-amber-500">{w}</div>
+            <div key={w} className="text-xs text-amber-500">
+              {w}
+            </div>
           ))}
         </div>
       )}
@@ -911,7 +983,12 @@ export function CompanyExport() {
           </div>
         </aside>
         <div className="min-w-0 overflow-y-auto pl-6">
-          <ExportPreviewPane selectedFile={selectedFile} content={previewContent} allFiles={effectiveFiles} onSkillClick={handleSkillClick} />
+          <ExportPreviewPane
+            selectedFile={selectedFile}
+            content={previewContent}
+            allFiles={effectiveFiles}
+            onSkillClick={handleSkillClick}
+          />
         </div>
       </div>
     </div>

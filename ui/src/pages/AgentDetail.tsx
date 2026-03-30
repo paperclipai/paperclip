@@ -67,6 +67,7 @@ import {
   ChevronDown,
   ArrowLeft,
   HelpCircle,
+  FolderOpen,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -585,9 +586,9 @@ export function AgentDetail() {
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(resolvedCompanyId!),
-    queryFn: () => issuesApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsDashboardData,
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
   });
 
   const { data: allAgents } = useQuery({
@@ -605,7 +606,6 @@ export function AgentDetail() {
   });
 
   const assignedIssues = (allIssues ?? [])
-    .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
@@ -1073,11 +1073,27 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const isLive = run.status === "running" || run.status === "queued";
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
-  const summary = run.resultJson
-    ? String(
-        (run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "",
-      )
-    : (run.error ?? "");
+  const summaryRaw = run.resultJson
+    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+    : run.error ?? "";
+
+  // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
+  const summary = (() => {
+    if (!summaryRaw) return "";
+    const lines = summaryRaw
+      .replace(/^#{1,6}\s+/gm, "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+    const excerpt: string[] = [];
+    let chars = 0;
+    for (const line of lines) {
+      if (excerpt.length >= 3 || chars + line.length > 280) break;
+      excerpt.push(line);
+      chars += line.length;
+    }
+    return excerpt.join(" ");
+  })();
 
   return (
     <div className="space-y-3">
@@ -1187,14 +1203,14 @@ function AgentOverview({
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Recent Issues</h3>
           <Link
-            to={`/issues?assignee=${agentId}`}
+            to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             See All &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No assigned issues.</p>
+          <p className="text-sm text-muted-foreground">No recent issues.</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1500,16 +1516,15 @@ function ConfigurationTab({
           : "Disabled unless explicitly granted.";
 
   const roleDefaults = ROLE_DEFAULT_PERMISSIONS[agent.role as AgentRole] ?? [];
-  const explicitGrants = new Set((agent.access?.grants ?? []).map((g) => g.permissionKey));
+  const explicitGrants = new Set(
+    (agent.access?.grants ?? []).map((g) => g.permissionKey),
+  );
 
   const PERMISSION_LABELS: Record<string, { label: string; description: string }> = {
     "agents:create": { label: "Create agents", description: "Create or hire new agents." },
     "agents:manage": { label: "Manage agents", description: "Update agent configuration, permissions, and status." },
     "users:invite": { label: "Invite users", description: "Invite new users to the company." },
-    "users:manage_permissions": {
-      label: "Manage user permissions",
-      description: "Grant or revoke permissions for users.",
-    },
+    "users:manage_permissions": { label: "Manage user permissions", description: "Grant or revoke permissions for users." },
     "tasks:assign": { label: "Assign tasks", description: "Assign issues to agents or users." },
     "tasks:assign_scope": { label: "Assign tasks (scoped)", description: "Assign tasks within a restricted scope." },
     "joins:approve": { label: "Approve join requests", description: "Approve or reject agent/user join requests." },
@@ -1576,6 +1591,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canCreateAgents}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1605,6 +1621,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canAssignTasks}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1629,9 +1646,7 @@ function ConfigurationTab({
 
           {/* Granular permission grants */}
           <div className="border-t border-border pt-4 mt-4">
-            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-              Granular Permissions
-            </h4>
+            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Granular Permissions</h4>
             <div className="space-y-3">
               {PERMISSION_KEYS.filter((k) => !LEGACY_KEYS.has(k)).map((key) => {
                 const info = PERMISSION_LABELS[key] ?? { label: key, description: "" };
@@ -1704,7 +1719,9 @@ function PromptsTab({
 }) {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
     mode: "managed" | "external";
@@ -1724,6 +1741,28 @@ function PromptsTab({
     entryFile: string;
     selectedFile: string;
   } | null>(null);
+
+  useEffect(() => {
+    setSelectedFile("AGENTS.md"); // eslint-disable-line react-hooks/set-state-in-effect
+     
+    setShowFilePanel(false);
+     
+    setDraft(null);
+     
+    setBundleDraft(null);
+     
+    setNewFilePath("");
+     
+    setShowNewFileInput(false);
+     
+    setPendingFiles([]);
+     
+    setExpandedDirs(new Set());
+     
+    setAwaitingRefresh(false);
+    lastFileVersionRef.current = null;
+    externalBundleRef.current = null;
+  }, [agent.id]);
 
   const isLocal =
     agent.adapterType === "claude_local" ||
@@ -1831,6 +1870,7 @@ function PromptsTab({
     }
     const availablePaths = bundle.files.map((file) => file.path);
     if (availablePaths.length === 0) {
+       
       if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
       return;
     }
@@ -1839,6 +1879,7 @@ function PromptsTab({
       selectedFile !== currentEntryFile &&
       !pendingFiles.includes(selectedFile)
     ) {
+       
       setSelectedFile(availablePaths.includes(bundle.entryFile) ? bundle.entryFile : availablePaths[0]!);
     }
   }, [bundle, bundleMatchesDraft, currentEntryFile, pendingFiles, selectedFile]);
@@ -1865,12 +1906,15 @@ function PromptsTab({
     if (awaitingRefresh) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAwaitingRefresh(false);
+       
       setBundleDraft(null);
+       
       setDraft(null);
       lastFileVersionRef.current = versionKey;
       return;
     }
     if (lastFileVersionRef.current !== versionKey) {
+       
       setDraft(null);
       lastFileVersionRef.current = versionKey;
     }
@@ -2181,21 +2225,38 @@ function PromptsTab({
         </CollapsibleContent>
       </Collapsible>
 
-      <div ref={containerRef} className="flex gap-0">
-        <div className="border border-border rounded-lg p-3 space-y-3 shrink-0" style={{ width: filePanelWidth }}>
+      <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
+        <div className={cn(
+          "border border-border rounded-lg p-3 space-y-3 shrink-0",
+          isMobile && showFilePanel && "block",
+          isMobile && !showFilePanel && "hidden",
+        )} style={isMobile ? undefined : { width: filePanelWidth }}>
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Files</h4>
-            {!showNewFileInput && (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="h-7 w-7"
-                onClick={() => setShowNewFileInput(true)}
-              >
-                +
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {!showNewFileInput && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  onClick={() => setShowNewFileInput(true)}
+                >
+                  +
+                </Button>
+              )}
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setShowFilePanel(false)}
+                >
+                  ✕
+                </Button>
+              )}
+            </div>
           </div>
           {showNewFileInput && (
             <div className="space-y-2">
@@ -2262,6 +2323,7 @@ function PromptsTab({
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
               if (!fileOptions.includes(filePath)) setDraft("");
+              if (isMobile) setShowFilePanel(false);
             }}
             onToggleCheck={() => {}}
             showCheckboxes={false}
@@ -2292,22 +2354,37 @@ function PromptsTab({
         </div>
 
         {/* Draggable separator */}
-        <div
-          className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
-          onMouseDown={handleSeparatorDrag}
-        />
+        {!isMobile && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
+            onMouseDown={handleSeparatorDrag}
+          />
+        )}
 
-        <div className="border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1">
+        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <h4 className="text-sm font-medium font-mono">{selectedOrEntryFile}</h4>
-              <p className="text-xs text-muted-foreground">
-                {selectedFileExists
-                  ? selectedFileSummary?.deprecated
-                    ? "Deprecated virtual file"
-                    : `${selectedFileDetail?.language ?? "text"} file`
-                  : "New file in this bundle"}
-              </p>
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => setShowFilePanel(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+                <p className="text-xs text-muted-foreground">
+                  {selectedFileExists
+                    ? selectedFileSummary?.deprecated
+                      ? "Deprecated virtual file"
+                      : `${selectedFileDetail?.language ?? "text"} file`
+                    : "New file in this bundle"}
+                </p>
+              </div>
             </div>
             {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
               <Button
@@ -2431,6 +2508,7 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
   const queryClient = useQueryClient();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const [unmanagedOpen, setUnmanagedOpen] = useState(false);
   const lastSavedSkillsRef = useRef<string[]>([]);
   const hasHydratedSkillSnapshotRef = useRef(false);
   const skipNextSkillAutosaveRef = useRef(true);
@@ -2463,6 +2541,7 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSkillDraft([]);
+     
     setLastSavedSkills([]);
     lastSavedSkillsRef.current = [];
     hasHydratedSkillSnapshotRef.current = false;
@@ -2481,8 +2560,10 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
     );
     skipNextSkillAutosaveRef.current = nextState.shouldSkipAutosave;
     hasHydratedSkillSnapshotRef.current = nextState.hasHydratedSnapshot;
+     
     setSkillDraft(nextState.draft);
     lastSavedSkillsRef.current = nextState.lastSaved;
+     
     setLastSavedSkills(nextState.lastSaved);
   }, [skillDraft, skillSnapshot]);
 
@@ -2748,12 +2829,19 @@ function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">
-                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="flex cursor-pointer items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 select-none"
+                      onClick={() => setUnmanagedOpen((v) => !v)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
+                    >
                       <span className="text-xs font-medium text-muted-foreground">
-                        User-installed skills, not managed by Paperclip
+                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
                       </span>
+                      {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
-                    {unmanagedSkillRows.map(renderSkillRow)}
+                    {unmanagedOpen && unmanagedSkillRows.map(renderSkillRow)}
                   </section>
                 )}
               </>

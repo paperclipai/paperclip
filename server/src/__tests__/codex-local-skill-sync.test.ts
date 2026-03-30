@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  listCodexSkills,
-  syncCodexSkills,
-} from "@paperclipai/adapter-codex-local/server";
+import { listCodexSkills, syncCodexSkills } from "@paperclipai/adapter-codex-local/server";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -43,7 +40,7 @@ describe("codex local skill sync", () => {
     expect(before.desiredSkills).toContain(paperclipKey);
     expect(before.entries.find((entry) => entry.key === paperclipKey)?.required).toBe(true);
     expect(before.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    expect(before.entries.find((entry) => entry.key === paperclipKey)?.detail).toContain(".agents/skills");
+    expect(before.entries.find((entry) => entry.key === paperclipKey)?.detail).toContain("CODEX_HOME/skills/");
   });
 
   it("does not persist Paperclip skills into CODEX_HOME during sync", async () => {

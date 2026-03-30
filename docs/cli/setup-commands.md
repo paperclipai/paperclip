@@ -33,6 +33,8 @@ Interactive first-time setup:
 pnpm paperclipai onboard
 ```
 
+If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to change settings on an existing install.
+
 First prompt:
 
 1. `Quickstart` (recommended): local defaults (embedded database, no LLM provider, local disk storage, default secrets)
@@ -49,6 +51,8 @@ Non-interactive defaults + immediate start (opens browser on server listen):
 ```sh
 pnpm paperclipai onboard --yes
 ```
+
+On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
 
 ## `paperclipai doctor`
 
@@ -95,12 +99,12 @@ pnpm paperclipai allowed-hostname my-tailscale-host
 
 ## Local Storage Paths
 
-| Data | Default Path |
-|------|-------------|
-| Config | `~/.paperclip/instances/default/config.json` |
-| Database | `~/.paperclip/instances/default/db` |
-| Logs | `~/.paperclip/instances/default/logs` |
-| Storage | `~/.paperclip/instances/default/data/storage` |
+| Data        | Default Path                                        |
+| ----------- | --------------------------------------------------- |
+| Config      | `~/.paperclip/instances/default/config.json`        |
+| Database    | `~/.paperclip/instances/default/db`                 |
+| Logs        | `~/.paperclip/instances/default/logs`               |
+| Storage     | `~/.paperclip/instances/default/data/storage`       |
 | Secrets key | `~/.paperclip/instances/default/secrets/master.key` |
 
 Override with:

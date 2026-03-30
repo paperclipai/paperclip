@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -51,9 +52,7 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "codex");
@@ -108,16 +107,30 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else {
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
-    });
+    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
+    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
+    if (codexAuth) {
+      checks.push({
+        code: "codex_native_auth_present",
+        level: "info",
+        message: "Codex is authenticated via its own auth configuration.",
+        detail: codexAuth.email
+          ? `Logged in as ${codexAuth.email}.`
+          : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+      });
+    } else {
+      checks.push({
+        code: "codex_openai_api_key_missing",
+        level: "warn",
+        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+      });
+    }
   }
 
-  const canRunProbe =
-    checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
+  const canRunProbe = checks.every(
+    (check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable",
+  );
   if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
       checks.push({
@@ -129,10 +142,7 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, "").trim();
-      const modelReasoningEffort = asString(
-        config.modelReasoningEffort,
-        asString(config.reasoningEffort, ""),
-      ).trim();
+      const modelReasoningEffort = asString(config.modelReasoningEffort, asString(config.reasoningEffort, "")).trim();
       const search = asBoolean(config.search, false);
       const bypass = asBoolean(
         config.dangerouslyBypassApprovalsAndSandbox,

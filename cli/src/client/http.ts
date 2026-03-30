@@ -13,6 +13,21 @@ export class ApiRequestError extends Error {
   }
 }
 
+export class ApiConnectionError extends Error {
+  url: string;
+  method: string;
+  causeMessage?: string;
+
+  constructor(input: { apiBase: string; path: string; method: string; cause?: unknown }) {
+    const url = buildUrl(input.apiBase, input.path);
+    const causeMessage = formatConnectionCause(input.cause);
+    super(buildConnectionErrorMessage({ apiBase: input.apiBase, url, method: input.method, causeMessage }));
+    this.url = url;
+    this.method = input.method;
+    this.causeMessage = causeMessage;
+  }
+}
+
 interface RequestOptions {
   ignoreNotFound?: boolean;
 }
@@ -48,17 +63,25 @@ export class PaperclipApiClient {
   }
 
   post<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
-    return this.request<T>(path, {
-      method: "POST",
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }, opts);
+    return this.request<T>(
+      path,
+      {
+        method: "POST",
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      opts,
+    );
   }
 
   patch<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
-    return this.request<T>(path, {
-      method: "PATCH",
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }, opts);
+    return this.request<T>(
+      path,
+      {
+        method: "PATCH",
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      opts,
+    );
   }
 
   delete<T>(path: string, opts?: RequestOptions): Promise<T | null> {
@@ -76,6 +99,7 @@ export class PaperclipApiClient {
     hasRetriedAuth = false,
   ): Promise<T | null> {
     const url = buildUrl(this.apiBase, path);
+    const method = String(init.method ?? "GET").toUpperCase();
 
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -94,10 +118,20 @@ export class PaperclipApiClient {
       headers["x-paperclip-run-id"] = this.runId;
     }
 
-    const response = await fetch(url, {
-      ...init,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...init,
+        headers,
+      });
+    } catch (error) {
+      throw new ApiConnectionError({
+        apiBase: this.apiBase,
+        path,
+        method,
+        cause: error,
+      });
+    }
 
     if (opts?.ignoreNotFound && response.status === 404) {
       return null;
@@ -108,7 +142,7 @@ export class PaperclipApiClient {
       if (!hasRetriedAuth && this.recoverAuth) {
         const recoveredToken = await this.recoverAuth({
           path,
-          method: String(init.method ?? "GET").toUpperCase(),
+          method,
           error: apiError,
         });
         if (recoveredToken) {
@@ -166,6 +200,46 @@ async function toApiError(response: Response): Promise<ApiRequestError> {
   return new ApiRequestError(response.status, `Request failed with status ${response.status}`, undefined, parsed);
 }
 
+function buildConnectionErrorMessage(input: {
+  apiBase: string;
+  url: string;
+  method: string;
+  causeMessage?: string;
+}): string {
+  const healthUrl = buildHealthCheckUrl(input.url);
+  const lines = ["Could not reach the Paperclip API.", "", `Request: ${input.method} ${input.url}`];
+  if (input.causeMessage) {
+    lines.push(`Cause: ${input.causeMessage}`);
+  }
+  lines.push(
+    "",
+    "This usually means the Paperclip server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
+    "",
+    "Try:",
+    "- Start Paperclip with `pnpm dev` or `pnpm paperclipai run`.",
+    `- Verify the server is reachable with \`curl ${healthUrl}\`.`,
+    `- If Paperclip is running elsewhere, pass \`--api-base ${input.apiBase.replace(/\/+$/, "")}\` or set \`PAPERCLIP_API_URL\`.`,
+  );
+  return lines.join("\n");
+}
+
+function buildHealthCheckUrl(requestUrl: string): string {
+  const url = new URL(requestUrl);
+  url.pathname = `${url.pathname.replace(/\/+$/, "").replace(/\/api(?:\/.*)?$/, "")}/api/health`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function formatConnectionCause(error: unknown): string | undefined {
+  if (!error) return undefined;
+  if (error instanceof Error) {
+    return error.message.trim() || error.name;
+  }
+  const message = String(error).trim();
+  return message || undefined;
+}
+
 function toStringRecord(headers: HeadersInit | undefined): Record<string, string> {
   if (!headers) return {};
   if (Array.isArray(headers)) {
@@ -174,7 +248,5 @@ function toStringRecord(headers: HeadersInit | undefined): Record<string, string
   if (headers instanceof Headers) {
     return Object.fromEntries(headers.entries());
   }
-  return Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [key, String(value)]),
-  );
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)]));
 }

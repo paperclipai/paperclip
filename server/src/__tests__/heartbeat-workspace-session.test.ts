@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
+import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applyPersistedExecutionWorkspaceConfig,
+  buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -118,6 +122,64 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
   });
 });
 
+describe("applyPersistedExecutionWorkspaceConfig", () => {
+  it("does not add workspace runtime when only the project workspace had manual runtime config", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: null,
+      mode: "isolated_workspace",
+    });
+
+    expect("workspaceRuntime" in result).toBe(false);
+  });
+
+  it("applies explicit persisted execution workspace runtime config when present", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        workspaceRuntime: {
+          services: [{ name: "workspace-web" }],
+        },
+      },
+      mode: "isolated_workspace",
+    });
+
+    expect(result.workspaceRuntime).toEqual({
+      services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
+  it("removes workspace runtime before heartbeat execution", () => {
+    const input = {
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+      workspaceRuntime: {
+        services: [{ name: "web" }],
+      },
+    };
+
+    const result = stripWorkspaceRuntimeFromExecutionRunConfig(input);
+
+    expect(result).toEqual({
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+    });
+    expect(input.workspaceRuntime).toEqual({
+      services: [{ name: "web" }],
+    });
+  });
+});
+
 describe("shouldResetTaskSessionForWake", () => {
   it("resets session context on assignment wake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
@@ -182,6 +244,57 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("buildExplicitResumeSessionOverride", () => {
+  it("reuses saved task session params when they belong to the selected failed run", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "session-after",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "session-after",
+        lastRunId: "run-1",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+        cwd: "/tmp/project",
+      },
+    });
+  });
+
+  it("falls back to the selected run session id when no matching task session params are available", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "other-session",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "other-session",
+        lastRunId: "run-2",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+      },
+    });
+  });
+});
+
 describe("formatRuntimeWorkspaceWarningLog", () => {
   it("emits informational workspace warnings on stdout", () => {
     expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
@@ -199,31 +312,29 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
       { id: "workspace-3", cwd: "/tmp/three" },
     ];
 
-    expect(
-      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-2").map((row) => row.id),
-    ).toEqual(["workspace-2", "workspace-1", "workspace-3"]);
+    expect(prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-2").map((row) => row.id)).toEqual([
+      "workspace-2",
+      "workspace-1",
+      "workspace-3",
+    ]);
   });
 
   it("keeps the original order when no preferred workspace is selected", () => {
-    const rows = [
-      { id: "workspace-1" },
-      { id: "workspace-2" },
-    ];
+    const rows = [{ id: "workspace-1" }, { id: "workspace-2" }];
 
-    expect(
-      prioritizeProjectWorkspaceCandidatesForRun(rows, null).map((row) => row.id),
-    ).toEqual(["workspace-1", "workspace-2"]);
+    expect(prioritizeProjectWorkspaceCandidatesForRun(rows, null).map((row) => row.id)).toEqual([
+      "workspace-1",
+      "workspace-2",
+    ]);
   });
 
   it("keeps the original order when the selected workspace is missing", () => {
-    const rows = [
-      { id: "workspace-1" },
-      { id: "workspace-2" },
-    ];
+    const rows = [{ id: "workspace-1" }, { id: "workspace-2" }];
 
-    expect(
-      prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
-    ).toEqual(["workspace-1", "workspace-2"]);
+    expect(prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id)).toEqual([
+      "workspace-1",
+      "workspace-2",
+    ]);
   });
 });
 

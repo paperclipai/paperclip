@@ -165,3 +165,11 @@ export function projectRouteRef(project: { id: string; urlKey?: string | null; n
 export function projectUrl(project: { id: string; urlKey?: string | null; name?: string | null }): string {
   return `/projects/${projectRouteRef(project)}`;
 }
+
+/** Build a project workspace URL scoped under its project. */
+export function projectWorkspaceUrl(
+  project: { id: string; urlKey?: string | null; name?: string | null },
+  workspaceId: string,
+): string {
+  return `${projectUrl(project)}/workspaces/${workspaceId}`;
+}

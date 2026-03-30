@@ -11,6 +11,7 @@ import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
+import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
 import { Issues } from "./pages/Issues";
 import { IssueDetail } from "./pages/IssueDetail";
 import { Routines } from "./pages/Routines";
@@ -61,7 +62,7 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
             : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
+          {`pnpm paperclipai auth bootstrap-ceo`}
         </pre>
       </div>
     </div>
@@ -78,9 +79,7 @@ function CloudAccessGate() {
       const data = query.state.data as
         | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
         | undefined;
-      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
-        ? 2000
-        : false;
+      return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending" ? 2000 : false;
     },
     refetchIntervalInBackground: true,
   });
@@ -147,6 +146,8 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
@@ -169,10 +170,11 @@ function boardRoutes() {
       <Route path="activity" element={<Activity />} />
       <Route path="heartbeat-monitoring" element={<HeartbeatMonitoring />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
+      <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
       <Route path="inbox/unread" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
-      <Route path="inbox/new" element={<Navigate to="/inbox/recent" replace />} />
+      <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
@@ -195,7 +197,7 @@ function OnboardingRoutePage() {
   const { openOnboarding } = useDialog();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const matchedCompany = companyPrefix
-    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
+    ? (companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null)
     : null;
 
   const title = matchedCompany
@@ -217,9 +219,7 @@ function OnboardingRoutePage() {
         <div className="mt-4">
           <Button
             onClick={() =>
-              matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
-                : openOnboarding()
+              matchedCompany ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id }) : openOnboarding()
             }
           >
             {matchedCompany ? "Add Agent" : "Start Onboarding"}
@@ -276,10 +276,7 @@ function UnprefixedBoardRedirect() {
   }
 
   return (
-    <Navigate
-      to={`/${targetCompany.issuePrefix}${location.pathname}${location.search}${location.hash}`}
-      replace
-    />
+    <Navigate to={`/${targetCompany.issuePrefix}${location.pathname}${location.search}${location.hash}`} replace />
   );
 }
 
@@ -290,9 +287,7 @@ function NoCompaniesStartPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">Create your first company</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">Get started by creating a company.</p>
         <div className="mt-4">
           <Button onClick={() => openOnboarding()}>New Company</Button>
         </div>
@@ -340,7 +335,10 @@ export function App() {
           <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/workspaces" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}

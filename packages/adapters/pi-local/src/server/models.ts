@@ -16,32 +16,32 @@ function firstNonEmptyLine(text: string): string {
 function parseModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   const lines = stdout.split(/\r?\n/);
-  
+
   // Skip header line if present
   let startIndex = 0;
   if (lines.length > 0 && (lines[0].includes("provider") || lines[0].includes("model"))) {
     startIndex = 1;
   }
-  
+
   for (let i = startIndex; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    
+
     // Parse format: "provider   model   context  max-out  thinking  images"
     // Split by 2+ spaces to handle the columnar format
     const parts = line.split(/\s{2,}/);
     if (parts.length < 2) continue;
-    
+
     const provider = parts[0].trim();
     const model = parts[1].trim();
-    
+
     if (!provider || !model) continue;
     if (provider === "provider" && model === "model") continue; // Skip header
-    
+
     const id = `${provider}/${model}`;
     parsed.push({ id, label: id });
   }
-  
+
   return parsed;
 }
 
@@ -58,15 +58,12 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
 }
 
 function sortModels(models: AdapterModel[]): AdapterModel[] {
-  return [...models].sort((a, b) =>
-    a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }),
-  );
+  return [...models].sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
 }
 
 function resolvePiCommand(input: unknown): string {
   const envOverride =
-    typeof process.env.PAPERCLIP_PI_COMMAND === "string" &&
-    process.env.PAPERCLIP_PI_COMMAND.trim().length > 0
+    typeof process.env.PAPERCLIP_PI_COMMAND === "string" && process.env.PAPERCLIP_PI_COMMAND.trim().length > 0
       ? process.env.PAPERCLIP_PI_COMMAND.trim()
       : "pi";
   return asString(input, envOverride);
@@ -100,11 +97,13 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
-export async function discoverPiModels(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
+export async function discoverPiModels(
+  input: {
+    command?: unknown;
+    cwd?: unknown;
+    env?: unknown;
+  } = {},
+): Promise<AdapterModel[]> {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
@@ -131,13 +130,14 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  return sortModels(dedupeModels(parseModelsOutput(result.stdout)));
+  // Pi outputs model list to stderr, but fall back to stdout for older versions
+  const output = result.stderr || result.stdout;
+  return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
-  const envInput = typeof input === "object" && input !== null && !Array.isArray(input)
-    ? (input as Record<string, unknown>)
-    : {};
+  const envInput =
+    typeof input === "object" && input !== null && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envInput)) {
     if (typeof value === "string") env[key] = value;
@@ -145,11 +145,13 @@ function normalizeEnv(input: unknown): Record<string, string> {
   return env;
 }
 
-export async function discoverPiModelsCached(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
+export async function discoverPiModelsCached(
+  input: {
+    command?: unknown;
+    cwd?: unknown;
+    env?: unknown;
+  } = {},
+): Promise<AdapterModel[]> {
   const command = resolvePiCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
@@ -186,7 +188,10 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+    const sample = models
+      .slice(0, 12)
+      .map((entry) => entry.id)
+      .join(", ");
     throw new Error(
       `Configured Pi model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
     );
