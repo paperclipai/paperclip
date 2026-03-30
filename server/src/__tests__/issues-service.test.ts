@@ -678,7 +678,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 });
-});
 
 // ─── Conversation project auto-association ───────────────────────────────────
 
