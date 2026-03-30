@@ -251,6 +251,10 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    heartbeatMaxRunDurationMs: Math.max(
+      5 * 60 * 1000,
+      Number(process.env.HEARTBEAT_MAX_RUN_DURATION_MS) || 45 * 60 * 1000,
+    ),
     companyDeletionEnabled,
   };
 }

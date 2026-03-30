@@ -1755,8 +1755,9 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxRunDurationMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxRunDurationMs = opts?.maxRunDurationMs ?? 0;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -1782,25 +1783,50 @@ export function heartbeatService(db: Db) {
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
-            });
+        // Check hard timeout: if alive but exceeded max duration, kill the process
+        const runStartTime = run.processStartedAt
+          ? new Date(run.processStartedAt).getTime()
+          : run.startedAt
+            ? new Date(run.startedAt).getTime()
+            : 0;
+        if (maxRunDurationMs > 0 && runStartTime > 0 && now.getTime() - runStartTime > maxRunDurationMs) {
+          const durationMin = Math.round((now.getTime() - runStartTime) / 60_000);
+          const maxMin = Math.round(maxRunDurationMs / 60_000);
+          logger.warn(
+            { runId: run.id, pid: run.processPid, durationMin },
+            `killing hung process after ${durationMin}min (max ${maxMin}min)`,
+          );
+          try {
+            process.kill(run.processPid, "SIGTERM");
+            await new Promise((r) => setTimeout(r, 5_000));
+            if (isProcessAlive(run.processPid)) {
+              process.kill(run.processPid, "SIGKILL");
+            }
+          } catch {
+            // Process may have already exited between check and kill
           }
+          // Fall through to the dead-process reap logic below
+        } else {
+          if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+            const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
+            const detachedRun = await setRunStatus(run.id, "running", {
+              error: detachedMessage,
+              errorCode: DETACHED_PROCESS_ERROR_CODE,
+            });
+            if (detachedRun) {
+              await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: detachedMessage,
+                payload: {
+                  processPid: run.processPid,
+                },
+              });
+            }
+          }
+          continue;
         }
-        continue;
       }
 
       const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
