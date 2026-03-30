@@ -994,6 +994,12 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   // Delete confirmation
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Claude login flow state
+  const [loginSessionId, setLoginSessionId] = useState<string | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "pending" | "complete" | "failed" | "expired">("idle");
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   const resetAddForm = () => {
     setShowAddForm(false);
     setAddName("");
@@ -1070,6 +1076,64 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     }
     updateMutation.mutate({ id: cred.id, data });
   }
+
+  const startLoginMutation = useMutation({
+    mutationFn: () =>
+      credentialsApi.startClaudeLogin(companyId, { isDefault: credentials.length === 0 }),
+    onSuccess: (data) => {
+      setLoginSessionId(data.loginSessionId);
+      setLoginUrl(data.loginUrl);
+      setLoginStatus("pending");
+      setLoginError(null);
+      if (data.loginUrl) {
+        window.open(data.loginUrl, "_blank", "noopener");
+      }
+    },
+    onError: (err) => {
+      setLoginStatus("failed");
+      setLoginError(err instanceof Error ? err.message : "Failed to start login");
+    },
+  });
+
+  useEffect(() => {
+    if (loginStatus !== "pending" || !loginSessionId) return;
+    const interval = setInterval(async () => {
+      try {
+        const result = await credentialsApi.pollClaudeLogin(companyId, loginSessionId);
+        if (result.loginUrl && !loginUrl) {
+          setLoginUrl(result.loginUrl);
+          window.open(result.loginUrl, "_blank", "noopener");
+        }
+        if (result.status === "complete") {
+          setLoginStatus("complete");
+          invalidate();
+          clearInterval(interval);
+          setTimeout(() => {
+            setLoginSessionId(null);
+            setLoginUrl(null);
+            setLoginStatus("idle");
+          }, 3000);
+        } else if (result.status === "failed" || result.status === "expired") {
+          setLoginStatus(result.status);
+          setLoginError(result.error ?? "Login failed");
+          clearInterval(interval);
+        }
+      } catch {
+        // Ignore transient poll errors
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [loginStatus, loginSessionId, companyId, loginUrl]);
+
+  const resetLogin = () => {
+    if (loginSessionId) {
+      credentialsApi.cancelClaudeLogin(companyId, loginSessionId).catch(() => {});
+    }
+    setLoginSessionId(null);
+    setLoginUrl(null);
+    setLoginStatus("idle");
+    setLoginError(null);
+  };
 
   return (
     <div className="space-y-4">
@@ -1283,9 +1347,64 @@ function CredentialsSection({ companyId }: { companyId: string }) {
             </div>
           </div>
         ) : (
-          <Button size="sm" variant="outline" onClick={() => setShowAddForm(true)}>
-            Add Credential
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {loginStatus === "idle" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => {
+                  setLoginStatus("starting");
+                  startLoginMutation.mutate();
+                }}
+                disabled={startLoginMutation.isPending}
+              >
+                Login with Claude
+              </Button>
+            ) : loginStatus === "starting" ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                Starting login...
+              </div>
+            ) : loginStatus === "pending" ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                  Waiting for login...
+                </div>
+                {loginUrl && (
+                  <a
+                    href={loginUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-blue-600 dark:text-blue-400 underline underline-offset-2"
+                  >
+                    Open login page
+                  </a>
+                )}
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
+                  Cancel
+                </Button>
+              </div>
+            ) : loginStatus === "complete" ? (
+              <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
+                <Check className="h-3.5 w-3.5" />
+                Claude login successful!
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-destructive">
+                  {loginError ?? "Login failed"}
+                </span>
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
+                  Retry
+                </Button>
+              </div>
+            )}
+            <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setShowAddForm(true)}>
+              Add manually
+            </Button>
+          </div>
         )}
       </div>
     </div>

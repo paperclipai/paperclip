@@ -25,4 +25,27 @@ export const credentialsApi = {
   ) => api.patch<ProviderCredential>(`/credentials/${id}`, data),
 
   remove: (id: string) => api.delete<{ ok: true }>(`/credentials/${id}`),
+
+  // Claude OAuth login flow
+  startClaudeLogin: (
+    companyId: string,
+    data?: { name?: string; isDefault?: boolean },
+  ) =>
+    api.post<{ loginSessionId: string; loginUrl: string | null }>(
+      `/companies/${companyId}/credentials/claude-login`,
+      data ?? {},
+    ),
+
+  pollClaudeLogin: (companyId: string, sessionId: string) =>
+    api.get<{
+      status: "pending" | "complete" | "failed" | "expired";
+      loginUrl: string | null;
+      credentialId?: string;
+      error?: string;
+    }>(`/companies/${companyId}/credentials/claude-login/${sessionId}/status`),
+
+  cancelClaudeLogin: (companyId: string, sessionId: string) =>
+    api.delete<{ ok: boolean }>(
+      `/companies/${companyId}/credentials/claude-login/${sessionId}`,
+    ),
 };

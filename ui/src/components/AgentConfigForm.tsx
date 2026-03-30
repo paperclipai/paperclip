@@ -25,7 +25,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, KeyRound } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, KeyRound, Check } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -325,6 +325,56 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
   }, [isCreate, credentials]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Claude login from agent config credential dropdown
+  const [agentLoginSessionId, setAgentLoginSessionId] = useState<string | null>(null);
+  const [agentLoginUrl, setAgentLoginUrl] = useState<string | null>(null);
+  const [agentLoginStatus, setAgentLoginStatus] = useState<"idle" | "starting" | "pending" | "complete" | "failed" | "expired">("idle");
+
+  const startAgentLogin = useMutation({
+    mutationFn: () =>
+      credentialsApi.startClaudeLogin(selectedCompanyId!, {
+        isDefault: !credentials?.length,
+      }),
+    onSuccess: (data) => {
+      setAgentLoginSessionId(data.loginSessionId);
+      setAgentLoginUrl(data.loginUrl);
+      setAgentLoginStatus("pending");
+      if (data.loginUrl) window.open(data.loginUrl, "_blank", "noopener");
+    },
+    onError: () => setAgentLoginStatus("failed"),
+  });
+
+  useEffect(() => {
+    if (agentLoginStatus !== "pending" || !agentLoginSessionId || !selectedCompanyId) return;
+    const interval = setInterval(async () => {
+      try {
+        const result = await credentialsApi.pollClaudeLogin(selectedCompanyId, agentLoginSessionId);
+        if (result.loginUrl && !agentLoginUrl) {
+          setAgentLoginUrl(result.loginUrl);
+          window.open(result.loginUrl, "_blank", "noopener");
+        }
+        if (result.status === "complete" && result.credentialId) {
+          setAgentLoginStatus("complete");
+          if (isCreate) {
+            set!({ credentialId: result.credentialId });
+          } else {
+            setOverlay((prev) => ({ ...prev, credentialId: result.credentialId! }));
+          }
+          queryClient.invalidateQueries({ queryKey: ["credentials", selectedCompanyId] });
+          clearInterval(interval);
+          setTimeout(() => setAgentLoginStatus("idle"), 3000);
+        } else if (result.status === "failed" || result.status === "expired") {
+          setAgentLoginStatus(result.status);
+          clearInterval(interval);
+          setTimeout(() => setAgentLoginStatus("idle"), 5000);
+        }
+      } catch {
+        // Ignore transient errors
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [agentLoginStatus, agentLoginSessionId, selectedCompanyId, agentLoginUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
     mode,
@@ -573,6 +623,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               }}
               open={credentialOpen}
               onOpenChange={setCredentialOpen}
+              onLoginClick={() => {
+                setAgentLoginStatus("starting");
+                startAgentLogin.mutate();
+              }}
+              loginStatus={agentLoginStatus}
+              loginUrl={agentLoginUrl}
             />
           )}
 
@@ -1252,12 +1308,18 @@ function CredentialDropdown({
   onChange,
   open,
   onOpenChange,
+  onLoginClick,
+  loginStatus,
+  loginUrl,
 }: {
   credentials: ProviderCredential[];
   value: string | null;
   onChange: (id: string | null) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onLoginClick?: () => void;
+  loginStatus?: "idle" | "starting" | "pending" | "complete" | "failed" | "expired";
+  loginUrl?: string | null;
 }) {
   const selected = credentials.find((c) => c.id === value);
 
@@ -1326,6 +1388,45 @@ function CredentialDropdown({
               <p className="px-2 py-1.5 text-xs text-muted-foreground">
                 No credentials configured. Add them in Company Settings.
               </p>
+            )}
+            {/* Login with Claude option */}
+            {onLoginClick && (
+              <>
+                <div className="border-t border-border my-1" />
+                {loginStatus === "pending" ? (
+                  <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground">
+                    <span className="h-3 w-3 shrink-0 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                    Waiting for login...
+                    {loginUrl && (
+                      <a
+                        href={loginUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 dark:text-blue-400 underline underline-offset-2 ml-auto"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        Open
+                      </a>
+                    )}
+                  </div>
+                ) : loginStatus === "complete" ? (
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-green-600 dark:text-green-400">
+                    <Check className="h-3 w-3" />
+                    Logged in!
+                  </div>
+                ) : (
+                  <button
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 text-blue-600 dark:text-blue-400"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onLoginClick();
+                    }}
+                    disabled={loginStatus === "starting"}
+                  >
+                    {loginStatus === "starting" ? "Starting..." : "Login with Claude..."}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </PopoverContent>

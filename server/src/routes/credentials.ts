@@ -9,6 +9,11 @@ import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { accessService, logActivity } from "../services/index.js";
 import { credentialService } from "../services/credentials.js";
+import {
+  startClaudeLoginSession,
+  getClaudeLoginSession,
+  cancelClaudeLoginSession,
+} from "../services/claude-login-sessions.js";
 
 export function credentialRoutes(db: Db) {
   const router = Router();
@@ -148,6 +153,69 @@ export function credentialRoutes(db: Db) {
       details: { name: existing.name },
     });
 
+    res.json({ ok: true });
+  });
+
+  // ── Claude OAuth login flow ────────────────────────────────────────────
+
+  // Start a Claude login session (runs `claude login` server-side)
+  router.post("/companies/:companyId/credentials/claude-login", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = await access.canUser(companyId, req.actor.userId, "credentials:manage");
+      if (!allowed) throw forbidden("Missing permission: credentials:manage");
+    }
+
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : undefined;
+    const isDefault = typeof req.body?.isDefault === "boolean" ? req.body.isDefault : undefined;
+
+    try {
+      const session = await startClaudeLoginSession(db, {
+        companyId,
+        userId: req.actor.userId ?? "board",
+        credentialName: name,
+        isDefault,
+      });
+
+      res.status(202).json({
+        loginSessionId: session.id,
+        loginUrl: session.loginUrl,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start login session";
+      res.status(429).json({ error: message });
+    }
+  });
+
+  // Poll login session status
+  router.get("/companies/:companyId/credentials/claude-login/:sessionId/status", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+
+    const session = getClaudeLoginSession(req.params.sessionId as string);
+    if (!session || session.companyId !== companyId) {
+      res.status(404).json({ error: "Login session not found" });
+      return;
+    }
+
+    res.json({
+      status: session.status,
+      loginUrl: session.loginUrl,
+      credentialId: session.credentialId,
+      error: session.error,
+    });
+  });
+
+  // Cancel a login session
+  router.delete("/companies/:companyId/credentials/claude-login/:sessionId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+
+    cancelClaudeLoginSession(req.params.sessionId as string);
     res.json({ ok: true });
   });
 
