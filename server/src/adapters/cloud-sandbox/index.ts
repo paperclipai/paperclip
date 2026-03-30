@@ -6,6 +6,7 @@ export const cloudSandboxAdapter: ServerAdapterModule = {
   type: "cloud_sandbox",
   execute,
   testEnvironment,
+  supportsLocalAgentJwt: true,
   models: [],
   agentConfigurationDoc: `# cloud_sandbox agent configuration
 

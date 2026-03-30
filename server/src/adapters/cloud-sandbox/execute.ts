@@ -383,12 +383,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  // Per-exec env overrides (agent-specific, not shared)
+  // Per-exec env overrides — mirrors the local adapter's env setup so the
+  // agent receives the same PAPERCLIP_* vars regardless of adapter type.
   const execEnv: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agentId,
     PAPERCLIP_RUN_ID: ctx.runId,
     HOME: `/home/agents/${agentId}`,
   };
+
+  // Inject PAPERCLIP_API_KEY from the run JWT so agents can authenticate to the API
+  if (ctx.authToken) {
+    execEnv.PAPERCLIP_API_KEY = ctx.authToken;
+  }
+
+  // Wake context env vars (same as local adapters set from context)
+  const ctxStr = (key: string): string | null => {
+    const v = ctx.context[key];
+    return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
+  };
+  const wakeTaskId = ctxStr("taskId") ?? ctxStr("issueId");
+  const wakeReason = ctxStr("wakeReason");
+  const wakeCommentId = ctxStr("wakeCommentId") ?? ctxStr("commentId");
+  const approvalId = ctxStr("approvalId");
+  const approvalStatus = ctxStr("approvalStatus");
+  if (wakeTaskId) execEnv.PAPERCLIP_TASK_ID = wakeTaskId;
+  if (wakeReason) execEnv.PAPERCLIP_WAKE_REASON = wakeReason;
+  if (wakeCommentId) execEnv.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+  if (approvalId) execEnv.PAPERCLIP_APPROVAL_ID = approvalId;
+  if (approvalStatus) execEnv.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  const linkedIssueIds = Array.isArray(ctx.context.issueIds)
+    ? ctx.context.issueIds.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    : [];
+  if (linkedIssueIds.length > 0) execEnv.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+
+  // Workspace context
+  const wsCtx = ctx.context.paperclipWorkspace as Record<string, unknown> | undefined;
+  if (wsCtx) {
+    const ws = (key: string) => typeof wsCtx[key] === "string" && (wsCtx[key] as string).length > 0 ? wsCtx[key] as string : null;
+    if (ws("cwd")) execEnv.PAPERCLIP_WORKSPACE_CWD = ws("cwd")!;
+    if (ws("source")) execEnv.PAPERCLIP_WORKSPACE_SOURCE = ws("source")!;
+    if (ws("workspaceId")) execEnv.PAPERCLIP_WORKSPACE_ID = ws("workspaceId")!;
+    if (ws("repoUrl")) execEnv.PAPERCLIP_WORKSPACE_REPO_URL = ws("repoUrl")!;
+    if (ws("repoRef")) execEnv.PAPERCLIP_WORKSPACE_REPO_REF = ws("repoRef")!;
+    if (ws("agentHome")) execEnv.AGENT_HOME = ws("agentHome")!;
+  }
+  if (Array.isArray(ctx.context.paperclipWorkspaces) && ctx.context.paperclipWorkspaces.length > 0) {
+    execEnv.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(ctx.context.paperclipWorkspaces);
+  }
 
   // Build the CLI command
   // Build rich prompt for CLIs that need it (mirrors the local adapter's prompt composition)
