@@ -235,6 +235,11 @@ export function Routines() {
           </h1>
           <p className="text-sm text-muted-foreground">
             Recurring work definitions that materialize into auditable execution issues.
+            {routines && routines.length > 0 && (() => {
+              const active = routines.filter((r) => r.status === "active").length;
+              const paused = routines.filter((r) => r.status === "paused").length;
+              return <span className="ml-1.5 tabular-nums">{active} active{paused > 0 ? `, ${paused} paused` : ""}</span>;
+            })()}
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
