@@ -373,7 +373,7 @@ SyslogIdentifier=paperclip
 # Security
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=${PAPERCLIP_HOME}/.paperclip ${INSTALL_DIR}
+ReadWritePaths=${PAPERCLIP_HOME}/.paperclip ${INSTALL_DIR} /tmp
 PrivateTmp=false
 
 [Install]

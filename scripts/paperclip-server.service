@@ -44,7 +44,7 @@ SyslogIdentifier=paperclip
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/paperclip/.paperclip /opt/paperclip
+ReadWritePaths=/home/paperclip/.paperclip /opt/paperclip /tmp
 PrivateTmp=false
 
 [Install]
