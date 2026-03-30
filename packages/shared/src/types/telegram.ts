@@ -6,6 +6,8 @@ export interface AgentTelegramConfig {
   enabled: boolean;
   ownerChatId: string | null;
   allowedUserIds: string[];
+  requireMention: boolean;
+  mentionPatterns: string[];
   createdAt: string;
   updatedAt: string;
 }

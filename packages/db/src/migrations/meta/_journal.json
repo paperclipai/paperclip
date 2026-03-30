@@ -295,6 +295,13 @@
       "when": 1774731221305,
       "tag": "0041_magical_whiplash",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1743360000000,
+      "tag": "0042_telegram_foundation",
+      "breakpoints": true
     }
   ]
 }

@@ -49,6 +49,8 @@ export function telegramRoutes(db: Db) {
         botToken: req.body.botToken,
         enabled: req.body.enabled,
         allowedUserIds: req.body.allowedUserIds,
+        requireMention: req.body.requireMention,
+        mentionPatterns: req.body.mentionPatterns,
       });
 
       const botInstance = telegram.getActiveBot(agent.id);
@@ -72,6 +74,8 @@ export function telegramRoutes(db: Db) {
         enabled: req.body.enabled,
         ownerChatId: req.body.ownerChatId,
         allowedUserIds: req.body.allowedUserIds,
+        requireMention: req.body.requireMention,
+        mentionPatterns: req.body.mentionPatterns,
       });
 
       if (!config) {

@@ -13,6 +13,8 @@ export const agentTelegramConfigs = pgTable(
     enabled: boolean("enabled").notNull().default(false),
     ownerChatId: text("owner_chat_id"),
     allowedUserIds: jsonb("allowed_user_ids").$type<string[]>().notNull().default([]),
+    requireMention: boolean("require_mention").notNull().default(true),
+    mentionPatterns: jsonb("mention_patterns").$type<string[]>().notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

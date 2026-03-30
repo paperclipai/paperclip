@@ -146,9 +146,64 @@ function toApiConfig(row: ConfigRow): AgentTelegramConfig {
     enabled: row.enabled,
     ownerChatId: row.ownerChatId,
     allowedUserIds: (row.allowedUserIds as string[]) ?? [],
+    requireMention: row.requireMention,
+    mentionPatterns: (row.mentionPatterns as string[]) ?? [],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Returns true when a group message passes the gating check.
+ *  Also strips the trigger text from rawText and returns the cleaned message. */
+function applyGroupGating(opts: {
+  rawText: string;
+  chatType: string;
+  requireMention: boolean;
+  mentionPatterns: string[];
+  botUsername: string | null | undefined;
+  replyToUsername: string | undefined;
+}): { allowed: boolean; cleanedText: string } {
+  const { rawText, chatType, requireMention, mentionPatterns, botUsername, replyToUsername } = opts;
+  const isGroup = chatType === "group" || chatType === "supergroup";
+
+  if (!isGroup || !requireMention) {
+    return { allowed: true, cleanedText: rawText };
+  }
+
+  const botMention = botUsername ? `@${botUsername}` : null;
+  const isMentioned = botMention ? rawText.includes(botMention) : false;
+  const isReplyToBot = !!botUsername && replyToUsername === botUsername;
+
+  const matchedPattern = mentionPatterns.find((pattern) => {
+    try {
+      return new RegExp(pattern, "i").test(rawText);
+    } catch {
+      return false;
+    }
+  });
+
+  if (!isMentioned && !isReplyToBot && !matchedPattern) {
+    return { allowed: false, cleanedText: rawText };
+  }
+
+  // Strip trigger from message text
+  let cleanedText = rawText;
+  if (isMentioned && botMention) {
+    cleanedText = rawText.replace(new RegExp(escapeRegex(botMention), "g"), "").trim();
+  } else if (matchedPattern) {
+    try {
+      cleanedText = rawText.replace(new RegExp(matchedPattern, "i"), "").trim();
+    } catch {
+      // keep original if regex fails
+    }
+  }
+  if (!cleanedText) cleanedText = rawText;
+
+  return { allowed: true, cleanedText };
 }
 
 function splitMessage(text: string): string[] {
@@ -192,6 +247,8 @@ export function telegramService(db: Db) {
     botToken: string;
     enabled?: boolean;
     allowedUserIds?: string[];
+    requireMention?: boolean;
+    mentionPatterns?: string[];
   }): Promise<AgentTelegramConfig> {
     const existing = await getConfig(input.agentId);
     const now = new Date();
@@ -203,6 +260,8 @@ export function telegramService(db: Db) {
           botToken: input.botToken,
           enabled: input.enabled ?? existing.enabled,
           allowedUserIds: input.allowedUserIds ?? existing.allowedUserIds,
+          requireMention: input.requireMention ?? existing.requireMention,
+          mentionPatterns: input.mentionPatterns ?? existing.mentionPatterns,
           updatedAt: now,
         })
         .where(eq(agentTelegramConfigs.id, existing.id))
@@ -221,6 +280,8 @@ export function telegramService(db: Db) {
         botToken: input.botToken,
         enabled: input.enabled ?? false,
         allowedUserIds: input.allowedUserIds ?? [],
+        requireMention: input.requireMention ?? true,
+        mentionPatterns: input.mentionPatterns ?? [],
       })
       .returning();
     if (!created) throw new Error("Failed to create telegram config");
@@ -235,6 +296,8 @@ export function telegramService(db: Db) {
     enabled?: boolean;
     ownerChatId?: string | null;
     allowedUserIds?: string[];
+    requireMention?: boolean;
+    mentionPatterns?: string[];
   }): Promise<AgentTelegramConfig | null> {
     const existing = await getConfig(input.agentId);
     if (!existing) return null;
@@ -244,6 +307,8 @@ export function telegramService(db: Db) {
     if (input.enabled !== undefined) patch.enabled = input.enabled;
     if (input.ownerChatId !== undefined) patch.ownerChatId = input.ownerChatId;
     if (input.allowedUserIds !== undefined) patch.allowedUserIds = input.allowedUserIds;
+    if (input.requireMention !== undefined) patch.requireMention = input.requireMention;
+    if (input.mentionPatterns !== undefined) patch.mentionPatterns = input.mentionPatterns;
 
     const [updated] = await db
       .update(agentTelegramConfigs)
@@ -525,19 +590,31 @@ export function telegramService(db: Db) {
           .where(eq(agentTelegramConfigs.id, currentConfig.id));
       }
 
+      const rawText = ctx.message.text;
+
+      // Group chat gating
+      const gating = applyGroupGating({
+        rawText,
+        chatType: ctx.chat.type,
+        requireMention: currentConfig?.requireMention ?? true,
+        mentionPatterns: (currentConfig?.mentionPatterns as string[]) ?? [],
+        botUsername: currentConfig?.botUsername ?? ctx.me?.username,
+        replyToUsername: ctx.message.reply_to_message?.from?.username,
+      });
+      if (!gating.allowed) return;
+
       const instance = activeBots.get(agentId);
       if (instance) {
         instance.lastMessageAt = new Date();
         instance.messageCount++;
       }
 
-      const rawText = ctx.message.text;
-      let messageText = rawText;
+      let messageText = gating.cleanedText;
       let forceNewSession = false;
 
-      if (rawText.trimStart().toLowerCase().startsWith("/new")) {
+      if (messageText.trimStart().toLowerCase().startsWith("/new")) {
         forceNewSession = true;
-        messageText = rawText.trimStart().slice(4).trim();
+        messageText = messageText.trimStart().slice(4).trim();
       }
 
       try {
@@ -584,15 +661,17 @@ export function telegramService(db: Db) {
     /** Shared helper: process a Telegram media file, download it, inject context, and wake the agent. */
     async function processTelegramMedia(opts: {
       chatId: number;
+      chatType: string;
       senderId: string;
       fileId: string;
       fileName: string;
       mimeType: string | undefined;
       fileSize: number | undefined;
       captionText: string;
+      replyToUsername?: string;
       reply: (text: string) => Promise<unknown>;
     }): Promise<void> {
-      const { chatId, senderId, fileId, fileName, mimeType, fileSize, captionText, reply } = opts;
+      const { chatId, chatType, senderId, fileId, fileName, mimeType, fileSize, captionText, replyToUsername, reply } = opts;
       const telegramChatId = String(chatId);
 
       if (allowedUserIds.size > 0 && !allowedUserIds.has(senderId)) {
@@ -601,6 +680,18 @@ export function telegramService(db: Db) {
       }
 
       const currentConfig = await getConfig(agentId);
+
+      // Group chat gating for media messages
+      const gating = applyGroupGating({
+        rawText: captionText,
+        chatType,
+        requireMention: currentConfig?.requireMention ?? true,
+        mentionPatterns: (currentConfig?.mentionPatterns as string[]) ?? [],
+        botUsername: currentConfig?.botUsername,
+        replyToUsername,
+      });
+      if (!gating.allowed) return;
+
       if (currentConfig && !currentConfig.ownerChatId) {
         await db
           .update(agentTelegramConfigs)
@@ -690,12 +781,14 @@ export function telegramService(db: Db) {
 
       await processTelegramMedia({
         chatId: ctx.chat.id,
+        chatType: ctx.chat.type,
         senderId: String(ctx.from.id),
         fileId: largest.file_id,
         fileName: `photo_${largest.file_unique_id}.jpg`,
         mimeType: "image/jpeg",
         fileSize: largest.file_size,
         captionText: ctx.message.caption ?? "",
+        replyToUsername: ctx.message.reply_to_message?.from?.username,
         reply: (text) => ctx.reply(text),
       });
     });
@@ -704,12 +797,14 @@ export function telegramService(db: Db) {
       const doc = ctx.message.document;
       await processTelegramMedia({
         chatId: ctx.chat.id,
+        chatType: ctx.chat.type,
         senderId: String(ctx.from.id),
         fileId: doc.file_id,
         fileName: doc.file_name ?? `document_${doc.file_unique_id}`,
         mimeType: doc.mime_type,
         fileSize: doc.file_size,
         captionText: ctx.message.caption ?? "",
+        replyToUsername: ctx.message.reply_to_message?.from?.username,
         reply: (text) => ctx.reply(text),
       });
     });

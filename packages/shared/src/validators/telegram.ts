@@ -4,6 +4,8 @@ export const upsertTelegramConfigSchema = z.object({
   botToken: z.string().trim().min(10, "Bot token is required"),
   enabled: z.boolean().optional().default(false),
   allowedUserIds: z.array(z.string().trim().min(1)).optional().default([]),
+  requireMention: z.boolean().optional().default(true),
+  mentionPatterns: z.array(z.string().trim().min(1)).optional().default([]),
 });
 
 export const updateTelegramConfigSchema = z.object({
@@ -11,6 +13,8 @@ export const updateTelegramConfigSchema = z.object({
   enabled: z.boolean().optional(),
   ownerChatId: z.string().trim().min(1).optional().nullable(),
   allowedUserIds: z.array(z.string().trim().min(1)).optional(),
+  requireMention: z.boolean().optional(),
+  mentionPatterns: z.array(z.string().trim().min(1)).optional(),
 });
 
 export const telegramMediaTypeSchema = z.enum(["photo", "document"]);
