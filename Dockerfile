@@ -1,6 +1,6 @@
 FROM node:lts-trixie-slim AS base
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates curl git awscli ffmpeg imagemagick graphicsmagick \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
@@ -13,6 +13,7 @@ COPY ui/package.json ui/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
+COPY packages/plugins/sdk/package.json packages/plugins/sdk/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
@@ -28,6 +29,10 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+<<<<<<< HEAD
+=======
+RUN pnpm --filter @paperclipai/shared build
+>>>>>>> feature/add-tools-and-opencode-models
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/server build
@@ -40,6 +45,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+RUN npm install -g @googleworkspace/cli
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -49,7 +56,9 @@ ENV NODE_ENV=production \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
-  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+  PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  OPENCODE_CONFIG=/paperclip/.config/opencode/opencode.json
+
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
