@@ -37,6 +37,7 @@ const accessServiceImpl = vi.hoisted(() => ({
 }));
 
 const mockAdapter = vi.hoisted(() => ({
+  type: "claude_local" as const,
   start: vi.fn().mockResolvedValue({ instanceId: "instance-abc-123" }),
   stop: vi.fn().mockResolvedValue(undefined),
   // scale returns instances based on what adapter.scale would return in manualScale path
@@ -46,12 +47,24 @@ const mockAdapter = vi.hoisted(() => ({
   testEnvironment: vi.fn().mockResolvedValue({ status: "pass" }),
   listSkills: vi.fn().mockResolvedValue([]),
   syncSkills: vi.fn().mockResolvedValue(undefined),
-  sessionCodec: vi.fn(),
-  sessionManagement: vi.fn(),
+  sessionCodec: {
+    deserialize: vi.fn().mockReturnValue(null),
+    serialize: vi.fn().mockReturnValue(null),
+  },
+  sessionManagement: {
+    supportsSessionResume: false,
+    nativeContextManagement: "unknown" as const,
+    defaultSessionCompaction: {
+      enabled: false,
+      maxSessionRuns: 100,
+      maxRawInputTokens: 100000,
+      maxSessionAgeHours: 24,
+    },
+  },
   models: [],
   listModels: vi.fn().mockResolvedValue([]),
   supportsLocalAgentJwt: true,
-  agentConfigurationDoc: null,
+  agentConfigurationDoc: undefined,
   getQuotaWindows: vi.fn().mockResolvedValue([]),
 }));
 
