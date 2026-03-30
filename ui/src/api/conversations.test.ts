@@ -318,7 +318,7 @@ describe("sendMessage", () => {
 
     const result = await sendMessage("issue-1", "agent-1", "hello");
     expect(result).toEqual({ ok: true });
-    expect(issuesApi.addComment).toHaveBeenCalledWith("issue-1", "hello", true);
+    expect(issuesApi.addComment).toHaveBeenCalledWith("issue-1", "hello");
     expect(agentsApi.wakeup).toHaveBeenCalledWith(
       "agent-1",
       {

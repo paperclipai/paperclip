@@ -71,18 +71,23 @@ export function workspaceFileRoutes(db: Db) {
     ) {
       return null;
     }
-    // Check parent directory — it may already exist and be a symlink
-    const parentDir = path.dirname(resolved);
-    try {
-      const realParent = await fs.realpath(parentDir);
-      if (
-        realParent !== realCwd &&
-        !realParent.startsWith(realCwd + path.sep)
-      ) {
-        return null;
+    // Walk up from the target to find the closest existing ancestor and verify
+    // it resolves within the workspace. This prevents mkdir from following a
+    // symlink ancestor that points outside the workspace boundary.
+    let checkDir = path.dirname(resolved);
+    while (checkDir !== realCwd && checkDir.startsWith(realCwd + path.sep)) {
+      try {
+        const realAncestor = await fs.realpath(checkDir);
+        if (
+          realAncestor !== realCwd &&
+          !realAncestor.startsWith(realCwd + path.sep)
+        ) {
+          return null;
+        }
+        break;
+      } catch {
+        checkDir = path.dirname(checkDir);
       }
-    } catch {
-      // Parent doesn't exist yet — will be created by mkdir; logical check passed
     }
     return resolved;
   }

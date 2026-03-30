@@ -126,8 +126,7 @@ export async function sendMessage(
   body: string,
   companyId?: string,
 ): Promise<SendMessageResult> {
-  // Comment is the primary action — let it throw on failure.
-  await issuesApi.addComment(issueId, body, true);
+  await issuesApi.addComment(issueId, body);
 
   // Wakeup is best-effort — capture failures so the caller can surface them.
   try {
