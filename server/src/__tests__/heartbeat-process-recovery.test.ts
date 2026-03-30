@@ -133,6 +133,11 @@ describe("heartbeat orphaned process recovery", () => {
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    invocationSource?: "assignment" | "timer" | "on_demand" | "automation";
+    triggerDetail?: "manual" | "ping" | "callback" | "system" | null;
+    wakeupReason?: string | null;
+    wakeupPayload?: Record<string, unknown>;
+    contextSnapshot?: Record<string, unknown>;
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processLossRetryCount?: number;
@@ -147,6 +152,12 @@ describe("heartbeat orphaned process recovery", () => {
     const issueId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const invocationSource = input?.invocationSource ?? "assignment";
+    const triggerDetail = input?.triggerDetail ?? "system";
+    const wakeupPayload =
+      input?.wakeupPayload ?? (input?.includeIssue === false ? {} : { issueId });
+    const contextSnapshot =
+      input?.contextSnapshot ?? (input?.includeIssue === false ? {} : { issueId });
 
     await db.insert(companies).values({
       id: companyId,
@@ -171,10 +182,10 @@ describe("heartbeat orphaned process recovery", () => {
       id: wakeupRequestId,
       companyId,
       agentId,
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: input?.includeIssue === false ? {} : { issueId },
+      source: invocationSource,
+      triggerDetail,
+      reason: input?.wakeupReason ?? "issue_assigned",
+      payload: wakeupPayload,
       status: "claimed",
       runId,
       claimedAt: now,
@@ -184,11 +195,11 @@ describe("heartbeat orphaned process recovery", () => {
       id: runId,
       companyId,
       agentId,
-      invocationSource: "assignment",
-      triggerDetail: "system",
+      invocationSource,
+      triggerDetail,
       status: input?.runStatus ?? "running",
       wakeupRequestId,
-      contextSnapshot: input?.includeIssue === false ? {} : { issueId },
+      contextSnapshot,
       processPid: input?.processPid ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
@@ -300,6 +311,49 @@ describe("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("does not queue a retry for idle timer heartbeats with no actionable context", async () => {
+    const { agentId, runId, wakeupRequestId } = await seedRunFixture({
+      includeIssue: false,
+      invocationSource: "timer",
+      wakeupReason: "heartbeat_timer",
+      processPid: 999_999_999,
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+        wakeReason: "heartbeat_timer",
+        now: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        reason: agentWakeupRequests.reason,
+        status: agentWakeupRequests.status,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toEqual([
+      {
+        id: wakeupRequestId,
+        reason: "heartbeat_timer",
+        status: "failed",
+      },
+    ]);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

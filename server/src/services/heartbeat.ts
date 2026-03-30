@@ -299,6 +299,40 @@ export function getTimerWakeSuppressionStateKey(
     .join("|");
 }
 
+function readNonEmptyStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const deduped = new Set<string>();
+  for (const entry of value) {
+    const normalized = readNonEmptyString(entry);
+    if (normalized) deduped.add(normalized);
+  }
+  return [...deduped];
+}
+
+function deriveProcessLossRetryContext(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const taskKey = deriveTaskKey(contextSnapshot, null);
+  const commentId = deriveCommentId(contextSnapshot, null);
+  const approvalId = readNonEmptyString(contextSnapshot?.approvalId);
+  const issueIds = [
+    ...readNonEmptyStringArray(contextSnapshot?.issueIds),
+    ...readNonEmptyStringArray(contextSnapshot?.linkedIssueIds),
+  ].filter((value, index, values) => values.indexOf(value) === index);
+  const issueId = readNonEmptyString(contextSnapshot?.issueId) ?? issueIds[0] ?? null;
+
+  return {
+    canRetry: Boolean(taskKey || commentId || approvalId || issueIds.length > 0),
+    payload: {
+      ...(issueId ? { issueId } : {}),
+      ...(taskKey && taskKey !== issueId ? { taskKey } : {}),
+      ...(commentId ? { commentId } : {}),
+      ...(approvalId ? { approvalId } : {}),
+      ...(issueIds.length > 0 ? { issueIds } : {}),
+    },
+  };
+}
+
 type ObservedWorkspaceGitProvenance = {
   repoRoot: string | null;
   branchName: string | null;
@@ -1677,6 +1711,7 @@ export function heartbeatService(db: Db) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKey(contextSnapshot, null);
+    const retryContext = deriveProcessLossRetryContext(contextSnapshot);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = {
       ...contextSnapshot,
@@ -1695,7 +1730,7 @@ export function heartbeatService(db: Db) {
           triggerDetail: "system",
           reason: "process_lost_retry",
           payload: {
-            ...(issueId ? { issueId } : {}),
+            ...retryContext.payload,
             retryOfRunId: run.id,
           },
           status: "queued",
@@ -2029,7 +2064,12 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const retryContext = deriveProcessLossRetryContext(parseObject(run.contextSnapshot));
+      const shouldRetry =
+        tracksLocalChild &&
+        !!run.processPid &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        retryContext.canRetry;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
