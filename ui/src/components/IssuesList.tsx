@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -52,8 +52,10 @@ import {
   RotateCcw,
   Loader2,
   FolderKanban,
+  Keyboard,
 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
+import { useIssueTriageKeyboard } from "../hooks/useIssueTriageKeyboard";
 import type { Issue } from "@paperclipai/shared";
 import type { TaskCronSchedule } from "@paperclipai/shared";
 
@@ -377,6 +379,16 @@ export function IssuesList({
   const activeIssues = useMemo(() => filtered.filter((i) => !pastStatuses.has(i.status)), [filtered]);
   const pastIssues = useMemo(() => filtered.filter((i) => pastStatuses.has(i.status)), [filtered]);
 
+  // Keyboard triage state
+  const navigate = useNavigate();
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const issueRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+
+  // Reset selection when filtered list changes
+  useEffect(() => {
+    setSelectedIndex(-1);
+  }, [filtered]);
+
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];
@@ -427,15 +439,74 @@ export function IssuesList({
     setAssigneeSearch("");
   };
 
+  // Compute flat visible issue list matching render order for keyboard navigation
+  const flatVisibleIssues = useMemo(() => {
+    if (viewState.viewMode !== "list") return [];
+    if (viewState.groupBy === "none") {
+      // Active section is open by default, past is closed by default
+      const activeOpen = !viewState.collapsedGroups.includes("__active");
+      const pastOpen = viewState.collapsedGroups.includes("__past"); // inverted: defaultOpen=false
+      const result: Issue[] = [];
+      if (activeOpen) result.push(...activeIssues);
+      if (pastOpen) result.push(...pastIssues);
+      return result;
+    }
+    // Grouped view
+    const result: Issue[] = [];
+    for (const group of groupedContent) {
+      const inCollapsed = viewState.collapsedGroups.includes(group.key);
+      const effectiveOpen = !inCollapsed; // defaultOpen=true for grouped
+      if (effectiveOpen) result.push(...group.items);
+    }
+    return result;
+  }, [viewState.viewMode, viewState.groupBy, viewState.collapsedGroups, activeIssues, pastIssues, groupedContent]);
+
+  // Scroll selected issue into view
+  useEffect(() => {
+    if (selectedIndex < 0 || selectedIndex >= flatVisibleIssues.length) return;
+    const issue = flatVisibleIssues[selectedIndex];
+    const el = issueRowRefs.current.get(issue.id);
+    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedIndex, flatVisibleIssues]);
+
+  useIssueTriageKeyboard({
+    issueCount: flatVisibleIssues.length,
+    selectedIndex,
+    onSelectIndex: setSelectedIndex,
+    onOpen: useCallback((index: number) => {
+      const issue = flatVisibleIssues[index];
+      if (issue) navigate(`/issues/${issue.identifier ?? issue.id}`, { state: issueLinkState });
+    }, [flatVisibleIssues, navigate, issueLinkState]),
+    onSetStatus: useCallback((index: number, status: string) => {
+      const issue = flatVisibleIssues[index];
+      if (issue) onUpdateIssue(issue.id, { status });
+    }, [flatVisibleIssues, onUpdateIssue]),
+    onOpenAssignee: useCallback((index: number) => {
+      const issue = flatVisibleIssues[index];
+      if (issue) setAssigneePickerIssueId(issue.id);
+    }, [flatVisibleIssues]),
+    enabled: viewState.viewMode === "list",
+  });
+
   const scheduleDraftValue = (schedule: TaskCronSchedule) =>
     recurringDrafts[schedule.id] ?? schedule.expression;
 
-  const renderIssueRow = useCallback((issue: Issue) => (
+  const renderIssueRow = useCallback((issue: Issue) => {
+    const visibleIdx = flatVisibleIssues.indexOf(issue);
+    const isSelected = visibleIdx >= 0 && visibleIdx === selectedIndex;
+    return (
     <Link
       key={issue.id}
+      ref={(el: HTMLAnchorElement | null) => {
+        if (el) issueRowRefs.current.set(issue.id, el);
+        else issueRowRefs.current.delete(issue.id);
+      }}
       to={`/issues/${issue.identifier ?? issue.id}`}
       state={issueLinkState}
-      className="flex items-start gap-2 py-2.5 pl-3 pr-3 text-sm last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit sm:items-center sm:py-2"
+      className={cn(
+        "flex items-start gap-2 py-2.5 pl-3 pr-3 text-sm last:border-b-0 cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit sm:items-center sm:py-2",
+        isSelected && "ring-2 ring-inset ring-primary bg-accent/60",
+      )}
     >
       <span className="shrink-0 pt-px sm:hidden" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
         <StatusIcon
@@ -820,7 +891,7 @@ export function IssuesList({
         </span>
       </span>
     </Link>
-  ), [issueLinkState, onUpdateIssue, recurringIssueIds, liveIssueIds, recurringByIssueId, recurringPickerIssueId, updateSchedule, scheduleDraftValue, recurringDrafts, assigneePickerIssueId, assigneeSearch, agentName, agents, projectPickerIssueId, projectSearch, allProjects]); // eslint-disable-line react-hooks/exhaustive-deps
+  ); }, [issueLinkState, onUpdateIssue, recurringIssueIds, liveIssueIds, recurringByIssueId, recurringPickerIssueId, updateSchedule, scheduleDraftValue, recurringDrafts, assigneePickerIssueId, assigneeSearch, agentName, agents, projectPickerIssueId, projectSearch, allProjects, flatVisibleIssues, selectedIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="space-y-4">
@@ -1121,6 +1192,20 @@ export function IssuesList({
           )}
         </div>
       </div>
+
+      {/* Keyboard shortcut hint */}
+      {viewState.viewMode === "list" && !isLoading && filtered.length > 0 && (
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
+          <Keyboard className="h-3 w-3" />
+          <span>
+            <kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">j</kbd>/<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">k</kbd> navigate
+            {" "}<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">Enter</kbd> open
+            {" "}<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">1</kbd>-<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">5</kbd> status
+            {" "}<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">a</kbd> assign
+            {" "}<kbd className="rounded border border-border px-1 py-0.5 text-[10px] font-mono">Esc</kbd> deselect
+          </span>
+        </div>
+      )}
 
       {!isLoading && upcomingSchedules.length > 0 && (
         <Collapsible defaultOpen>
