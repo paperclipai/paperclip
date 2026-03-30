@@ -44,6 +44,7 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
 import { VpsAdminSetupPage } from "./pages/VpsAdminSetup";
 import { VpsDomainSetupPage } from "./pages/VpsDomainSetup";
+import { ProviderAuthPage } from "./pages/ProviderAuth";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -324,6 +325,7 @@ export function App() {
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route path="setup/admin" element={<VpsAdminSetupPage />} />
         <Route path="setup/domain" element={<VpsDomainSetupPage />} />
+        <Route path="setup/providers" element={<ProviderAuthPage showSkip />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
@@ -336,6 +338,7 @@ export function App() {
             <Route path="experimental" element={<InstanceExperimentalSettings />} />
             <Route path="plugins" element={<PluginManager />} />
             <Route path="plugins/:pluginId" element={<PluginSettings />} />
+            <Route path="providers" element={<ProviderAuthPage />} />
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />

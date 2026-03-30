@@ -29,6 +29,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { vpsSetupRoutes } from "./routes/vps-setup.js";
+import { providerAuthRoutes } from "./routes/provider-auth.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -227,6 +228,7 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  api.use(providerAuthRoutes());
   api.use(
     vpsSetupRoutes(db, {
       deploymentMode: opts.deploymentMode,

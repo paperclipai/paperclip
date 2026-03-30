@@ -33,8 +33,8 @@ export function VpsDomainSetupPage() {
     onSuccess: async (data) => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-      // Redirect to the new HTTPS domain
-      window.location.href = data.url;
+      // Redirect to provider setup on the new HTTPS domain
+      window.location.href = `${data.url}/setup/providers`;
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Domain configuration failed");
@@ -45,7 +45,7 @@ export function VpsDomainSetupPage() {
     mutationFn: () => vpsApi.skipDomain(),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-      navigate("/", { replace: true });
+      navigate("/setup/providers", { replace: true });
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Failed to skip domain setup");
