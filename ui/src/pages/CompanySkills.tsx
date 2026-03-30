@@ -49,6 +49,7 @@ import {
   Link2,
   Loader2,
   ExternalLink,
+  MessageSquare,
   Paperclip,
   Pencil,
   Plus,
@@ -148,6 +149,109 @@ function buildTree(entries: CompanySkillFileInventoryEntry[]) {
 
   sortNode(root);
   return root.children;
+}
+
+/* ── agentskill.sh inline review ─────────────────────────────────── */
+
+function AgentSkillReview({
+  slug,
+  onSubmitted,
+}: {
+  slug: string;
+  onSubmitted?: () => void;
+}) {
+  const [rating, setRating] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  async function handleSubmit() {
+    if (rating === 0) return;
+    setSubmitting(true);
+    try {
+      await fetch(`https://agentskill.sh/api/skills/${encodeURIComponent(slug)}/agent-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          score: rating,
+          comment: comment.trim() || undefined,
+          platform: "paperclip",
+          agentName: "Paperclip",
+          sessionId: `paperclip-${slug}-${Date.now()}`,
+        }),
+      });
+      setSubmitted(true);
+      onSubmitted?.();
+    } catch {
+      // silent fail
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="text-green-500">Thanks for your review!</span>
+        <span className="flex items-center gap-0.5">
+          {Array.from({ length: 5 }, (_, i) => (
+            <Star
+              key={i}
+              className={cn("h-3 w-3", i < rating ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground/30")}
+            />
+          ))}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-xs">
+      <div className="flex items-center gap-1">
+        <span className="text-muted-foreground">Rate:</span>
+        {Array.from({ length: 5 }, (_, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => setRating(i + 1)}
+            onMouseEnter={() => setHover(i + 1)}
+            onMouseLeave={() => setHover(0)}
+            className="p-0"
+          >
+            <Star
+              className={cn(
+                "h-4 w-4 transition-colors",
+                i < (hover || rating)
+                  ? "fill-yellow-400 text-yellow-400"
+                  : "text-muted-foreground/30 hover:text-yellow-400/50",
+              )}
+            />
+          </button>
+        ))}
+      </div>
+      {rating > 0 && (
+        <>
+          <input
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="Optional comment"
+            className="w-40 rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={submitting}
+            onClick={handleSubmit}
+            className="h-6 px-2 text-xs"
+          >
+            {submitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+            <span className="ml-1">Submit</span>
+          </Button>
+        </>
+      )}
+    </div>
+  );
 }
 
 /* ── agentskill.sh in-app browser ────────────────────────────────── */
@@ -1084,24 +1188,9 @@ function SkillPane({
               </span>
             </div>
             {detail.sourceType === "agentskill_sh" && detail.sourceLocator && (
-              <div className="flex flex-wrap items-center gap-2">
-                <a
-                  href={`${detail.sourceLocator}?ref=paperclip`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  View on agentskill.sh <ExternalLink className="h-3 w-3" />
-                </a>
-                <a
-                  href={`${detail.sourceLocator}?ref=paperclip#reviews`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Star className="h-3 w-3" /> Rate & review
-                </a>
-              </div>
+              <AgentSkillReview
+                slug={(detail.metadata as Record<string, unknown>)?.agentSkillSlug as string ?? detail.slug}
+              />
             )}
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
