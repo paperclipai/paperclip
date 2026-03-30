@@ -478,7 +478,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               onCommit={(name) => commitField("name", { name })}
               immediate
               className="w-full rounded border border-border bg-transparent px-2 py-1 text-sm outline-none"
-              placeholder="Project name"
+              placeholder="프로젝트 이름"
             />
           ) : (
             <span className="text-sm">{project.name}</span>
@@ -495,7 +495,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               onSave={(description) => commitField("description", { description })}
               as="p"
               className="text-sm text-muted-foreground"
-              placeholder="Add a description..."
+              placeholder="설명 추가..."
               multiline
             />
           ) : (
@@ -605,7 +605,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 <button
                   type="button"
                   className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
-                  aria-label="Codebase help"
+                  aria-label="코드베이스 도움"
                 >
                   ?
                 </button>
@@ -654,7 +654,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       variant="ghost"
                       size="icon-xs"
                       onClick={clearRepoWorkspace}
-                      aria-label="Clear repo"
+                      aria-label="리포지토리 지우기"
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -708,7 +708,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       variant="ghost"
                       size="icon-xs"
                       onClick={clearLocalWorkspace}
-                      aria-label="Clear local folder"
+                      aria-label="로컬 폴더 지우기"
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -864,7 +864,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     <button
                       type="button"
                       className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
-                      aria-label="Execution workspaces help"
+                      aria-label="실행 작업공간 도움"
                     >
                       ?
                     </button>

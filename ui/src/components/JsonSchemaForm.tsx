@@ -451,7 +451,7 @@ const EnumField = React.memo(({
       disabled={disabled}
     >
       <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
+        <SelectValue placeholder="옵션 선택" />
       </SelectTrigger>
       <SelectContent>
         {options.map((option) => (

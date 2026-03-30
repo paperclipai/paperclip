@@ -59,7 +59,7 @@ export function BreadcrumbBar() {
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label="사이드바 열기"
     >
       <Menu className="h-5 w-5" />
     </Button>

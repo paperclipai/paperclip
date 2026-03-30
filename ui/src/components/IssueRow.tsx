@@ -108,7 +108,7 @@ export function IssueRow({
                 }
               }}
               className="inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-blue-500/20"
-              aria-label="Mark as read"
+              aria-label="읽음으로 표시"
             >
               <span
                 className={cn(
