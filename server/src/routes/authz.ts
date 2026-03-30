@@ -113,6 +113,48 @@ export async function requireProjectPermission(
 }
 
 /**
+ * Checks company access, then verifies the actor holds EITHER the company-level
+ * permission OR the project-level permission (if a projectId is provided).
+ *
+ * This allows project members to perform actions on project issues without
+ * needing the broader company-level grant.
+ */
+export async function requirePermissionOrProjectPermission(
+  req: Request,
+  access: AccessChecker & ProjectAccessChecker,
+  companyId: string,
+  companyPermission: PermissionKey,
+  projectId: string | null | undefined,
+  projectPermission: ProjectPermissionKey,
+) {
+  assertCompanyAccess(req, companyId);
+
+  // Agents: check company-level permission only (project checks are for humans)
+  if (req.actor.type === "agent") {
+    if (!req.actor.agentId) throw forbidden("Agent authentication required");
+    const allowed = await access.hasPermission(companyId, "agent", req.actor.agentId, companyPermission);
+    if (!allowed) throw forbidden(`Missing permission: ${companyPermission}`);
+    return;
+  }
+
+  if (req.actor.type !== "board") throw unauthorized();
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+
+  // Try company-level permission first
+  const hasCompanyPerm = await access.canUser(companyId, req.actor.userId, companyPermission);
+  if (hasCompanyPerm) return;
+
+  // Fall back to project-level permission if a project is involved
+  if (projectId) {
+    if (await access.isCompanyOwner(companyId, req.actor.userId)) return;
+    const hasProjectPerm = await access.hasProjectPermission(projectId, "user", req.actor.userId!, projectPermission);
+    if (hasProjectPerm) return;
+  }
+
+  throw forbidden(`Missing permission: ${companyPermission}${projectId ? ` or ${projectPermission}` : ""}`);
+}
+
+/**
  * Checks company access, then verifies the actor has membership in the given
  * project (no specific permission required).
  */
