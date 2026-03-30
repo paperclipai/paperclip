@@ -553,7 +553,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder="문서 키"
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -564,7 +564,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder="선택사항: 제목"
             />
           )}
           <MarkdownEditor
@@ -572,7 +572,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder="마크다운 본문"
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -793,7 +793,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder="선택사항: 제목"
                     />
                   )}
                   <div
@@ -818,7 +818,7 @@ export function IssueDocumentsSection({
                           };
                         });
                       }}
-                      placeholder="Markdown body"
+                      placeholder="마크다운 본문"
                       bordered={false}
                       className="bg-transparent"
                       contentClassName={documentBodyContentClassName}

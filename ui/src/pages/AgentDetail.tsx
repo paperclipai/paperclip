@@ -127,10 +127,10 @@ function formatEnvForDisplay(envValue: unknown): string {
 }
 
 const sourceLabels: Record<string, string> = {
-  timer: "Timer",
-  assignment: "Assignment",
-  on_demand: "On-demand",
-  automation: "Automation",
+  timer: "타이머",
+  assignment: "할당",
+  on_demand: "요청",
+  automation: "자동화",
 };
 
 const LIVE_SCROLL_BOTTOM_TOLERANCE_PX = 32;
@@ -700,7 +700,7 @@ export function AgentDetail() {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+        crumbs.push({ label: "구성" });
       } else if (activeView === "skills") {
         crumbs.push({ label: "스킬" });
       } else if (activeView === "runs") {
@@ -861,7 +861,7 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "dashboard", label: "Dashboard" },
-              { value: "configuration", label: "Configuration" },
+              { value: "configuration", label: "구성" },
               { value: "skills", label: "스킬" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
@@ -898,7 +898,7 @@ export function AgentDetail() {
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? "저장 중…" : "저장"}
             </Button>
           </div>
         </div>
@@ -924,7 +924,7 @@ export function AgentDetail() {
               onClick={() => saveConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              {configSaving ? "Saving…" : "Save"}
+              {configSaving ? "저장 중…" : "저장"}
             </Button>
           </div>
         </div>
@@ -1198,16 +1198,16 @@ function AgentOverview({
 
       {/* Charts */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
+        <ChartCard title="실행 활동" subtitle="지난 14일">
           <RunActivityChart runs={runs} />
         </ChartCard>
-        <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+        <ChartCard title="우선순위별 이슈" subtitle="지난 14일">
           <PriorityChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Issues by Status" subtitle="Last 14 days">
+        <ChartCard title="상태별 이슈" subtitle="지난 14일">
           <IssueStatusChart issues={assignedIssues} />
         </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
+        <ChartCard title="성공률" subtitle="지난 14일">
           <SuccessRateChart runs={runs} />
         </ChartCard>
       </div>
@@ -2811,7 +2811,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
               variant="ghost"
               size="icon-sm"
               onClick={copyToken}
-              title="Copy"
+              title="복사"
             >
               <Copy className="h-3.5 w-3.5" />
             </Button>
@@ -2839,7 +2839,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
         </p>
         <div className="flex items-center gap-2">
           <Input
-            placeholder="Key name (e.g. production)"
+            placeholder="키 이름 (예: production)"
             value={newKeyName}
             onChange={(e) => setNewKeyName(e.target.value)}
             className="h-8 text-sm"

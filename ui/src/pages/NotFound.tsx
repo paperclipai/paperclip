@@ -18,7 +18,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const { companies, selectedCompany } = useCompany();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Not Found" }]);
+    setBreadcrumbs([{ label: "찾을 수 없음" }]);
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
@@ -26,7 +26,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const currentPath = `${location.pathname}${location.search}${location.hash}`;
   const normalizedPrefix = requestedPrefix?.toUpperCase();
 
-  const title = scope === "invalid_company_prefix" ? "Company not found" : "Page not found";
+  const title = scope === "invalid_company_prefix" ? "회사를 찾을 수 없습니다" : "페이지를 찾을 수 없습니다";
   const description =
     scope === "invalid_company_prefix"
       ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`

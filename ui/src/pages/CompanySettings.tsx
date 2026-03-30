@@ -300,7 +300,7 @@ export function CompanySettings() {
           General
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label="회사명" hint="회사의 표시명입니다.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -309,14 +309,14 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label="설명"
+            hint="회사 프로필에 표시되는 선택적 설명입니다."
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder="선택사항: 회사 설명"
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -340,8 +340,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label="로고"
+                hint="PNG, JPEG, WEBP, GIF 또는 SVG 로고 이미지를 업로드하세요."
               >
                 <div className="space-y-2">
                   <input
@@ -381,8 +381,8 @@ export function CompanySettings() {
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label="브랜드 색상"
+                hint="회사 아이콘의 색조를 설정합니다. 자동 생성 색상은 비워두세요."
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -400,7 +400,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder="자동"
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -450,8 +450,8 @@ export function CompanySettings() {
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label="신입 채용 시 보드 승인 필요"
+            hint="새 에이전트 채용은 보드 승인 전까지 대기 상태로 유지됩니다."
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
           />

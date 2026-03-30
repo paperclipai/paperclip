@@ -607,10 +607,10 @@ export function OnboardingWizard() {
               <div className="flex items-center gap-0 mb-8 border-b border-border">
                 {(
                   [
-                    { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
+                    { step: 1 as Step, label: "회사", icon: Building2 },
+                    { step: 2 as Step, label: "에이전트", icon: Bot },
+                    { step: 3 as Step, label: "작업", icon: ListTodo },
+                    { step: 4 as Step, label: "시작", icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -638,9 +638,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">회사 이름 지정</h3>
                       <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
+                        에이전트가 일할 조직입니다.
                       </p>
                     </div>
                   </div>
@@ -653,7 +653,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      회사명
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -672,11 +672,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Mission / goal (optional)
+                      미션 / 목표 (선택사항)
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder="What is this company trying to achieve?"
+                      placeholder="이 회사가 달성하려는 목표는 무엇입니까?"
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
@@ -691,15 +691,15 @@ export function OnboardingWizard() {
                       <Bot className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Create your first agent</h3>
+                      <h3 className="font-medium">첫 에이전트 만들기</h3>
                       <p className="text-xs text-muted-foreground">
-                        Choose how this agent will run tasks.
+                        에이전트가 작업을 실행하는 방법을 선택하세요.
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Agent name
+                      에이전트 이름
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -713,7 +713,7 @@ export function OnboardingWizard() {
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
+                      어댑터 유형
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -721,14 +721,14 @@ export function OnboardingWizard() {
                           value: "claude_local" as const,
                           label: "Claude Code",
                           icon: Sparkles,
-                          desc: "Local Claude agent",
+                          desc: "로컬 Claude 에이전트",
                           recommended: true
                         },
                         {
                           value: "codex_local" as const,
                           label: "Codex",
                           icon: Code,
-                          desc: "Local Codex agent",
+                          desc: "로컬 Codex 에이전트",
                           recommended: true
                         }
                       ].map((opt) => (
@@ -753,7 +753,7 @@ export function OnboardingWizard() {
                         >
                           {opt.recommended && (
                             <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                              Recommended
+                              권장
                             </span>
                           )}
                           <opt.icon className="h-4 w-4" />
@@ -775,7 +775,7 @@ export function OnboardingWizard() {
                           showMoreAdapters ? "rotate-0" : "-rotate-90"
                         )}
                       />
-                      More Agent Adapter Types
+                      더 많은 에이전트 어댑터 유형
                     </button>
 
                     {showMoreAdapters && (
@@ -785,31 +785,31 @@ export function OnboardingWizard() {
                             value: "gemini_local" as const,
                             label: "Gemini CLI",
                             icon: Gem,
-                            desc: "Local Gemini agent"
+                            desc: "로컬 Gemini 에이전트"
                           },
                           {
                             value: "process" as const,
                             label: "Process",
                             icon: Terminal,
-                            desc: "Run a local command"
+                            desc: "로컬 명령 실행"
                           },
                           {
                             value: "opencode_local" as const,
                             label: "OpenCode",
                             icon: OpenCodeLogoIcon,
-                            desc: "Local multi-provider agent"
+                            desc: "로컬 멀티 프로바이더 에이전트"
                           },
                           {
                             value: "pi_local" as const,
                             label: "Pi",
                             icon: Terminal,
-                            desc: "Local Pi agent"
+                            desc: "로컬 Pi 에이전트"
                           },
                           {
                             value: "cursor" as const,
                             label: "Cursor",
                             icon: MousePointer2,
-                            desc: "Local Cursor agent"
+                            desc: "로컬 Cursor 에이전트"
                           },
                           {
                             value: "openclaw_gateway" as const,
@@ -868,7 +868,7 @@ export function OnboardingWizard() {
                       <div>
                         <div className="flex items-center gap-1.5 mb-1">
                           <label className="text-xs text-muted-foreground">
-                            Working directory
+                            작업 디렉토리
                           </label>
                           <HintIcon text="Paperclip works best if you create a new folder for your agents to keep their memories and stay organized. Create a new folder and put the path here." />
                         </div>
@@ -885,7 +885,7 @@ export function OnboardingWizard() {
                       </div>
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
+                          모델
                         </label>
                         <Popover
                           open={modelOpen}
@@ -905,8 +905,8 @@ export function OnboardingWizard() {
                                   ? selectedModel.label
                                   : model ||
                                     (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
+                                      ? "모델 선택 (필수)"
+                                      : "기본값")}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -917,7 +917,7 @@ export function OnboardingWizard() {
                           >
                             <input
                               className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
+                              placeholder="모델 검색..."
                               value={modelSearch}
                               onChange={(e) => setModelSearch(e.target.value)}
                               autoFocus
@@ -933,7 +933,7 @@ export function OnboardingWizard() {
                                   setModelOpen(false);
                                 }}
                               >
-                                Default
+                                기본값
                               </button>
                             )}
                             <div className="max-h-[240px] overflow-y-auto">
@@ -988,11 +988,10 @@ export function OnboardingWizard() {
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <p className="text-xs font-medium">
-                            Adapter environment check
+                            어댑터 환경 확인
                           </p>
                           <p className="text-[11px] text-muted-foreground">
-                            Runs a live probe that asks the adapter CLI to
-                            respond with hello.
+                            어댑터 CLI에 hello 응답을 요청하는 실시간 프로브를 실행합니다.
                           </p>
                         </div>
                         <Button
@@ -1002,7 +1001,7 @@ export function OnboardingWizard() {
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
+                          {adapterEnvLoading ? "테스트 중..." : "지금 테스트"}
                         </Button>
                       </div>
 
@@ -1016,7 +1015,7 @@ export function OnboardingWizard() {
                       adapterEnvResult.status === "pass" ? (
                         <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
                           <Check className="h-3.5 w-3.5 shrink-0" />
-                          <span className="font-medium">Passed</span>
+                          <span className="font-medium">통과</span>
                         </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
@@ -1025,10 +1024,9 @@ export function OnboardingWizard() {
                       {shouldSuggestUnsetAnthropicApiKey && (
                         <div className="rounded-md border border-amber-300/60 bg-amber-50/40 px-2.5 py-2 space-y-2">
                           <p className="text-[11px] text-amber-900/90 leading-relaxed">
-                            Claude failed while{" "}
-                            <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
-                            is set. You can clear it in this CEO adapter config
-                            and retry the probe.
+                            <span className="font-mono">ANTHROPIC_API_KEY</span>가
+                            설정된 상태에서 Claude가 실패했습니다. CEO 어댑터 설정에서
+                            이 키를 해제하고 프로브를 다시 시도할 수 있습니다.
                           </p>
                           <Button
                             size="sm"
@@ -1040,15 +1038,15 @@ export function OnboardingWizard() {
                             onClick={() => void handleUnsetAnthropicApiKey()}
                           >
                             {unsetAnthropicLoading
-                              ? "Retrying..."
-                              : "Unset ANTHROPIC_API_KEY"}
+                              ? "재시도 중..."
+                              : "ANTHROPIC_API_KEY 해제"}
                           </Button>
                         </div>
                       )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
-                          <p className="font-medium">Manual debug</p>
+                          <p className="font-medium">수동 디버깅</p>
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
@@ -1105,7 +1103,7 @@ export function OnboardingWizard() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Command
+                          명령어
                         </label>
                         <input
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1116,7 +1114,7 @@ export function OnboardingWizard() {
                       </div>
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
-                          Args (comma-separated)
+                          인수 (쉼표로 구분)
                         </label>
                         <input
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1158,16 +1156,15 @@ export function OnboardingWizard() {
                       <ListTodo className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Give it something to do</h3>
+                      <h3 className="font-medium">에이전트에게 할 일을 주세요</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        버그 수정, 리서치 질문, 스크립트 작성 등 작은 작업부터 시작하세요.
                       </p>
                     </div>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Task title
+                      작업 제목
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1179,12 +1176,12 @@ export function OnboardingWizard() {
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">
-                      Description (optional)
+                      설명 (선택사항)
                     </label>
                     <textarea
                       ref={textareaRef}
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
-                      placeholder="Add more detail about what the agent should do..."
+                      placeholder="에이전트가 수행해야 할 작업에 대한 세부사항을 추가하세요..."
                       value={taskDescription}
                       onChange={(e) => setTaskDescription(e.target.value)}
                     />
@@ -1199,10 +1196,10 @@ export function OnboardingWizard() {
                       <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Ready to launch</h3>
+                      <h3 className="font-medium">시작 준비 완료</h3>
                       <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
+                        모든 설정이 완료되었습니다. 시작하면 초기 작업을 생성하고,
+                        에이전트를 깨우고, 이슈를 엽니다.
                       </p>
                     </div>
                   </div>
@@ -1213,7 +1210,7 @@ export function OnboardingWizard() {
                         <p className="text-sm font-medium truncate">
                           {companyName}
                         </p>
-                        <p className="text-xs text-muted-foreground">Company</p>
+                        <p className="text-xs text-muted-foreground">회사</p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
@@ -1235,7 +1232,7 @@ export function OnboardingWizard() {
                         <p className="text-sm font-medium truncate">
                           {taskTitle}
                         </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
+                        <p className="text-xs text-muted-foreground">작업</p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
@@ -1261,7 +1258,7 @@ export function OnboardingWizard() {
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back
+                      뒤로
                     </Button>
                   )}
                 </div>
@@ -1277,7 +1274,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "생성 중..." : "다음"}
                     </Button>
                   )}
                   {step === 2 && (
@@ -1293,7 +1290,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "생성 중..." : "다음"}
                     </Button>
                   )}
                   {step === 3 && (
@@ -1307,7 +1304,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "생성 중..." : "다음"}
                     </Button>
                   )}
                   {step === 4 && (
@@ -1317,7 +1314,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading ? "생성 중..." : "생성 및 이슈 열기"}
                     </Button>
                   )}
                 </div>
@@ -1347,10 +1344,10 @@ function AdapterEnvironmentResult({
 }) {
   const statusLabel =
     result.status === "pass"
-      ? "Passed"
+      ? "통과"
       : result.status === "warn"
-      ? "Warnings"
-      : "Failed";
+      ? "경고"
+      : "실패";
   const statusClass =
     result.status === "pass"
       ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"

@@ -101,7 +101,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
     <button
       type="button"
       className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      title="마크다운으로 복사"
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
@@ -132,7 +132,7 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">아직 댓글이나 실행이 없습니다.</p>;
   }
 
   return (
@@ -392,7 +392,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+      <h3 className="text-sm font-semibold">댓글 &amp; 실행 ({timeline.length})</h3>
 
       <TimelineList
         timeline={timeline}
@@ -409,7 +409,7 @@ export function CommentThread({
           ref={editorRef}
           value={body}
           onChange={setBody}
-          placeholder="Leave a comment..."
+          placeholder="댓글 남기기..."
           mentions={mentions}
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
@@ -430,7 +430,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
+                title="이미지 첨부"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -451,14 +451,14 @@ export function CommentThread({
             <InlineEntitySelector
               value={reassignTarget}
               options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
+              placeholder="담당자"
+              noneLabel="담당자 없음"
+              searchPlaceholder="담당자 검색..."
+              emptyMessage="담당자를 찾을 수 없습니다."
               onChange={setReassignTarget}
               className="text-xs h-8"
               renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                if (!option) return <span className="text-muted-foreground">담당자</span>;
                 const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
@@ -486,7 +486,7 @@ export function CommentThread({
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
+            {submitting ? "게시 중..." : "댓글"}
           </Button>
         </div>
       </div>

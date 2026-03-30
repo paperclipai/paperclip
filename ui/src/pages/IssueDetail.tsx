@@ -898,7 +898,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title="마크다운으로 이슈 복사"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -906,7 +906,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
+              title="속성"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -917,7 +917,7 @@ export function IssueDetail() {
               variant="ghost"
               size="icon-xs"
               onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              title="마크다운으로 이슈 복사"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
@@ -929,7 +929,7 @@ export function IssueDetail() {
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
               onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              title="속성 표시"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -971,7 +971,7 @@ export function IssueDetail() {
           onSave={(description) => updateIssue.mutateAsync({ description })}
           as="p"
           className="text-[15px] leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder="설명 추가..."
           multiline
           mentions={mentionOptions}
           imageUploadHandler={async (file) => {
@@ -1079,7 +1079,7 @@ export function IssueDetail() {
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => deleteAttachment.mutate(attachment.id)}
                   disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
+                  title="첨부파일 삭제"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -1380,7 +1380,7 @@ export function IssueDetail() {
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
         <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
+            <SheetTitle className="text-sm">속성</SheetTitle>
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">

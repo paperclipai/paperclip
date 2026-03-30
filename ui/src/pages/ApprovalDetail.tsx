@@ -65,7 +65,7 @@ export function ApprovalDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Approvals", href: "/approvals" },
+      { label: "승인", href: "/approvals" },
       { label: approval?.id?.slice(0, 8) ?? approvalId ?? "Approval" },
     ]);
   }, [setBreadcrumbs, approval, approvalId]);
@@ -156,17 +156,17 @@ export function ApprovalDetail() {
       ? {
           label:
             (linkedIssues?.length ?? 0) > 1
-              ? "Review linked issues"
-              : "Review linked issue",
+              ? "연결된 이슈 검토"
+              : "연결된 이슈 검토",
           to: `/issues/${primaryLinkedIssue.identifier ?? primaryLinkedIssue.id}`,
         }
       : linkedAgentId
         ? {
-            label: "Open hired agent",
+            label: "고용된 에이전트 열기",
             to: `/agents/${linkedAgentId}`,
           }
         : {
-            label: "Back to approvals",
+            label: "승인으로 돌아가기",
             to: "/approvals",
           };
 
@@ -312,7 +312,7 @@ export function ApprovalDetail() {
               variant="outline"
               className="text-destructive border-destructive/40"
               onClick={() => {
-                if (!window.confirm("Delete this disapproved agent? This cannot be undone.")) return;
+                if (!window.confirm("비승인된 에이전트를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.")) return;
                 deleteAgentMutation.mutate(linkedAgentId);
               }}
               disabled={deleteAgentMutation.isPending}
@@ -337,7 +337,7 @@ export function ApprovalDetail() {
                     />
                   </Link>
                 ) : (
-                  <Identity name="Board" size="sm" />
+                  <Identity name="보드" size="sm" />
                 )}
                 <span className="text-xs text-muted-foreground">
                   {new Date(comment.createdAt).toLocaleString()}
@@ -350,7 +350,7 @@ export function ApprovalDetail() {
         <Textarea
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
-          placeholder="Add a comment..."
+          placeholder="댓글 추가..."
           rows={3}
         />
         <div className="flex justify-end">
@@ -359,7 +359,7 @@ export function ApprovalDetail() {
             onClick={() => addCommentMutation.mutate()}
             disabled={!commentBody.trim() || addCommentMutation.isPending}
           >
-            {addCommentMutation.isPending ? "Posting…" : "Post comment"}
+            {addCommentMutation.isPending ? "게시 중…" : "댓글 게시"}
           </Button>
         </div>
       </div>

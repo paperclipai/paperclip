@@ -47,15 +47,15 @@ export function ExecutionWorkspaceDetail() {
       </div>
 
       <div className="rounded-lg border border-border p-4">
-        <DetailRow label="Project">
+        <DetailRow label="프로젝트">
           {workspace.projectId ? <Link to={`/projects/${workspace.projectId}`} className="hover:underline">{workspace.projectId}</Link> : "None"}
         </DetailRow>
-        <DetailRow label="Source issue">
+        <DetailRow label="원본 이슈">
           {workspace.sourceIssueId ? <Link to={`/issues/${workspace.sourceIssueId}`} className="hover:underline">{workspace.sourceIssueId}</Link> : "None"}
         </DetailRow>
-        <DetailRow label="Branch">{workspace.branchName ?? "None"}</DetailRow>
+        <DetailRow label="브랜치">{workspace.branchName ?? "None"}</DetailRow>
         <DetailRow label="Base ref">{workspace.baseRef ?? "None"}</DetailRow>
-        <DetailRow label="Working dir">
+        <DetailRow label="작업 디렉토리">
           <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
         </DetailRow>
         <DetailRow label="Provider ref">
@@ -71,9 +71,9 @@ export function ExecutionWorkspaceDetail() {
             <span className="break-all font-mono text-xs">{workspace.repoUrl}</span>
           ) : "None"}
         </DetailRow>
-        <DetailRow label="Opened">{new Date(workspace.openedAt).toLocaleString()}</DetailRow>
-        <DetailRow label="Last used">{new Date(workspace.lastUsedAt).toLocaleString()}</DetailRow>
-        <DetailRow label="Cleanup">
+        <DetailRow label="열림">{new Date(workspace.openedAt).toLocaleString()}</DetailRow>
+        <DetailRow label="마지막 사용">{new Date(workspace.lastUsedAt).toLocaleString()}</DetailRow>
+        <DetailRow label="정리">
           {workspace.cleanupEligibleAt ? `${new Date(workspace.cleanupEligibleAt).toLocaleString()}${workspace.cleanupReason ? ` · ${workspace.cleanupReason}` : ""}` : "Not scheduled"}
         </DetailRow>
       </div>
