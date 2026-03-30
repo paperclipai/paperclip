@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -10,19 +10,6 @@ import {
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
-
-afterEach(() => {
-  process.chdir(ORIGINAL_CWD);
-
-  for (const key of Object.keys(process.env)) {
-    if (!(key in ORIGINAL_ENV)) {
-      delete process.env[key];
-    }
-  }
-  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
-    process.env[key] = value;
-  }
-});
 
 function buildLegacyConfig(sharedRoot: string) {
   return {
@@ -82,6 +69,24 @@ function buildLegacyConfig(sharedRoot: string) {
 }
 
 describe("worktree config repair", () => {
+  // resolvePaperclipConfigPath prefers PAPERCLIP_CONFIG over cwd; dev shells often set it.
+  beforeEach(() => {
+    delete process.env.PAPERCLIP_CONFIG;
+  });
+
+  afterEach(() => {
+    process.chdir(ORIGINAL_CWD);
+
+    for (const key of Object.keys(process.env)) {
+      if (!(key in ORIGINAL_ENV)) {
+        delete process.env[key];
+      }
+    }
+    for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+      process.env[key] = value;
+    }
+  });
+
   it("repairs legacy repo-local worktree config and env files into an isolated instance", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repair-"));
     const worktreeRoot = path.join(tempRoot, "PAP-884-ai-commits-component");

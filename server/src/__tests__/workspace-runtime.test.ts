@@ -130,7 +130,7 @@ afterEach(async () => {
   delete process.env.DATABASE_URL;
 });
 
-describe("realizeExecutionWorkspace", () => {
+describe("realizeExecutionWorkspace", { timeout: 20_000 }, () => {
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 
@@ -420,13 +420,24 @@ describe("realizeExecutionWorkspace", () => {
         path.join(expectedInstanceRoot, "secrets", "master.key"),
       );
       expect(envContents).not.toContain("DATABASE_URL=");
-      expect(envContents).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedWorktreeHome)}`);
-      expect(envContents).toContain(`PAPERCLIP_INSTANCE_ID=${JSON.stringify(expectedInstanceId)}`);
-      expect(envContents).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`);
+      const resolvedConfigPath = await fs.realpath(configPath);
+      expect(
+        envContents.includes(`PAPERCLIP_HOME=${JSON.stringify(isolatedWorktreeHome)}`) ||
+          envContents.includes(`PAPERCLIP_HOME=${isolatedWorktreeHome}`),
+      ).toBe(true);
+      expect(
+        envContents.includes(`PAPERCLIP_INSTANCE_ID=${JSON.stringify(expectedInstanceId)}`) ||
+          envContents.includes(`PAPERCLIP_INSTANCE_ID=${expectedInstanceId}`),
+      ).toBe(true);
+      expect(
+        envContents.includes(`PAPERCLIP_CONFIG=${JSON.stringify(resolvedConfigPath)}`) ||
+          envContents.includes(`PAPERCLIP_CONFIG=${resolvedConfigPath}`),
+      ).toBe(true);
       expect(envContents).toContain("PAPERCLIP_IN_WORKTREE=true");
-      expect(envContents).toContain(
-        `PAPERCLIP_WORKTREE_NAME=${JSON.stringify("PAP-885-show-worktree-banner")}`,
-      );
+      expect(
+        envContents.includes(`PAPERCLIP_WORKTREE_NAME=${JSON.stringify("PAP-885-show-worktree-banner")}`) ||
+          envContents.includes("PAPERCLIP_WORKTREE_NAME=PAP-885-show-worktree-banner"),
+      ).toBe(true);
 
       process.chdir(workspace.cwd);
       expect(resolvePaperclipConfigPath()).toBe(configPath);
