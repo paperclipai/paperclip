@@ -17,12 +17,15 @@ const CAPTURE_KEYS = [
   "PAPERCLIP_WORKSPACE_REPO_URL",
   "PAPERCLIP_WORKSPACE_REPO_REF",
   "PAPERCLIP_WORKSPACE_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_BRANCH",
+  "PAPERCLIP_WORKSPACE_OBSERVED_HEAD",
   "PAPERCLIP_WORKSPACE_WORKTREE_PATH",
 ] as const;
 
 type CaptureKey = (typeof CAPTURE_KEYS)[number];
 
 type CapturePayload = {
+  cwd: string;
   env: Partial<Record<CaptureKey, string>>;
 };
 
@@ -56,6 +59,7 @@ const capture = () => {
   fs.writeFileSync(
     capturePath,
     JSON.stringify({
+      cwd: process.cwd(),
       env: Object.fromEntries(
         ${JSON.stringify([...CAPTURE_KEYS])}
           .filter((key) => typeof process.env[key] === "string" && process.env[key].length > 0)
@@ -286,6 +290,7 @@ describe("local adapter workspace env parity", () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-${adapter.name}-workspace-env-`));
       const workspaceCwd = path.join(root, "workspace");
       const worktreePath = path.join(root, ".paperclip", "worktrees", "GRA-1881-test-branch");
+      const observedHead = "0123456789abcdef0123456789abcdef01234567";
       const commandPath = path.join(root, adapter.commandName);
       const capturePath = path.join(root, "capture.json");
       await fs.mkdir(workspaceCwd, { recursive: true });
@@ -326,6 +331,8 @@ describe("local adapter workspace env parity", () => {
               repoUrl: "https://github.com/paperclipai/paperclip",
               repoRef: "main",
               branchName: "GRA-1881-test-branch",
+              observedBranchName: "GRA-1881-test-branch",
+              observedHeadSha: observedHead,
               worktreePath,
             },
           },
@@ -346,8 +353,70 @@ describe("local adapter workspace env parity", () => {
           PAPERCLIP_WORKSPACE_REPO_URL: "https://github.com/paperclipai/paperclip",
           PAPERCLIP_WORKSPACE_REPO_REF: "main",
           PAPERCLIP_WORKSPACE_BRANCH: "GRA-1881-test-branch",
+          PAPERCLIP_WORKSPACE_OBSERVED_BRANCH: "GRA-1881-test-branch",
+          PAPERCLIP_WORKSPACE_OBSERVED_HEAD: observedHead,
           PAPERCLIP_WORKSPACE_WORKTREE_PATH: worktreePath,
         });
+      } finally {
+        await restoreEnv();
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it(`${adapter.name} uses paperclipWorkspace.cwd for agent_home runs`, async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-${adapter.name}-agent-home-cwd-`));
+      const configuredCwd = path.join(root, "configured-workspace");
+      const workspaceCwd = path.join(root, "agent-home-workspace");
+      const commandPath = path.join(root, adapter.commandName);
+      const capturePath = path.join(root, "capture.json");
+      await fs.mkdir(configuredCwd, { recursive: true });
+      await fs.mkdir(workspaceCwd, { recursive: true });
+      await writeCaptureCommand(commandPath, adapter.commandMode);
+
+      const restoreEnv = adapter.setupEnv ? await adapter.setupEnv(root) : async () => {};
+      try {
+        const result = await adapter.execute({
+          runId: "run-1",
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: `${adapter.name} agent`,
+            adapterType: adapter.adapterType,
+            adapterConfig: {},
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey: null,
+          },
+          config: {
+            command: commandPath,
+            cwd: configuredCwd,
+            env: {
+              PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            },
+            promptTemplate: "Continue your Paperclip work.",
+            ...adapter.config,
+          },
+          context: {
+            paperclipWorkspace: {
+              cwd: workspaceCwd,
+              source: "agent_home",
+            },
+          },
+          authToken: "run-jwt-token",
+          onLog: async () => {},
+          onMeta: async () => {},
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(result.errorMessage).toBeNull();
+
+        const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+        expect(capture.cwd).toBe(workspaceCwd);
+        expect(capture.env.PAPERCLIP_WORKSPACE_CWD).toBe(workspaceCwd);
+        expect(capture.env.PAPERCLIP_WORKSPACE_SOURCE).toBe("agent_home");
       } finally {
         await restoreEnv();
         await fs.rm(root, { recursive: true, force: true });
