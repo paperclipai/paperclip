@@ -21,7 +21,7 @@ const surfaceOptions: Array<{
     id: "detail",
     label: "运行详情",
     eyebrow: "完整转录",
-    description: "带有"简洁 | 原始"切换的长篇运行页面，具有最详细的转录检查视图。",
+    description: "带有「简洁 | 原始」切换的长篇运行页面，具有最详细的转录检查视图。",
     icon: MonitorCog,
   },
   {

@@ -502,7 +502,7 @@ export function Routines() {
           <div className="py-12">
             <EmptyState
               icon={Repeat}
-              message="暂无例程。使用"创建例程"来定义第一个循环工作流。"
+              message="暂无例程。使用「创建例程」来定义第一个循环工作流。"
             />
           </div>
         ) : (
