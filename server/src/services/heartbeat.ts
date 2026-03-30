@@ -1332,9 +1332,29 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
+    const agentConfig = parseObject(agent.adapterConfig);
+    const agentConfigCwd = readNonEmptyString(agentConfig.cwd);
+    // Prefer adapterConfig.cwd if set and exists, otherwise use default agent workspace
     const warnings: string[] = [];
+    let cwd: string;
+    if (agentConfigCwd) {
+      const agentConfigCwdExists = await fs
+        .stat(agentConfigCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (agentConfigCwdExists) {
+        cwd = agentConfigCwd;
+      } else {
+        cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+        await fs.mkdir(cwd, { recursive: true });
+        warnings.push(
+          `Configured adapter workspace "${agentConfigCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
+        );
+      }
+    } else {
+      cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      await fs.mkdir(cwd, { recursive: true });
+    }
     if (sessionCwd) {
       warnings.push(
         `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
@@ -1342,10 +1362,6 @@ export function heartbeatService(db: Db) {
     } else if (resolvedProjectId) {
       warnings.push(
         `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
       );
     }
     return {
