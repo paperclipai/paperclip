@@ -316,7 +316,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "hybrid_local";
   const isHermesLocal = adapterType === "hermes_local";
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
