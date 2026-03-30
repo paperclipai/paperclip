@@ -9,6 +9,7 @@ import {
   SquarePen,
   Network,
   Settings,
+  BookOpen,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -127,6 +128,7 @@ export function Sidebar() {
           />
           <SidebarNavItem to="/activity" label="활동" icon={History} />
           <SidebarNavItem to="/company/settings" label="설정" icon={Settings} />
+          <SidebarNavItem to="/guide" label="사용법" icon={BookOpen} />
         </SidebarSection>
 
         <PluginSlotOutlet
