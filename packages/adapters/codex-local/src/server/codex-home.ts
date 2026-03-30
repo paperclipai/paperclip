@@ -7,6 +7,15 @@ const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const REQUIRED_CONTEXT_MODE_TOOLS = [
+  "ctx_batch_execute",
+  "ctx_execute",
+  "ctx_execute_file",
+  "ctx_search",
+  "ctx_fetch_and_index",
+  "ctx_index",
+  "ctx_stats",
+] as const;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -65,10 +74,33 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
-  const existing = await fs.lstat(target).catch(() => null);
-  if (existing) return;
+  const sourceContent = await fs.readFile(source);
+  const existingContent = await fs.readFile(target).catch(() => null);
+  if (existingContent && sourceContent.equals(existingContent)) return;
   await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  await fs.writeFile(target, sourceContent);
+}
+
+function ensureContextModeCodexApprovals(configText: string, env: NodeJS.ProcessEnv): string {
+  const hasContextModeServer = /\[mcp_servers\.context-mode\]/.test(configText);
+  const sectionsToAppend: string[] = [];
+
+  if (!hasContextModeServer) {
+    const sharedCommand = resolveSharedCodexHomeDir(env);
+    sectionsToAppend.push(
+      `[mcp_servers.context-mode]\ncommand = ${JSON.stringify(path.join(sharedCommand, "bin", "context-mode-poc"))}`,
+    );
+  }
+
+  for (const tool of REQUIRED_CONTEXT_MODE_TOOLS) {
+    const sectionHeader = `[mcp_servers.context-mode.tools.${tool}]`;
+    if (configText.includes(sectionHeader)) continue;
+    sectionsToAppend.push(`${sectionHeader}\napproval_mode = "approve"`);
+  }
+
+  if (sectionsToAppend.length === 0) return configText;
+  const trimmed = configText.trimEnd();
+  return `${trimmed}\n\n${sectionsToAppend.join("\n\n")}\n`;
 }
 
 export async function prepareManagedCodexHome(
@@ -92,7 +124,17 @@ export async function prepareManagedCodexHome(
   for (const name of COPIED_SHARED_FILES) {
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) continue;
-    await ensureCopiedFile(path.join(targetHome, name), source);
+    const target = path.join(targetHome, name);
+    if (name === "config.toml") {
+      const normalized = ensureContextModeCodexApprovals(await fs.readFile(source, "utf8"), env);
+      const existing = await fs.readFile(target, "utf8").catch(() => null);
+      if (existing !== normalized) {
+        await ensureParentDir(target);
+        await fs.writeFile(target, normalized, "utf8");
+      }
+      continue;
+    }
+    await ensureCopiedFile(target, source);
   }
 
   await onLog(
