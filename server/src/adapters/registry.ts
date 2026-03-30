@@ -210,7 +210,7 @@ const hybridLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("hybrid_local") ?? undefined,
   models: hybridModels,
   listModels: async () => {
-    const localModels = await listOpenAICompatModels("http://127.0.0.1:1234/v1").catch(() => []);
+    const localModels = await listOpenAICompatModels("http://127.0.0.1:11434/v1").catch(() => []);
     return [...hybridModels, ...localModels.filter((m) => !hybridModels.some((s) => s.id === m.id))];
   },
   supportsLocalAgentJwt: true,

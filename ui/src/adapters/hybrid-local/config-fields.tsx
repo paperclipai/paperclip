@@ -34,7 +34,7 @@ export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
               : eff(
                   "adapterConfig",
                   "localBaseUrl",
-                  String(config.localBaseUrl ?? "http://127.0.0.1:1234/v1"),
+                  String(config.localBaseUrl ?? "http://127.0.0.1:11434/v1"),
                 )
           }
           onCommit={(v) =>
@@ -44,7 +44,7 @@ export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
           }
           immediate
           className={inputClass}
-          placeholder="http://127.0.0.1:1234/v1"
+          placeholder="http://127.0.0.1:11434/v1"
         />
       </Field>
 

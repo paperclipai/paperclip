@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1";
+const DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
 const MAX_TOOL_TURNS = 30;
 const BASH_TIMEOUT_MS = 120_000;
 
