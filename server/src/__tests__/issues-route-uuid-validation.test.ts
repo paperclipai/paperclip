@@ -8,6 +8,7 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  create: vi.fn(),
   getById: vi.fn(),
   getComment: vi.fn(),
   checkout: vi.fn(),
@@ -75,6 +76,13 @@ describe("issues routes UUID validation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.list.mockResolvedValue([]);
+    mockIssueService.create.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: COMPANY_ID,
+      status: "backlog",
+      title: "Test issue",
+      identifier: "PAP-1",
+    });
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue({
       id: "22222222-2222-4222-8222-222222222222",
@@ -125,6 +133,18 @@ describe("issues routes UUID validation", () => {
     expect(mockIssueService.list).toHaveBeenCalledWith(
       COMPANY_ID,
       expect.any(Object),
+    );
+  });
+
+  it("trims and normalizes companyId path on issue creation route", async () => {
+    const res = await request(createApp())
+      .post(`/api/companies/%20${COMPANY_ID.toUpperCase()}%20/issues`)
+      .send({ title: "Test issue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({ title: "Test issue" }),
     );
   });
 
