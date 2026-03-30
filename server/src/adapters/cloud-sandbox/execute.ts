@@ -4,7 +4,7 @@ import { K8sClient } from "./k8s-client.js";
 import { renderTemplate, asString } from "../utils.js";
 
 /** Shell-escape a string for use inside sh -c (single-quote wrapping). */
-function shellEscape(s: string): string {
+export function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
@@ -29,7 +29,7 @@ function joinPromptSections(sections: Array<string | null | undefined>): string 
  *
  * Falls back to issueTitle + issueDescription when no templates are configured.
  */
-function buildPrompt(
+export function buildPrompt(
   ctx: AdapterExecutionContext,
 ): string | undefined {
   const { agent, runId, config, context } = ctx;
@@ -152,18 +152,19 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
   return config.namespace;
 }
 
-function resolveRuntimeCommand(runtime: string, model: string, stdinPrompt?: string): string[] {
+export function resolveRuntimeCommand(runtime: string, model: string, stdinPrompt?: string): string[] {
   switch (runtime) {
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
       // opencode requires -p for non-interactive mode (no TTY in containers).
+      // -q suppresses the spinner (no TTY available).
       // -f json for structured output.
       if (stdinPrompt) {
-        return ["opencode", "-p", shellEscape(stdinPrompt), "-f", "json"];
+        return ["opencode", "-p", shellEscape(stdinPrompt), "-f", "json", "-q"];
       }
-      return ["opencode", "-p", shellEscape("Complete your assigned tasks."), "-f", "json"];
+      return ["opencode", "-p", shellEscape("Complete your assigned tasks."), "-f", "json", "-q"];
     case "gemini":
       return ["gemini",
         ...(model ? ["--model", model] : [])];
@@ -334,7 +335,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let stdoutBuffer = "";
   let lineBuffer = "";
 
-  // Parse stream-json lines and only surface meaningful content to the transcript
+  /**
+   * Parse stdout from the CLI and surface meaningful content to the transcript.
+   *
+   * Supports multiple output formats:
+   * - opencode JSONL: {"type":"text","part":{"text":"..."}} (opencode `run --format json`)
+   * - Claude Code stream-json: {"type":"assistant","message":{"content":[...]}} (claude/codex)
+   * - Non-JSON plaintext lines (passed through as-is)
+   *
+   * Note: opencode `-p -f json` outputs a single pretty-printed JSON object
+   * ({"response":"..."}) which spans multiple lines — that format is handled
+   * after exec completes by parsing the full stdoutBuffer.
+   */
   function handleStdout(data: string): void {
     stdoutBuffer += data;
     lineBuffer += data;
@@ -344,7 +356,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (!line.trim()) continue;
       try {
         const event = JSON.parse(line);
-        if (event.type === "assistant" && event.message?.content) {
+        const eventType = typeof event.type === "string" ? event.type : "";
+
+        // opencode JSONL format (type: "text", "step_finish", "tool_use", "error")
+        if (eventType === "text") {
+          const text = event.part?.text;
+          if (typeof text === "string" && text.trim()) {
+            void ctx.onLog("stdout", text + "\n");
+          }
+          continue;
+        }
+        if (eventType === "error") {
+          const errText = typeof event.error === "string" ? event.error
+            : event.error?.message ?? event.message ?? "";
+          if (errText) void ctx.onLog("stderr", `[opencode] ${errText}\n`);
+          continue;
+        }
+
+        // Claude Code stream-json format
+        if (eventType === "assistant" && event.message?.content) {
           for (const block of event.message.content) {
             if (block.type === "text" && block.text) {
               void ctx.onLog("stdout", block.text + "\n");
@@ -352,14 +382,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               void ctx.onLog("stdout", `[tool: ${block.name}]\n`);
             }
           }
-        } else if (event.type === "result") {
+          continue;
+        }
+        if (eventType === "result") {
           if (event.is_error && event.result) {
             // Error result is handled separately via cliError extraction
           } else if (event.result) {
             void ctx.onLog("stdout", event.result + "\n");
           }
+          continue;
         }
-        // Skip system init, raw message objects, etc.
+
+        // Skip known non-content events (step_finish, tool_use status, init, etc.)
       } catch {
         // Not JSON - pass through as-is (e.g. non-stream-json output)
         void ctx.onLog("stdout", line + "\n");
@@ -400,21 +434,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  // Extract error from CLI stream-json output (e.g. authentication failures)
+  // Extract error and response from CLI output.
+  // Supports both JSONL stream format and opencode's single-object `-p -f json` format.
   let cliError: string | null = null;
-  try {
-    for (const line of stdoutBuffer.split("\n")) {
-      if (!line.trim()) continue;
+  let simpleResponse: string | null = null;
+
+  // First try: parse as JSONL (one JSON object per line)
+  for (const line of stdoutBuffer.split("\n")) {
+    if (!line.trim()) continue;
+    try {
       const parsed = JSON.parse(line);
       if (parsed.type === "result" && parsed.is_error) {
         cliError = parsed.result || null;
       } else if (parsed.error === "authentication_failed" && parsed.message?.content) {
         const text = parsed.message.content.find((c: { type: string; text?: string }) => c.type === "text");
         if (text?.text) cliError = text.text;
+      } else if (parsed.type === "error") {
+        const errText = typeof parsed.error === "string" ? parsed.error
+          : parsed.error?.message ?? parsed.message ?? null;
+        if (errText && !cliError) cliError = errText;
       }
+    } catch {
+      // Not valid JSON line — skip
     }
-  } catch {
-    // Not valid JSON or not stream-json format — ignore
+  }
+
+  // Second try: parse entire buffer as a single JSON object (opencode `-p -f json` format)
+  // This format outputs pretty-printed JSON like: {"response": "..."}
+  if (!cliError) {
+    try {
+      const fullParsed = JSON.parse(stdoutBuffer.trim());
+      if (typeof fullParsed.response === "string" && fullParsed.response.trim()) {
+        simpleResponse = fullParsed.response.trim();
+        // Surface the response to the transcript
+        await ctx.onLog("stdout", simpleResponse + "\n");
+      }
+      if (typeof fullParsed.error === "string" && fullParsed.error.trim()) {
+        cliError = fullParsed.error.trim();
+      }
+    } catch {
+      // Not a single JSON object — that's fine, it was JSONL or plaintext
+    }
   }
 
   if (exitCode !== 0 && cliError) {
