@@ -71,6 +71,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "todo" | "blocked";
     runErrorCode?: string | null;
     runError?: string | null;
   }) {
@@ -136,7 +137,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -251,5 +252,91 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("cancels deferred issue wakeups instead of promoting when the issue is not in_progress", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      runStatus: "queued",
+      issueStatus: "todo",
+    });
+    const heartbeat = heartbeatService(db);
+    const deferredWakeId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      runId: null,
+    });
+
+    await heartbeat.cancelRun(runId);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionAgentNameKey).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("cancelled");
+    expect(deferredWake?.runId).toBeNull();
+
+    const extraRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(extraRuns).toHaveLength(0);
+  });
+
+  it("suppresses deferred promotion when cancelRun is called with suppressDeferredPromotion", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      runStatus: "queued",
+      issueStatus: "in_progress",
+    });
+    const heartbeat = heartbeatService(db);
+    const deferredWakeId = randomUUID();
+
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+      runId: null,
+    });
+
+    await heartbeat.cancelRun(runId, { suppressDeferredPromotion: true });
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionAgentNameKey).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("cancelled");
+    expect(deferredWake?.runId).toBeNull();
   });
 });

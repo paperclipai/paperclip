@@ -1023,12 +1023,18 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
 
       return db.transaction(async (tx) => {
@@ -1207,6 +1213,54 @@ export function issueService(db: Db) {
         }
       }
 
+      if (current.executionRunId && (!checkoutRunId || current.executionRunId !== checkoutRunId)) {
+        const staleExecutionLock = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
+        if (staleExecutionLock) {
+          await db
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.executionRunId, current.executionRunId),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              ),
+            );
+
+          const retried = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              status: "in_progress",
+              startedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+
+          if (retried) {
+            const [enriched] = await withIssueLabels(db, [retried]);
+            return enriched;
+          }
+        }
+      }
+
       // If this run already owns it and it's in_progress, return it (no self-409)
       if (
         current.assigneeAgentId === agentId &&
@@ -1281,7 +1335,12 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
+    release: async (
+      id: string,
+      actorAgentId?: string,
+      actorRunId?: string | null,
+      opts?: { allowAnyIssueRelease?: boolean },
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -1289,10 +1348,12 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!existing) return null;
-      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+      const allowAnyIssueRelease = opts?.allowAnyIssueRelease === true;
+      if (!allowAnyIssueRelease && actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
         throw conflict("Only assignee can release issue");
       }
       if (
+        !allowAnyIssueRelease &&
         actorAgentId &&
         existing.status === "in_progress" &&
         existing.assigneeAgentId === actorAgentId &&
@@ -1313,6 +1374,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))

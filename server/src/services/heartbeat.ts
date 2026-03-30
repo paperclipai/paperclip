@@ -1577,7 +1577,14 @@ export function heartbeatService(db: Db) {
             executionLockedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              eq(issues.executionRunId, run.id),
+              eq(issues.status, "in_progress"),
+            ),
+          );
       }
 
       return retryRun;
@@ -2816,7 +2823,33 @@ export function heartbeatService(db: Db) {
         }
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  async function cancelPendingIssueExecutionWakeups(
+    tx: any,
+    input: { companyId: string; issueId: string; reason: string },
+  ) {
+    const now = new Date();
+    await tx
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: input.reason,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.issueId}`,
+        ),
+      );
+  }
+
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options?: { suppressDeferredPromotion?: boolean },
+  ) {
     const promotedRun = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from issues where company_id = ${run.companyId} and execution_run_id = ${run.id} for update`,
@@ -2826,6 +2859,8 @@ export function heartbeatService(db: Db) {
         .select({
           id: issues.id,
           companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
         })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
@@ -2842,6 +2877,15 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
+
+      if (options?.suppressDeferredPromotion || issue.status !== "in_progress" || !issue.assigneeAgentId) {
+        await cancelPendingIssueExecutionWakeups(tx, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          reason: "Cancelled because issue is no longer executable",
+        });
+        return null;
+      }
 
       while (true) {
         const deferred = await tx
@@ -3166,7 +3210,7 @@ export function heartbeatService(db: Db) {
                 executionLockedAt: new Date(),
                 updatedAt: new Date(),
               })
-              .where(eq(issues.id, issue.id));
+              .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")));
           }
         }
 
@@ -3331,7 +3375,7 @@ export function heartbeatService(db: Db) {
             executionLockedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, issue.id));
+          .where(and(eq(issues.id, issue.id), eq(issues.status, "in_progress")));
 
         return { kind: "queued" as const, run: newRun };
       });
@@ -3564,7 +3608,11 @@ export function heartbeatService(db: Db) {
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  async function cancelRunInternal(
+    runId: string,
+    reason = "Cancelled by control plane",
+    options?: { suppressDeferredPromotion?: boolean },
+  ) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
@@ -3598,7 +3646,7 @@ export function heartbeatService(db: Db) {
         level: "warn",
         message: "run cancelled",
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, options);
     }
 
     runningProcesses.delete(run.id);
@@ -3838,7 +3886,8 @@ export function heartbeatService(db: Db) {
       return { checked, enqueued, skipped };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, options?: { suppressDeferredPromotion?: boolean }) =>
+      cancelRunInternal(runId, "Cancelled by control plane", options),
 
     cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
 
