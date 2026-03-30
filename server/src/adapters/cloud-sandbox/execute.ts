@@ -280,8 +280,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // Company-level env vars (shared by all agents in the pod)
+  const resolvedApiUrl = process.env.PAPERCLIP_API_URL || "";
+  await ctx.onLog("stderr", `[cloud-sandbox] PAPERCLIP_API_URL=${resolvedApiUrl}, config.env keys=${Object.keys(config.env || {}).join(",")}\n`);
   const podEnv: Array<{ name: string; value: string }> = [
-    { name: "PAPERCLIP_API_URL", value: process.env.PAPERCLIP_API_URL || "" },
+    { name: "PAPERCLIP_API_URL", value: resolvedApiUrl },
     { name: "PAPERCLIP_COMPANY_ID", value: companyId },
   ];
   // Add resolved env config (LLM keys, connection tokens, secrets)
