@@ -314,3 +314,115 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]));
   });
 });
+
+describeEmbeddedPostgres("issueService.create parentId", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parentid-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("creates an issue with parentId set in a single call", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // Create the parent issue first
+    const parent = await svc.create(companyId, {
+      title: "Parent task",
+      status: "todo",
+      priority: "high",
+    });
+
+    // Create a subtask with parentId in a single POST
+    const child = await svc.create(companyId, {
+      title: "Subtask",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+    });
+
+    expect(child.parentId).toBe(parent.id);
+
+    // Verify the value persisted in the database
+    const fetched = await svc.getById(child.id);
+    expect(fetched!.parentId).toBe(parent.id);
+  });
+
+  it("rejects parentId pointing to a non-existent issue", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Orphan subtask",
+        status: "todo",
+        priority: "medium",
+        parentId: randomUUID(),
+      }),
+    ).rejects.toThrow("Parent issue not found");
+  });
+
+  it("rejects parentId from a different company", async () => {
+    const companyA = randomUUID();
+    const companyB = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyA,
+        name: "Company A",
+        issuePrefix: `A${companyA.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: companyB,
+        name: "Company B",
+        issuePrefix: `B${companyB.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const parentInA = await svc.create(companyA, {
+      title: "Parent in company A",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(
+      svc.create(companyB, {
+        title: "Child in company B",
+        status: "todo",
+        priority: "medium",
+        parentId: parentInA.id,
+      }),
+    ).rejects.toThrow("Parent issue must belong to the same company");
+  });
+});
