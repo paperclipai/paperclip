@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "cursor",
   "openclaw_gateway",
   "hermes_local",
+  "opencode_remote",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
