@@ -69,6 +69,7 @@ export function InviteLandingPage() {
   });
 
   const invite = inviteQuery.data;
+  const companyName = invite?.companyName?.trim() || null;
   const allowedJoinTypes = invite?.allowedJoinTypes ?? "both";
   const availableJoinTypes = useMemo(() => {
     if (invite?.inviteType === "bootstrap_ceo") return ["human"] as JoinType[];
@@ -227,9 +228,18 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo" ? "Bootstrap your Paperclip instance" : "Join this Paperclip company"}
+          {invite.inviteType === "bootstrap_ceo"
+            ? "Bootstrap your Paperclip instance"
+            : companyName
+              ? `Join ${companyName}`
+              : "Join this Paperclip company"}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {invite.inviteType !== "bootstrap_ceo" && companyName
+            ? `You were invited to join ${companyName}. `
+            : null}
+          Invite expires {dateTime(invite.expiresAt)}.
+        </p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-5 flex gap-2">

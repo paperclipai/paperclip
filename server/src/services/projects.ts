@@ -9,11 +9,13 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
 import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -34,6 +36,7 @@ type CreateWorkspaceInput = {
   remoteWorkspaceRef?: string | null;
   sharedWorkspaceKey?: string | null;
   metadata?: Record<string, unknown> | null;
+  runtimeConfig?: Partial<ProjectWorkspaceRuntimeConfig> | null;
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
@@ -149,6 +152,7 @@ function toWorkspace(
     remoteWorkspaceRef: row.remoteWorkspaceRef ?? null,
     sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    runtimeConfig: readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null),
     isPrimary: row.isPrimary,
     runtimeServices,
     createdAt: row.createdAt,
@@ -611,7 +615,13 @@ export function projectService(db: Db) {
             remoteProvider: readNonEmptyString(data.remoteProvider),
             remoteWorkspaceRef,
             sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
-            metadata: (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+            metadata:
+              data.runtimeConfig !== undefined
+                ? mergeProjectWorkspaceRuntimeConfig(
+                    (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+                    data.runtimeConfig ?? null,
+                  )
+                : (data.metadata as Record<string, unknown> | null | undefined) ?? null,
             isPrimary: shouldBePrimary,
           })
           .returning()
@@ -681,7 +691,17 @@ export function projectService(db: Db) {
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
-      if (data.metadata !== undefined) patch.metadata = data.metadata;
+      if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+        patch.metadata =
+          data.runtimeConfig !== undefined
+            ? mergeProjectWorkspaceRuntimeConfig(
+                data.metadata !== undefined
+                  ? (data.metadata as Record<string, unknown> | null | undefined)
+                  : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
+                data.runtimeConfig ?? null,
+              )
+            : data.metadata;
+      }
 
       const updated = await db.transaction(async (tx) => {
         if (data.isPrimary === true) {
