@@ -101,16 +101,18 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
   return config.namespace;
 }
 
-function resolveRuntimeCommand(runtime: string, model: string): string[] {
+function resolveRuntimeCommand(runtime: string, model: string, stdinPrompt?: string): string[] {
   switch (runtime) {
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
-      // opencode requires the "run" subcommand with --format json for
-      // non-interactive headless execution (no TTY in containers).
-      // The prompt is passed via stdin, same as the local adapter.
-      return ["opencode", "run", "--format", "json"];
+      // opencode requires -p for non-interactive mode (no TTY in containers).
+      // -f json for structured output.
+      if (stdinPrompt) {
+        return ["opencode", "-p", shellEscape(stdinPrompt), "-f", "json"];
+      }
+      return ["opencode", "-p", shellEscape("Complete your assigned tasks."), "-f", "json"];
     case "gemini":
       return ["gemini",
         ...(model ? ["--model", model] : [])];
@@ -262,7 +264,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // Build the CLI command
-  const command = resolveRuntimeCommand(config.runtime, config.model);
+  // Build stdin prompt for CLIs that need it
+  const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildStdinPrompt(ctx.context);
+  const command = resolveRuntimeCommand(config.runtime, config.model, stdinPrompt);
 
   // Ensure agent home and workspace directories exist, then exec the CLI
   const setupAndRun = [
@@ -313,9 +317,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   try {
-    // Build stdin prompt for CLIs that need it (opencode reads from stdin)
-    const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildStdinPrompt(ctx.context);
-
     const result = await client.exec({
       podName: name,
       namespace,
