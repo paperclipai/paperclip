@@ -546,6 +546,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         ref={ref}
         markdown={value}
         placeholder={placeholder}
+        suppressHtmlProcessing
         onChange={(next) => {
           latestValueRef.current = next;
           onChange(next);
