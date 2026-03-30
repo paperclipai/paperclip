@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
@@ -29,9 +31,9 @@ function joinPromptSections(sections: Array<string | null | undefined>): string 
  *
  * Falls back to issueTitle + issueDescription when no templates are configured.
  */
-export function buildPrompt(
+export async function buildPrompt(
   ctx: AdapterExecutionContext,
-): string | undefined {
+): Promise<string | undefined> {
   const { agent, runId, config, context } = ctx;
 
   const promptTemplate = asString(
@@ -57,6 +59,26 @@ export function buildPrompt(
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
 
+  // Load agent instructions file from the server filesystem (same as local adapters).
+  // The instructions bundle system writes files to ~/.paperclip/.../instructions/,
+  // and config.instructionsFilePath is set by the bundle service.
+  let instructionsPrefix = "";
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  if (instructionsFilePath) {
+    const cwd = asString((context.paperclipWorkspace as Record<string, unknown> | undefined)?.cwd, "");
+    const resolvedPath = path.isAbsolute(instructionsFilePath)
+      ? instructionsFilePath
+      : cwd ? path.resolve(cwd, instructionsFilePath) : "";
+    if (resolvedPath) {
+      try {
+        const contents = await fs.readFile(resolvedPath, "utf8");
+        instructionsPrefix = contents.trim();
+      } catch {
+        // Instructions file not found or unreadable — continue without it
+      }
+    }
+  }
+
   // Build issue context section from enriched heartbeat fields
   const issueTitle = asString(context.issueTitle, "");
   const issueDescription = asString(context.issueDescription, "");
@@ -69,6 +91,7 @@ export function buildPrompt(
       : "";
 
   const prompt = joinPromptSections([
+    instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
     issueSection,
@@ -317,7 +340,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Build the CLI command
   // Build rich prompt for CLIs that need it (mirrors the local adapter's prompt composition)
-  const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildPrompt(ctx);
+  const stdinPrompt = (ctx.context.prompt as string | undefined) ?? await buildPrompt(ctx);
   const command = resolveRuntimeCommand(config.runtime, config.model, stdinPrompt);
 
   // Ensure agent home and workspace directories exist, then exec the CLI

@@ -51,26 +51,26 @@ describe("shellEscape", () => {
 // buildPrompt
 // ---------------------------------------------------------------------------
 describe("buildPrompt", () => {
-  it("returns the default heartbeat prompt when config has no templates", () => {
+  it("returns the default heartbeat prompt when config has no templates", async () => {
     const ctx = buildContext({ runtime: "opencode" });
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 
-  it("renders a custom promptTemplate with template variables", () => {
+  it("renders a custom promptTemplate with template variables", async () => {
     const ctx = buildContext({
       promptTemplate: "Agent {{agent.name}} in company {{companyId}}, run {{runId}}.",
     });
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toBe("Agent CEO in company company-xyz, run run-123.");
   });
 
-  it("includes bootstrapPromptTemplate before heartbeat prompt", () => {
+  it("includes bootstrapPromptTemplate before heartbeat prompt", async () => {
     const ctx = buildContext({
       bootstrapPromptTemplate: "Welcome {{agent.name}}, you are a Paperclip agent.",
       promptTemplate: "Continue working.",
     });
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toContain("Welcome CEO, you are a Paperclip agent.");
     expect(prompt).toContain("Continue working.");
     // Bootstrap comes first
@@ -79,27 +79,27 @@ describe("buildPrompt", () => {
     expect(bootstrapIdx).toBeLessThan(heartbeatIdx);
   });
 
-  it("includes issue context as a structured section", () => {
+  it("includes issue context as a structured section", async () => {
     const ctx = buildContext(
       { runtime: "opencode" },
       { issueTitle: "Fix the login bug", issueDescription: "Users can't log in after password reset." },
     );
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toContain("## Current Task");
     expect(prompt).toContain("Fix the login bug");
     expect(prompt).toContain("Users can't log in after password reset.");
   });
 
-  it("includes session handoff markdown", () => {
+  it("includes session handoff markdown", async () => {
     const ctx = buildContext(
       { runtime: "opencode" },
       { paperclipSessionHandoffMarkdown: "Previous session summary: fixed 3 bugs." },
     );
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toContain("Previous session summary: fixed 3 bugs.");
   });
 
-  it("composes all sections in the correct order", () => {
+  it("composes all sections in the correct order", async () => {
     const ctx = buildContext(
       {
         bootstrapPromptTemplate: "BOOTSTRAP",
@@ -111,7 +111,7 @@ describe("buildPrompt", () => {
         issueDescription: "TASK_DESC",
       },
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
     const bootstrapIdx = prompt.indexOf("BOOTSTRAP");
     const handoffIdx = prompt.indexOf("HANDOFF");
     const taskIdx = prompt.indexOf("TASK_TITLE");
@@ -123,40 +123,40 @@ describe("buildPrompt", () => {
     expect(heartbeatIdx).toBeGreaterThan(taskIdx);
   });
 
-  it("skips empty sections gracefully", () => {
+  it("skips empty sections gracefully", async () => {
     const ctx = buildContext({
       bootstrapPromptTemplate: "",
       promptTemplate: "Do your work.",
     });
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toBe("Do your work.");
     // No double newlines from empty sections
     expect(prompt).not.toContain("\n\n\n");
   });
 
-  it("falls back to default heartbeat prompt even when promptTemplate is empty string", () => {
+  it("falls back to default heartbeat prompt even when promptTemplate is empty string", async () => {
     // asString treats "" as falsy and returns the default
     const ctx = buildContext({ promptTemplate: "" });
-    const prompt = buildPrompt(ctx);
+    const prompt = await buildPrompt(ctx);
     expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 
-  it("handles issue with only a title (no description)", () => {
+  it("handles issue with only a title (no description)", async () => {
     const ctx = buildContext(
       { promptTemplate: "Work." },
       { issueTitle: "Deploy v2", issueDescription: "" },
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
     expect(prompt).toContain("## Current Task\nDeploy v2");
     expect(prompt).toContain("Work.");
   });
 
-  it("handles issue with only a description (no title)", () => {
+  it("handles issue with only a description (no title)", async () => {
     const ctx = buildContext(
       { promptTemplate: "Work." },
       { issueTitle: "", issueDescription: "Migrate the database schema." },
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
     expect(prompt).toContain("Migrate the database schema.");
     expect(prompt).not.toContain("## Current Task");
   });
@@ -246,7 +246,7 @@ describe("extractStreamJsonResult", () => {
 // End-to-end prompt composition (realistic scenarios)
 // ---------------------------------------------------------------------------
 describe("buildPrompt realistic scenarios", () => {
-  it("CEO agent with an assigned issue produces a rich prompt", () => {
+  it("CEO agent with an assigned issue produces a rich prompt", async () => {
     const ctx = buildContext(
       {
         runtime: "opencode",
@@ -262,7 +262,7 @@ describe("buildPrompt realistic scenarios", () => {
         paperclipSessionHandoffMarkdown: "",
       },
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
 
     // Contains rendered bootstrap
     expect(prompt).toContain("You are CEO, the chief executive of company company-xyz.");
@@ -274,13 +274,13 @@ describe("buildPrompt realistic scenarios", () => {
     expect(prompt).toContain("Review the current task and take action. Run ID: run-123.");
   });
 
-  it("agent with minimal config (like the live CEO) gets a usable default", () => {
+  it("agent with minimal config (like the live CEO) gets a usable default", async () => {
     // This mirrors the actual CEO config: { "env": {...}, "runtime": "opencode" }
     const ctx = buildContext(
       { runtime: "opencode", env: { ANTHROPIC_API_KEY: "sk-..." } },
       { issueTitle: "Set up the company", issueDescription: "Initialize company operations." },
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
 
     // Should still get a useful prompt from the defaults
     expect(prompt).toContain("## Current Task\nSet up the company");
@@ -288,12 +288,12 @@ describe("buildPrompt realistic scenarios", () => {
     expect(prompt).toContain("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 
-  it("agent with no issue still gets identity prompt", () => {
+  it("agent with no issue still gets identity prompt", async () => {
     const ctx = buildContext(
       { runtime: "opencode" },
       {}, // no issue context
     );
-    const prompt = buildPrompt(ctx)!;
+    const prompt = (await buildPrompt(ctx))!;
     expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 });
