@@ -64,6 +64,15 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const CIRCUIT_BREAKER_THRESHOLD = 10;
+
+// Error codes eligible for automatic retry, with max attempts and delay before retry
+const RETRY_POLICY: Record<string, { maxRetries: number; delayMs: number }> = {
+  process_lost: { maxRetries: 1, delayMs: 0 },
+  adapter_failed: { maxRetries: 1, delayMs: 30_000 },
+  rate_limit: { maxRetries: 2, delayMs: 60_000 },
+  copilot_auth_required: { maxRetries: 1, delayMs: 10_000 },
+  claude_auth_required: { maxRetries: 1, delayMs: 10_000 },
+};
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1532,11 +1541,18 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
-  async function enqueueProcessLossRetry(
+  async function enqueueRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
+    errorCode: string,
     now: Date,
   ) {
+    const policy = RETRY_POLICY[errorCode];
+    if (!policy) return null;
+
+    const retryCount = run.processLossRetryCount ?? 0;
+    if (retryCount >= policy.maxRetries) return null;
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKey(contextSnapshot, null);
@@ -1544,9 +1560,11 @@ export function heartbeatService(db: Db) {
     const retryContextSnapshot = {
       ...contextSnapshot,
       retryOfRunId: run.id,
-      wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      wakeReason: `${errorCode}_retry`,
+      retryReason: errorCode,
     };
+
+    const scheduledAt = policy.delayMs > 0 ? new Date(now.getTime() + policy.delayMs) : now;
 
     const queued = await db.transaction(async (tx) => {
       const wakeupRequest = await tx
@@ -1556,7 +1574,7 @@ export function heartbeatService(db: Db) {
           agentId: run.agentId,
           source: "automation",
           triggerDetail: "system",
-          reason: "process_lost_retry",
+          reason: `${errorCode}_retry`,
           payload: {
             ...(issueId ? { issueId } : {}),
             retryOfRunId: run.id,
@@ -1581,7 +1599,7 @@ export function heartbeatService(db: Db) {
           contextSnapshot: retryContextSnapshot,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
-          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          processLossRetryCount: retryCount + 1,
           updatedAt: now,
         })
         .returning()
@@ -1622,15 +1640,23 @@ export function heartbeatService(db: Db) {
       },
     });
 
+    const delayNote = policy.delayMs > 0 ? ` (delay ${Math.round(policy.delayMs / 1000)}s)` : "";
     await appendRunEvent(queued, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: `Queued automatic retry for ${errorCode} (attempt ${retryCount + 1}/${policy.maxRetries})${delayNote}`,
       payload: {
         retryOfRunId: run.id,
+        errorCode,
+        retryCount: retryCount + 1,
       },
     });
+
+    // For delayed retries, don't start immediately — let the scheduler pick it up
+    if (policy.delayMs === 0) {
+      await startNextQueuedRunForAgent(run.agentId);
+    }
 
     return queued;
   }
@@ -1881,30 +1907,28 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
-        }
-      } else {
+      const agent = await getAgent(run.agentId);
+      if (agent) {
+        retriedRun = await enqueueRetry(finalizedRun, agent, "process_lost", now);
+      }
+      if (!retriedRun) {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -1912,8 +1936,8 @@ export function heartbeatService(db: Db) {
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
+        message: retriedRun
+          ? `${baseMessage}; queued retry ${retriedRun.id}`
           : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
@@ -2783,7 +2807,17 @@ export function heartbeatService(db: Db) {
             exitCode: adapterResult.exitCode,
           },
         });
-        await releaseIssueExecutionAndPromote(finalizedRun);
+
+        // For retryable failures, attempt automatic retry before releasing the issue lock
+        const resolvedErrorCode = outcome === "failed" ? (adapterResult.errorCode ?? "adapter_failed") : null;
+        let retried = false;
+        if (resolvedErrorCode && RETRY_POLICY[resolvedErrorCode]) {
+          const retriedRun = await enqueueRetry(finalizedRun, agent, resolvedErrorCode, new Date()).catch(() => null);
+          retried = !!retriedRun;
+        }
+        if (!retried) {
+          await releaseIssueExecutionAndPromote(finalizedRun);
+        }
       }
 
       if (finalizedRun) {
@@ -2865,7 +2899,12 @@ export function heartbeatService(db: Db) {
           level: "error",
           message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
+
+        // Attempt automatic retry before releasing the issue lock
+        const retried = await enqueueRetry(failedRun, agent, "adapter_failed", new Date()).catch(() => null);
+        if (!retried) {
+          await releaseIssueExecutionAndPromote(failedRun);
+        }
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
@@ -2916,7 +2955,12 @@ export function heartbeatService(db: Db) {
               level: "error",
               message,
             }).catch(() => undefined);
-            await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+
+            // Attempt automatic retry before releasing the issue lock
+            const retried = await enqueueRetry(failedRun, agent, "adapter_failed", new Date()).catch(() => null);
+            if (!retried) {
+              await releaseIssueExecutionAndPromote(failedRun).catch(() => undefined);
+            }
           }
           // Ensure the agent is not left stuck in "running" if the inner catch handler's
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
