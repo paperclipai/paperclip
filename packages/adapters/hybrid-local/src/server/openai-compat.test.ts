@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveBaseUrl } from "./lmstudio.js";
+import { resolveBaseUrl } from "./openai-compat.js";
 
 describe("resolveBaseUrl", () => {
   it("returns the default URL when config is undefined", () => {

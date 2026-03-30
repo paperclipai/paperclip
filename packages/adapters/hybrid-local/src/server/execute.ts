@@ -2,7 +2,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import { asString, asNumber, renderTemplate, joinPromptSections } from "@paperclipai/adapter-utils/server-utils";
 import { execute as claudeExecute } from "@paperclipai/adapter-claude-local/server";
 import { isClaudeModel, models as staticModels } from "../index.js";
-import { executeLocalModel, resolveBaseUrl, testLMStudioAvailability } from "./lmstudio.js";
+import { executeLocalModel, resolveBaseUrl, testOpenAICompatAvailability } from "./openai-compat.js";
 import { getQuotaWindows } from "./quota.js";
 
 // --- Helpers ---
@@ -78,7 +78,7 @@ async function isClaudeQuotaNearExhausted(
  * responds to GET /v1/models within 3 seconds.
  */
 async function isLocalEndpointHealthy(baseUrl: string): Promise<boolean> {
-  const result = await testLMStudioAvailability(baseUrl);
+  const result = await testOpenAICompatAvailability(baseUrl);
   return result.available;
 }
 

@@ -7,7 +7,7 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1";
 const MAX_TOOL_TURNS = 30;
 const BASH_TIMEOUT_MS = 120_000;
 
-export interface LMStudioResult {
+export interface OpenAICompatResult {
   summary: string;
   model: string;
   usage: UsageSummary;
@@ -65,14 +65,14 @@ interface ChatCompletionResponse {
   usage?: ChatCompletionUsage;
 }
 
-interface LMStudioModel {
+interface OpenAICompatModel {
   id: string;
   object: string;
   owned_by?: string;
 }
 
-interface LMStudioModelsResponse {
-  data: LMStudioModel[];
+interface OpenAICompatModelsResponse {
+  data: OpenAICompatModel[];
 }
 
 // --- Tool definitions passed to the model ---
@@ -163,7 +163,7 @@ export async function executeLocalModel(opts: {
   enableTools: boolean;
   timeoutMs: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-}): Promise<LMStudioResult> {
+}): Promise<OpenAICompatResult> {
   const { baseUrl, model, prompt, cwd, enableTools, timeoutMs, onLog } = opts;
   const url = `${baseUrl}/chat/completions`;
   const deadline = Date.now() + timeoutMs;
@@ -188,13 +188,14 @@ export async function executeLocalModel(opts: {
           messages,
           stream: false,
           temperature: 0.1,
+          keep_alive: 0,
         }),
       },
       timeoutMs,
     );
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
-      throw new Error(`LM Studio returned ${response.status}: ${errorBody || response.statusText}`);
+      throw new Error(`OpenAI-compatible endpoint returned ${response.status}: ${errorBody || response.statusText}`);
     }
     const body = (await response.json()) as ChatCompletionResponse;
     const content = body.choices?.[0]?.message?.content ?? "";
@@ -226,6 +227,7 @@ export async function executeLocalModel(opts: {
           tool_choice: "auto",
           stream: false,
           temperature: 0.1,
+          keep_alive: 0,
         }),
       },
       Math.min(remainingMs, BASH_TIMEOUT_MS + 30_000),
@@ -233,7 +235,7 @@ export async function executeLocalModel(opts: {
 
     if (!response.ok) {
       const errorBody = await response.text().catch(() => "");
-      throw new Error(`LM Studio returned ${response.status}: ${errorBody || response.statusText}`);
+      throw new Error(`OpenAI-compatible endpoint returned ${response.status}: ${errorBody || response.statusText}`);
     }
 
     const body = (await response.json()) as ChatCompletionResponse;
@@ -311,7 +313,7 @@ export async function executeLocalModel(opts: {
   };
 }
 
-export async function testLMStudioAvailability(baseUrl: string): Promise<{
+export async function testOpenAICompatAvailability(baseUrl: string): Promise<{
   available: boolean;
   models: string[];
   error: string | null;
@@ -327,11 +329,11 @@ export async function testLMStudioAvailability(baseUrl: string): Promise<{
       return {
         available: false,
         models: [],
-        error: `LM Studio returned ${response.status}`,
+        error: `OpenAI-compatible endpoint returned ${response.status}`,
       };
     }
 
-    const body = (await response.json()) as LMStudioModelsResponse;
+    const body = (await response.json()) as OpenAICompatModelsResponse;
     const modelIds = (body.data ?? []).map((m) => m.id);
 
     return {
@@ -345,14 +347,14 @@ export async function testLMStudioAvailability(baseUrl: string): Promise<{
       available: false,
       models: [],
       error: message.includes("ECONNREFUSED")
-        ? `LM Studio is not running at ${baseUrl}`
-        : `LM Studio check failed: ${message}`,
+        ? `OpenAI-compatible endpoint not running at ${baseUrl}`
+        : `OpenAI-compatible endpoint check failed: ${message}`,
     };
   }
 }
 
-export async function listLMStudioModels(baseUrl: string): Promise<Array<{ id: string; label: string }>> {
-  const result = await testLMStudioAvailability(baseUrl);
+export async function listOpenAICompatModels(baseUrl: string): Promise<Array<{ id: string; label: string }>> {
+  const result = await testOpenAICompatAvailability(baseUrl);
   if (!result.available) return [];
   return result.models.map((id) => ({ id, label: `${id} (Local)` }));
 }

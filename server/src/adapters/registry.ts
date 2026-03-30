@@ -85,7 +85,7 @@ import {
   testEnvironment as hybridTestEnvironment,
   sessionCodec as hybridSessionCodec,
   getQuotaWindows as hybridGetQuotaWindows,
-  listLMStudioModels,
+  listOpenAICompatModels,
 } from "@paperclipai/adapter-hybrid-local/server";
 import {
   agentConfigurationDoc as hybridAgentConfigurationDoc,
@@ -210,7 +210,7 @@ const hybridLocalAdapter: ServerAdapterModule = {
   sessionManagement: getAdapterSessionManagement("hybrid_local") ?? undefined,
   models: hybridModels,
   listModels: async () => {
-    const localModels = await listLMStudioModels("http://127.0.0.1:1234/v1").catch(() => []);
+    const localModels = await listOpenAICompatModels("http://127.0.0.1:1234/v1").catch(() => []);
     return [...hybridModels, ...localModels.filter((m) => !hybridModels.some((s) => s.id === m.id))];
   },
   supportsLocalAgentJwt: true,

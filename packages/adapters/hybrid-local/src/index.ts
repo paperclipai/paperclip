@@ -2,9 +2,9 @@ export const type = "hybrid_local";
 export const label = "Hybrid (local)";
 
 // Only Claude models are hardcoded — local models are discovered dynamically
-// from LM Studio's /v1/models endpoint via listLMStudioModels() in registry.ts.
+// from the OpenAI-compatible /v1/models endpoint via listOpenAICompatModels() in registry.ts.
 // Hardcoding local model IDs here causes stale IDs to be stored in agent configs
-// when LM Studio updates its naming convention.
+// when the local server updates its naming convention.
 export const models = [
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },

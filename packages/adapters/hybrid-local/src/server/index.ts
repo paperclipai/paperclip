@@ -15,7 +15,7 @@ export {
   fetchClaudeQuota,
   fetchClaudeCliQuota,
 } from "./quota.js";
-export { listLMStudioModels } from "./lmstudio.js";
+export { listOpenAICompatModels } from "./openai-compat.js";
 
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as claudeSessionCodec } from "@paperclipai/adapter-claude-local/server";
