@@ -1833,6 +1833,62 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  /**
+   * Build a summary of the agent's most recent run if it failed.
+   * Injected into the next run's context so the agent knows what happened.
+   */
+  async function buildLastRunSummary(agentId: string, currentRunId: string) {
+    const previousRun = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), sql`${heartbeatRuns.id} != ${currentRunId}`))
+      .orderBy(desc(heartbeatRuns.startedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!previousRun || previousRun.status !== "failed") return null;
+
+    const startMs = previousRun.startedAt ? new Date(previousRun.startedAt).getTime() : 0;
+    const endMs = previousRun.finishedAt ? new Date(previousRun.finishedAt).getTime() : 0;
+    const durationMs = startMs && endMs ? endMs - startMs : null;
+
+    // Fetch the last few events from the failed run for context
+    const events = await db
+      .select({
+        eventType: heartbeatRunEvents.eventType,
+        message: heartbeatRunEvents.message,
+        level: heartbeatRunEvents.level,
+      })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, previousRun.id))
+      .orderBy(desc(heartbeatRunEvents.seq))
+      .limit(5);
+
+    const prevContext = parseObject(previousRun.contextSnapshot);
+
+    return {
+      runId: previousRun.id,
+      status: previousRun.status,
+      errorCode: previousRun.errorCode ?? null,
+      error: previousRun.error ?? null,
+      durationMs,
+      issueId: readNonEmptyString(prevContext.issueId) ?? null,
+      lastEvents: events.reverse().map((e) => ({
+        type: e.eventType,
+        message: e.message,
+        level: e.level,
+      })),
+    };
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxRunDurationMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const maxRunDurationMs = opts?.maxRunDurationMs ?? 0;
@@ -2431,6 +2487,13 @@ export function heartbeatService(db: Db) {
       delete context.paperclipSessionHandoffMarkdown;
       delete context.paperclipSessionRotationReason;
       delete context.paperclipPreviousSessionId;
+    }
+
+    // Build last-run summary if previous run for this agent failed
+    // This gives the agent visibility into what happened before it died
+    const lastRunSummary = await buildLastRunSummary(agent.id, run.id);
+    if (lastRunSummary) {
+      context.paperclipLastRunSummary = lastRunSummary;
     }
 
     const runtimeForAdapter = {
