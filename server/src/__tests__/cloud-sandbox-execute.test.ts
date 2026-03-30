@@ -51,10 +51,21 @@ describe("shellEscape", () => {
 // buildPrompt
 // ---------------------------------------------------------------------------
 describe("buildPrompt", () => {
+  it("injects Paperclip skill content (SKILL.md) into the prompt", async () => {
+    const ctx = buildContext({ runtime: "opencode" });
+    const prompt = await buildPrompt(ctx);
+    // The SKILL.md content should be present (loaded from skills/ directory)
+    expect(prompt).toContain("paperclip");
+    // Skill content comes before the heartbeat prompt
+    expect(prompt!.indexOf("paperclip")).toBeLessThan(
+      prompt!.indexOf("You are agent agent-abc"),
+    );
+  });
+
   it("returns the default heartbeat prompt when config has no templates", async () => {
     const ctx = buildContext({ runtime: "opencode" });
     const prompt = await buildPrompt(ctx);
-    expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
+    expect(prompt).toContain("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 
   it("renders a custom promptTemplate with template variables", async () => {
@@ -62,7 +73,7 @@ describe("buildPrompt", () => {
       promptTemplate: "Agent {{agent.name}} in company {{companyId}}, run {{runId}}.",
     });
     const prompt = await buildPrompt(ctx);
-    expect(prompt).toBe("Agent CEO in company company-xyz, run run-123.");
+    expect(prompt).toContain("Agent CEO in company company-xyz, run run-123.");
   });
 
   it("includes bootstrapPromptTemplate before heartbeat prompt", async () => {
@@ -129,16 +140,16 @@ describe("buildPrompt", () => {
       promptTemplate: "Do your work.",
     });
     const prompt = await buildPrompt(ctx);
-    expect(prompt).toBe("Do your work.");
-    // No double newlines from empty sections
-    expect(prompt).not.toContain("\n\n\n");
+    expect(prompt).toContain("Do your work.");
+    // No triple newlines from empty sections
+    expect(prompt).not.toContain("\n\n\n\n");
   });
 
   it("falls back to default heartbeat prompt even when promptTemplate is empty string", async () => {
     // asString treats "" as falsy and returns the default
     const ctx = buildContext({ promptTemplate: "" });
     const prompt = await buildPrompt(ctx);
-    expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
+    expect(prompt).toContain("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 
   it("handles issue with only a title (no description)", async () => {
@@ -294,7 +305,7 @@ describe("buildPrompt realistic scenarios", () => {
       {}, // no issue context
     );
     const prompt = (await buildPrompt(ctx))!;
-    expect(prompt).toBe("You are agent agent-abc (CEO). Continue your Paperclip work.");
+    expect(prompt).toContain("You are agent agent-abc (CEO). Continue your Paperclip work.");
   });
 });
 

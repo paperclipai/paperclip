@@ -34,7 +34,13 @@ function joinPromptSections(sections: Array<string | null | undefined>): string 
  * for cloud sandbox we read the content and inject it into the prompt.
  */
 async function loadSkillContents(config: Record<string, unknown>): Promise<string> {
-  const entries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  // The skills directory is at the repo/image root (e.g. /app/skills/ in Docker).
+  // The default relative-path resolution from __moduleDir can't reach it, so we
+  // provide the repo-root skills/ path as an additional candidate.
+  const repoRoot = path.resolve(__moduleDir, "..", "..", "..", "..");
+  const entries = await readPaperclipRuntimeSkillEntries(config, __moduleDir, [
+    path.join(repoRoot, "skills"),
+  ]);
   const desiredNames = resolvePaperclipDesiredSkillNames(config, entries);
   const desiredSet = new Set(desiredNames ?? entries.map((e) => e.key));
   const selectedEntries = entries.filter((e) => desiredSet.has(e.key));
