@@ -38,8 +38,14 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => ({}),
-  assetService: () => ({}),
-  chatService: () => ({}),
+  assetService: () => ({ getById: vi.fn() }),
+  chatService: () => ({
+    getSession: vi.fn(),
+    sendMessage: vi.fn(),
+    getHistory: vi.fn(),
+    getSessionById: vi.fn(),
+    getSessionMessages: vi.fn(),
+  }),
   chatProcessService: () => ({}),
   companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
   budgetService: () => ({}),
@@ -48,7 +54,15 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
-  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
+  syncInstructionsBundleConfigFromFilePath: vi.fn((_agent: unknown, config: Record<string, unknown>) => {
+    const next = { ...config };
+    if (!next.instructionsFilePath) {
+      delete next.instructionsBundleMode;
+      delete next.instructionsRootPath;
+      delete next.instructionsEntryFile;
+    }
+    return next;
+  }),
   workspaceOperationService: () => ({}),
 }));
 
