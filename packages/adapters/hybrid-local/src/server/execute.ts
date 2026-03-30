@@ -354,6 +354,7 @@ async function executeLocal(
     baseUrl: localBaseUrl,
     model,
     prompt,
+    cwd: asString(config.cwd, process.cwd()),
     timeoutMs: timeoutSec * 1000,
     onLog,
   });
