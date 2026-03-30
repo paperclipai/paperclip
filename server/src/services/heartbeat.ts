@@ -1019,8 +1019,11 @@ export function heartbeatService(db: Db) {
       );
     }
 
-    const runtimeForRun = await getRuntimeState(agent.id);
-    return runtimeForRun?.sessionId ?? null;
+    // No task/issue context — issueless heartbeats are stateless by nature.
+    // Resuming the agent-level session would accumulate context across independent
+    // heartbeat cycles until the context window fills up. Return null so each
+    // issueless run starts fresh.
+    return null;
   }
 
   async function resolveExplicitResumeSessionOverride(
