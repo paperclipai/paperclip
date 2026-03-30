@@ -14,6 +14,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseOpenCodeResponse, isOpenCodeSessionNotFound } from "./parse.js";
 
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
+  );
+}
+
 interface OpenCodeSessionResponse {
   id: string;
   slug?: string;
@@ -85,7 +92,7 @@ async function fetchJson<T>(
 export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken } =
+  const { runId, agent, runtime, config, context, onLog, onMeta, authToken: _authToken } =
     ctx;
 
   const url = asString(config.url, "").replace(/\/+$/, "");
@@ -228,12 +235,7 @@ export async function execute(
           `[paperclip] Created OpenCode session: ${sessionId}\n`,
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (
-          msg.includes("AbortError") ||
-          msg.includes("abort") ||
-          msg.includes("timeout")
-        ) {
+        if (isAbortError(err)) {
           return {
             sessionId: null,
             response: null,
@@ -242,6 +244,7 @@ export async function execute(
             raw: "",
           };
         }
+        const msg = err instanceof Error ? err.message : String(err);
         return {
           sessionId: null,
           response: null,
@@ -295,12 +298,7 @@ export async function execute(
         raw: msgRes.raw,
       };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (
-        msg.includes("AbortError") ||
-        msg.includes("abort") ||
-        msg.includes("timeout")
-      ) {
+      if (isAbortError(err)) {
         return {
           sessionId,
           response: null,
@@ -309,6 +307,7 @@ export async function execute(
           raw: "",
         };
       }
+      const msg = err instanceof Error ? err.message : String(err);
       return {
         sessionId,
         response: null,

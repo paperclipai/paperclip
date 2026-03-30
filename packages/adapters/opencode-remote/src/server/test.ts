@@ -77,6 +77,7 @@ export async function testEnvironment(
         });
       }
     } catch (err) {
+      clearTimeout(timer);
       const msg = err instanceof Error ? err.message : String(err);
       checks.push({
         code: "server_unreachable",
