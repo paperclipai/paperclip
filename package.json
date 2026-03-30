@@ -16,7 +16,7 @@
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
-    "paperclipai": "pnpm --dir cli exec tsx src/index.ts",
+    "paperclipai": "tsx cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",
@@ -32,7 +32,8 @@
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
-    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed"
+    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
