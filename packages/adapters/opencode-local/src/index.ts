@@ -11,31 +11,47 @@ export const label = "OpenCode (local)";
  * Ollama cloud format: ollama/model-name:tag
  */
 export const models: Array<{ id: string; label: string }> = [
-  // Anthropic
+  // Anthropic (latest)
+  { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Anthropic)" },
+  { id: "anthropic/claude-opus-4-6", label: "Claude Opus 4.6 (Anthropic)" },
   { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5 (Anthropic)" },
-  { id: "anthropic/claude-opus-4-5", label: "Claude Opus 4.5 (Anthropic)" },
   { id: "anthropic/claude-haiku-3-5", label: "Claude Haiku 3.5 (Anthropic)" },
 
-  // OpenAI via OpenCode free tier
+  // OpenAI (latest)
+  { id: "openai/gpt-4o", label: "GPT-4o (OpenAI)" },
+  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini (OpenAI)" },
+  { id: "openai/o3", label: "o3 (OpenAI)" },
+  { id: "openai/o4-mini", label: "o4 Mini (OpenAI)" },
+
+  // OpenCode free tier
   { id: "opencode/gpt-5-mini", label: "GPT-5 Mini (OpenCode)" },
   { id: "opencode/gpt-5", label: "GPT-5 (OpenCode)" },
-  { id: "opencode/gpt-5-nano", label: "GPT-5 Nano (OpenCode)" },
   { id: "opencode/minimax-m2.5-free", label: "MiniMax M2.5 Free (OpenCode)" },
-  { id: "opencode/big-pickle", label: "Big Pickle (OpenCode)" },
-  { id: "opencode/nemotron-3-super-free", label: "Nemotron 3 Super (OpenCode)" },
 
-  // Google
+  // Google (latest)
+  { id: "google/gemini-2.5-pro-preview", label: "Gemini 2.5 Pro Preview (Google)" },
   { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash (Google)" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro (Google)" },
   { id: "google/gemini-2.0-flash", label: "Gemini 2.0 Flash (Google)" },
 
-  // Ollama cloud models
+  // Anthropic (latest)
+  { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Anthropic)" },
+  { id: "anthropic/claude-opus-4-6", label: "Claude Opus 4.6 (Anthropic)" },
+
+  // OpenAI (latest)
+  { id: "openai/gpt-4o", label: "GPT-4o (OpenAI)" },
+  { id: "openai/gpt-4o-mini", label: "GPT-4o Mini (OpenAI)" },
+  { id: "openai/o3", label: "o3 (OpenAI)" },
+  { id: "openai/o4-mini", label: "o4 Mini (OpenAI)" },
+
+  // Google (latest)
+  { id: "google/gemini-2.5-pro-preview", label: "Gemini 2.5 Pro Preview (Google)" },
+
+  // Ollama cloud models (chat/completion only — embedding models excluded)
   { id: "ollama/qwen3.5:cloud", label: "Qwen 3.5 (Ollama Cloud)" },
   { id: "ollama/qwen3.5:397b-cloud", label: "Qwen 3.5 397B (Ollama Cloud)" },
   { id: "ollama/glm-5:cloud", label: "GLM-5 (Ollama Cloud)" },
   { id: "ollama/minimax-m2.5:cloud", label: "MiniMax M2.5 (Ollama Cloud)" },
   { id: "ollama/minimax-m2.7:cloud", label: "MiniMax M2.7 (Ollama Cloud)" },
-  { id: "ollama/nomic-embed-text", label: "Nomic Embed Text (Ollama)" },
 ];
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
