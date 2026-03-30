@@ -308,4 +308,108 @@ describe("budgetService", () => {
       }),
     );
   });
+
+  it("accepts seat budget policies and resolves seat scope names", async () => {
+    const seatPolicy = {
+      id: "policy-seat-1",
+      companyId: "company-1",
+      scopeType: "seat",
+      scopeId: "seat-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 200,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+      createdByUserId: "board-user",
+      updatedByUserId: "board-user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const dbStub = createDbStub([
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "active",
+      }],
+      [],
+      [],
+      [{ total: 0 }],
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "active",
+      }],
+    ]);
+
+    dbStub.queueInsert([seatPolicy]);
+    dbStub.queueUpdate([]);
+
+    const service = budgetService(dbStub.db as any);
+    const summary = await service.upsertPolicy(
+      "company-1",
+      {
+        scopeType: "seat",
+        scopeId: "seat-1",
+        amount: 200,
+      },
+      "board-user",
+    );
+
+    expect(summary.scopeType).toBe("seat");
+    expect(summary.scopeId).toBe("seat-1");
+    expect(summary.scopeName).toBe("Platform Seat");
+  });
+
+  it("blocks new work when a seat hard-stop remains exceeded", async () => {
+    const seatPolicy = {
+      id: "policy-seat-1",
+      companyId: "company-1",
+      scopeType: "seat",
+      scopeId: "seat-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [{
+        status: "idle",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+        seatId: "seat-1",
+      }],
+      [{
+        status: "active",
+        name: "Paperclip",
+      }],
+      [],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "active",
+      }],
+      [seatPolicy],
+      [{ costEventId: "event-1" }],
+      [{ total: 120 }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    expect(block).toEqual({
+      scopeType: "seat",
+      scopeId: "seat-1",
+      scopeName: "Platform Seat",
+      reason: "Seat cannot start work because its budget hard-stop is still exceeded.",
+    });
+  });
 });

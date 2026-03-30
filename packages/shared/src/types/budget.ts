@@ -76,6 +76,7 @@ export interface BudgetOverview {
   policies: BudgetPolicySummary[];
   activeIncidents: BudgetIncident[];
   pausedAgentCount: number;
+  pausedSeatCount: number;
   pausedProjectCount: number;
   pendingApprovalCount: number;
 }

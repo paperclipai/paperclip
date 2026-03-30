@@ -1,17 +1,39 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Link, useNavigate } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { seatsApi } from "../api/seats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { Download, Network, Upload } from "lucide-react";
+import { Download, ExternalLink, Network, Upload, UserMinus, UserPlus } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { orgNodeBadges } from "../lib/org-node-display";
+import { formatDelegatedPermissions, seatPermissionOptions } from "../lib/seat-permissions";
+import { orgNodeCanManageSeat, primarySeatAction } from "../lib/seat-actions";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
 // Layout constants
 const CARD_W = 200;
@@ -24,8 +46,11 @@ const PADDING = 60;
 
 interface LayoutNode {
   id: string;
+  seatId: string | null;
   name: string;
   role: string;
+  seatType: string | null;
+  operatingMode: string | null;
   status: string;
   x: number;
   y: number;
@@ -61,8 +86,11 @@ function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
 
   return {
     id: node.id,
+    seatId: node.seatId,
     name: node.name,
     role: node.role,
+    seatType: node.seatType,
+    operatingMode: node.operatingMode,
     status: node.status,
     x: x + (totalW - CARD_W) / 2,
     y,
@@ -143,7 +171,15 @@ const defaultDotColor = "#a3a3a3";
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [selectedSeatNode, setSelectedSeatNode] = useState<OrgNode | null>(null);
+  const [attachDialogNode, setAttachDialogNode] = useState<OrgNode | null>(null);
+  const [attachUserId, setAttachUserId] = useState("");
+  const [permissionsDialogNode, setPermissionsDialogNode] = useState<OrgNode | null>(null);
+  const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
+  const [mutationPendingSeatId, setMutationPendingSeatId] = useState<string | null>(null);
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -156,16 +192,128 @@ export function OrgChart() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: selectedSeatDetail } = useQuery({
+    queryKey: selectedSeatNode?.seatId
+      ? queryKeys.seats.detail(selectedCompanyId!, selectedSeatNode.seatId)
+      : ["seats", "org-chart", "selected-none"],
+    queryFn: () => seatsApi.detail(selectedCompanyId!, selectedSeatNode!.seatId!),
+    enabled: !!selectedCompanyId && !!selectedSeatNode?.seatId,
+  });
+  const { data: permissionsSeatDetail } = useQuery({
+    queryKey: permissionsDialogNode?.seatId
+      ? queryKeys.seats.detail(selectedCompanyId!, permissionsDialogNode.seatId)
+      : ["seats", "org-chart", "permissions-none"],
+    queryFn: () => seatsApi.detail(selectedCompanyId!, permissionsDialogNode!.seatId!),
+    enabled: !!selectedCompanyId && !!permissionsDialogNode?.seatId,
+  });
 
   const agentMap = useMemo(() => {
     const m = new Map<string, Agent>();
     for (const a of agents ?? []) m.set(a.id, a);
     return m;
   }, [agents]);
+  const selectedDisplayAgent = useMemo(
+    () => (selectedSeatNode ? agentMap.get(selectedSeatNode.id) ?? null : null),
+    [agentMap, selectedSeatNode],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (permissionsSeatDetail && permissionsDialogNode?.seatId === permissionsSeatDetail.id) {
+      setSelectedPermissions(permissionsSeatDetail.delegatedPermissions);
+    }
+  }, [permissionsSeatDetail, permissionsDialogNode]);
+
+  const invalidateSeatViews = async () => {
+    if (!selectedCompanyId) return;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) }),
+      selectedSeatNode?.seatId
+        ? queryClient.invalidateQueries({ queryKey: queryKeys.seats.detail(selectedCompanyId, selectedSeatNode.seatId) })
+        : Promise.resolve(),
+    ]);
+  };
+
+  const attachHuman = useMutation({
+    mutationFn: async ({ seatId, userId }: { seatId: string; userId: string }) => {
+      setMutationPendingSeatId(seatId);
+      return seatsApi.attachHuman(selectedCompanyId!, seatId, userId);
+    },
+    onSuccess: async () => {
+      await invalidateSeatViews();
+      setAttachDialogNode(null);
+      setAttachUserId("");
+      pushToast({ tone: "success", title: "Human attached to seat" });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Attach failed",
+        body: error instanceof Error ? error.message : "Unknown error",
+      });
+    },
+    onSettled: () => {
+      setMutationPendingSeatId(null);
+    },
+  });
+
+  const detachHuman = useMutation({
+    mutationFn: async (seatId: string) => {
+      setMutationPendingSeatId(seatId);
+      return seatsApi.detachHuman(selectedCompanyId!, seatId, null);
+    },
+    onSuccess: async (result) => {
+      await invalidateSeatViews();
+      pushToast({
+        tone: "success",
+        title: "Human detached from seat",
+        body:
+          result.fallbackReassignedIssueCount > 0
+            ? `${result.fallbackReassignedIssueCount} issues were reassigned to the fallback agent.`
+            : "No open issues needed reassignment.",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Detach failed",
+        body: error instanceof Error ? error.message : "Unknown error",
+      });
+    },
+    onSettled: () => {
+      setMutationPendingSeatId(null);
+    },
+  });
+
+  const updateSeatPermissions = useMutation({
+    mutationFn: async ({ seatId, delegatedPermissions }: { seatId: string; delegatedPermissions: string[] }) => {
+      setMutationPendingSeatId(seatId);
+      return seatsApi.update(selectedCompanyId!, seatId, { delegatedPermissions });
+    },
+    onSuccess: async (result) => {
+      await invalidateSeatViews();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.seats.detail(selectedCompanyId!, result.id) });
+      setPermissionsDialogNode(null);
+      setSelectedPermissions([]);
+      pushToast({ tone: "success", title: "Seat permissions updated" });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Permission update failed",
+        body: error instanceof Error ? error.message : "Unknown error",
+      });
+    },
+    onSettled: () => {
+      setMutationPendingSeatId(null);
+    },
+  });
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -391,6 +539,20 @@ export function OrgChart() {
         {allNodes.map((node) => {
           const agent = agentMap.get(node.id);
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+          const orgNode: OrgNode = {
+            id: node.id,
+            seatId: node.seatId,
+            name: node.name,
+            role: node.role,
+            seatType: node.seatType,
+            operatingMode: node.operatingMode,
+            status: node.status,
+            reports: [],
+          };
+          const badges = orgNodeBadges(orgNode);
+          const canManageSeat = orgNodeCanManageSeat(orgNode);
+          const primaryAction = primarySeatAction(orgNode);
+          const actionPending = mutationPendingSeatId === node.seatId;
 
           return (
             <div
@@ -403,7 +565,13 @@ export function OrgChart() {
                 width: CARD_W,
                 minHeight: CARD_H,
               }}
-              onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+              onClick={() => {
+                if (!node.seatId) {
+                  navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+                  return;
+                }
+                setSelectedSeatNode(orgNode);
+              }}
             >
               <div className="flex items-center px-4 py-3 gap-3">
                 {/* Agent icon + status dot */}
@@ -424,6 +592,18 @@ export function OrgChart() {
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
+                  {badges.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {badges.map((badge) => (
+                        <span
+                          key={badge.key}
+                          className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground"
+                        >
+                          {badge.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
@@ -431,11 +611,236 @@ export function OrgChart() {
                   )}
                 </div>
               </div>
+              {canManageSeat && (
+                <div className="flex items-center justify-between border-t border-border/60 px-3 py-2">
+                  <button
+                    type="button"
+                    className="text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedSeatNode(orgNode);
+                    }}
+                  >
+                    Details
+                  </button>
+                  <div className="flex items-center gap-1">
+                    {primaryAction && (
+                      <button
+                        type="button"
+                        className="rounded-md border border-border px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+                        disabled={actionPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (primaryAction === "attach") {
+                            setAttachDialogNode(orgNode);
+                            setAttachUserId("");
+                            return;
+                          }
+                          if (orgNode.seatId) {
+                            detachHuman.mutate(orgNode.seatId);
+                          }
+                        }}
+                      >
+                        {primaryAction === "attach"
+                          ? <UserPlus className="mr-1 inline h-3 w-3" />
+                          : <UserMinus className="mr-1 inline h-3 w-3" />}
+                        {actionPending ? "Working" : primaryAction}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="rounded-md border border-border px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPermissionsDialogNode(orgNode);
+                        setSelectedPermissions([]);
+                      }}
+                    >
+                      Perms
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
     </div>
+    <Sheet open={Boolean(selectedSeatNode)} onOpenChange={(open) => !open && setSelectedSeatNode(null)}>
+      <SheetContent side="right" className="overflow-y-auto sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>{selectedSeatDetail?.name ?? selectedSeatNode?.name ?? "Seat Detail"}</SheetTitle>
+          <SheetDescription>
+            {selectedSeatDetail?.name
+              ? `${selectedSeatDetail.name} seat 상태와 위임 권한`
+              : "Seat 상태를 확인하고 관리합니다."}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="mt-6 space-y-4 text-sm">
+          {!selectedSeatDetail ? (
+            <p className="text-muted-foreground">Seat 정보를 불러오는 중입니다.</p>
+          ) : (
+            <>
+              <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2">
+                <dt className="text-muted-foreground">Slug</dt>
+                <dd className="truncate">{selectedSeatDetail.slug}</dd>
+                <dt className="text-muted-foreground">Seat Type</dt>
+                <dd>{selectedSeatDetail.seatType}</dd>
+                <dt className="text-muted-foreground">Mode</dt>
+                <dd>{selectedSeatDetail.operatingMode}</dd>
+                <dt className="text-muted-foreground">Status</dt>
+                <dd>{selectedSeatDetail.status}</dd>
+                <dt className="text-muted-foreground">Human</dt>
+                <dd>{selectedSeatDetail.currentHumanUserId || "None"}</dd>
+                <dt className="text-muted-foreground">Default Agent</dt>
+                <dd className="truncate">{selectedSeatDetail.defaultAgentId || "None"}</dd>
+                <dt className="text-muted-foreground">Delegated</dt>
+                <dd>{formatDelegatedPermissions(selectedSeatDetail.delegatedPermissions) || "none"}</dd>
+              </dl>
+              <div className="flex flex-wrap gap-2 pt-2">
+                {selectedSeatNode && primarySeatAction(selectedSeatNode) === "attach" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setAttachDialogNode(selectedSeatNode);
+                      setAttachUserId("");
+                    }}
+                  >
+                    <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+                    Attach
+                  </Button>
+                ) : null}
+                {selectedSeatNode?.seatId && primarySeatAction(selectedSeatNode) === "detach" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => detachHuman.mutate(selectedSeatNode.seatId!)}
+                  >
+                    <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                    Detach
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!selectedSeatNode) return;
+                    setPermissionsDialogNode(selectedSeatNode);
+                    setSelectedPermissions(selectedSeatDetail.delegatedPermissions);
+                  }}
+                >
+                  Edit Permissions
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (selectedDisplayAgent) {
+                      navigate(agentUrl(selectedDisplayAgent));
+                      return;
+                    }
+                    if (selectedSeatDetail.defaultAgentId) {
+                      navigate(`/agents/${selectedSeatDetail.defaultAgentId}`);
+                    }
+                  }}
+                  disabled={!selectedDisplayAgent && !selectedSeatDetail.defaultAgentId}
+                >
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                  Open Agent
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+    <Dialog open={Boolean(attachDialogNode)} onOpenChange={(open) => !open && setAttachDialogNode(null)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Attach Human Operator</DialogTitle>
+          <DialogDescription>
+            {attachDialogNode?.name ? `${attachDialogNode.name} seat에 human operator를 붙입니다.` : "Seat에 human operator를 붙입니다."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <label className="text-sm font-medium">User ID</label>
+          <Input
+            value={attachUserId}
+            onChange={(e) => setAttachUserId(e.target.value)}
+            placeholder="user-123"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setAttachDialogNode(null)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              if (!attachDialogNode?.seatId || !attachUserId.trim()) return;
+              attachHuman.mutate({ seatId: attachDialogNode.seatId, userId: attachUserId.trim() });
+            }}
+            disabled={!attachDialogNode?.seatId || !attachUserId.trim() || attachHuman.isPending}
+          >
+            {attachHuman.isPending ? "Attaching…" : "Attach"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={Boolean(permissionsDialogNode)} onOpenChange={(open) => !open && setPermissionsDialogNode(null)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit Delegated Permissions</DialogTitle>
+          <DialogDescription>
+            {permissionsDialogNode?.name
+              ? `${permissionsDialogNode.name} seat에 위임 권한을 설정합니다.`
+              : "Seat delegated permissions를 설정합니다."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Delegated Permissions</label>
+          <div className="space-y-2 rounded-md border border-border p-3">
+            {seatPermissionOptions.map((option) => {
+              const checked = selectedPermissions.includes(option.key);
+              return (
+                <label key={option.key} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(next) => {
+                      setSelectedPermissions((current) => {
+                        if (next) return Array.from(new Set([...current, option.key]));
+                        return current.filter((value) => value !== option.key);
+                      });
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Current: {formatDelegatedPermissions(selectedPermissions) || "none"}
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setPermissionsDialogNode(null)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              if (!permissionsDialogNode?.seatId) return;
+              updateSeatPermissions.mutate({
+                seatId: permissionsDialogNode.seatId,
+                delegatedPermissions: selectedPermissions,
+              });
+            }}
+            disabled={!permissionsDialogNode?.seatId || updateSeatPermissions.isPending}
+          >
+            {updateSeatPermissions.isPending ? "Saving…" : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     </div>
   );
 }

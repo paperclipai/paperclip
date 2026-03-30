@@ -515,6 +515,32 @@ export function issueService(db: Db) {
     }
   }
 
+  async function resolveOwnerSeatIdForAssignment(
+    companyId: string,
+    assigneeAgentId: string | null | undefined,
+    assigneeUserId: string | null | undefined,
+    dbOrTx: DbReader = db,
+  ): Promise<string | null> {
+    if (assigneeAgentId) {
+      const row = await dbOrTx
+        .select({
+          seatId: agents.seatId,
+          companyId: agents.companyId,
+        })
+        .from(agents)
+        .where(eq(agents.id, assigneeAgentId))
+        .then((rows) => rows[0] ?? null);
+      if (!row || row.companyId !== companyId) {
+        throw notFound("Assignee agent not found");
+      }
+      return row.seatId ?? null;
+    }
+    if (assigneeUserId) {
+      return null;
+    }
+    return null;
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -929,6 +955,12 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const derivedOwnerSeatId =
+          issueData.ownerSeatId !== undefined
+            ? issueData.ownerSeatId
+            : (data.assigneeAgentId !== undefined || data.assigneeUserId !== undefined)
+              ? await resolveOwnerSeatIdForAssignment(companyId, data.assigneeAgentId, data.assigneeUserId, tx)
+              : null;
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -1024,6 +1056,9 @@ export function issueService(db: Db) {
         const values = {
           ...issueData,
           originKind: issueData.originKind ?? "manual",
+          ...(derivedOwnerSeatId !== null || issueData.ownerSeatId !== undefined || data.assigneeUserId !== undefined
+            ? { ownerSeatId: derivedOwnerSeatId }
+            : {}),
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
@@ -1129,6 +1164,18 @@ export function issueService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        if (issueData.ownerSeatId === undefined) {
+          const assigneeFieldsTouched =
+            issueData.assigneeAgentId !== undefined || issueData.assigneeUserId !== undefined;
+          if (assigneeFieldsTouched) {
+            patch.ownerSeatId = await resolveOwnerSeatIdForAssignment(
+              existing.companyId,
+              nextAssigneeAgentId,
+              nextAssigneeUserId,
+              tx,
+            );
+          }
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),

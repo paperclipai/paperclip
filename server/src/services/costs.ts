@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, costEventSeatAttributions, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -45,6 +45,56 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  async function attributeSeatForCostEvent(event: typeof costEvents.$inferSelect) {
+    let seatId: string | null = null;
+    let attributionSource: "issue_owner_seat" | "agent_seat" | null = null;
+
+    if (event.issueId) {
+      const issue = await db
+        .select({ ownerSeatId: issues.ownerSeatId })
+        .from(issues)
+        .where(eq(issues.id, event.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (issue?.ownerSeatId) {
+        seatId = issue.ownerSeatId;
+        attributionSource = "issue_owner_seat";
+      }
+    }
+
+    if (!seatId) {
+      const agent = await db
+        .select({ seatId: agents.seatId })
+        .from(agents)
+        .where(eq(agents.id, event.agentId))
+        .then((rows) => rows[0] ?? null);
+      if (agent?.seatId) {
+        seatId = agent.seatId;
+        attributionSource = "agent_seat";
+      }
+    }
+
+    if (!seatId || !attributionSource) {
+      console.warn("[seat-cost-attribution] unresolved", {
+        companyId: event.companyId,
+        costEventId: event.id,
+        agentId: event.agentId,
+        issueId: event.issueId ?? null,
+      });
+      return null;
+    }
+
+    const [row] = await db
+      .insert(costEventSeatAttributions)
+      .values({
+        costEventId: event.id,
+        companyId: event.companyId,
+        seatId,
+        attributionSource,
+      })
+      .returning();
+    return row ?? null;
+  }
+
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
@@ -69,6 +119,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         })
         .returning()
         .then((rows) => rows[0]);
+
+      await attributeSeatForCostEvent(event);
 
       const [agentMonthSpend, companyMonthSpend] = await Promise.all([
         getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
@@ -141,6 +193,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           agentName: agents.name,
           agentStatus: agents.status,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          issueOwnerSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'issue_owner_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          agentSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'agent_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          unattributedCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.costEventId} is null then ${costEvents.costCents} else 0 end), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
@@ -156,6 +214,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::int`,
         })
         .from(costEvents)
+        .leftJoin(costEventSeatAttributions, eq(costEventSeatAttributions.costEventId, costEvents.id))
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
@@ -174,6 +233,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: costEvents.billingType,
           model: costEvents.model,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          issueOwnerSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'issue_owner_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          agentSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'agent_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          unattributedCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.costEventId} is null then ${costEvents.costCents} else 0 end), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
@@ -189,6 +254,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.outputTokens} else 0 end), 0)::int`,
         })
         .from(costEvents)
+        .leftJoin(costEventSeatAttributions, eq(costEventSeatAttributions.costEventId, costEvents.id))
         .where(and(...conditions))
         .groupBy(costEvents.provider, costEvents.biller, costEvents.billingType, costEvents.model)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
@@ -203,6 +269,12 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .select({
           biller: costEvents.biller,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          issueOwnerSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'issue_owner_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          agentSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'agent_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          unattributedCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.costEventId} is null then ${costEvents.costCents} else 0 end), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
@@ -220,6 +292,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           modelCount: sql<number>`count(distinct ${costEvents.model})::int`,
         })
         .from(costEvents)
+        .leftJoin(costEventSeatAttributions, eq(costEventSeatAttributions.costEventId, costEvents.id))
         .where(and(...conditions))
         .groupBy(costEvents.biller)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
@@ -293,11 +366,18 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           billingType: costEvents.billingType,
           model: costEvents.model,
           costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          issueOwnerSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'issue_owner_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          agentSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'agent_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          unattributedCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.costEventId} is null then ${costEvents.costCents} else 0 end), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
+        .leftJoin(costEventSeatAttributions, eq(costEventSeatAttributions.costEventId, costEvents.id))
         .leftJoin(agents, eq(costEvents.agentId, agents.id))
         .where(and(...conditions))
         .groupBy(
@@ -349,11 +429,18 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           projectId: effectiveProjectId,
           projectName: projects.name,
           costCents: costCentsExpr,
+          issueOwnerSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'issue_owner_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          agentSeatCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.attributionSource} = 'agent_seat' then ${costEvents.costCents} else 0 end), 0)::int`,
+          unattributedCostCents:
+            sql<number>`coalesce(sum(case when ${costEventSeatAttributions.costEventId} is null then ${costEvents.costCents} else 0 end), 0)::int`,
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
         })
         .from(costEvents)
+        .leftJoin(costEventSeatAttributions, eq(costEventSeatAttributions.costEventId, costEvents.id))
         .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
         .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))

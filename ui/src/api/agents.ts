@@ -44,8 +44,11 @@ export interface ClaudeLoginResult {
 
 export interface OrgNode {
   id: string;
+  seatId: string | null;
   name: string;
   role: string;
+  seatType: string | null;
+  operatingMode: string | null;
   status: string;
   reports: OrgNode[];
 }

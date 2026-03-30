@@ -34,12 +34,14 @@ export function BudgetPolicyCard({
   isSaving,
   compact = false,
   variant = "card",
+  onInspect,
 }: {
   summary: BudgetPolicySummary;
   onSave?: (amountCents: number) => void;
   isSaving?: boolean;
   compact?: boolean;
   variant?: "card" | "plain";
+  onInspect?: (() => void) | undefined;
 }) {
   const [draftBudget, setDraftBudget] = useState(centsInputValue(summary.amount));
 
@@ -204,6 +206,13 @@ export function BudgetPolicyCard({
             {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
           </div>
         </div>
+        {onInspect ? (
+          <div className="flex justify-end">
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={onInspect}>
+              Details
+            </Button>
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent className={cn("space-y-4", compact ? "px-4 pb-4 pt-0" : "px-5 pb-5 pt-0")}>
         {observedBudgetGrid}

@@ -18,6 +18,15 @@ export {
   type EmbeddedPostgresTestSupport,
 } from "./test-embedded-postgres.js";
 export {
+  backfillSeatModel,
+  type SeatBackfillResult,
+  type SeatBackfillWarning,
+} from "./seat-backfill.js";
+export {
+  assertNoSeatCycle,
+  MAX_SEAT_TREE_DEPTH,
+} from "./seat-tree.js";
+export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,

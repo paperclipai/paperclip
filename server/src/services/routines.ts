@@ -178,6 +178,21 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
   }
 
+  async function resolveAssigneeSeatIdForAgent(companyId: string, assigneeAgentId: string | null | undefined) {
+    if (!assigneeAgentId) return null;
+    const row = await db
+      .select({
+        seatId: agents.seatId,
+        companyId: agents.companyId,
+      })
+      .from(agents)
+      .where(eq(agents.id, assigneeAgentId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Assignee agent not found");
+    if (row.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
+    return row.seatId ?? null;
+  }
+
   async function assertProject(companyId: string, projectId: string) {
     const project = await db
       .select({ id: projects.id, companyId: projects.companyId })
@@ -824,6 +839,10 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
+      const assigneeSeatId =
+        input.assigneeSeatId !== undefined
+          ? input.assigneeSeatId
+          : await resolveAssigneeSeatIdForAgent(companyId, input.assigneeAgentId);
       const [created] = await db
         .insert(routines)
         .values({
@@ -834,6 +853,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           title: input.title,
           description: input.description ?? null,
           assigneeAgentId: input.assigneeAgentId,
+          assigneeSeatId,
           priority: input.priority,
           status: input.status,
           concurrencyPolicy: input.concurrencyPolicy,
@@ -856,6 +876,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
+      const nextAssigneeSeatId =
+        patch.assigneeSeatId !== undefined
+          ? patch.assigneeSeatId
+          : patch.assigneeAgentId !== undefined
+            ? await resolveAssigneeSeatIdForAgent(existing.companyId, nextAssigneeAgentId)
+            : existing.assigneeSeatId;
       const [updated] = await db
         .update(routines)
         .set({
@@ -865,6 +891,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           title: patch.title ?? existing.title,
           description: patch.description === undefined ? existing.description : patch.description,
           assigneeAgentId: nextAssigneeAgentId,
+          assigneeSeatId: nextAssigneeSeatId,
           priority: patch.priority ?? existing.priority,
           status: patch.status ?? existing.status,
           concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,

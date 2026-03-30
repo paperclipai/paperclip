@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SEAT_OPERATING_MODES, SEAT_STATUSES, SEAT_TYPES } from "../constants.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -58,6 +59,19 @@ export const portabilityAgentManifestEntrySchema = z.object({
   runtimeConfig: z.record(z.unknown()),
   permissions: z.record(z.unknown()),
   budgetMonthlyCents: z.number().int().nonnegative(),
+  seat: z.object({
+    slug: z.string().min(1),
+    name: z.string().min(1),
+    title: z.string().nullable(),
+    seatType: z.enum(SEAT_TYPES),
+    status: z.enum(SEAT_STATUSES).nullable(),
+    operatingMode: z.enum(SEAT_OPERATING_MODES).nullable(),
+    parentSeatSlug: z.string().min(1).nullable(),
+    occupancy: z.object({
+      humanUserId: z.string().min(1).nullable(),
+      shadowAgentSlug: z.string().min(1).nullable(),
+    }).nullable().default(null),
+  }).nullable().default(null),
   metadata: z.record(z.unknown()).nullable(),
 });
 

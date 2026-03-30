@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   executionWorkspaces,
   instanceSettings,
@@ -12,6 +14,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  seats,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -48,6 +51,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(companyMemberships);
+    await db.delete(seats);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -67,6 +72,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "user-1",
+      status: "active",
+      membershipRole: "member",
     });
 
     await db.insert(agents).values([
@@ -423,6 +436,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(companyMemberships);
+    await db.delete(seats);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -676,5 +691,167 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService seat dual-write", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-seat-dual-write-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(companyMemberships);
+    await db.delete(seats);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("sets ownerSeatId from the assigned agent seat on create", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const [seat] = await db.insert(seats).values({
+      companyId,
+      slug: "codexcoder",
+      name: "Engineer Seat",
+      seatType: "individual",
+      status: "active",
+      operatingMode: "vacant",
+      defaultAgentId: agentId,
+    }).returning();
+
+    await db.update(agents).set({ seatId: seat.id, seatRole: "primary_agent" }).where(eq(agents.id, agentId));
+
+    const issue = await svc.create(companyId, {
+      title: "Assigned to agent seat",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    expect(issue.ownerSeatId).toBe(seat.id);
+  });
+
+  it("updates ownerSeatId when the assignee agent changes and clears it for user-only assignment", async () => {
+    const companyId = randomUUID();
+    const agentOneId = randomUUID();
+    const agentTwoId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "user-1",
+      status: "active",
+      membershipRole: "member",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentOneId,
+        companyId,
+        name: "Agent One",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentTwoId,
+        companyId,
+        name: "Agent Two",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const [seatOne, seatTwo] = await db.insert(seats).values([
+      {
+        companyId,
+        slug: "agent-one",
+        name: "Seat One",
+        seatType: "individual",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentOneId,
+      },
+      {
+        companyId,
+        slug: "agent-two",
+        name: "Seat Two",
+        seatType: "individual",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentTwoId,
+      },
+    ]).returning();
+
+    await db.update(agents).set({ seatId: seatOne.id, seatRole: "primary_agent" }).where(eq(agents.id, agentOneId));
+    await db.update(agents).set({ seatId: seatTwo.id, seatRole: "primary_agent" }).where(eq(agents.id, agentTwoId));
+
+    const issue = await svc.create(companyId, {
+      title: "Seat owner changes with agent assignee",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentOneId,
+    });
+
+    const reassigned = await svc.update(issue.id, {
+      assigneeAgentId: agentTwoId,
+      assigneeUserId: null,
+    });
+    expect(reassigned?.ownerSeatId).toBe(seatTwo.id);
+
+    const userAssigned = await svc.update(issue.id, {
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+    });
+    expect(userAssigned?.ownerSeatId).toBeNull();
   });
 });

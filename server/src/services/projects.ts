@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { agents, projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -13,6 +13,7 @@ import {
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { notFound, unprocessable } from "../errors.js";
 import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -210,6 +211,25 @@ function pickPrimaryWorkspace(
   const explicitPrimary = rows.find((row) => row.isPrimary);
   const primary = explicitPrimary ?? rows[0];
   return toWorkspace(primary, runtimeServicesByWorkspaceId?.get(primary.id) ?? []);
+}
+
+async function resolveLeadSeatIdForAgent(
+  db: Db,
+  companyId: string,
+  leadAgentId: string | null | undefined,
+): Promise<string | null> {
+  if (!leadAgentId) return null;
+  const row = await db
+    .select({
+      seatId: agents.seatId,
+      companyId: agents.companyId,
+    })
+    .from(agents)
+    .where(eq(agents.id, leadAgentId))
+    .then((rows) => rows[0] ?? null);
+  if (!row) throw notFound("Lead agent not found");
+  if (row.companyId !== companyId) throw unprocessable("Lead agent must belong to same company");
+  return row.seatId ?? null;
 }
 
 /** Batch-load workspace refs for a set of projects. */
@@ -449,12 +469,17 @@ export function projectService(db: Db) {
         .where(eq(projects.companyId, companyId));
       projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
+      const derivedLeadSeatId =
+        projectData.leadSeatId !== undefined
+          ? projectData.leadSeatId
+          : await resolveLeadSeatIdForAgent(db, companyId, projectData.leadAgentId);
+
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
       const row = await db
         .insert(projects)
-        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .values({ ...projectData, leadSeatId: derivedLeadSeatId, goalId: legacyGoalId, companyId })
         .returning()
         .then((rows) => rows[0]);
 
@@ -499,6 +524,9 @@ export function projectService(db: Db) {
         ...projectData,
         updatedAt: new Date(),
       };
+      if (projectData.leadSeatId === undefined && projectData.leadAgentId !== undefined) {
+        updates.leadSeatId = await resolveLeadSeatIdForAgent(db, existingProject.companyId, projectData.leadAgentId);
+      }
       if (ids !== undefined) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }

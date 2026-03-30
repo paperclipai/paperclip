@@ -19,6 +19,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { orgNodeBadges } from "../lib/org-node-display";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -322,6 +323,7 @@ function OrgTreeNode({
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
 }) {
   const agent = agentMap.get(node.id);
+  const badges = orgNodeBadges(node);
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
 
@@ -340,6 +342,15 @@ function OrgTreeNode({
             {roleLabels[node.role] ?? node.role}
             {agent?.title ? ` - ${agent.title}` : ""}
           </span>
+          {badges.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {badges.map((badge) => (
+                <span key={badge.key} className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {badge.label}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <span className="sm:hidden">

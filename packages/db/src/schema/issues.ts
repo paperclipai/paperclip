@@ -17,6 +17,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { seats } from "./seats.js";
 
 export const issues = pgTable(
   "issues",
@@ -31,6 +32,7 @@ export const issues = pgTable(
     description: text("description"),
     status: text("status").notNull().default("backlog"),
     priority: text("priority").notNull().default("medium"),
+    ownerSeatId: uuid("owner_seat_id").references(() => seats.id, { onDelete: "set null" }),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -65,6 +67,7 @@ export const issues = pgTable(
       table.assigneeAgentId,
       table.status,
     ),
+    ownerSeatIdx: index("issues_company_owner_seat_idx").on(table.companyId, table.ownerSeatId),
     assigneeUserStatusIdx: index("issues_company_assignee_user_status_idx").on(
       table.companyId,
       table.assigneeUserId,

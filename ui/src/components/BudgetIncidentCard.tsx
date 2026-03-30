@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import { incidentPauseMessage } from "../lib/budget-scope-display";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,11 +22,13 @@ export function BudgetIncidentCard({
   onRaiseAndResume,
   onKeepPaused,
   isMutating,
+  onInspect,
 }: {
   incident: BudgetIncident;
   onRaiseAndResume: (amountCents: number) => void;
   onKeepPaused: () => void;
   isMutating?: boolean;
+  onInspect?: (() => void) | undefined;
 }) {
   const [draftAmount, setDraftAmount] = useState(
     centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
@@ -49,15 +52,18 @@ export function BudgetIncidentCard({
             <AlertOctagon className="h-4 w-4" />
           </div>
         </div>
+        {onInspect ? (
+          <div className="flex justify-end">
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-red-100/80" onClick={onInspect}>
+              Details
+            </Button>
+          </div>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-4 px-5 pb-5 pt-0">
         <div className="flex items-start gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-50/90">
           <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            {incident.scopeType === "project"
-              ? "Project execution is paused. New work in this project will not start until you resolve the budget incident."
-              : "This scope is paused. New heartbeats will not start until you resolve the budget incident."}
-          </div>
+          <div>{incidentPauseMessage(incident)}</div>
         </div>
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">

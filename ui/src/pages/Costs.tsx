@@ -9,9 +9,10 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, GitBranch, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { seatsApi } from "../api/seats";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -23,14 +24,17 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
+import { SeatAttributionBreakdown } from "../components/SeatAttributionBreakdown";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
+import { budgetSectionDescription, pausedSummaryLine } from "../lib/budget-scope-display";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
@@ -154,6 +158,11 @@ export function Costs() {
   const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
+  const [selectedSeatBudgetScope, setSelectedSeatBudgetScope] = useState<{
+    seatId: string;
+    policyId?: string | null;
+    incidentId?: string | null;
+  } | null>(null);
 
   const {
     preset,
@@ -197,6 +206,13 @@ export function Costs() {
     enabled: !!selectedCompanyId && customReady,
     refetchInterval: 30_000,
     staleTime: 5_000,
+  });
+  const { data: selectedSeatDetail } = useQuery({
+    queryKey: selectedSeatBudgetScope?.seatId
+      ? queryKeys.seats.detail(companyId, selectedSeatBudgetScope.seatId)
+      : ["seats", "costs", "detail", "none"],
+    queryFn: () => seatsApi.detail(companyId, selectedSeatBudgetScope!.seatId),
+    enabled: !!selectedCompanyId && !!selectedSeatBudgetScope?.seatId,
   });
 
   const invalidateBudgetViews = () => {
@@ -522,9 +538,24 @@ export function Costs() {
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
+  const selectedSeatPolicies = useMemo(
+    () =>
+      selectedSeatBudgetScope?.seatId
+        ? budgetPolicies.filter((policy) => policy.scopeType === "seat" && policy.scopeId === selectedSeatBudgetScope.seatId)
+        : [],
+    [budgetPolicies, selectedSeatBudgetScope],
+  );
+  const selectedSeatIncidents = useMemo(
+    () =>
+      selectedSeatBudgetScope?.seatId
+        ? activeBudgetIncidents.filter((incident) => incident.scopeType === "seat" && incident.scopeId === selectedSeatBudgetScope.seatId)
+        : [],
+    [activeBudgetIncidents, selectedSeatBudgetScope],
+  );
   const budgetPoliciesByScope = useMemo(() => ({
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
     agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
+    seat: budgetPolicies.filter((policy) => policy.scopeType === "seat"),
     project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
   }), [budgetPolicies]);
 
@@ -595,7 +626,11 @@ export function Costs() {
               )}
               subtitle={
                 activeBudgetIncidents.length > 0
-                  ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
+                  ? pausedSummaryLine({
+                    pausedAgentCount: budgetData?.pausedAgentCount ?? 0,
+                    pausedSeatCount: budgetData?.pausedSeatCount ?? 0,
+                    pausedProjectCount: budgetData?.pausedProjectCount ?? 0,
+                  })
                   : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                     ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
                     : "No monthly cap configured"
@@ -642,6 +677,11 @@ export function Costs() {
                       key={incident.id}
                       incident={incident}
                       isMutating={incidentMutation.isPending}
+                      onInspect={
+                        incident.scopeType === "seat"
+                          ? () => setSelectedSeatBudgetScope({ seatId: incident.scopeId, incidentId: incident.id })
+                          : undefined
+                      }
                       onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                       onRaiseAndResume={(amount) =>
                         incidentMutation.mutate({
@@ -761,6 +801,15 @@ export function Costs() {
                               </div>
                             </div>
 
+                            <div className="mt-3">
+                              <SeatAttributionBreakdown
+                                issueOwnerSeatCostCents={row.issueOwnerSeatCostCents}
+                                agentSeatCostCents={row.agentSeatCostCents}
+                                unattributedCostCents={row.unattributedCostCents}
+                                compact
+                              />
+                            </div>
+
                             {isExpanded && modelRows.length > 0 ? (
                               <div className="mt-3 space-y-2 border-l border-border pl-4">
                                 {modelRows.map((modelRow) => {
@@ -768,27 +817,35 @@ export function Costs() {
                                   return (
                                     <div
                                       key={`${modelRow.provider}:${modelRow.model}:${modelRow.billingType}`}
-                                      className="flex items-start justify-between gap-3 text-xs"
+                                      className="space-y-2 border border-border/70 px-3 py-2 text-xs"
                                     >
-                                      <div className="min-w-0">
-                                        <div className="truncate font-medium text-foreground">
-                                          {providerDisplayName(modelRow.provider)}
-                                          <span className="mx-1 text-border">/</span>
-                                          <span className="font-mono">{modelRow.model}</span>
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className="truncate font-medium text-foreground">
+                                            {providerDisplayName(modelRow.provider)}
+                                            <span className="mx-1 text-border">/</span>
+                                            <span className="font-mono">{modelRow.model}</span>
+                                          </div>
+                                          <div className="truncate text-muted-foreground">
+                                            {providerDisplayName(modelRow.biller)} · {billingTypeDisplayName(modelRow.billingType)}
+                                          </div>
                                         </div>
-                                        <div className="truncate text-muted-foreground">
-                                          {providerDisplayName(modelRow.biller)} · {billingTypeDisplayName(modelRow.billingType)}
+                                        <div className="text-right tabular-nums">
+                                          <div className="font-medium">
+                                            {formatCents(modelRow.costCents)}
+                                            <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
+                                          </div>
+                                          <div className="text-muted-foreground">
+                                            {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
+                                          </div>
                                         </div>
                                       </div>
-                                      <div className="text-right tabular-nums">
-                                        <div className="font-medium">
-                                          {formatCents(modelRow.costCents)}
-                                          <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
-                                        </div>
-                                        <div className="text-muted-foreground">
-                                          {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
-                                        </div>
-                                      </div>
+                                      <SeatAttributionBreakdown
+                                        issueOwnerSeatCostCents={modelRow.issueOwnerSeatCostCents}
+                                        agentSeatCostCents={modelRow.agentSeatCostCents}
+                                        unattributedCostCents={modelRow.unattributedCostCents}
+                                        compact
+                                      />
                                     </div>
                                   );
                                 })}
@@ -814,10 +871,18 @@ export function Costs() {
                         spendData?.byProject.map((row, index) => (
                           <div
                             key={row.projectId ?? `unattributed-${index}`}
-                            className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
+                            className="space-y-2 border border-border px-3 py-2 text-sm"
                           >
-                            <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
+                              <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            </div>
+                            <SeatAttributionBreakdown
+                              issueOwnerSeatCostCents={row.issueOwnerSeatCostCents}
+                              agentSeatCostCents={row.agentSeatCostCents}
+                              unattributedCostCents={row.unattributedCostCents}
+                              compact
+                            />
                           </div>
                         ))
                       )}
@@ -845,7 +910,7 @@ export function Costs() {
                     Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
+                <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-5">
                   <MetricTile
                     label="Active incidents"
                     value={String(activeBudgetIncidents.length)}
@@ -863,6 +928,12 @@ export function Costs() {
                     value={String(budgetData?.pausedAgentCount ?? 0)}
                     subtitle="Agent heartbeats blocked by budget"
                     icon={Coins}
+                  />
+                  <MetricTile
+                    label="Paused seats"
+                    value={String(budgetData?.pausedSeatCount ?? 0)}
+                    subtitle="Seat-owned work blocked by budget"
+                    icon={GitBranch}
                   />
                   <MetricTile
                     label="Paused projects"
@@ -887,6 +958,11 @@ export function Costs() {
                         key={incident.id}
                         incident={incident}
                         isMutating={incidentMutation.isPending}
+                        onInspect={
+                          incident.scopeType === "seat"
+                            ? () => setSelectedSeatBudgetScope({ seatId: incident.scopeId, incidentId: incident.id })
+                            : undefined
+                        }
                         onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                         onRaiseAndResume={(amount) =>
                           incidentMutation.mutate({
@@ -901,20 +977,14 @@ export function Costs() {
               ) : null}
 
               <div className="space-y-5">
-                {(["company", "agent", "project"] as const).map((scopeType) => {
+                {(["company", "agent", "seat", "project"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];
                   if (rows.length === 0) return null;
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
                         <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
-                        <p className="text-sm text-muted-foreground">
-                          {scopeType === "company"
-                            ? "Company-wide monthly policy."
-                            : scopeType === "agent"
-                              ? "Recurring monthly spend policies for individual agents."
-                              : "Lifetime spend policies for execution-bound projects."}
-                        </p>
+                        <p className="text-sm text-muted-foreground">{budgetSectionDescription(scopeType)}</p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">
                         {rows.map((summary) => (
@@ -922,6 +992,11 @@ export function Costs() {
                             key={summary.policyId}
                             summary={summary}
                             isSaving={policyMutation.isPending}
+                            onInspect={
+                              summary.scopeType === "seat"
+                                ? () => setSelectedSeatBudgetScope({ seatId: summary.scopeId, policyId: summary.policyId })
+                                : undefined
+                            }
                             onSave={(amount) =>
                               policyMutation.mutate({
                                 scopeType: summary.scopeType,
@@ -1097,6 +1172,106 @@ export function Costs() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Sheet open={Boolean(selectedSeatBudgetScope)} onOpenChange={(open) => !open && setSelectedSeatBudgetScope(null)}>
+        <SheetContent side="right" className="overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>{selectedSeatDetail?.name ?? "Seat budget detail"}</SheetTitle>
+            <SheetDescription>
+              {selectedSeatDetail?.name
+                ? `${selectedSeatDetail.name} seat의 운영 상태와 budget drill-down`
+                : "Seat detail을 불러오는 중입니다."}
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="mt-6 space-y-6">
+            {selectedSeatDetail ? (
+              <Card>
+                <CardHeader className="px-5 pt-5 pb-3">
+                  <CardTitle className="text-base">Seat context</CardTitle>
+                  <CardDescription>Budget 판단과 함께 보게 되는 현재 seat 상태</CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2 px-5 pb-5 pt-0 text-sm">
+                  <div className="text-muted-foreground">Slug</div>
+                  <div className="truncate">{selectedSeatDetail.slug}</div>
+                  <div className="text-muted-foreground">Seat type</div>
+                  <div>{selectedSeatDetail.seatType}</div>
+                  <div className="text-muted-foreground">Mode</div>
+                  <div>{selectedSeatDetail.operatingMode}</div>
+                  <div className="text-muted-foreground">Status</div>
+                  <div>{selectedSeatDetail.status}</div>
+                  <div className="text-muted-foreground">Human</div>
+                  <div>{selectedSeatDetail.currentHumanUserId || "None"}</div>
+                  <div className="text-muted-foreground">Default agent</div>
+                  <div className="truncate">{selectedSeatDetail.defaultAgentId || "None"}</div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-lg font-semibold">Seat incidents</h2>
+                <p className="text-sm text-muted-foreground">이 seat에 직접 걸려 있는 hard-stop incident</p>
+              </div>
+              {selectedSeatIncidents.length === 0 ? (
+                <Card>
+                  <CardContent className="px-5 py-6 text-sm text-muted-foreground">
+                    Active incident가 없습니다.
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="space-y-4">
+                  {selectedSeatIncidents.map((incident) => (
+                    <BudgetIncidentCard
+                      key={incident.id}
+                      incident={incident}
+                      isMutating={incidentMutation.isPending}
+                      onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
+                      onRaiseAndResume={(amount) =>
+                        incidentMutation.mutate({
+                          incidentId: incident.id,
+                          action: "raise_budget_and_resume",
+                          amount,
+                        })}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-lg font-semibold">Seat policies</h2>
+                <p className="text-sm text-muted-foreground">이 seat 범위에 적용되는 budget policy</p>
+              </div>
+              {selectedSeatPolicies.length === 0 ? (
+                <Card>
+                  <CardContent className="px-5 py-6 text-sm text-muted-foreground">
+                    Seat policy가 없습니다.
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="space-y-4">
+                  {selectedSeatPolicies.map((summary) => (
+                    <BudgetPolicyCard
+                      key={summary.policyId}
+                      summary={summary}
+                      isSaving={policyMutation.isPending}
+                      onSave={(amount) =>
+                        policyMutation.mutate({
+                          scopeType: summary.scopeType,
+                          scopeId: summary.scopeId,
+                          amount,
+                          windowKind: summary.windowKind,
+                        })}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -7,7 +7,9 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  costEventSeatAttributions,
   projects,
+  seats,
 } from "@paperclipai/db";
 import type {
   BudgetIncident,
@@ -120,6 +122,25 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
     };
   }
 
+  if (scopeType === "seat") {
+    const row = await db
+      .select({
+        companyId: seats.companyId,
+        name: seats.name,
+        status: seats.status,
+      })
+      .from(seats)
+      .where(eq(seats.id, scopeId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Seat not found");
+    return {
+      companyId: row.companyId,
+      name: row.name,
+      paused: row.status === "paused",
+      pauseReason: null,
+    };
+  }
+
   const row = await db
     .select({
       companyId: projects.companyId,
@@ -148,6 +169,20 @@ async function computeObservedAmount(
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
+  if (policy.scopeType === "seat") {
+    const attributedCostEventIds = await db
+      .select({ costEventId: costEventSeatAttributions.costEventId })
+      .from(costEventSeatAttributions)
+      .where(
+        and(
+          eq(costEventSeatAttributions.companyId, policy.companyId),
+          eq(costEventSeatAttributions.seatId, policy.scopeId),
+        ),
+      );
+    const ids = attributedCostEventIds.map((row) => row.costEventId);
+    if (ids.length === 0) return 0;
+    conditions.push(inArray(costEvents.id, ids));
+  }
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
   if (policy.windowKind === "calendar_month_utc") {
     conditions.push(gte(costEvents.occurredAt, start));
@@ -237,6 +272,17 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       return;
     }
 
+    if (policy.scopeType === "seat") {
+      await db
+        .update(seats)
+        .set({
+          status: "paused",
+          updatedAt: now,
+        })
+        .where(eq(seats.id, policy.scopeId));
+      return;
+    }
+
     await db
       .update(companies)
       .set({
@@ -281,6 +327,17 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           updatedAt: now,
         })
         .where(and(eq(projects.id, policy.scopeId), eq(projects.pauseReason, "budget")));
+      return;
+    }
+
+    if (policy.scopeType === "seat") {
+      await db
+        .update(seats)
+        .set({
+          status: "active",
+          updatedAt: now,
+        })
+        .where(eq(seats.id, policy.scopeId));
       return;
     }
 
@@ -586,6 +643,15 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(agents.id, input.scopeId));
       }
 
+      if (input.scopeType === "seat" && windowKind === "calendar_month_utc") {
+        await db
+          .update(seats)
+          .set({
+            updatedAt: now,
+          })
+          .where(eq(seats.id, input.scopeId));
+      }
+
       if (amount > 0) {
         const observedAmount = await computeObservedAmount(db, row);
         if (observedAmount < amount) {
@@ -639,6 +705,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         policies,
         activeIncidents,
         pausedAgentCount: policies.filter((policy) => policy.scopeType === "agent" && policy.paused).length,
+        pausedSeatCount: policies.filter((policy) => policy.scopeType === "seat" && policy.paused).length,
         pausedProjectCount: policies.filter((policy) => policy.scopeType === "project" && policy.paused).length,
         pendingApprovalCount: activeIncidents.filter((incident) => incident.approvalStatus === "pending").length,
       };
@@ -652,14 +719,25 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           and(
             eq(budgetPolicies.companyId, event.companyId),
             eq(budgetPolicies.isActive, true),
-            inArray(budgetPolicies.scopeType, ["company", "agent", "project"]),
+            inArray(budgetPolicies.scopeType, ["company", "agent", "project", "seat"]),
           ),
         );
+
+      const seatAttribution = candidatePolicies.some((policy) => policy.scopeType === "seat")
+        ? await db
+          .select({
+            seatId: costEventSeatAttributions.seatId,
+          })
+          .from(costEventSeatAttributions)
+          .where(eq(costEventSeatAttributions.costEventId, event.id))
+          .then((rows) => rows[0] ?? null)
+        : null;
 
       const relevantPolicies = candidatePolicies.filter((policy) => {
         if (policy.scopeType === "company") return policy.scopeId === event.companyId;
         if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
         if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
+        if (policy.scopeType === "seat") return Boolean(seatAttribution?.seatId) && policy.scopeId === seatAttribution.seatId;
         return false;
       });
 
@@ -724,6 +802,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pauseReason: agents.pauseReason,
           companyId: agents.companyId,
           name: agents.name,
+          seatId: agents.seatId,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -808,6 +887,53 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeName: agent.name,
             reason: "Agent cannot start because its budget hard-stop is still exceeded.",
           };
+        }
+      }
+
+      if (agent.seatId) {
+        const seat = await db
+          .select({
+            id: seats.id,
+            name: seats.name,
+            status: seats.status,
+          })
+          .from(seats)
+          .where(eq(seats.id, agent.seatId))
+          .then((rows) => rows[0] ?? null);
+
+        if (seat?.status === "paused") {
+          return {
+            scopeType: "seat" as const,
+            scopeId: seat.id,
+            scopeName: seat.name,
+            reason: "Seat is paused and cannot start new work.",
+          };
+        }
+
+        const seatPolicy = await db
+          .select()
+          .from(budgetPolicies)
+          .where(
+            and(
+              eq(budgetPolicies.companyId, companyId),
+              eq(budgetPolicies.scopeType, "seat"),
+              eq(budgetPolicies.scopeId, agent.seatId),
+              eq(budgetPolicies.isActive, true),
+              eq(budgetPolicies.metric, "billed_cents"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+
+        if (seatPolicy && seatPolicy.hardStopEnabled && seatPolicy.amount > 0) {
+          const observed = await computeObservedAmount(db, seatPolicy);
+          if (observed >= seatPolicy.amount) {
+            return {
+              scopeType: "seat" as const,
+              scopeId: agent.seatId,
+              scopeName: seat?.name ?? "seat",
+              reason: "Seat cannot start work because its budget hard-stop is still exceeded.",
+            };
+          }
         }
       }
 

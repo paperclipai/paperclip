@@ -4,6 +4,8 @@ import {
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
+  seatOccupancies,
+  seats,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 
@@ -12,6 +14,14 @@ type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
 };
+
+const CEO_SEAT_DERIVED_PERMISSION_KEYS = new Set<PermissionKey>([
+  "agents:create",
+  "tasks:assign",
+  "joins:approve",
+  "users:invite",
+  "users:manage_permissions",
+]);
 
 export function accessService(db: Db) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
@@ -49,20 +59,31 @@ export function accessService(db: Db) {
     permissionKey: PermissionKey,
   ): Promise<boolean> {
     const membership = await getMembership(companyId, principalType, principalId);
-    if (!membership || membership.status !== "active") return false;
-    const grant = await db
-      .select({ id: principalPermissionGrants.id })
-      .from(principalPermissionGrants)
-      .where(
-        and(
-          eq(principalPermissionGrants.companyId, companyId),
-          eq(principalPermissionGrants.principalType, principalType),
-          eq(principalPermissionGrants.principalId, principalId),
-          eq(principalPermissionGrants.permissionKey, permissionKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    return Boolean(grant);
+    const hasActiveMembership = Boolean(membership && membership.status === "active");
+
+    if (hasActiveMembership) {
+      const grant = await db
+        .select({ id: principalPermissionGrants.id })
+        .from(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, principalType),
+            eq(principalPermissionGrants.principalId, principalId),
+            eq(principalPermissionGrants.permissionKey, permissionKey),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (grant) return true;
+    }
+
+    return hasSeatDerivedPermission({
+      companyId,
+      principalType,
+      principalId,
+      permissionKey,
+      hasActiveMembership,
+    });
   }
 
   async function canUser(
@@ -73,6 +94,62 @@ export function accessService(db: Db) {
     if (!userId) return false;
     if (await isInstanceAdmin(userId)) return true;
     return hasPermission(companyId, "user", userId, permissionKey);
+  }
+
+  async function hasSeatDerivedPermission(input: {
+    companyId: string;
+    principalType: PrincipalType;
+    principalId: string;
+    permissionKey: PermissionKey;
+    hasActiveMembership: boolean;
+  }): Promise<boolean> {
+    if (!CEO_SEAT_DERIVED_PERMISSION_KEYS.has(input.permissionKey)) return false;
+
+    if (input.principalType === "user" && !input.hasActiveMembership) {
+      return false;
+    }
+
+    const allowedOccupancyRole =
+      input.principalType === "agent"
+        ? "primary_agent"
+        : input.principalType === "user"
+          ? "human_operator"
+          : null;
+    if (!allowedOccupancyRole) return false;
+
+    const row = await db
+      .select({ seatId: seats.id, seatType: seats.seatType, metadata: seats.metadata })
+      .from(seatOccupancies)
+      .innerJoin(seats, eq(seatOccupancies.seatId, seats.id))
+      .where(
+        and(
+          eq(seatOccupancies.companyId, input.companyId),
+          eq(seatOccupancies.occupantType, input.principalType),
+          eq(seatOccupancies.occupantId, input.principalId),
+          eq(seatOccupancies.occupancyRole, allowedOccupancyRole),
+          eq(seatOccupancies.status, "active"),
+          eq(seats.companyId, input.companyId),
+          eq(seats.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!row) return false;
+
+    if (row.seatType === "ceo" && CEO_SEAT_DERIVED_PERMISSION_KEYS.has(input.permissionKey)) {
+      return true;
+    }
+
+    const delegatedPermissions =
+      row.metadata &&
+      typeof row.metadata === "object" &&
+      !Array.isArray(row.metadata) &&
+      Array.isArray((row.metadata as Record<string, unknown>).delegatedPermissions)
+        ? ((row.metadata as Record<string, unknown>).delegatedPermissions as unknown[])
+            .filter((value): value is PermissionKey => typeof value === "string")
+        : [];
+
+    return delegatedPermissions.includes(input.permissionKey);
   }
 
   async function listMembers(companyId: string) {

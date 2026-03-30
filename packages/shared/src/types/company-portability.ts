@@ -119,6 +119,19 @@ export interface CompanyPortabilityAgentManifestEntry {
   runtimeConfig: Record<string, unknown>;
   permissions: Record<string, unknown>;
   budgetMonthlyCents: number;
+  seat: {
+    slug: string;
+    name: string;
+    title: string | null;
+    seatType: string;
+    status: string | null;
+    operatingMode: string | null;
+    parentSeatSlug: string | null;
+    occupancy: {
+      humanUserId: string | null;
+      shadowAgentSlug: string | null;
+    } | null;
+  } | null;
   metadata: Record<string, unknown> | null;
 }
 

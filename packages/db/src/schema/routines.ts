@@ -15,6 +15,7 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
+import { seats } from "./seats.js";
 
 export const routines = pgTable(
   "routines",
@@ -27,6 +28,7 @@ export const routines = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     assigneeAgentId: uuid("assignee_agent_id").notNull().references(() => agents.id),
+    assigneeSeatId: uuid("assignee_seat_id").references(() => seats.id, { onDelete: "set null" }),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
@@ -43,6 +45,7 @@ export const routines = pgTable(
   (table) => ({
     companyStatusIdx: index("routines_company_status_idx").on(table.companyId, table.status),
     companyAssigneeIdx: index("routines_company_assignee_idx").on(table.companyId, table.assigneeAgentId),
+    companyAssigneeSeatIdx: index("routines_company_assignee_seat_idx").on(table.companyId, table.assigneeSeatId),
     companyProjectIdx: index("routines_company_project_idx").on(table.companyId, table.projectId),
   }),
 );
