@@ -10,8 +10,8 @@ export const models = [
   // Local models (routed to OpenAI-compatible endpoint)
   { id: "qwen/qwen3.5-9b", label: "Qwen 3.5 9B (Local)" },
   { id: "qwen/qwen3.5-35b-a3b", label: "Qwen 3.5 35B A3B (Local)" },
-  { id: "qwen2.5-coder:32b", label: "Qwen 2.5 Coder 32B (Local)" },
-  { id: "qwen2.5-coder:7b", label: "Qwen 2.5 Coder 7B (Local)" },
+  { id: "qwen/qwen2.5-coder-32b", label: "Qwen 2.5 Coder 32B (Local)" },
+  { id: "qwen/qwen2.5-coder-7b", label: "Qwen 2.5 Coder 7B (Local)" },
   { id: "deepseek-coder-v2:16b", label: "DeepSeek Coder V2 16B (Local)" },
   { id: "deepseek-r1:8b", label: "DeepSeek R1 8B (Local)" },
 ];

@@ -27,7 +27,7 @@ describe("isClaudeModel", () => {
   });
 
   it("returns false for qwen coder models", () => {
-    expect(isClaudeModel("qwen2.5-coder:32b")).toBe(false);
+    expect(isClaudeModel("qwen/qwen2.5-coder-32b")).toBe(false);
   });
 
   it("returns false for deepseek models", () => {
