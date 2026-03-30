@@ -6,6 +6,7 @@ import {
   AGENT_STATUSES,
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { HTTP_RUNTIME_PROFILES } from "../types/agent.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
@@ -43,7 +44,34 @@ const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   }
 });
 
-export const createAgentSchema = z.object({
+function validateHttpAdapterConfig(
+  adapterConfig: Record<string, unknown>,
+  ctx: z.RefinementCtx,
+) {
+  const url = adapterConfig.url;
+  if (url !== undefined && (typeof url !== "string" || url.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "adapterConfig.url must be a non-empty string for http adapters",
+      path: ["adapterConfig", "url"],
+    });
+  }
+
+  const runtimeProfile = adapterConfig.runtimeProfile;
+  if (
+    runtimeProfile !== undefined &&
+    (typeof runtimeProfile !== "string" ||
+      !(HTTP_RUNTIME_PROFILES as readonly string[]).includes(runtimeProfile))
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `adapterConfig.runtimeProfile must be one of: ${HTTP_RUNTIME_PROFILES.join(", ")}`,
+      path: ["adapterConfig", "runtimeProfile"],
+    });
+  }
+}
+
+const createAgentShape = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
@@ -59,16 +87,24 @@ export const createAgentSchema = z.object({
   metadata: z.record(z.unknown()).optional().nullable(),
 });
 
+export const createAgentSchema = createAgentShape.superRefine((value, ctx) => {
+  if (value.adapterType !== "http") return;
+  validateHttpAdapterConfig(value.adapterConfig ?? {}, ctx);
+});
+
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
-export const createAgentHireSchema = createAgentSchema.extend({
+export const createAgentHireSchema = createAgentShape.extend({
   sourceIssueId: z.string().uuid().optional().nullable(),
   sourceIssueIds: z.array(z.string().uuid()).optional(),
+}).superRefine((value, ctx) => {
+  if (value.adapterType !== "http") return;
+  validateHttpAdapterConfig(value.adapterConfig ?? {}, ctx);
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
-export const updateAgentSchema = createAgentSchema
+export const updateAgentSchema = createAgentShape
   .omit({ permissions: true })
   .partial()
   .extend({
@@ -76,6 +112,10 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.adapterType !== "http") return;
+    validateHttpAdapterConfig((value.adapterConfig ?? {}) as Record<string, unknown>, ctx);
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;

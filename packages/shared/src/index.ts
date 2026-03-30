@@ -134,6 +134,11 @@ export {
   type PluginBridgeErrorCode,
 } from "./constants.js";
 
+export {
+  DEFAULT_RUNTIME_PROFILES,
+} from "./runtime-profiles.js";
+export type { RuntimeProfileDefinition } from "./runtime-profiles.js";
+
 export type {
   Company,
   CompanySkillSourceType,
@@ -169,6 +174,8 @@ export type {
   AgentChainOfCommandEntry,
   AgentDetail,
   AgentPermissions,
+  HttpRuntimeProfile,
+  HttpAdapterConfig,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,
@@ -299,6 +306,7 @@ export type {
   PluginLauncherRenderDeclaration,
   PluginLauncherRenderContextSnapshot,
   PluginLauncherDeclaration,
+  PluginRuntimeProfileDeclaration,
   PluginMinimumHostVersion,
   PluginUiDeclaration,
   PaperclipPluginManifestV1,

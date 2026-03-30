@@ -10,6 +10,7 @@ import type {
   PluginLauncherBounds,
   PluginLauncherRenderEnvironment,
 } from "../constants.js";
+import type { RuntimeProfileDefinition } from "../runtime-profiles.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – plugins declare config schemas as JSON Schema
@@ -190,6 +191,12 @@ export interface PluginUiDeclaration {
   launchers?: PluginLauncherDeclaration[];
 }
 
+/**
+ * Declares an HTTP runtime profile that can be registered by the plugin host
+ * at plugin startup.
+ */
+export interface PluginRuntimeProfileDeclaration extends RuntimeProfileDefinition {}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -240,6 +247,8 @@ export interface PaperclipPluginManifestV1 {
   webhooks?: PluginWebhookDeclaration[];
   /** Agent tools this plugin contributes. Requires `agent.tools.register` capability. */
   tools?: PluginToolDeclaration[];
+  /** HTTP runtime profiles registered by the host when the plugin is activated. */
+  runtimeProfiles?: PluginRuntimeProfileDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

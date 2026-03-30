@@ -106,6 +106,19 @@ export const pluginToolDeclarationSchema = z.object({
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
 /**
+ * Validates a runtime profile declaration contributed by a plugin manifest.
+ */
+export const pluginRuntimeProfileDeclarationSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  framework: z.string().min(1),
+  defaultHeaderValue: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+});
+
+export type PluginRuntimeProfileDeclarationInput = z.infer<typeof pluginRuntimeProfileDeclarationSchema>;
+
+/**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
  * fills with a React component. Includes `superRefine` checks for slot-specific
  * requirements such as `entityTypes` for context-sensitive slots.
@@ -405,6 +418,7 @@ export const pluginManifestV1Schema = z.object({
   jobs: z.array(pluginJobDeclarationSchema).optional(),
   webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
   tools: z.array(pluginToolDeclarationSchema).optional(),
+  runtimeProfiles: z.array(pluginRuntimeProfileDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -474,6 +488,17 @@ export const pluginManifestV1Schema = z.object({
     }
   }
 
+  // runtimeProfiles require runtime.profiles.register
+  if (manifest.runtimeProfiles && manifest.runtimeProfiles.length > 0) {
+    if (!manifest.capabilities.includes("runtime.profiles.register")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'runtime.profiles.register' is required when runtimeProfiles are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
   // ── Uniqueness checks ──────────────────────────────────────────────────
   // Duplicate keys within a plugin's own manifest are always a bug. The host
   // would not know which declaration takes precedence, so we reject early.
@@ -513,6 +538,19 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate tool names: ${[...new Set(duplicates)].join(", ")}`,
         path: ["tools"],
+      });
+    }
+  }
+
+  // runtime profile IDs must be unique within the plugin
+  if (manifest.runtimeProfiles) {
+    const profileIds = manifest.runtimeProfiles.map((profile) => profile.id);
+    const duplicates = profileIds.filter((id, i) => profileIds.indexOf(id) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate runtime profile ids: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["runtimeProfiles"],
       });
     }
   }

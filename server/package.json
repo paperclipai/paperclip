@@ -40,7 +40,10 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit",
+    "phase1:simulate": "tsx scripts/simulate-http-adapter-v1alpha.ts",
+    "phase1:crewai-smoke": "tsx scripts/phase1-crewai-webhook-smoke.ts",
+    "phase1:runtime-matrix": "tsx scripts/phase1-runtime-matrix-smoke.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",

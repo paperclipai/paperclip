@@ -21,6 +21,7 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  type RuntimeProfileDefinition,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -44,7 +45,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
-import { findServerAdapter, listAdapterModels, detectAdapterModel } from "../adapters/index.js";
+import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -61,8 +62,14 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import type { RuntimeProfileRegistry } from "../services/runtime-profile-registry.js";
 
-export function agentRoutes(db: Db) {
+export function agentRoutes(
+  db: Db,
+  deps?: {
+    runtimeProfiles?: RuntimeProfileRegistry;
+  },
+) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -94,6 +101,7 @@ export function agentRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const runtimeProfiles = deps?.runtimeProfiles;
 
   async function getCurrentUserRedactionOptions() {
     return {
@@ -671,13 +679,47 @@ export function agentRoutes(db: Db) {
     res.json(models);
   });
 
-  router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const type = req.params.type as string;
+  router.get("/runtime-profiles", async (_req, res) => {
+    if (!runtimeProfiles) {
+      res.json([]);
+      return;
+    }
+    res.json(runtimeProfiles.list());
+  });
 
-    const detected = await detectAdapterModel(type);
-    res.json(detected);
+  router.post("/runtime-profiles", async (req, res) => {
+    assertBoard(req);
+    if (!runtimeProfiles) {
+      res.status(500).json({ error: "Runtime profile registry not configured" });
+      return;
+    }
+    const body = (req.body ?? {}) as Partial<RuntimeProfileDefinition>;
+    if (!body.id || typeof body.id !== "string") {
+      res.status(422).json({ error: "Runtime profile id is required" });
+      return;
+    }
+    if (!body.label || typeof body.label !== "string") {
+      res.status(422).json({ error: "Runtime profile label is required" });
+      return;
+    }
+    if (!body.framework || typeof body.framework !== "string") {
+      res.status(422).json({ error: "Runtime profile framework is required" });
+      return;
+    }
+    const next = runtimeProfiles.upsert({
+      id: body.id.trim(),
+      label: body.label.trim(),
+      framework: body.framework.trim(),
+      defaultHeaderValue:
+        typeof body.defaultHeaderValue === "string" && body.defaultHeaderValue.trim().length > 0
+          ? body.defaultHeaderValue.trim()
+          : undefined,
+      description:
+        typeof body.description === "string" && body.description.trim().length > 0
+          ? body.description.trim()
+          : undefined,
+    });
+    res.status(201).json(next);
   });
 
   router.post(

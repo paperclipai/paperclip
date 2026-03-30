@@ -120,11 +120,75 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Phase 1 contract simulation gate (T1-T6)
+        run: |
+          set -euo pipefail
+          tmp_log="$(mktemp)"
+          (
+            cd server
+            pnpm tsx scripts/simulate-http-adapter-v1alpha.ts
+          ) | tee "$tmp_log"
+          if ! grep -qx 'TOTAL: 6/6 PASS' "$tmp_log"; then
+            echo "Phase 1 gate failed: expected 'TOTAL: 6/6 PASS'"
+            exit 1
+          fi
+
+      - name: Optional CrewAI smoke gate
+        env:
+          CREWAI_WEBHOOK_URL: ${{ secrets.CREWAI_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CREWAI_WEBHOOK_URL:-}" ]; then
+            echo "Skipping CrewAI smoke gate: CREWAI_WEBHOOK_URL secret not configured."
+            exit 0
+          fi
+          tmp_log="$(mktemp)"
+          (
+            cd server
+            CREWAI_WEBHOOK_URL="$CREWAI_WEBHOOK_URL" pnpm tsx scripts/phase1-crewai-webhook-smoke.ts
+          ) | tee "$tmp_log"
+          if ! grep -qx 'TOTAL: 1/1 PASS' "$tmp_log"; then
+            echo "CrewAI smoke gate failed: expected 'TOTAL: 1/1 PASS'"
+            exit 1
+          fi
+
       - name: Release canary dry run
         run: |
           git checkout -B master HEAD
           git checkout -- pnpm-lock.yaml
           ./scripts/release.sh canary --skip-verify --dry-run
+
+  runtime-profile-contract:
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify runtime profile API route contract
+        run: cd server && pnpm vitest run src/__tests__/runtime-profile-registry-routes.test.ts
+
+      - name: Verify plugin runtime profile normalization
+        run: cd server && pnpm vitest run src/services/plugin-loader.runtime-profiles.test.ts
+
+      - name: Verify runtime profile dropdown contract
+        run: cd ui && pnpm vitest run src/adapters/http/runtime-profile-dropdown.test.tsx
 
   e2e:
     needs: [policy]

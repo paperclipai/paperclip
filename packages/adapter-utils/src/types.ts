@@ -343,6 +343,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  httpRuntimeProfile?: "custom-http" | "http+crewai" | "http+langgraph";
+  httpRuntimeHeader?: string;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;

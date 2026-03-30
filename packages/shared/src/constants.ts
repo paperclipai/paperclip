@@ -447,6 +447,7 @@ export const PLUGIN_CAPABILITIES = [
   "webhooks.receive",
   "http.outbound",
   "secrets.read-ref",
+  "runtime.profiles.register",
   // Agent Tools
   "agent.tools.register",
   // UI

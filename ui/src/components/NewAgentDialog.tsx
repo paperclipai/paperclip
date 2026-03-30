@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import {
   ArrowLeft,
   Bot,
+  Cloud,
   Code,
   Gem,
   MousePointer2,
@@ -21,7 +22,6 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
-import { HermesIcon } from "./HermesIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -31,7 +31,7 @@ type AdvancedAdapterType =
   | "pi_local"
   | "cursor"
   | "openclaw_gateway"
-  | "hermes_local";
+  | "http";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
@@ -67,12 +67,6 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     desc: "Local multi-provider agent",
   },
   {
-    value: "hermes_local",
-    label: "Hermes Agent",
-    icon: HermesIcon,
-    desc: "Local multi-provider agent",
-  },
-  {
     value: "pi_local",
     label: "Pi",
     icon: Terminal,
@@ -89,6 +83,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenClaw Gateway",
     icon: Bot,
     desc: "Invoke OpenClaw via gateway protocol",
+  },
+  {
+    value: "http",
+    label: "CrewAI (HTTP)",
+    icon: Cloud,
+    desc: "Webhook runtime profile with CrewAI hints",
   },
 ];
 
@@ -122,6 +122,12 @@ export function NewAgentDialog() {
   function handleAdvancedAdapterPick(adapterType: AdvancedAdapterType) {
     closeNewAgent();
     setShowAdvancedCards(false);
+    if (adapterType === "http") {
+      navigate(
+        `/agents/new?adapterType=http&runtimeProfile=http%2Bcrewai&webhookUrl=${encodeURIComponent("http://127.0.0.1:8000/webhook")}`,
+      );
+      return;
+    }
     navigate(`/agents/new?adapterType=${encodeURIComponent(adapterType)}`);
   }
 

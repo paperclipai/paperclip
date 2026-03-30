@@ -36,6 +36,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
   PluginRecord,
+  RuntimeProfileDefinition,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
@@ -48,6 +49,7 @@ import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
+import type { RuntimeProfileRegistry } from "./runtime-profile-registry.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -245,6 +247,8 @@ export interface PluginRuntimeServices {
     instanceId: string;
     hostVersion: string;
   };
+  /** Optional runtime profile registry used for plugin-provided profile registration. */
+  runtimeProfileRegistry?: RuntimeProfileRegistry;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +281,37 @@ export interface PluginLoadResult {
     /** Number of agent tools registered. */
     tools: number;
   };
+}
+
+export function normalizePluginRuntimeProfiles(
+  runtimeProfiles: PaperclipPluginManifestV1["runtimeProfiles"],
+): RuntimeProfileDefinition[] {
+  if (!Array.isArray(runtimeProfiles)) return [];
+  return runtimeProfiles
+    .filter((profile): profile is RuntimeProfileDefinition => (
+      Boolean(profile) &&
+      typeof profile.id === "string" &&
+      profile.id.trim().length > 0 &&
+      typeof profile.label === "string" &&
+      profile.label.trim().length > 0 &&
+      typeof profile.framework === "string" &&
+      profile.framework.trim().length > 0
+    ))
+    .map((profile) => ({
+      id: profile.id.trim(),
+      label: profile.label.trim(),
+      framework: profile.framework.trim(),
+      ...(typeof profile.defaultHeaderValue === "string" && profile.defaultHeaderValue.trim().length > 0
+        ? { defaultHeaderValue: profile.defaultHeaderValue.trim() }
+        : {}),
+      ...(typeof profile.description === "string" && profile.description.trim().length > 0
+        ? { description: profile.description.trim() }
+        : {}),
+    }));
+}
+
+export function canRegisterPluginRuntimeProfiles(manifest: PaperclipPluginManifestV1): boolean {
+  return Array.isArray(manifest.capabilities) && manifest.capabilities.includes("runtime.profiles.register");
 }
 
 /**
@@ -1689,6 +1724,7 @@ export function pluginLoader(
       lifecycleManager,
       buildHostHandlers,
       instanceInfo,
+      runtimeProfileRegistry,
     } = runtimeServices;
 
     try {
@@ -1808,11 +1844,30 @@ export function pluginLoader(
       }
 
       // ------------------------------------------------------------------
-      // 8. Register agent tools
+      // 8.5. Register plugin-declared runtime profiles
+      // ------------------------------------------------------------------
+      const runtimeProfiles = normalizePluginRuntimeProfiles(manifest.runtimeProfiles);
+      if (runtimeProfileRegistry && runtimeProfiles.length > 0 && canRegisterPluginRuntimeProfiles(manifest)) {
+        for (const runtimeProfile of runtimeProfiles) {
+          runtimeProfileRegistry.upsert(runtimeProfile);
+        }
+        log.info(
+          { pluginId, pluginKey, runtimeProfiles: runtimeProfiles.length },
+          "plugin-loader: runtime profiles registered",
+        );
+      } else if (runtimeProfileRegistry && runtimeProfiles.length > 0) {
+        log.warn(
+          { pluginId, pluginKey },
+          "plugin-loader: runtime profiles declared without runtime.profiles.register capability; skipping",
+        );
+      }
+
+      // ------------------------------------------------------------------
+      // 9. Register agent tools
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(

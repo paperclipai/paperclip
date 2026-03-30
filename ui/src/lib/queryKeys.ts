@@ -3,6 +3,8 @@ export const queryKeys = {
     all: ["companies"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
+    routineFeatureSettings: (companyId: string) =>
+      ["companies", companyId, "feature-settings", "routines"] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
@@ -53,6 +55,15 @@ export const queryKeys = {
   },
   routines: {
     list: (companyId: string) => ["routines", companyId] as const,
+    companyRuns: (companyId: string, filters: Record<string, unknown>) => ["routines", companyId, "company-runs", filters] as const,
+    metrics: (companyId: string, filters: Record<string, unknown>) => ["routines", companyId, "metrics", filters] as const,
+    attention: (companyId: string, windowHours: number, limit: number) =>
+      ["routines", companyId, "attention", windowHours, limit] as const,
+    governance: (companyId: string, windowHours: number) =>
+      ["routines", companyId, "governance", windowHours] as const,
+    governanceDrift: (companyId: string, windowHours: number) =>
+      ["routines", companyId, "governance-drift", windowHours] as const,
+    templates: (companyId: string) => ["routines", companyId, "templates"] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", "runs", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
@@ -129,6 +140,7 @@ export const queryKeys = {
   skills: {
     available: ["skills", "available"] as const,
   },
+  runtimeProfiles: ["runtime-profiles"] as const,
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,

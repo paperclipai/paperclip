@@ -13,6 +13,18 @@ export interface AgentPermissions {
   canCreateAgents: boolean;
 }
 
+export const HTTP_RUNTIME_PROFILES = ["custom-http", "http+crewai", "http+langgraph"] as const;
+export type HttpRuntimeProfile = (typeof HTTP_RUNTIME_PROFILES)[number];
+
+export interface HttpAdapterConfig {
+  url?: string;
+  method?: string;
+  timeoutMs?: number;
+  payloadTemplate?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  runtimeProfile?: HttpRuntimeProfile;
+}
+
 export type AgentInstructionsBundleMode = "managed" | "external";
 
 export interface AgentInstructionsFileSummary {

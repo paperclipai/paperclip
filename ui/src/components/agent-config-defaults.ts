@@ -17,6 +17,8 @@ export const defaultCreateValues: CreateConfigValues = {
   envVars: "",
   envBindings: {},
   url: "",
+  httpRuntimeProfile: "custom-http",
+  httpRuntimeHeader: "",
   bootstrapPrompt: "",
   payloadTemplateJson: "",
   workspaceStrategyType: "project_primary",

@@ -37,9 +37,10 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "cursor",
   "hermes_local",
   "openclaw_gateway",
+  "http",
 ]);
 
-function createValuesForAdapterType(
+export function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
 ): CreateConfigValues {
   const { adapterType: _discard, ...defaults } = defaultCreateValues;
@@ -54,6 +55,12 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
+  } else if (adapterType === "http") {
+    nextValues.httpRuntimeProfile = "http+crewai";
+    nextValues.httpRuntimeHeader = "CrewAI";
+    nextValues.url = "http://127.0.0.1:8000/webhook";
+    nextValues.heartbeatEnabled = true;
+    nextValues.intervalSec = 300;
   }
   return nextValues;
 }
@@ -65,6 +72,8 @@ export function NewAgent() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presetAdapterType = searchParams.get("adapterType");
+  const presetWebhookUrl = searchParams.get("webhookUrl");
+  const presetRuntimeProfile = searchParams.get("runtimeProfile");
 
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -124,10 +133,22 @@ export function NewAgent() {
       return;
     }
     setConfigValues((prev) => {
-      if (prev.adapterType === requested) return prev;
-      return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      if (prev.adapterType === requested) {
+        return prev;
+      }
+      const seeded = createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
+      if (requested === "http") {
+        return {
+          ...seeded,
+          ...(presetWebhookUrl ? { url: presetWebhookUrl } : {}),
+          ...(presetRuntimeProfile === "http+langgraph"
+            ? { httpRuntimeProfile: "http+langgraph", httpRuntimeHeader: "LangGraph" }
+            : {}),
+        };
+      }
+      return seeded;
     });
-  }, [presetAdapterType]);
+  }, [presetAdapterType, presetRuntimeProfile, presetWebhookUrl]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>

@@ -28,11 +28,16 @@
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
+    "verify:connectors": "node scripts/verify-connector-webhooks.mjs",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
-    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed"
+    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
+    "phase1:simulate": "pnpm -C server phase1:simulate",
+    "phase1:crewai-smoke": "pnpm -C server phase1:crewai-smoke",
+    "phase1:runtime-matrix": "pnpm -C server phase1:runtime-matrix",
+    "phase1:flow": "pnpm phase1:simulate && pnpm phase1:runtime-matrix && pnpm phase1:crewai-smoke"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
