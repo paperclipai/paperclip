@@ -203,15 +203,14 @@ install_cli_tools() {
     }
   fi
 
-  # Codex
-  if sudo -u "${PAPERCLIP_USER}" bash -lc 'command -v codex' &>/dev/null; then
+  # Codex (install globally as root since npm global dir is /usr/lib/node_modules)
+  if command -v codex &>/dev/null; then
     success "Codex CLI already installed"
   else
     info "Installing Codex CLI..."
-    sudo -u "${PAPERCLIP_USER}" bash -c \
-      'npm install --global @openai/codex@latest' 2>&1 | tail -1 || {
+    npm install --global @openai/codex@latest 2>&1 | tail -1 || {
       warn "Codex install failed. You can install it later:"
-      warn "  su - ${PAPERCLIP_USER} && npm install --global @openai/codex@latest"
+      warn "  sudo npm install --global @openai/codex@latest"
     }
   fi
 }
