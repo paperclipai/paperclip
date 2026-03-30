@@ -1661,7 +1661,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = (req.params.companyId as string).trim().toLowerCase();
     if (!assertValidCompanyId(res, companyId)) return;
     const issueId = req.params.issueId as string;
     assertCompanyAccess(req, companyId);

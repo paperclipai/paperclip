@@ -148,6 +148,21 @@ describe("issues routes UUID validation", () => {
     );
   });
 
+  it("trims and normalizes companyId path on company-scoped attachment upload route", async () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    mockIssueService.getById.mockResolvedValueOnce({
+      id: issueId,
+      companyId: COMPANY_ID,
+      status: "todo",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/companies/%20${COMPANY_ID.toUpperCase()}%20/issues/${issueId}/attachments`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Missing file");
+  });
+
   it("returns 400 for invalid issue id path on comments routes", async () => {
     const res = await request(createApp()).get("/api/issues/not-a-uuid/comments");
     expect(res.status).toBe(400);
