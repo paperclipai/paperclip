@@ -840,8 +840,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const { assertActiveSubscription } = await import("../middleware/subscription-guard.js");
-    await assertActiveSubscription(db, companyId);
     await limits.checkIssueLimit(companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);

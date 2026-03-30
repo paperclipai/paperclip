@@ -1,22 +1,23 @@
 import { eq } from "drizzle-orm";
-import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { companySubscriptions } from "@paperclipai/db";
+import { HttpError } from "../errors.js";
 
-export function subscriptionGuard(db: Db): RequestHandler {
-  return async (req, _res, next) => {
-    // Skip for non-board actors (agents, local_implicit)
-    if (req.actor.type !== "board" || req.actor.source === "local_implicit") {
-      next();
-      return;
-    }
-    // Attach subscription status to request for downstream checks
-    // Don't block here — let individual routes decide enforcement
-    next();
-  };
-}
+export type SubscriptionStatus = {
+  status: string;
+  trialEndsAt: Date | null;
+  canWrite: boolean;
+};
 
-export async function assertActiveSubscription(db: Db, companyId: string): Promise<void> {
+/**
+ * Look up the subscription status for a company. Returns null if no
+ * subscription record exists (self-hosted free tier).
+ * Also lazily transitions "trialing" → "trial_expired" when the trial window has passed.
+ */
+export async function getSubscriptionStatus(
+  db: Db,
+  companyId: string,
+): Promise<SubscriptionStatus | null> {
   const sub = await db
     .select({
       status: companySubscriptions.status,
@@ -26,41 +27,54 @@ export async function assertActiveSubscription(db: Db, companyId: string): Promi
     .where(eq(companySubscriptions.companyId, companyId))
     .then((rows) => rows[0]);
 
-  if (!sub) return; // No subscription record = self-hosted free tier, allowed
-  if (sub.status === "active" || sub.status === "free") return;
-  if (sub.status === "past_due") return; // Grace period — allow but could warn
+  if (!sub) return null; // No subscription = self-hosted free tier
 
-  if (sub.status === "trialing") {
-    if (sub.trialEndsAt && new Date(sub.trialEndsAt) > new Date()) return; // Trial still active
-
-    // Trial expired — update status lazily and block
+  // Lazy trial expiry transition
+  if (
+    sub.status === "trialing" &&
+    sub.trialEndsAt &&
+    new Date(sub.trialEndsAt) <= new Date()
+  ) {
     await db
       .update(companySubscriptions)
       .set({ status: "trial_expired", updatedAt: new Date() })
       .where(eq(companySubscriptions.companyId, companyId));
 
-    throw Object.assign(
-      new Error("Your 14-day free trial has ended. Please subscribe to continue."),
-      { statusCode: 402, code: "TRIAL_EXPIRED" },
-    );
+    return { status: "trial_expired", trialEndsAt: sub.trialEndsAt, canWrite: false };
   }
 
-  if (sub.status === "trial_expired") {
-    throw Object.assign(
-      new Error("Your 14-day free trial has ended. Please subscribe to continue."),
-      { statusCode: 402, code: "TRIAL_EXPIRED" },
-    );
-  }
+  const canWrite = ["active", "trialing", "free", "past_due"].includes(sub.status);
 
-  if (sub.status === "canceled") {
-    throw Object.assign(
-      new Error("Your subscription has been canceled. Please resubscribe to continue."),
-      { statusCode: 402, code: "SUBSCRIPTION_CANCELED" },
-    );
-  }
+  return {
+    status: sub.status,
+    trialEndsAt: sub.trialEndsAt,
+    canWrite,
+  };
+}
 
-  throw Object.assign(new Error("Subscription is not active. Please update your billing."), {
-    statusCode: 402,
-    code: "SUBSCRIPTION_INACTIVE",
-  });
+/**
+ * Throws a 402 HttpError if the company's subscription does not allow
+ * write operations. Read access is always allowed.
+ * Call this before any mutating endpoint (create, update, delete).
+ */
+export async function assertWriteAccess(db: Db, companyId: string): Promise<void> {
+  const sub = await getSubscriptionStatus(db, companyId);
+  if (!sub) return; // Self-hosted free tier — no restrictions
+  if (sub.canWrite) return;
+
+  const code =
+    sub.status === "trial_expired"
+      ? "TRIAL_EXPIRED"
+      : sub.status === "canceled"
+        ? "SUBSCRIPTION_CANCELED"
+        : "SUBSCRIPTION_INACTIVE";
+
+  const message =
+    sub.status === "trial_expired"
+      ? "Your 14-day free trial has ended. Subscribe to continue."
+      : sub.status === "canceled"
+        ? "Your subscription has been canceled. Resubscribe to continue."
+        : "Subscription is not active. Please update your billing.";
+
+  throw new HttpError(402, message, { code, canRead: true, canWrite: false });
 }

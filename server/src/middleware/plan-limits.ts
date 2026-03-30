@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { assets, companySubscriptions, issues, projects, subscriptionPlans, agents } from "@paperclipai/db";
 import { eq, count, sql } from "drizzle-orm";
-import { paymentRequired } from "../errors.js";
+import { HttpError } from "../errors.js";
 
 interface PlanQuotas {
   maxAgents: number | null;
@@ -36,7 +36,7 @@ export function planLimits(db: Db) {
 
       const [row] = await db.select({ count: count() }).from(agents).where(eq(agents.companyId, companyId));
       if (Number(row?.count ?? 0) >= quotas.maxAgents) {
-        throw paymentRequired(`Agent limit reached (${quotas.maxAgents}) for your current plan. Upgrade to add more agents.`);
+        throw new HttpError(402, `Agent limit reached (${quotas.maxAgents}) for your current plan. Upgrade to add more agents.`);
       }
     },
 
@@ -46,7 +46,7 @@ export function planLimits(db: Db) {
 
       const [row] = await db.select({ count: count() }).from(issues).where(eq(issues.companyId, companyId));
       if (Number(row?.count ?? 0) >= quotas.maxIssues) {
-        throw paymentRequired(`Issue limit reached (${quotas.maxIssues}) for your current plan.`);
+        throw new HttpError(402, `Issue limit reached (${quotas.maxIssues}) for your current plan.`);
       }
     },
 
@@ -56,7 +56,7 @@ export function planLimits(db: Db) {
 
       const [row] = await db.select({ count: count() }).from(projects).where(eq(projects.companyId, companyId));
       if (Number(row?.count ?? 0) >= quotas.maxProjects) {
-        throw paymentRequired(`Project limit reached (${quotas.maxProjects}) for your current plan.`);
+        throw new HttpError(402, `Project limit reached (${quotas.maxProjects}) for your current plan.`);
       }
     },
 
@@ -72,7 +72,7 @@ export function planLimits(db: Db) {
       const maxBytes = Number(quotas.maxStorageBytes);
       if (totalBytes >= maxBytes) {
         const maxMb = Math.round(maxBytes / (1024 * 1024));
-        throw paymentRequired(`Storage limit reached (${maxMb}MB) for your current plan.`);
+        throw new HttpError(402, `Storage limit reached (${maxMb}MB) for your current plan.`);
       }
     },
   };

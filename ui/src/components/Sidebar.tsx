@@ -24,12 +24,14 @@ import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useSubscription } from "../hooks/useSubscription";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { canWrite } = useSubscription();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
@@ -75,8 +77,14 @@ export function Sidebar() {
         <div className="flex flex-col gap-0.5">
           {/* New Issue button aligned with nav items */}
           <button
-            onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+            onClick={() => canWrite && openNewIssue()}
+            disabled={!canWrite}
+            title={!canWrite ? "Subscribe to create issues" : undefined}
+            className={`flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors ${
+              canWrite
+                ? "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                : "text-muted-foreground/50 cursor-not-allowed"
+            }`}
           >
             <SquarePen className="h-4 w-4 shrink-0" />
             <span className="truncate">New Issue</span>

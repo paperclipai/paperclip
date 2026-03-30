@@ -3082,10 +3082,10 @@ export function heartbeatService(db: Db) {
     if (company?.status === "archived") return null;
     // Check subscription status before spawning work
     try {
-      const { assertActiveSubscription } = await import("../middleware/subscription-guard.js");
-      await assertActiveSubscription(db, agent.companyId);
+      const { assertWriteAccess } = await import("../middleware/subscription-guard.js");
+      await assertWriteAccess(db, agent.companyId);
     } catch (err: any) {
-      if (err?.code === "SUBSCRIPTION_INACTIVE") return null;
+      if (err?.status === 402) return null; // Subscription inactive — skip silently
       throw err;
     }
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);

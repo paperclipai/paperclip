@@ -196,6 +196,25 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  // Block write operations for inactive subscriptions.
+  // Read (GET/HEAD/OPTIONS) is always allowed.
+  // Billing and export routes are excluded so users can subscribe and export data.
+  api.use(async (req, _res, next) => {
+    if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+    // Extract companyId from various URL patterns
+    const match = req.path.match(/\/companies\/([^/]+)/);
+    const companyId = match?.[1];
+    if (!companyId) return next();
+    // Exclude billing and export routes — users must always be able to pay and export
+    if (req.path.includes("/billing/") || req.path.includes("/export")) return next();
+    try {
+      const { assertWriteAccess } = await import("./middleware/subscription-guard.js");
+      await assertWriteAccess(db, companyId);
+    } catch (err) {
+      return next(err);
+    }
+    next();
+  });
   api.use(
     "/health",
     healthRoutes(db, {
