@@ -706,6 +706,40 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function clearStaleExecutionLocksForRoutine(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const staleIssueIds = await executor
+      .select({ id: issues.id })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          or(
+            isNull(heartbeatRuns.id),
+            and(ne(heartbeatRuns.status, "queued"), ne(heartbeatRuns.status, "running")),
+          ),
+        ),
+      )
+      .then((rows) => rows.map((row) => row.id));
+
+    if (staleIssueIds.length === 0) return;
+
+    await executor
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(inArray(issues.id, staleIssueIds));
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -805,6 +839,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       title,
       description,
     });
+    await clearStaleExecutionLocksForRoutine(input.routine);
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
