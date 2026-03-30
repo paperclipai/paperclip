@@ -129,12 +129,14 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
+  agentId: string | null;
   runId: string;
   issueId: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
+  if (!input.agentId) return fallback;
+  if (input.strategy === "run") return `agent:${input.agentId}:paperclip:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `agent:${input.agentId}:paperclip:issue:${input.issueId}`;
   return fallback;
 }
 
@@ -1060,6 +1062,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
+    agentId: nonEmpty(ctx.config.agentId),
     runId: ctx.runId,
     issueId: wakePayload.issueId,
   });
