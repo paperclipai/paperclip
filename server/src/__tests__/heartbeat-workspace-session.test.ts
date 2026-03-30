@@ -128,6 +128,15 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
   });
 
+  it("does not reset session context on board_comment wake", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "board_comment",
+        wakeCommentId: "comment-3",
+      }),
+    ).toBe(false);
+  });
+
   it("does not reset when wake reason is missing", () => {
     expect(shouldResetTaskSessionForWake({})).toBe(false);
   });

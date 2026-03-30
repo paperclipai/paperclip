@@ -1045,10 +1045,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
             },
           });
         } else {
+          const isBoardComment = !actorIsAgent;
+          const commentWakeReason = isBoardComment ? "board_comment" : "issue_commented";
           wakeups.set(assigneeId, {
             source: "automation",
             triggerDetail: "system",
-            reason: "issue_commented",
+            reason: commentWakeReason,
             payload: {
               issueId: currentIssue.id,
               commentId: comment.id,
@@ -1062,8 +1064,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
               taskId: currentIssue.id,
               commentId: comment.id,
               wakeCommentId: comment.id,
-              source: "issue.comment",
-              wakeReason: "issue_commented",
+              source: isBoardComment ? "issue.comment.board" : "issue.comment",
+              wakeReason: commentWakeReason,
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
           });
