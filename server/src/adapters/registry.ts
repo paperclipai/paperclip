@@ -78,6 +78,19 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as localLocalExecute,
+  listSkills as localLocalListSkills,
+  syncSkills as localLocalSyncSkills,
+  testEnvironment as localLocalTestEnvironment,
+  sessionCodec as localLocalSessionCodec,
+  getQuotaWindows as localLocalGetQuotaWindows,
+  listLMStudioModels,
+} from "@paperclipai/adapter-local-local/server";
+import {
+  agentConfigurationDoc as localLocalAgentConfigurationDoc,
+  models as localLocalModels,
+} from "@paperclipai/adapter-local-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -187,6 +200,24 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const localLocalAdapter: ServerAdapterModule = {
+  type: "local_local",
+  execute: localLocalExecute,
+  testEnvironment: localLocalTestEnvironment,
+  listSkills: localLocalListSkills,
+  syncSkills: localLocalSyncSkills,
+  sessionCodec: localLocalSessionCodec,
+  sessionManagement: getAdapterSessionManagement("local_local") ?? undefined,
+  models: localLocalModels,
+  listModels: async () => {
+    const lmStudioModels = await listLMStudioModels("http://127.0.0.1:1234/v1").catch(() => []);
+    return [...localLocalModels, ...lmStudioModels.filter((m) => !localLocalModels.some((s) => s.id === m.id))];
+  },
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: localLocalAgentConfigurationDoc,
+  getQuotaWindows: localLocalGetQuotaWindows,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -197,6 +228,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    localLocalAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
