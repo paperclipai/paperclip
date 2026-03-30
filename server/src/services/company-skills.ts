@@ -1719,6 +1719,18 @@ export function companySkillService(db: Db) {
       }
       const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
       content = await fetchText(resolveRawGitHubUrl(owner, repo, ref, repoPath));
+    } else if (skill.sourceType === "agentskill_sh") {
+      if (normalizedPath === "SKILL.md") {
+        content = skill.markdown;
+      } else {
+        const metadata = getSkillMeta(skill);
+        const storedFiles = (metadata as Record<string, unknown>).fileContents;
+        if (isPlainRecord(storedFiles) && typeof storedFiles[normalizedPath] === "string") {
+          content = storedFiles[normalizedPath] as string;
+        } else {
+          throw notFound("Skill file not found");
+        }
+      }
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
         throw notFound("This skill source only exposes SKILL.md");
@@ -2309,6 +2321,7 @@ export function companySkillService(db: Db) {
       name: string;
       description: string;
       skillMd: string;
+      skillFiles?: Array<{ path: string; content: string }>;
       owner?: string;
       contentQualityScore?: number;
       securityScore?: number;
@@ -2320,13 +2333,26 @@ export function companySkillService(db: Db) {
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const slug = data.slug || agentSkillSlug;
     const sourceUrl = `https://agentskill.sh/${slug}`;
+
+    // Build file inventory and content map from API response
+    const inventory: CompanySkillFileInventoryEntry[] = [{ path: "SKILL.md", kind: "skill" }];
+    const fileContents: Record<string, string> = {};
+    if (data.skillFiles && Array.isArray(data.skillFiles)) {
+      for (const file of data.skillFiles) {
+        if (file.path && file.content) {
+          inventory.push({ path: file.path, kind: classifyInventoryKind(file.path) });
+          fileContents[file.path] = file.content;
+        }
+      }
+    }
+
     const metadata: Record<string, unknown> = {
       sourceKind: "agentskill_sh",
       agentSkillSlug: slug,
       qualityScore: data.contentQualityScore ?? null,
       securityScore: data.securityScore ?? null,
+      fileContents,
     };
-    const inventory: CompanySkillFileInventoryEntry[] = [{ path: "SKILL.md", kind: "skill" }];
     const skill: ImportedSkill = {
       key: deriveCanonicalSkillKey(companyId, {
         slug: normalizeSkillSlug(slug) ?? slug,
