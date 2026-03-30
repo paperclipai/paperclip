@@ -515,12 +515,12 @@ export function Routines() {
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 font-medium">Project</th>
-                  <th className="px-3 py-2 font-medium">Agent</th>
-                  <th className="px-3 py-2 font-medium">Last run</th>
-                  <th className="px-3 py-2 font-medium">Enabled</th>
-                  <th className="w-12 px-3 py-2" />
+                  <th scope="col" className="px-3 py-2 font-medium">Name</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Project</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Agent</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Last run</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Enabled</th>
+                  <th scope="col" className="w-12 px-3 py-2" />
                 </tr>
               </thead>
               <tbody>
