@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getLabelById: vi.fn(),
   deleteLabel: vi.fn(),
   listLabels: vi.fn(),
+  createLabel: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -61,6 +62,12 @@ describe("issue label route validation", () => {
     mockIssueService.getLabelById.mockResolvedValue(null);
     mockIssueService.deleteLabel.mockResolvedValue(null);
     mockIssueService.listLabels.mockResolvedValue([]);
+    mockIssueService.createLabel.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: COMPANY_ID,
+      name: "Ops",
+      color: "#123456",
+    });
   });
 
   it("returns 400 for malformed label ids instead of querying the DB", async () => {
@@ -77,5 +84,17 @@ describe("issue label route validation", () => {
 
     expect(res.status).toBe(200);
     expect(mockIssueService.listLabels).toHaveBeenCalledWith(COMPANY_ID);
+  });
+
+  it("normalizes companyId path for label creation", async () => {
+    const res = await request(createApp())
+      .post(`/api/companies/%20${COMPANY_ID.toUpperCase()}%20/labels`)
+      .send({ name: "Ops", color: "#123456" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createLabel).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({ name: "Ops", color: "#123456" }),
+    );
   });
 });
