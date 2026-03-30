@@ -5,6 +5,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRuns,
   issueComments,
   issueInboxArchives,
   issues,
@@ -312,5 +313,194 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       archivedIssueId,
       resurfacedIssueId,
     ]));
+  });
+});
+
+describeEmbeddedPostgres("issueService checkout/release execution lock semantics", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-exec-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedFixture(input?: { runStatus?: string }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleRunId = randomUUID();
+    const freshRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: input?.runStatus ?? "succeeded",
+        contextSnapshot: {},
+        startedAt: new Date("2026-03-29T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-29T00:00:00.000Z"),
+      },
+      {
+        id: freshRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        status: "running",
+        contextSnapshot: {},
+        startedAt: new Date("2026-03-29T01:00:00.000Z"),
+        updatedAt: new Date("2026-03-29T01:00:00.000Z"),
+      },
+    ]);
+
+    return { companyId, agentId, staleRunId, freshRunId };
+  }
+
+  it("release clears executionRunId, executionAgentNameKey, executionLockedAt", async () => {
+    const { companyId, agentId, staleRunId } = await seedFixture({ runStatus: "succeeded" });
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "testagent",
+      executionLockedAt: new Date("2026-03-29T00:00:00.000Z"),
+      issueNumber: 1,
+      identifier: "T-1",
+    });
+
+    const released = await svc.release(issueId, agentId, staleRunId);
+    expect(released).toBeTruthy();
+    expect(released!.status).toBe("todo");
+    expect(released!.assigneeAgentId).toBeNull();
+    expect(released!.checkoutRunId).toBeNull();
+    expect(released!.executionRunId).toBeNull();
+    expect(released!.executionAgentNameKey).toBeNull();
+    expect(released!.executionLockedAt).toBeNull();
+  });
+
+  it("checkout recovers from stale execution lock held by a succeeded run", async () => {
+    const { companyId, agentId, staleRunId, freshRunId } = await seedFixture({ runStatus: "succeeded" });
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock issue",
+      status: "todo",
+      priority: "medium",
+      executionRunId: staleRunId,
+      executionAgentNameKey: "testagent",
+      executionLockedAt: new Date("2026-03-29T00:00:00.000Z"),
+      issueNumber: 1,
+      identifier: "T-1",
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], freshRunId);
+    expect(result).toBeTruthy();
+    expect(result!.status).toBe("in_progress");
+    expect(result!.assigneeAgentId).toBe(agentId);
+    expect(result!.checkoutRunId).toBe(freshRunId);
+    expect(result!.executionRunId).toBe(freshRunId);
+  });
+
+  it("checkout does not steal issue from another agent even with stale execution lock", async () => {
+    const { companyId, agentId, staleRunId, freshRunId } = await seedFixture({ runStatus: "succeeded" });
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Assigned to other agent",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: otherAgentId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "otheragent",
+      executionLockedAt: new Date("2026-03-29T00:00:00.000Z"),
+      issueNumber: 1,
+      identifier: "T-1",
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo", "in_progress"], freshRunId),
+    ).rejects.toThrow();
+  });
+
+  it("checkout does not recover execution lock when run is still running", async () => {
+    const { companyId, agentId, staleRunId, freshRunId } = await seedFixture({ runStatus: "running" });
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Active lock issue",
+      status: "todo",
+      priority: "medium",
+      executionRunId: staleRunId,
+      executionAgentNameKey: "testagent",
+      executionLockedAt: new Date("2026-03-29T00:00:00.000Z"),
+      issueNumber: 1,
+      identifier: "T-1",
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo"], freshRunId),
+    ).rejects.toThrow();
   });
 });
