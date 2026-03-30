@@ -16,3 +16,13 @@ export interface AgentTelegramTestResult {
   botUsername: string;
   firstName: string;
 }
+
+export type TelegramMediaType = "photo" | "document";
+
+export interface SendTelegramNotificationOptions {
+  sessionId?: string;
+  mediaType?: TelegramMediaType;
+  mediaUrl?: string;
+  mediaPath?: string;
+  caption?: string;
+}

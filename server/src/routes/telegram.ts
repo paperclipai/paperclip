@@ -109,6 +109,10 @@ export function telegramRoutes(db: Db) {
       try {
         const sent = await telegram.sendNotification(agent.id, req.body.text, {
           sessionId: req.body.sessionId,
+          mediaType: req.body.mediaType,
+          mediaUrl: req.body.mediaUrl,
+          mediaPath: req.body.mediaPath,
+          caption: req.body.caption,
         });
         if (!sent) {
           const botInstance = telegram.getActiveBot(agent.id);

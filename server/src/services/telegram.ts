@@ -3,12 +3,12 @@ import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
-import { Bot } from "grammy";
+import { Bot, InputFile } from "grammy";
 import { run as grammyRun, type RunnerHandle } from "@grammyjs/runner";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, agentTelegramConfigs, chatSessions } from "@paperclipai/db";
-import type { AgentTelegramConfig, AgentTelegramTestResult } from "@paperclipai/shared";
+import type { AgentTelegramConfig, AgentTelegramTestResult, SendTelegramNotificationOptions } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
@@ -875,10 +875,25 @@ export function telegramService(db: Db) {
     };
   }
 
+  async function resolveTargetChatId(
+    config: ConfigRow,
+    sessionId: string | undefined,
+  ): Promise<string | null> {
+    if (sessionId) {
+      const session = await db
+        .select()
+        .from(chatSessions)
+        .where(eq(chatSessions.id, sessionId))
+        .then((rows) => rows[0] ?? null);
+      if (session?.telegramChatId) return session.telegramChatId;
+    }
+    return config.ownerChatId;
+  }
+
   async function sendNotification(
     agentId: string,
-    text: string,
-    opts?: { sessionId?: string },
+    text: string | undefined,
+    opts?: SendTelegramNotificationOptions,
   ): Promise<boolean> {
     const config = await getConfig(agentId);
     if (!config?.enabled) return false;
@@ -886,28 +901,63 @@ export function telegramService(db: Db) {
     const instance = activeBots.get(agentId);
     if (!instance) return false;
 
-    let targetChatId: string | null = null;
+    const targetChatId = await resolveTargetChatId(config, opts?.sessionId);
+    if (!targetChatId) return false;
 
-    if (opts?.sessionId) {
-      const session = await db
-        .select()
-        .from(chatSessions)
-        .where(eq(chatSessions.id, opts.sessionId))
-        .then((rows) => rows[0] ?? null);
-      if (session?.telegramChatId) {
-        targetChatId = session.telegramChatId;
+    const chatId = Number(targetChatId);
+
+    // Media send path
+    if (opts?.mediaType) {
+      const caption = opts.caption;
+      if (opts.mediaType === "photo") {
+        if (opts.mediaUrl) {
+          await instance.bot.api.sendPhoto(chatId, opts.mediaUrl, caption ? { caption } : undefined);
+        } else if (opts.mediaPath) {
+          const fileData = await fs.readFile(opts.mediaPath);
+          const fileName = path.basename(opts.mediaPath);
+          await instance.bot.api.sendPhoto(
+            chatId,
+            new InputFile(fileData, fileName),
+            caption ? { caption } : undefined,
+          );
+        }
+        // Send trailing text caption separately if also provided
+        if (text) {
+          const parts = splitMessage(text);
+          for (const part of parts) {
+            await instance.bot.api.sendMessage(chatId, part);
+          }
+        }
+        return true;
+      }
+
+      if (opts.mediaType === "document") {
+        const fileName = opts.mediaPath ? path.basename(opts.mediaPath) : "document";
+        if (opts.mediaUrl) {
+          await instance.bot.api.sendDocument(chatId, opts.mediaUrl, caption ? { caption } : undefined);
+        } else if (opts.mediaPath) {
+          const fileData = await fs.readFile(opts.mediaPath);
+          await instance.bot.api.sendDocument(
+            chatId,
+            new InputFile(fileData, fileName),
+            caption ? { caption } : undefined,
+          );
+        }
+        if (text) {
+          const parts = splitMessage(text);
+          for (const part of parts) {
+            await instance.bot.api.sendMessage(chatId, part);
+          }
+        }
+        return true;
       }
     }
 
-    if (!targetChatId) {
-      targetChatId = config.ownerChatId;
-    }
-
-    if (!targetChatId) return false;
-
+    // Text-only path
+    if (!text) return false;
     const parts = splitMessage(text);
     for (const part of parts) {
-      await instance.bot.api.sendMessage(Number(targetChatId), part);
+      await instance.bot.api.sendMessage(chatId, part);
     }
     return true;
   }
