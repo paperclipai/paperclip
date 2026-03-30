@@ -707,28 +707,6 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
   }
 
   async function clearStaleExecutionLocksForRoutine(routine: typeof routines.$inferSelect, executor: Db = db) {
-    const staleIssueIds = await executor
-      .select({ id: issues.id })
-      .from(issues)
-      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, "routine_execution"),
-          eq(issues.originId, routine.id),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
-          isNotNull(issues.executionRunId),
-          or(
-            isNull(heartbeatRuns.id),
-            and(ne(heartbeatRuns.status, "queued"), ne(heartbeatRuns.status, "running")),
-          ),
-        ),
-      )
-      .then((rows) => rows.map((row) => row.id));
-
-    if (staleIssueIds.length === 0) return;
-
     await executor
       .update(issues)
       .set({
@@ -737,7 +715,25 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         executionLockedAt: null,
         updatedAt: new Date(),
       })
-      .where(inArray(issues.id, staleIssueIds));
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          sql`not exists (
+            select 1
+            from ${heartbeatRuns}
+            where ${heartbeatRuns.id} = ${issues.executionRunId}
+              and ${heartbeatRuns.status} in (${sql.join(
+                LIVE_HEARTBEAT_RUN_STATUSES.map((status) => sql`${status}`),
+                sql`, `,
+              )})
+          )`,
+        ),
+      );
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
