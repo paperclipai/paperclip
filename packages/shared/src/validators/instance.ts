@@ -9,6 +9,11 @@ export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.
 export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
+  staleIssueMonitorEnabled: z.boolean().default(false),
+  staleIssueIdleHoursCritical: z.number().int().min(1).max(8760).default(24),
+  staleIssueIdleHoursHigh: z.number().int().min(1).max(8760).default(48),
+  staleIssueIdleHoursMedium: z.number().int().min(1).max(8760).default(72),
+  staleIssueIdleHoursLow: z.number().int().min(1).max(8760).default(168),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();

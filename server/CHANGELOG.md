@@ -1,5 +1,11 @@
 # @paperclipai/server
 
+## 0.3.2
+
+### Patch Changes
+
+- Add optional stale-issue monitor: scans open issues on the heartbeat schedule, priority alerts for critical/high issues past idle thresholds, and a daily grouped activity report per company (after 06:00 UTC). Toggle and thresholds under Instance Settings → Experimental (`staleIssueMonitorEnabled` and `staleIssueIdleHours*`).
+
 ## 0.3.1
 
 ### Patch Changes

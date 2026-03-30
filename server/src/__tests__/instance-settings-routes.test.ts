@@ -39,6 +39,11 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      staleIssueMonitorEnabled: false,
+      staleIssueIdleHoursCritical: 24,
+      staleIssueIdleHoursHigh: 48,
+      staleIssueIdleHoursMedium: 72,
+      staleIssueIdleHoursLow: 168,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
@@ -69,6 +74,11 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      staleIssueMonitorEnabled: false,
+      staleIssueIdleHoursCritical: 24,
+      staleIssueIdleHoursHigh: 48,
+      staleIssueIdleHoursMedium: 72,
+      staleIssueIdleHoursLow: 168,
     });
 
     const patchRes = await request(app)

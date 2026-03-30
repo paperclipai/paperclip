@@ -50,6 +50,7 @@
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
+              "guides/board-operator/stale-issue-monitor",
               "guides/board-operator/importing-and-exporting"
             ]
           },

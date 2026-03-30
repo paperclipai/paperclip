@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FlaskConical } from "lucide-react";
+import type { PatchInstanceExperimentalSettings } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -24,7 +25,7 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
+    mutationFn: async (patch: Parameters<typeof instanceSettingsApi.updateExperimental>[0]) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -54,6 +55,15 @@ export function InstanceExperimentalSettings() {
 
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const staleIssueMonitorEnabled = experimentalQuery.data?.staleIssueMonitorEnabled === true;
+  const staleHours = experimentalQuery.data
+    ? {
+        critical: experimentalQuery.data.staleIssueIdleHoursCritical,
+        high: experimentalQuery.data.staleIssueIdleHoursHigh,
+        medium: experimentalQuery.data.staleIssueIdleHoursMedium,
+        low: experimentalQuery.data.staleIssueIdleHoursLow,
+      }
+    : null;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -101,6 +111,73 @@ export function InstanceExperimentalSettings() {
             />
           </button>
         </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Stale-issue monitor</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              On each heartbeat scheduler tick, scan open issues whose <code className="text-xs">updatedAt</code> is older
+              than the idle threshold for their priority. Critical and high issues log warnings and activity entries when
+              stale; after 06:00 UTC each day, emit one grouped activity per company (owner × status). Disable to roll
+              back without restarting the server.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-slot="toggle"
+            aria-label="Toggle stale-issue monitor"
+            disabled={toggleMutation.isPending}
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              staleIssueMonitorEnabled ? "bg-green-600" : "bg-muted",
+            )}
+            onClick={() => toggleMutation.mutate({ staleIssueMonitorEnabled: !staleIssueMonitorEnabled })}
+          >
+            <span
+              className={cn(
+                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                staleIssueMonitorEnabled ? "translate-x-4.5" : "translate-x-0.5",
+              )}
+            />
+          </button>
+        </div>
+        {staleIssueMonitorEnabled && staleHours && (
+          <div className="mt-4 grid max-w-xl grid-cols-2 gap-3 border-t border-border pt-4 text-sm sm:grid-cols-4">
+            {(
+              [
+                ["Critical (h)", "staleIssueIdleHoursCritical", staleHours.critical],
+                ["High (h)", "staleIssueIdleHoursHigh", staleHours.high],
+                ["Medium (h)", "staleIssueIdleHoursMedium", staleHours.medium],
+                ["Low (h)", "staleIssueIdleHoursLow", staleHours.low],
+              ] as const
+            ).map(([label, key, value]) => (
+              <label key={key} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">{label}</span>
+                <input
+                  key={`${key}-${value}`}
+                  type="number"
+                  min={1}
+                  max={8760}
+                  className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                  defaultValue={value}
+                  onBlur={(e) => {
+                    const next = Number(e.target.value);
+                    if (!Number.isFinite(next) || next < 1 || next > 8760) {
+                      e.target.value = String(value);
+                      return;
+                    }
+                    if (next !== value) {
+                      const patch = { [key]: next } as PatchInstanceExperimentalSettings;
+                      toggleMutation.mutate(patch);
+                    }
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">

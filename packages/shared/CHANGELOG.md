@@ -1,5 +1,11 @@
 # @paperclipai/shared
 
+## 0.3.2
+
+### Patch Changes
+
+- Add experimental instance settings for the stale-issue monitor (feature flag and per-priority idle thresholds in hours).
+
 ## 0.3.1
 
 ### Patch Changes

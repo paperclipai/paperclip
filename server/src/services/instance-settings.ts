@@ -28,15 +28,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
 function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettings {
   const parsed = instanceExperimentalSettingsSchema.safeParse(raw ?? {});
   if (parsed.success) {
-    return {
-      enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
-      autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-    };
+    return parsed.data;
   }
-  return {
-    enableIsolatedWorkspaces: false,
-    autoRestartDevServerWhenIdle: false,
-  };
+  return instanceExperimentalSettingsSchema.parse({});
 }
 
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
