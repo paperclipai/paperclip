@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
+import https from "node:https";
+import path from "node:path";
 import { Bot } from "grammy";
 import { run as grammyRun, type RunnerHandle } from "@grammyjs/runner";
 import { and, eq, isNull } from "drizzle-orm";
@@ -6,6 +10,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, agentTelegramConfigs, chatSessions } from "@paperclipai/db";
 import type { AgentTelegramConfig, AgentTelegramTestResult } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { chatService } from "./chat.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -17,6 +22,79 @@ import {
   resolveStdoutParser,
   isTerminalRunStatus,
 } from "./chat-transcript.js";
+
+const TELEGRAM_MEDIA_TEXT_MAX_BYTES = 100 * 1024; // 100 KB
+const TEXT_EXTRACTABLE_EXTENSIONS = new Set([".md", ".txt", ".text"]);
+const TEXT_EXTRACTABLE_MIME_PREFIXES = ["text/plain", "text/markdown"];
+
+/** Download a file from Telegram to a local path. Returns the destination path. */
+async function downloadTelegramFile(
+  botToken: string,
+  filePath: string,
+  destPath: string,
+): Promise<void> {
+  const url = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  return new Promise((resolve, reject) => {
+    const fileStream = createWriteStream(destPath);
+    https.get(url, (res) => {
+      if (res.statusCode !== 200) {
+        fileStream.destroy();
+        reject(new Error(`Telegram file download failed: HTTP ${res.statusCode}`));
+        return;
+      }
+      res.pipe(fileStream);
+      fileStream.on("finish", () => { fileStream.close(); resolve(); });
+      fileStream.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+/** Resolve the media storage directory for an agent.
+ *  Uses agent's adapterConfig.cwd if set, otherwise falls back to instance storage. */
+async function resolveAgentMediaDir(db: Db, agentId: string): Promise<string> {
+  const row = await db
+    .select({ adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .then((rows) => rows[0] ?? null);
+
+  const cwd = typeof row?.adapterConfig?.["cwd"] === "string"
+    ? (row.adapterConfig["cwd"] as string).trim()
+    : "";
+
+  const baseDir = cwd
+    ? cwd
+    : path.join(resolvePaperclipInstanceRoot(), "data", "storage");
+
+  return path.join(baseDir, "telegram-media");
+}
+
+/** For small text-like files, read and return content. Returns null otherwise. */
+async function maybeExtractTextContent(
+  filePath: string,
+  mimeType: string | undefined,
+  fileSize: number | undefined,
+): Promise<string | null> {
+  if (fileSize !== undefined && fileSize > TELEGRAM_MEDIA_TEXT_MAX_BYTES) return null;
+
+  const ext = path.extname(filePath).toLowerCase();
+  const isTextExt = TEXT_EXTRACTABLE_EXTENSIONS.has(ext);
+  const isTextMime = mimeType
+    ? TEXT_EXTRACTABLE_MIME_PREFIXES.some((p) => mimeType.startsWith(p))
+    : false;
+
+  if (!isTextExt && !isTextMime) return null;
+
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    // Guard against surprisingly large files (e.g. fileSize was undefined)
+    if (Buffer.byteLength(content, "utf8") > TELEGRAM_MEDIA_TEXT_MAX_BYTES) return null;
+    return content;
+  } catch {
+    return null;
+  }
+}
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 const STREAM_POLL_INTERVAL_MS = 1500;
@@ -501,6 +579,139 @@ export function telegramService(db: Db) {
           // ignore send failure
         }
       }
+    });
+
+    /** Shared helper: process a Telegram media file, download it, inject context, and wake the agent. */
+    async function processTelegramMedia(opts: {
+      chatId: number;
+      senderId: string;
+      fileId: string;
+      fileName: string;
+      mimeType: string | undefined;
+      fileSize: number | undefined;
+      captionText: string;
+      reply: (text: string) => Promise<unknown>;
+    }): Promise<void> {
+      const { chatId, senderId, fileId, fileName, mimeType, fileSize, captionText, reply } = opts;
+      const telegramChatId = String(chatId);
+
+      if (allowedUserIds.size > 0 && !allowedUserIds.has(senderId)) {
+        await reply("You are not authorized to use this bot.");
+        return;
+      }
+
+      const currentConfig = await getConfig(agentId);
+      if (currentConfig && !currentConfig.ownerChatId) {
+        await db
+          .update(agentTelegramConfigs)
+          .set({ ownerChatId: telegramChatId, updatedAt: new Date() })
+          .where(eq(agentTelegramConfigs.id, currentConfig.id));
+      }
+
+      const instance = activeBots.get(agentId);
+      if (instance) {
+        instance.lastMessageAt = new Date();
+        instance.messageCount++;
+      }
+
+      try {
+        await bot.api.sendChatAction(chatId, "typing");
+
+        // Resolve file info and download
+        const telegramFile = await bot.api.getFile(fileId);
+        const tgFilePath = telegramFile.file_path;
+
+        let messageContent = captionText;
+
+        if (tgFilePath) {
+          const mediaDir = await resolveAgentMediaDir(db, agentId);
+          const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const destPath = path.join(mediaDir, safeFileName);
+
+          try {
+            await downloadTelegramFile(config.botToken, tgFilePath, destPath);
+
+            const textContent = await maybeExtractTextContent(destPath, mimeType, fileSize);
+            if (textContent) {
+              // Inject text file content inline
+              const header = captionText
+                ? `${captionText}\n\n[Attached file: ${safeFileName}]\n\`\`\`\n`
+                : `[Attached file: ${safeFileName}]\n\`\`\`\n`;
+              messageContent = `${header}${textContent}\n\`\`\``;
+            } else {
+              // Reference saved file path for images and binary docs
+              const fileRef = `[Attached file saved to: ${destPath}]`;
+              messageContent = captionText ? `${captionText}\n\n${fileRef}` : fileRef;
+            }
+
+            logger.info({ agentId, destPath, mimeType }, "telegram: media file downloaded");
+          } catch (downloadErr) {
+            logger.warn({ err: downloadErr, agentId, fileName }, "telegram: media download failed");
+            messageContent = captionText
+              ? `${captionText}\n\n[Attached file: ${safeFileName} (download failed)]`
+              : `[Attached file: ${safeFileName} (download failed)]`;
+          }
+        }
+
+        const session = await findOrCreateTelegramSession({
+          agentId,
+          companyId,
+          telegramChatId,
+        });
+
+        const result = await chat.createMessage({
+          agentId,
+          sessionId: session.id,
+          content: messageContent,
+          actor: { actorType: "system", actorId: `telegram:${senderId}` },
+        });
+
+        if (!result.runId) {
+          await reply("The agent could not be woken. Please try again later.");
+          return;
+        }
+
+        await streamRunToTelegram(bot, chatId, result.runId, agentId);
+      } catch (err) {
+        logger.error({ err, agentId, telegramChatId }, "telegram: failed to process media message");
+        try {
+          await reply("Something went wrong processing your file. Please try again.");
+        } catch {
+          // ignore send failure
+        }
+      }
+    }
+
+    bot.on("message:photo", async (ctx) => {
+      // photo is an array of PhotoSize; last entry is the highest resolution
+      const photo = ctx.message.photo;
+      const largest = photo[photo.length - 1];
+      if (!largest) return;
+
+      await processTelegramMedia({
+        chatId: ctx.chat.id,
+        senderId: String(ctx.from.id),
+        fileId: largest.file_id,
+        fileName: `photo_${largest.file_unique_id}.jpg`,
+        mimeType: "image/jpeg",
+        fileSize: largest.file_size,
+        captionText: ctx.message.caption ?? "",
+        reply: (text) => ctx.reply(text),
+      });
+    });
+
+    bot.on("message:document", async (ctx) => {
+      const doc = ctx.message.document;
+      await processTelegramMedia({
+        chatId: ctx.chat.id,
+        senderId: String(ctx.from.id),
+        fileId: doc.file_id,
+        fileName: doc.file_name ?? `document_${doc.file_unique_id}`,
+        mimeType: doc.mime_type,
+        fileSize: doc.file_size,
+        captionText: ctx.message.caption ?? "",
+        reply: (text) => ctx.reply(text),
+      });
     });
 
     bot.catch((err) => {
