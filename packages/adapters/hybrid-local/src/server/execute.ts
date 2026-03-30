@@ -32,7 +32,10 @@ function isLocalResourceError(error: unknown): boolean {
     lower.includes("502") ||
     lower.includes("out of memory") ||
     lower.includes("gpu") ||
-    lower.includes("no model loaded")
+    lower.includes("no model loaded") ||
+    lower.includes("context size has been exceeded") ||
+    lower.includes("context length exceeded") ||
+    lower.includes("maximum context length")
   );
 }
 
