@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   Bot,
   Code,
+  Cpu,
   Gem,
   MousePointer2,
   Sparkles,
@@ -31,7 +32,8 @@ type AdvancedAdapterType =
   | "pi_local"
   | "cursor"
   | "openclaw_gateway"
-  | "hermes_local";
+  | "hermes_local"
+  | "ollama_local";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
@@ -89,6 +91,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenClaw Gateway",
     icon: Bot,
     desc: "Invoke OpenClaw via gateway protocol",
+  },
+  {
+    value: "ollama_local",
+    label: "Ollama (local)",
+    icon: Cpu,
+    desc: "Free local LLM agent",
   },
 ];
 

@@ -3,6 +3,7 @@ import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
 import { geminiLocalUIAdapter } from "./gemini-local";
+import { ollamaLocalUIAdapter } from "./ollama-local";
 import { hermesLocalUIAdapter } from "./hermes-local";
 import { openCodeLocalUIAdapter } from "./opencode-local";
 import { piLocalUIAdapter } from "./pi-local";
@@ -14,6 +15,7 @@ const uiAdapters: UIAdapterModule[] = [
   claudeLocalUIAdapter,
   codexLocalUIAdapter,
   geminiLocalUIAdapter,
+  ollamaLocalUIAdapter,
   hermesLocalUIAdapter,
   openCodeLocalUIAdapter,
   piLocalUIAdapter,
