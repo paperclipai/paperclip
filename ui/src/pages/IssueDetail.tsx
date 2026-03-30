@@ -540,12 +540,18 @@ export function IssueDetail() {
         queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
       }
     },
+    onError: (err) => {
+      pushToast({ title: "Failed to mark as read", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
+    },
   });
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: () => {
       invalidateIssue();
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to update issue", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
     },
   });
 
