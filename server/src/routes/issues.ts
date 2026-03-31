@@ -932,13 +932,70 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const actor = getActorInfo(req);
     const isClosed = existing.status === "done" || existing.status === "cancelled";
-    const { comment: commentBody, reopen: reopenRequested, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const {
+      comment: commentBody,
+      reopen: reopenRequested,
+      interrupt: interruptRequested,
+      hiddenAt: hiddenAtRaw,
+      ...updateFields
+    } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
+    let interruptedRunId: string | null = null;
+    if (interruptRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+        return;
+      }
+
+      let runToInterrupt = existing.executionRunId
+        ? await heartbeat.getRun(existing.executionRunId)
+        : null;
+
+      if (
+        (!runToInterrupt || runToInterrupt.status !== "running") &&
+        existing.assigneeAgentId
+      ) {
+        const activeRun = await heartbeat.getActiveRunForAgent(existing.assigneeAgentId);
+        const activeIssueId =
+          activeRun &&
+          activeRun.contextSnapshot &&
+          typeof activeRun.contextSnapshot === "object" &&
+          typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (activeRun && activeRun.status === "running" && activeIssueId === existing.id) {
+          runToInterrupt = activeRun;
+        }
+      }
+
+      if (runToInterrupt && runToInterrupt.status === "running") {
+        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        if (cancelled) {
+          interruptedRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: existing.id,
+            },
+          });
+        }
+      }
+    }
+
     let issue;
     try {
       issue = await svc.update(id, updateFields);
@@ -1007,6 +1064,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
@@ -1033,6 +1091,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
           identifier: issue.identifier,
           issueTitle: issue.title,
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
