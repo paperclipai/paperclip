@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "@/lib/router";
 import { ChevronDown, ChevronRight, MoreHorizontal, Play, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
@@ -63,6 +64,7 @@ function nextRoutineStatus(currentStatus: string, enabled: boolean) {
 }
 
 export function Routines() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -87,8 +89,8 @@ export function Routines() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.routines") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: routines, isLoading, error } = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),

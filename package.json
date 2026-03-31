@@ -49,5 +49,10 @@
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     }
+  },
+  "dependencies": {
+    "i18next": "^26.0.2",
+    "i18next-browser-languagedetector": "^8.2.1",
+    "react-i18next": "^17.0.1"
   }
 }
