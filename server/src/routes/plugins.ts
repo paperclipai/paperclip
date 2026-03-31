@@ -552,6 +552,18 @@ export function pluginRoutes(
 
     assertCompanyAccess(req, runContext.companyId);
 
+    // For agent callers, enforce that runContext matches authenticated identity
+    if (req.actor.type === "agent") {
+      if (req.actor.agentId && runContext.agentId !== req.actor.agentId) {
+        res.status(403).json({ error: "runContext.agentId must match authenticated agent" });
+        return;
+      }
+      if (req.actor.runId && runContext.runId !== req.actor.runId) {
+        res.status(403).json({ error: "runContext.runId must match authenticated run" });
+        return;
+      }
+    }
+
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
     if (!registeredTool) {
