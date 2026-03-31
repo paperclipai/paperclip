@@ -15,7 +15,7 @@ import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
 // Layout constants
 const CARD_W = 200;
-const CARD_H = 100;
+const CARD_H = 128;
 const GAP_X = 32;
 const GAP_Y = 80;
 const PADDING = 60;
@@ -401,7 +401,7 @@ export function OrgChart() {
                 left: node.x,
                 top: node.y,
                 width: CARD_W,
-                minHeight: CARD_H,
+                height: CARD_H,
               }}
               onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
             >
