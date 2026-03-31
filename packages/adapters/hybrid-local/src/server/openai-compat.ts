@@ -9,6 +9,7 @@ const MAX_TOOLS_PER_TURN = 5;
 const MAX_MESSAGE_HISTORY = 1000;
 const MAX_TOTAL_TOKENS = 100_000; // Cap across all 30 turns
 const BASH_TIMEOUT_MS = 120_000;
+const MAX_TOOL_OUTPUT_CHARS = 8_000; // ~2k tokens — prevents context overflow from large ls/cat outputs
 
 // Commands that are too dangerous to execute via local model
 const DANGEROUS_PATTERNS = [
@@ -361,10 +362,15 @@ export async function executeLocalModel(opts: {
         result = `ERROR: unknown tool "${toolCall.function.name}"`;
       }
 
+      // Guard: truncate large outputs to prevent context window overflow
+      const truncatedResult = result.length > MAX_TOOL_OUTPUT_CHARS
+        ? result.slice(0, MAX_TOOL_OUTPUT_CHARS) + `\n[output truncated: ${result.length} chars total]`
+        : result;
+
       toolResults.push({
         role: "tool",
         tool_call_id: toolCall.id,
-        content: result,
+        content: truncatedResult,
       });
     }
 
