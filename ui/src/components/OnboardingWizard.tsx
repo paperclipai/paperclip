@@ -382,6 +382,18 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    const companyId = await ensureCompanyCreated();
+    if (companyId) {
+      setStep(2);
+    }
+  }
+
+  async function ensureCompanyCreated(): Promise<string | null> {
+    if (createdCompanyId) return createdCompanyId;
+    if (!companyName.trim()) {
+      setError("Enter a company name before continuing.");
+      return null;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -408,13 +420,39 @@ export function OnboardingWizard() {
       } else {
         setCreatedCompanyGoalId(null);
       }
-
-      setStep(2);
+      return company.id;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
+      return null;
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleStepTabClick(targetStep: Step) {
+    if (loading) return;
+    if (targetStep <= step) {
+      setError(null);
+      setStep(targetStep);
+      return;
+    }
+
+    if (targetStep >= 2) {
+      const companyId = await ensureCompanyCreated();
+      if (!companyId) {
+        setStep(1);
+        return;
+      }
+    }
+
+    if (targetStep >= 3 && !createdAgentId) {
+      setError("Create your first agent before continuing.");
+      setStep(2);
+      return;
+    }
+
+    setError(null);
+    setStep(targetStep);
   }
 
   async function handleStep2Next() {
@@ -659,9 +697,11 @@ export function OnboardingWizard() {
                   <button
                     key={s}
                     type="button"
-                    onClick={() => setStep(s)}
+                    onClick={() => void handleStepTabClick(s)}
+                    disabled={loading}
                     className={cn(
                       "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+                      loading && "cursor-not-allowed opacity-60",
                       s === step
                         ? "border-foreground text-foreground"
                         : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border"
