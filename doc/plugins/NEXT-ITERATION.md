@@ -1,66 +1,184 @@
 # Plugin System — Próxima Iteração
 
-## Gap Identificado (2026-03-31)
-
-**Status atual:**
-- 3 plugins production-ready (Playwright MCP, Ruflo Bridge, Skills Hub)
-- SDK: 131 testes unitários ✅
-- Playwright MCP: 28 testes unitários ✅
-- Ruflo Bridge + Skills Hub: **ZERO testes unitários** (apenas E2E lifecycle)
-
-**Problema:**
-- E2E lifecycle valida integração básica (install → run → uninstall)
-- Não valida lógica interna dos workers (tool registration, entity operations, error handling)
-- Se um worker quebrar a lógica, só descobrimos em produção
+**Last Updated:** 2026-03-31 20:30 UTC
 
 ---
 
-## Oportunidade de Alto ROI
+## ✅ Concluído Nesta Sessão
 
-**Adicionar testes unitários para Ruflo Bridge + Skills Hub**
+### Testes Unitários de Worker — COMPLETO
 
-### Ruflo Bridge (9 tools)
-Tools para testar:
-1. `agent_spawn` — valida schema, entity upsert, response format
-2. `swarm_init` — valida schema, entity upsert, response format
-3. `memory_store` — valida schema, entity upsert, tags
-4. `memory_search` — valida query, threshold, namespace
-5. `agent_status` — valida agent lookup, status response
-6. `agent_terminate` — valida termination flow
-7. `agent_list` — valida filtering, pagination
-8. `swarm_status` — valida swarm lookup
-9. `swarm_shutdown` — valida shutdown flow
+**Status anterior (documento desatualizado):**
+- Playwright MCP: 28 testes unitários ✅
+- Ruflo Bridge + Skills Hub: **ZERO testes unitários** ❌
 
-**Abordagem:**
-- Mock `ctx` (logger, entities, tools, assets)
-- Testar cada tool handler isoladamente
-- Validar schemas de input/output
-- Testar error paths (missing params, invalid data)
+**Status atual (2026-03-31 20:30 UTC):**
+| Plugin | Testes | Arquivo | Status |
+|--------|--------|---------|--------|
+| Playwright MCP | 28 testes | `src/__tests__/worker.test.ts` | ✅ Completa |
+| Ruflo Bridge | 47 testes | `src/__tests__/worker.test.ts` | ✅ Completa |
+| Skills Hub | 37 testes | `src/__tests__/worker.test.ts` | ✅ Completa |
+| **Total** | **112 testes** | 3 arquivos | ✅ **Completa** |
 
-**Esforço estimado:** 2-3 horas, ~100 testes
+**Cobertura por plugin:**
 
-### Skills Hub (12 tools)
-Tools para testar:
-1. `skill_list` — list filtering, category search
-2. `skill_view` — skill loading, file access
-3. `skill_create` — creation flow, validation
-4. `skill_patch` — patch operations, replace_all
-5. `skill_delete` — deletion flow
-6. `skill_search` — search queries, relevance
-7. `skill_validate` — validation logic
-8. `skill_export` — export format
-9. `skill_import` — import validation
-10. `skill_template_list` — template discovery
-11. `skill_template_apply` — template application
-12. `skill_metadata` — metadata extraction
+#### Ruflo Bridge (47 testes)
+- Manifest validation (4 testes)
+- `agent_spawn` schema (7 testes)
+- `swarm_init` schema (4 testes)
+- `memory_store` schema (5 testes)
+- `memory_search` schema (4 testes)
+- `workflow_create` schema (4 testes)
+- `workflow_execute` schema (4 testes)
+- `coordination_orchestrate` schema (4 testes)
+- `autopilot_status` schema (3 testes)
+- `hooks_route` schema (3 testes)
 
-**Abordagem:**
-- Mock filesystem operations
-- Mock skill registry
-- Testar cada tool handler
-- Validar error handling
+#### Skills Hub (37 testes)
+- Manifest validation (4 testes)
+- `search_skills` schema (3 testes)
+- `get_skill` schema (3 testes)
+- `get_trending` schema (2 testes)
+- `get_top_rated` schema (2 testes)
+- `get_rising` schema (2 testes)
+- `get_categories` schema (2 testes)
+- `get_masters` schema (2 testes)
+- `get_stats` schema (2 testes)
+- `submit_skill` schema (3 testes)
+- `scan_security` schema (2 testes)
+- `get_workflows` schema (2 testes)
+- `get_landing` schema (2 testes)
 
-**Esforço estimado:** 3-4 horas, ~150 testes
+**Validação:**
+```bash
+pnpm test -- plugin-unit
+# → 112 testes passando (28 + 47 + 37)
+# → Duration: ~2s
+```
+
+---
+
+## 🎯 Próximas Oportunidades de Alto ROI
+
+### 1. Testes de Integração com Mock de Contexto (PRIORITÁRIO)
+
+**Gap atual:**
+- Testes atuais validam apenas schemas de manifesto
+- Não validam execução real dos workers com contexto mockado
+- Não testam error handling, entity operations, ou tool registration dinâmica
+
+**Oportunidade:**
+Adicionar testes de integração que mockam o `PluginContext` e validam:
+- Tool registration no boot do worker
+- Execução de handlers com inputs válidos/inválidos
+- Entity upsert/find operations
+- Error handling e fallbacks
+- Response formatting
+
+**Esforço estimado:** 4-6 horas, ~50-80 testes de integração
+
+**Padrão sugerido:**
+```typescript
+// Exemplo: ruflo-bridge/src/__tests__/integration.test.ts
+import { createMockContext } from '@paperclipai/plugin-sdk/testing';
+
+describe('Ruflo Bridge Integration', () => {
+  it('should register all 9 tools on boot', async () => {
+    const ctx = createMockContext();
+    const worker = await import('../worker.js');
+    await worker.default(ctx);
+    
+    expect(ctx.tools.register).toHaveBeenCalledTimes(9);
+    expect(ctx.tools.register).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'agent_spawn' })
+    );
+  });
+
+  it('should execute agent_spawn with valid params', async () => {
+    const ctx = createMockContext({
+      entities: { upsert: vi.fn().mockResolvedValue({ id: 'agent-1' }) }
+    });
+    
+    const result = await executeTool(ctx, 'agent_spawn', {
+      agentType: 'coder',
+      task: 'Fix bug #123'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(ctx.entities.upsert).toHaveBeenCalledWith(
+      'agent',
+      expect.objectContaining({ type: 'coder' })
+    );
+  });
+});
+```
+
+---
+
+### 2. Playwright MCP — Testes de Execução Real de Browser
+
+**Gap atual:**
+- Testes validam apenas schema do manifesto
+- Não executam browser real (Playwright não instalado no CI)
+
+**Oportunidade:**
+Adicionar testes E2E opcionais (skip no CI, run local) que:
+- Navegam para página de teste local
+- Validam click, fill, screenshot
+- Testam wait conditions e timeouts
+
+**Requisitos:**
+- Playwright instalado (`pnpm exec playwright install chromium`)
+- Servidor local de teste (Vite ou Express estático)
+
+**Esforço estimado:** 2-3 horas, ~15-20 testes E2E
+
+---
+
+### 3. Documentação de Exemplos de Uso por Tool
+
+**Gap atual:**
+- READMEs dos plugins listam tools mas não mostram exemplos completos
+- Usuário precisa adivinhar como combinar múltiplas tools
+
+**Oportunidade:**
+Adicionar seção "Recipes" em cada README:
+- Playwright MCP: "Login automation", "Scrape product data", "Visual regression"
+- Ruflo Bridge: "Spawn coder agent", "Initialize swarm", "Store/retrieve memory"
+- Skills Hub: "Search skills by category", "Install skill", "Validate skill"
+
+**Esforço estimado:** 1-2 horas, 3-6 recipes por plugin
+
+---
+
+### 4. Plugin de Exemplo "Kitchen Sink" — Completa
+
+**Gap atual:**
+- `packages/plugins/examples/plugin-kitchen-sink-example/` existe mas pode estar incompleto
+
+**Oportunidade:**
+Transformar em referência completa:
+- Todas as features do SDK demonstradas
+- UI component examples
+- Tool registration dinâmica
+- Entity operations
+- Asset handling
+- Error boundaries
+
+**Esforço estimado:** 3-4 horas
+
+---
+
+## Critérios de Priorização
+
+| Critério | Peso | Opção 1 (Integração) | Opção 2 (Playwright E2E) | Opção 3 (Docs) |
+|----------|------|---------------------|-------------------------|----------------|
+| Impacto na confiabilidade | 3x | Alto | Médio | Baixo |
+| Esforço | 2x | Médio (4-6h) | Baixo (2-3h) | Baixo (1-2h) |
+| Risco de regressão | 2x | Alto (pega bugs cedo) | Médio | Baixo |
+| Valor para devs externos | 1x | Médio | Baixo | Alto |
+
+**Recomendação:** Opção 1 (testes de integração) → maior ROI em confiabilidade.
 
 ---
 
