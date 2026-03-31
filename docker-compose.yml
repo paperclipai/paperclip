@@ -33,9 +33,9 @@ services:
       CLAUDE_CONFIG_DIR: /claude-config
     volumes:
       - paperclip-data:/paperclip
-      - claude-bin:/claude-bin:ro
+      - paperclip-claude-adi6ix_claude-bin:/claude-bin:ro
       # Mount the credentials volume read-only — claude reads tokens from here
-      - claude-config:/claude-config:ro
+      - paperclip-claude-adi6ix_claude-config:/claude-config:ro
     depends_on:
       db:
         condition: service_healthy
