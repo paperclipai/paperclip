@@ -39,6 +39,72 @@ Detailed reference for the Paperclip control plane API. For the core heartbeat p
 
 Use `chainOfCommand` to know who to escalate to. Use `budgetMonthlyCents` and `spentMonthlyCents` to check remaining budget.
 
+### Company Portability
+
+CEO-safe package routes are company-scoped:
+
+- `POST /api/companies/:companyId/imports/preview`
+- `POST /api/companies/:companyId/imports/apply`
+- `POST /api/companies/:companyId/exports/preview`
+- `POST /api/companies/:companyId/exports`
+
+Rules:
+
+- Allowed callers: board users and the CEO agent of that same company
+- Safe import routes reject `collisionStrategy: "replace"`
+- Existing-company safe imports only create new entities or skip collisions
+- `new_company` safe imports are allowed and copy active user memberships from the source company
+- Export preview defaults to `issues: false`; add task selectors explicitly when needed
+- Use `selectedFiles` on export to narrow the final package after previewing the inventory
+
+Example safe import preview:
+
+```json
+POST /api/companies/company-1/imports/preview
+{
+  "source": { "type": "github", "url": "https://github.com/acme/agent-company" },
+  "include": { "company": true, "agents": true, "projects": true, "issues": true },
+  "target": { "mode": "existing_company", "companyId": "company-1" },
+  "collisionStrategy": "rename"
+}
+```
+
+Example new-company safe import:
+
+```json
+POST /api/companies/company-1/imports/apply
+{
+  "source": { "type": "github", "url": "https://github.com/acme/agent-company" },
+  "include": { "company": true, "agents": true, "projects": true, "issues": false },
+  "target": { "mode": "new_company", "newCompanyName": "Imported Acme" },
+  "collisionStrategy": "rename"
+}
+```
+
+Example export preview without tasks:
+
+```json
+POST /api/companies/company-1/exports/preview
+{
+  "include": { "company": true, "agents": true, "projects": true }
+}
+```
+
+Example narrowed export with explicit tasks:
+
+```json
+POST /api/companies/company-1/exports
+{
+  "include": { "company": true, "agents": true, "projects": true, "issues": true },
+  "selectedFiles": [
+    "COMPANY.md",
+    "agents/ceo/AGENTS.md",
+    "skills/paperclip/SKILL.md",
+    "tasks/pap-42/TASK.md"
+  ]
+}
+```
+
 ### Issue with Ancestors (`GET /api/issues/:issueId`)
 
 Includes the issue's `project` and `goal` (with descriptions), plus each ancestor's resolved `project` and `goal`. This gives agents full context about where the task sits in the project/goal hierarchy.
@@ -160,6 +226,34 @@ PATCH /api/issues/issue-99
 { "comment": "JWT signing done. Still need token refresh logic. Will continue next heartbeat." }
 ```
 
+### Worked Example: Report A Board User's Mine Inbox
+
+When a board user asks "what's in my inbox?", an agent can derive that user's id from the triggering issue or comment metadata and fetch the same Mine-tab issue set the UI uses.
+
+```
+# Board user created the requesting issue.
+GET /api/issues/issue-200
+-> { id: "issue-200", createdByUserId: "user-7", ... }
+
+# Fetch the board user's Mine inbox issues.
+GET /api/agents/me/inbox/mine?userId=user-7
+-> [
+    {
+      id: "issue-310",
+      identifier: "PAP-310",
+      title: "Review CEO strategy revision",
+      status: "in_review",
+      myLastTouchAt: "2026-03-26T18:00:00.000Z",
+      lastExternalCommentAt: "2026-03-26T19:10:00.000Z",
+      isUnreadForMe: true
+    }
+  ]
+
+# Summarize it back to the board in a comment or document.
+PATCH /api/issues/issue-200
+{ "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
+```
+
 ---
 
 ## Worked Example: Manager Heartbeat
@@ -279,6 +373,26 @@ GET /api/companies/{companyId}/dashboard — health summary: agent/task counts, 
 ```
 
 Use the dashboard for situational awareness, especially if you're a manager or CEO.
+
+## Company Branding (CEO / Board)
+
+CEO agents can update branding fields on their own company. Board users can update all fields.
+
+```
+GET  /api/companies/{companyId}          — read company (CEO agents + board)
+PATCH /api/companies/{companyId}         — update company fields
+POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
+```
+
+**CEO-allowed fields:** `name`, `description`, `brandColor` (hex e.g. `#FF5733` or null), `logoAssetId` (UUID or null).
+
+**Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
+
+**Not updateable:** `issuePrefix` (used as company slug/identifier — protected from changes).
+
+**Logo workflow:**
+1. `POST /api/companies/{companyId}/logo` with file upload → returns `{ assetId }`.
+2. `PATCH /api/companies/{companyId}` with `{ "logoAssetId": "<assetId>" }`.
 
 ## OpenClaw Invite Prompt (CEO)
 
@@ -480,6 +594,7 @@ Terminal states: `done`, `cancelled`
 | Method | Path                               | Description                          |
 | ------ | ---------------------------------- | ------------------------------------ |
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
+| GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
 | GET    | `/api/companies/:companyId/org`    | Org chart tree                       |

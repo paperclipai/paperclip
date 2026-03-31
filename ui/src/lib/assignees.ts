@@ -9,10 +9,41 @@ export interface AssigneeOption {
   searchText?: string;
 }
 
+interface CommentAssigneeSuggestionInput {
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+}
+
+interface CommentAssigneeSuggestionComment {
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+}
+
 export function assigneeValueFromSelection(selection: Partial<AssigneeSelection>): string {
   if (selection.assigneeAgentId) return `agent:${selection.assigneeAgentId}`;
   if (selection.assigneeUserId) return `user:${selection.assigneeUserId}`;
   return "";
+}
+
+export function suggestedCommentAssigneeValue(
+  issue: CommentAssigneeSuggestionInput,
+  comments: CommentAssigneeSuggestionComment[] | null | undefined,
+  currentUserId: string | null | undefined,
+  currentAgentId?: string | null | undefined,
+): string {
+  if (comments && comments.length > 0 && (currentUserId || currentAgentId)) {
+    for (let i = comments.length - 1; i >= 0; i--) {
+      const comment = comments[i];
+      if (comment.authorAgentId && comment.authorAgentId !== currentAgentId) {
+        return assigneeValueFromSelection({ assigneeAgentId: comment.authorAgentId });
+      }
+      if (comment.authorUserId && comment.authorUserId !== currentUserId) {
+        return assigneeValueFromSelection({ assigneeUserId: comment.authorUserId });
+      }
+    }
+  }
+
+  return assigneeValueFromSelection(issue);
 }
 
 export function parseAssigneeValue(value: string): AssigneeSelection {

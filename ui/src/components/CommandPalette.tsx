@@ -75,11 +75,15 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open,
   });
 
-  const { data: projects = [] } = useQuery({
+  const { data: allProjects = [] } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
   });
+  const projects = useMemo(
+    () => allProjects.filter((p) => !p.archivedAt),
+    [allProjects],
+  );
 
   function go(path: string) {
     setOpen(false);

@@ -18,7 +18,8 @@ function parseOrigin(value: string | undefined) {
 
 function trustedOriginsForRequest(req: Request) {
   const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const host = req.header("host")?.trim();
+  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = forwardedHost || req.header("host")?.trim();
   if (host) {
     origins.add(`http://${host}`.toLowerCase());
     origins.add(`https://${host}`.toLowerCase());
@@ -49,10 +50,9 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    // Local-trusted mode uses an implicit board actor for localhost-only development.
-    // In this mode, origin/referer headers can be omitted by some clients for multipart
-    // uploads; do not block those mutations.
-    if (req.actor.source === "local_implicit") {
+    // Local-trusted mode and board bearer keys are not browser-session requests.
+    // In these modes, origin/referer headers can be absent; do not block those mutations.
+    if (req.actor.source === "local_implicit" || req.actor.source === "board_key") {
       next();
       return;
     }

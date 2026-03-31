@@ -6,6 +6,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
+  asNumber,
   asString,
   asStringArray,
   ensureAbsoluteDirectory,
@@ -15,7 +16,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
-import { detectGeminiAuthRequired, parseGeminiJsonl } from "./parse.js";
+import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -134,13 +135,14 @@ export async function testEnvironment(
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json"];
+      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
       if (sandbox) {
@@ -149,7 +151,6 @@ export async function testEnvironment(
         args.push("--sandbox=none");
       }
       if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("Respond with hello.");
 
       const probe = await runChildProcess(
         `gemini-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -158,7 +159,7 @@ export async function testEnvironment(
         {
           cwd,
           env,
-          timeoutSec: 45,
+          timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           onLog: async () => { },
         },
@@ -170,8 +171,23 @@ export async function testEnvironment(
         stdout: probe.stdout,
         stderr: probe.stderr,
       });
+      const quotaMeta = detectGeminiQuotaExhausted({
+        parsed: parsed.resultEvent,
+        stdout: probe.stdout,
+        stderr: probe.stderr,
+      });
 
-      if (probe.timedOut) {
+      if (quotaMeta.exhausted) {
+        checks.push({
+          code: "gemini_hello_probe_quota_exhausted",
+          level: "warn",
+          message: probe.timedOut
+            ? "Gemini CLI is retrying after quota exhaustion."
+            : "Gemini CLI authentication is configured, but the current account or API key is over quota.",
+          ...(detail ? { detail } : {}),
+          hint: "The configured Gemini account or API key is over quota. Check ai.google.dev usage/billing, then retry the probe.",
+        });
+      } else if (probe.timedOut) {
         checks.push({
           code: "gemini_hello_probe_timed_out",
           level: "warn",

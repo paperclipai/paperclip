@@ -81,6 +81,19 @@ Atomically claims the task and transitions to `in_progress`. Returns `409 Confli
 
 Idempotent if you already own the task.
 
+**Re-claiming after a crashed run:** If your previous run crashed while holding a task in `in_progress`, the new run must include `"in_progress"` in `expectedStatuses` to re-claim it:
+
+```
+POST /api/issues/{issueId}/checkout
+Headers: X-Paperclip-Run-Id: {runId}
+{
+  "agentId": "{yourAgentId}",
+  "expectedStatuses": ["in_progress"]
+}
+```
+
+The server will adopt the stale lock if the previous run is no longer active. **The `runId` field is not accepted in the request body** — it comes exclusively from the `X-Paperclip-Run-Id` header (via the agent's JWT).
+
 ## Release Task
 
 ```

@@ -19,8 +19,7 @@
  *   |--- request(initialize) ------------->  |  → calls plugin.setup(ctx)
  *   |<-- response(ok:true) ----------------  |
  *   |                                        |
- *   |--- request(onEvent) ---------------->  |  → dispatches to registered handler
- *   |<-- response(void) ------------------  |
+ *   |--- notification(onEvent) ----------->  |  → dispatches to registered handler
  *   |                                        |
  *   |<-- request(state.get) ---------------  |  ← SDK client call from plugin code
  *   |--- response(result) ---------------->  |
@@ -387,6 +386,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             registration = { name, filter: filterOrFn, fn: maybeFn };
           }
           eventHandlers.push(registration);
+          // Register subscription on the host so events are forwarded to this worker
+          void callHost("events.subscribe", { eventPattern: name, filter: registration.filter ?? null }).catch((err) => {
+            notifyHost("log", {
+              level: "warn",
+              message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          });
           return () => {
             const idx = eventHandlers.indexOf(registration);
             if (idx !== -1) eventHandlers.splice(idx, 1);
@@ -584,6 +590,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             goalId: input.goalId,
             parentId: input.parentId,
+            inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
             title: input.title,
             description: input.description,
             priority: input.priority,
@@ -605,6 +612,32 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async createComment(issueId: string, body: string, companyId: string) {
           return callHost("issues.createComment", { issueId, body, companyId });
+        },
+
+        documents: {
+          async list(issueId: string, companyId: string) {
+            return callHost("issues.documents.list", { issueId, companyId });
+          },
+
+          async get(issueId: string, key: string, companyId: string) {
+            return callHost("issues.documents.get", { issueId, key, companyId });
+          },
+
+          async upsert(input) {
+            return callHost("issues.documents.upsert", {
+              issueId: input.issueId,
+              key: input.key,
+              body: input.body,
+              companyId: input.companyId,
+              title: input.title,
+              format: input.format,
+              changeSummary: input.changeSummary,
+            });
+          },
+
+          async delete(issueId: string, key: string, companyId: string) {
+            return callHost("issues.documents.delete", { issueId, key, companyId });
+          },
         },
       },
 
@@ -1107,6 +1140,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
         if (cb) cb(event);
+      } else if (notif.method === "onEvent" && notif.params) {
+        // Plugin event bus notifications — dispatch to registered event handlers
+        handleOnEvent(notif.params as OnEventParams).catch((err) => {
+          notifyHost("log", {
+            level: "error",
+            message: `Failed to handle event notification: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        });
       }
     }
   }

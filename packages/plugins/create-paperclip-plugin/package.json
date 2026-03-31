@@ -1,6 +1,16 @@
 {
   "name": "@paperclipai/create-paperclip-plugin",
   "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/create-paperclip-plugin"
+  },
   "type": "module",
   "bin": {
     "create-paperclip-plugin": "./dist/index.js"

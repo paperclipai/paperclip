@@ -3,8 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { normalizeAgentUrlKey, type AgentStatus } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { budgetService } from "./budgets.js";
 
 export function dashboardService(db: Db) {
+  const budgets = budgetService(db);
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -118,6 +120,7 @@ export function dashboardService(db: Db) {
         company.budgetMonthlyCents > 0
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
+      const budgetOverview = await budgets.overview(companyId);
 
       const tasksByAgent = new Map<string, typeof inProgressTasks>();
       for (const task of inProgressTasks) {
@@ -183,6 +186,12 @@ export function dashboardService(db: Db) {
           idleEngineers,
           queuedTasks,
           engineers,
+        },
+        budgets: {
+          activeIncidents: budgetOverview.activeIncidents.length,
+          pendingApprovals: budgetOverview.pendingApprovalCount,
+          pausedAgents: budgetOverview.pausedAgentCount,
+          pausedProjects: budgetOverview.pausedProjectCount,
         },
       };
     },

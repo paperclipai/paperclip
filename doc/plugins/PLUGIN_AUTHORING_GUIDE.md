@@ -108,6 +108,7 @@ Mount surfaces currently wired in the host include:
 - `detailTab`
 - `taskDetailView`
 - `projectSidebarItem`
+- `globalToolbarButton`
 - `toolbarButton`
 - `contextMenuItem`
 - `commentAnnotation`

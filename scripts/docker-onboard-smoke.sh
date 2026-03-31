@@ -7,6 +7,8 @@ HOST_PORT="${HOST_PORT:-3131}"
 PAPERCLIPAI_VERSION="${PAPERCLIPAI_VERSION:-latest}"
 DATA_DIR="${DATA_DIR:-$REPO_ROOT/data/docker-onboard-smoke}"
 HOST_UID="${HOST_UID:-$(id -u)}"
+SMOKE_DETACH="${SMOKE_DETACH:-false}"
+SMOKE_METADATA_FILE="${SMOKE_METADATA_FILE:-}"
 PAPERCLIP_DEPLOYMENT_MODE="${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
 PAPERCLIP_DEPLOYMENT_EXPOSURE="${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
 PAPERCLIP_PUBLIC_URL="${PAPERCLIP_PUBLIC_URL:-http://localhost:${HOST_PORT}}"
@@ -18,6 +20,7 @@ CONTAINER_NAME="${IMAGE_NAME//[^a-zA-Z0-9_.-]/-}"
 LOG_PID=""
 COOKIE_JAR=""
 TMP_DIR=""
+PRESERVE_CONTAINER_ON_EXIT="false"
 
 mkdir -p "$DATA_DIR"
 
@@ -25,13 +28,21 @@ cleanup() {
   if [[ -n "$LOG_PID" ]]; then
     kill "$LOG_PID" >/dev/null 2>&1 || true
   fi
-  docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  if [[ "$PRESERVE_CONTAINER_ON_EXIT" != "true" ]]; then
+    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
     rm -rf "$TMP_DIR"
   fi
 }
 
 trap cleanup EXIT INT TERM
+
+container_is_running() {
+  local running
+  running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  [[ "$running" == "true" ]]
+}
 
 wait_for_http() {
   local url="$1"
@@ -42,9 +53,34 @@ wait_for_http() {
     if curl -fsS "$url" >/dev/null 2>&1; then
       return 0
     fi
+    if ! container_is_running; then
+      echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before $url became ready" >&2
+      docker logs "$CONTAINER_NAME" >&2 || true
+      return 1
+    fi
     sleep "$sleep_seconds"
   done
+  if ! container_is_running; then
+    echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before readiness check completed" >&2
+    docker logs "$CONTAINER_NAME" >&2 || true
+  fi
   return 1
+}
+
+write_metadata_file() {
+  if [[ -z "$SMOKE_METADATA_FILE" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$SMOKE_METADATA_FILE")"
+  {
+    printf 'SMOKE_BASE_URL=%q\n' "$PAPERCLIP_PUBLIC_URL"
+    printf 'SMOKE_ADMIN_EMAIL=%q\n' "$SMOKE_ADMIN_EMAIL"
+    printf 'SMOKE_ADMIN_PASSWORD=%q\n' "$SMOKE_ADMIN_PASSWORD"
+    printf 'SMOKE_CONTAINER_NAME=%q\n' "$CONTAINER_NAME"
+    printf 'SMOKE_DATA_DIR=%q\n' "$DATA_DIR"
+    printf 'SMOKE_IMAGE_NAME=%q\n' "$IMAGE_NAME"
+    printf 'SMOKE_PAPERCLIPAI_VERSION=%q\n' "$PAPERCLIPAI_VERSION"
+  } >"$SMOKE_METADATA_FILE"
 }
 
 generate_bootstrap_invite_url() {
@@ -214,9 +250,12 @@ echo "==> Running onboard smoke container"
 echo "    UI should be reachable at: http://localhost:$HOST_PORT"
 echo "    Public URL: $PAPERCLIP_PUBLIC_URL"
 echo "    Smoke auto-bootstrap: $SMOKE_AUTO_BOOTSTRAP"
+echo "    Detached mode: $SMOKE_DETACH"
 echo "    Data dir: $DATA_DIR"
 echo "    Deployment: $PAPERCLIP_DEPLOYMENT_MODE/$PAPERCLIP_DEPLOYMENT_EXPOSURE"
-echo "    Live output: onboard banner and server logs stream in this terminal (Ctrl+C to stop)"
+if [[ "$SMOKE_DETACH" != "true" ]]; then
+  echo "    Live output: onboard banner and server logs stream in this terminal (Ctrl+C to stop)"
+fi
 
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
@@ -231,8 +270,10 @@ docker run -d --rm \
   -v "$DATA_DIR:/paperclip" \
   "$IMAGE_NAME" >/dev/null
 
-docker logs -f "$CONTAINER_NAME" &
-LOG_PID=$!
+if [[ "$SMOKE_DETACH" != "true" ]]; then
+  docker logs -f "$CONTAINER_NAME" &
+  LOG_PID=$!
+fi
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-onboard-smoke.XXXXXX")"
 COOKIE_JAR="$TMP_DIR/cookies.txt"
@@ -244,6 +285,19 @@ fi
 
 if [[ "$SMOKE_AUTO_BOOTSTRAP" == "true" && "$PAPERCLIP_DEPLOYMENT_MODE" == "authenticated" ]]; then
   auto_bootstrap_authenticated_smoke
+fi
+
+write_metadata_file
+
+if [[ "$SMOKE_DETACH" == "true" ]]; then
+  PRESERVE_CONTAINER_ON_EXIT="true"
+  echo "==> Smoke container ready for automation"
+  echo "    Smoke base URL: $PAPERCLIP_PUBLIC_URL"
+  echo "    Smoke admin credentials: $SMOKE_ADMIN_EMAIL / $SMOKE_ADMIN_PASSWORD"
+  if [[ -n "$SMOKE_METADATA_FILE" ]]; then
+    echo "    Smoke metadata file: $SMOKE_METADATA_FILE"
+  fi
+  exit 0
 fi
 
 wait "$LOG_PID"

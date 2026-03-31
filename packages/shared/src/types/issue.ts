@@ -1,7 +1,8 @@
-import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssueOriginKind, IssuePriority, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
-import type { IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+import type { IssueWorkProduct } from "./work-product.js";
 
 export interface IssueAncestorProject {
   id: string;
@@ -97,6 +98,7 @@ export interface Issue {
   id: string;
   companyId: string;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
   ancestors?: IssueAncestor[];
@@ -114,9 +116,14 @@ export interface Issue {
   createdByUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
+  originKind?: IssueOriginKind;
+  originId?: string | null;
+  originRunId?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  executionWorkspaceId: string | null;
+  executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -129,6 +136,8 @@ export interface Issue {
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
   goal?: Goal | null;
+  currentExecutionWorkspace?: ExecutionWorkspace | null;
+  workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;

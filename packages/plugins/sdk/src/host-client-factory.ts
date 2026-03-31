@@ -103,9 +103,10 @@ export interface HostServices {
     list(params: WorkerToHostMethods["entities.list"][0]): Promise<WorkerToHostMethods["entities.list"][1]>;
   };
 
-  /** Provides `events.emit`. */
+  /** Provides `events.emit` and `events.subscribe`. */
   events: {
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
+    subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
 
   /** Provides `http.fetch`. */
@@ -162,6 +163,14 @@ export interface HostServices {
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
+  };
+
+  /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
+  issueDocuments: {
+    list(params: WorkerToHostMethods["issues.documents.list"][0]): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
+    get(params: WorkerToHostMethods["issues.documents.get"][0]): Promise<WorkerToHostMethods["issues.documents.get"][1]>;
+    upsert(params: WorkerToHostMethods["issues.documents.upsert"][0]): Promise<WorkerToHostMethods["issues.documents.upsert"][1]>;
+    delete(params: WorkerToHostMethods["issues.documents.delete"][0]): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
   };
 
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
@@ -261,6 +270,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Events
   "events.emit": "events.emit",
+  "events.subscribe": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -295,6 +305,12 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.update": "issues.update",
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
+
+  // Issue Documents
+  "issues.documents.list": "issue.documents.read",
+  "issues.documents.get": "issue.documents.read",
+  "issues.documents.upsert": "issue.documents.write",
+  "issues.documents.delete": "issue.documents.write",
 
   // Agents
   "agents.list": "agents.read",
@@ -407,6 +423,9 @@ export function createHostClientHandlers(
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),
+    "events.subscribe": gated("events.subscribe", async (params) => {
+      return services.events.subscribe(params);
+    }),
 
     // HTTP
     "http.fetch": gated("http.fetch", async (params) => {
@@ -476,6 +495,20 @@ export function createHostClientHandlers(
     }),
     "issues.createComment": gated("issues.createComment", async (params) => {
       return services.issues.createComment(params);
+    }),
+
+    // Issue Documents
+    "issues.documents.list": gated("issues.documents.list", async (params) => {
+      return services.issueDocuments.list(params);
+    }),
+    "issues.documents.get": gated("issues.documents.get", async (params) => {
+      return services.issueDocuments.get(params);
+    }),
+    "issues.documents.upsert": gated("issues.documents.upsert", async (params) => {
+      return services.issueDocuments.upsert(params);
+    }),
+    "issues.documents.delete": gated("issues.documents.delete", async (params) => {
+      return services.issueDocuments.delete(params);
     }),
 
     // Agents

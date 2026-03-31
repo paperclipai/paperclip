@@ -207,6 +207,7 @@ The same set of values is used as **slot types** (where a component mounts) and 
 | `sidebarPanel` | Global | — |
 | `settingsPage` | Global | — |
 | `dashboardWidget` | Global | — |
+| `globalToolbarButton` | Global | — |
 | `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
 | `taskDetailView` | Entity | (task/issue context) |
 | `commentAnnotation` | Entity | `comment` |
@@ -253,9 +254,13 @@ A specialized slot rendered in the context of a task or issue detail view. Simil
 
 A link or small component rendered **once per project** under that project's row in the sidebar Projects list. Use this to add project-scoped navigation entries (e.g. "Files", "Linear Sync") that deep-link into a plugin detail tab: `/:company/projects/:projectRef?tab=plugin:<key>:<slotId>`. Receives `PluginProjectSidebarItemProps` with `context.companyId` set to the active company, `context.entityId` set to the project id, and `context.entityType` set to `"project"`. Use the optional `order` field in the manifest slot to control sort position. Requires the `ui.sidebar.register` capability.
 
+#### `globalToolbarButton`
+
+A button rendered in the global top bar (breadcrumb bar) that appears on every page. Use this for company-wide actions that are not scoped to a specific entity — for example, a universal search trigger, a global sync status indicator, or a floating action that applies across the whole workspace. Receives only `context.companyId` and `context.companyPrefix`; no entity context is available. Requires the `ui.action.register` capability.
+
 #### `toolbarButton`
 
-A button rendered in the toolbar of a host surface (e.g. project detail, issue detail). Use this for short-lived, contextual actions like triggering a sync, opening a picker, or running a quick command. The component can open a plugin-owned modal internally for confirmations or compact forms. Receives `context.companyId` set to the active company; entity context varies by host surface. Requires the `ui.action.register` capability.
+A button rendered in the toolbar of an entity page (e.g. project detail, issue detail). Use this for short-lived, contextual actions scoped to the current entity — like triggering a project sync, opening a picker, or running a quick command on that entity. The component can open a plugin-owned modal internally for confirmations or compact forms. Receives `context.companyId`, `context.entityId`, and `context.entityType`; declare `entityTypes` in the manifest to control which entity pages the button appears on. Requires the `ui.action.register` capability.
 
 #### `contextMenuItem`
 
@@ -481,7 +486,9 @@ Each slot type receives a typed props object with `context: PluginHostContext`. 
 | `sidebar` | `PluginSidebarProps` | — |
 | `settingsPage` | `PluginSettingsPageProps` | — |
 | `dashboardWidget` | `PluginWidgetProps` | — |
+| `globalToolbarButton` | `PluginGlobalToolbarButtonProps` | — |
 | `detailTab` | `PluginDetailTabProps` | `entityId: string`, `entityType: string` |
+| `toolbarButton` | `PluginToolbarButtonProps` | `entityId: string`, `entityType: string` |
 | `commentAnnotation` | `PluginCommentAnnotationProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
 | `commentContextMenuItem` | `PluginCommentContextMenuItemProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
 | `projectSidebarItem` | `PluginProjectSidebarItemProps` | `entityId: string`, `entityType: "project"` |
@@ -521,7 +528,7 @@ V1 does not provide a dedicated `modal` slot. Plugins can either:
 - declare concrete UI mount points in `ui.slots`
 - declare host-rendered entry points in `ui.launchers`
 
-Supported launcher placement zones currently mirror the major host surfaces such as `projectSidebarItem`, `toolbarButton`, `detailTab`, `settingsPage`, and `contextMenuItem`. Plugins may still open their own local modal from those entry points when needed.
+Supported launcher placement zones currently mirror the major host surfaces such as `projectSidebarItem`, `globalToolbarButton`, `toolbarButton`, `detailTab`, `settingsPage`, and `contextMenuItem`. Plugins may still open their own local modal from those entry points when needed.
 
 Declarative launcher example:
 
@@ -597,7 +604,14 @@ Use optional `order` in the slot to sort among other project sidebar items. See 
 
 ## Toolbar launcher with a local modal
 
-For short-lived actions, mount a `toolbarButton` and open a plugin-owned modal inside the component. Use `useHostContext()` to scope the action to the current company or project.
+Two toolbar slot types are available depending on where the button should appear:
+
+- **`globalToolbarButton`** — renders in the top bar on every page, scoped to the company. No entity context. Use for workspace-wide actions.
+- **`toolbarButton`** — renders on entity detail pages (project, issue, etc.). Receives `entityId` and `entityType`. Declare `entityTypes` to control which pages the button appears on.
+
+For short-lived actions, mount the appropriate slot type and open a plugin-owned modal inside the component. Use `useHostContext()` to scope the action to the current company or entity.
+
+Project-scoped example (appears only on project detail pages):
 
 ```json
 {
@@ -607,7 +621,8 @@ For short-lived actions, mount a `toolbarButton` and open a plugin-owned modal i
         "type": "toolbarButton",
         "id": "sync-toolbar-button",
         "displayName": "Sync",
-        "exportName": "SyncToolbarButton"
+        "exportName": "SyncToolbarButton",
+        "entityTypes": ["project"]
       }
     ]
   },

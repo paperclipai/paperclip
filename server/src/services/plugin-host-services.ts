@@ -16,6 +16,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { goalService } from "./goals.js";
+import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
@@ -450,6 +451,7 @@ export function buildHostServices(
   const heartbeat = heartbeatService(db);
   const projects = projectService(db);
   const issues = issueService(db);
+  const documents = documentService(db);
   const goals = goalService(db);
   const activity = activityService(db);
   const costs = costService(db);
@@ -555,6 +557,18 @@ export function buildHostServices(
           await ensurePluginAvailableForCompany(params.companyId);
         }
         await scopedBus.emit(params.name, params.companyId, params.payload);
+      },
+      async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
+        const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
+          if (notifyWorker) {
+            notifyWorker("onEvent", { event });
+          }
+        };
+        if (params.filter) {
+          scopedBus.subscribe(params.eventPattern as any, params.filter as any, handler);
+        } else {
+          scopedBus.subscribe(params.eventPattern as any, handler);
+        }
       },
     },
 
@@ -704,17 +718,16 @@ export function buildHostServices(
         const project = await projects.getById(params.projectId);
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
-        if (!row) return null;
-        const path = sanitizeWorkspacePath(row.cwd);
-        const name = sanitizeWorkspaceName(row.name, path);
+        const path = sanitizeWorkspacePath(project.codebase.effectiveLocalFolder);
+        const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
-          id: row.id,
-          projectId: row.projectId,
+          id: row?.id ?? `${project.id}:managed`,
+          projectId: project.id,
           name,
           path,
-          isPrimary: row.isPrimary,
-          createdAt: row.createdAt.toISOString(),
-          updatedAt: row.updatedAt.toISOString(),
+          isPrimary: true,
+          createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
+          updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
 
@@ -728,17 +741,16 @@ export function buildHostServices(
         const project = await projects.getById(projectId);
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
-        if (!row) return null;
-        const path = sanitizeWorkspacePath(row.cwd);
-        const name = sanitizeWorkspaceName(row.name, path);
+        const path = sanitizeWorkspacePath(project.codebase.effectiveLocalFolder);
+        const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
-          id: row.id,
-          projectId: row.projectId,
+          id: row?.id ?? `${project.id}:managed`,
+          projectId: project.id,
           name,
           path,
-          isPrimary: row.isPrimary,
-          createdAt: row.createdAt.toISOString(),
-          updatedAt: row.updatedAt.toISOString(),
+          isPrimary: true,
+          createdAt: (row?.createdAt ?? project.createdAt).toISOString(),
+          updatedAt: (row?.updatedAt ?? project.updatedAt).toISOString(),
         };
       },
     },
@@ -781,6 +793,43 @@ export function buildHostServices(
           params.body,
           {},
         )) as IssueComment;
+      },
+    },
+
+    issueDocuments: {
+      async list(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const rows = await documents.listIssueDocuments(params.issueId);
+        return rows as any;
+      },
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const doc = await documents.getIssueDocumentByKey(params.issueId, params.key);
+        return (doc ?? null) as any;
+      },
+      async upsert(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const result = await documents.upsertIssueDocument({
+          issueId: params.issueId,
+          key: params.key,
+          body: params.body,
+          title: params.title ?? null,
+          format: params.format ?? "markdown",
+          changeSummary: params.changeSummary ?? null,
+        });
+        return result.document as any;
+      },
+      async delete(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await documents.deleteIssueDocument(params.issueId, params.key);
       },
     },
 
@@ -1059,6 +1108,10 @@ export function buildHostServices(
      */
     dispose() {
       disposed = true;
+
+      // Clear event bus subscriptions to prevent accumulation on worker restart.
+      // Without this, each crash/restart cycle adds duplicate subscriptions.
+      scopedBus.clear();
 
       // Snapshot to avoid iterator invalidation from concurrent sendMessage() calls
       const snapshot = Array.from(activeSubscriptions);

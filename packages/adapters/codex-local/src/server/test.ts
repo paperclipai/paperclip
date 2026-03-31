@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -108,12 +109,23 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
     });
   } else {
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
-      hint: "Set OPENAI_API_KEY in adapter env, shell environment, or Codex auth configuration.",
-    });
+    const codexHome = isNonEmpty(env.CODEX_HOME) ? env.CODEX_HOME : undefined;
+    const codexAuth = await readCodexAuthInfo(codexHome).catch(() => null);
+    if (codexAuth) {
+      checks.push({
+        code: "codex_native_auth_present",
+        level: "info",
+        message: "Codex is authenticated via its own auth configuration.",
+        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+      });
+    } else {
+      checks.push({
+        code: "codex_openai_api_key_missing",
+        level: "warn",
+        message: "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.",
+        hint: "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+      });
+    }
   }
 
   const canRunProbe =

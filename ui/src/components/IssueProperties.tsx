@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,8 +22,23 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
-// TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+function defaultProjectWorkspaceIdForProject(project: {
+  workspaces?: Array<{ id: string; isPrimary: boolean }>;
+  executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null;
+} | null | undefined) {
+  if (!project) return null;
+  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
+    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
+    ?? project.workspaces?.[0]?.id
+    ?? null;
+}
+
+function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
+  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
+  if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
+  if (defaultMode === "adapter_default") return "agent_default";
+  return "shared_workspace";
+}
 
 interface IssuePropertiesProps {
   issue: Issue;
@@ -131,8 +147,12 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryFn: () => projectsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const activeProjects = useMemo(
+    () => (projects ?? []).filter((p) => !p.archivedAt || p.id === issue.projectId),
+    [projects, issue.projectId],
+  );
   const { orderedProjects } = useProjectOrder({
-    projects: projects ?? [],
+    projects: activeProjects,
     companyId,
     userId: currentUserId,
   });
@@ -183,15 +203,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
-  const currentProjectExecutionWorkspacePolicy = SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI
-    ? currentProject?.executionWorkspacePolicy ?? null
-    : null;
-  const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const usesIsolatedExecutionWorkspace = issue.executionWorkspaceSettings?.mode === "isolated"
-    ? true
-    : issue.executionWorkspaceSettings?.mode === "project_primary"
-      ? false
-      : currentProjectExecutionWorkspacePolicy?.defaultMode === "isolated";
   const projectLink = (id: string | null) => {
     if (!id) return null;
     const project = projects?.find((p) => p.id === id) ?? null;
@@ -220,7 +231,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           style={{
             borderColor: label.color,
             backgroundColor: `${label.color}22`,
-            color: label.color,
+            color: pickTextColorForPillBg(label.color, 0.13),
           }}
         >
           {label.name}
@@ -427,7 +438,13 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             !issue.projectId && "bg-accent"
           )}
           onClick={() => {
-            onUpdate({ projectId: null, executionWorkspaceSettings: null });
+            onUpdate({
+              projectId: null,
+              projectWorkspaceId: null,
+              executionWorkspaceId: null,
+              executionWorkspacePreference: null,
+              executionWorkspaceSettings: null,
+            });
             setProjectOpen(false);
           }}
         >
@@ -447,10 +464,14 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
               p.id === issue.projectId && "bg-accent"
             )}
             onClick={() => {
+              const defaultMode = defaultExecutionWorkspaceModeForProject(p);
               onUpdate({
                 projectId: p.id,
-                executionWorkspaceSettings: SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI && p.executionWorkspacePolicy?.enabled
-                  ? { mode: p.executionWorkspacePolicy.defaultMode === "isolated" ? "isolated" : "project_primary" }
+                projectWorkspaceId: defaultProjectWorkspaceIdForProject(p),
+                executionWorkspaceId: null,
+                executionWorkspacePreference: defaultMode,
+                executionWorkspaceSettings: p.executionWorkspacePolicy?.enabled
+                  ? { mode: defaultMode }
                   : null,
               });
               setProjectOpen(false);
@@ -538,42 +559,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           {projectContent}
         </PropertyPicker>
-
-        {currentProjectSupportsExecutionWorkspace && (
-          <PropertyRow label="Workspace">
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border px-2 py-1.5 w-full">
-              <div className="min-w-0">
-                <div className="text-sm">
-                  {usesIsolatedExecutionWorkspace ? "Isolated issue checkout" : "Project primary checkout"}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  Toggle whether this issue runs in its own execution workspace.
-                </div>
-              </div>
-              <button
-                className={cn(
-                  "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                  usesIsolatedExecutionWorkspace ? "bg-green-600" : "bg-muted",
-                )}
-                type="button"
-                onClick={() =>
-                  onUpdate({
-                    executionWorkspaceSettings: {
-                      mode: usesIsolatedExecutionWorkspace ? "project_primary" : "isolated",
-                    },
-                  })
-                }
-              >
-                <span
-                  className={cn(
-                    "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                    usesIsolatedExecutionWorkspace ? "translate-x-4.5" : "translate-x-0.5",
-                  )}
-                />
-              </button>
-            </div>
-          </PropertyRow>
-        )}
 
         {issue.parentId && (
           <PropertyRow label="Parent">

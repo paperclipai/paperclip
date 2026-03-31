@@ -110,6 +110,7 @@ const entityScopedZones = new Set<PluginLauncherPlacementZone>([
   "commentAnnotation",
   "commentContextMenuItem",
   "projectSidebarItem",
+  "toolbarButton",
 ]);
 const focusableElementSelector = [
   "button:not([disabled])",
@@ -195,6 +196,9 @@ function launcherTriggerClassName(placementZone: PluginLauncherPlacementZone): s
     case "sidebar":
     case "sidebarPanel":
       return "justify-start h-8 w-full";
+    case "toolbarButton":
+    case "globalToolbarButton":
+      return "h-8";
     default:
       return "h-8";
   }
@@ -732,7 +736,7 @@ function DefaultLauncherTrigger({
   return (
     <Button
       type="button"
-      variant={placementZone === "toolbarButton" ? "outline" : "ghost"}
+      variant={placementZone === "toolbarButton" || placementZone === "globalToolbarButton" ? "outline" : "ghost"}
       size="sm"
       className={launcherTriggerClassName(placementZone)}
       onClick={onClick}

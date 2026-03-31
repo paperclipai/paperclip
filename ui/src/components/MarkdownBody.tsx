@@ -1,13 +1,15 @@
-import { isValidElement, useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import { isValidElement, useEffect, useId, useState, type ReactNode } from "react";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { parseProjectMentionHref } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
+import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 
 interface MarkdownBodyProps {
   children: string;
   className?: string;
+  /** Optional resolver for relative image paths (e.g. within export packages) */
+  resolveImageSrc?: (src: string) => string | null;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -32,29 +34,6 @@ function extractMermaidSource(children: ReactNode): string | null {
   if (typeof childProps.className !== "string") return null;
   if (!/\blanguage-mermaid\b/i.test(childProps.className)) return null;
   return flattenText(childProps.children).replace(/\n$/, "");
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-  const match = /^#([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!match) return null;
-  const value = match[1];
-  return {
-    r: parseInt(value.slice(0, 2), 16),
-    g: parseInt(value.slice(2, 4), 16),
-    b: parseInt(value.slice(4, 6), 16),
-  };
-}
-
-function mentionChipStyle(color: string | null): CSSProperties | undefined {
-  if (!color) return undefined;
-  const rgb = hexToRgb(color);
-  if (!rgb) return undefined;
-  const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-  return {
-    borderColor: color,
-    backgroundColor: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.22)`,
-    color: luminance > 0.55 ? "#111827" : "#f8fafc",
-  };
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
@@ -112,48 +91,60 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
   );
 }
 
-export function MarkdownBody({ children, className }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  const components: Components = {
+    pre: ({ node: _node, children: preChildren, ...preProps }) => {
+      const mermaidSource = extractMermaidSource(preChildren);
+      if (mermaidSource) {
+        return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
+      }
+      return <pre {...preProps}>{preChildren}</pre>;
+    },
+    a: ({ href, children: linkChildren }) => {
+      const parsed = href ? parseMentionChipHref(href) : null;
+      if (parsed) {
+        const targetHref = parsed.kind === "project"
+          ? `/projects/${parsed.projectId}`
+          : `/agents/${parsed.agentId}`;
+        return (
+          <a
+            href={targetHref}
+            className={cn(
+              "paperclip-mention-chip",
+              `paperclip-mention-chip--${parsed.kind}`,
+              parsed.kind === "project" && "paperclip-project-mention-chip",
+            )}
+            data-mention-kind={parsed.kind}
+            style={mentionChipInlineStyle(parsed)}
+          >
+            {linkChildren}
+          </a>
+        );
+      }
+      return (
+        <a href={href} rel="noreferrer">
+          {linkChildren}
+        </a>
+      );
+    },
+  };
+  if (resolveImageSrc) {
+    components.img = ({ node: _node, src, alt, ...imgProps }) => {
+      const resolved = src ? resolveImageSrc(src) : null;
+      return <img {...imgProps} src={resolved ?? src} alt={alt ?? ""} />;
+    };
+  }
+
   return (
     <div
       className={cn(
-        "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden prose-pre:whitespace-pre-wrap prose-pre:break-words prose-code:break-all",
+        "paperclip-markdown prose prose-sm max-w-none break-words overflow-hidden",
         theme === "dark" && "prose-invert",
         className,
       )}
     >
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre: ({ node: _node, children: preChildren, ...preProps }) => {
-            const mermaidSource = extractMermaidSource(preChildren);
-            if (mermaidSource) {
-              return <MermaidDiagramBlock source={mermaidSource} darkMode={theme === "dark"} />;
-            }
-            return <pre {...preProps}>{preChildren}</pre>;
-          },
-          a: ({ href, children: linkChildren }) => {
-            const parsed = href ? parseProjectMentionHref(href) : null;
-            if (parsed) {
-              const label = linkChildren;
-              return (
-                <a
-                  href={`/projects/${parsed.projectId}`}
-                  className="paperclip-project-mention-chip"
-                  style={mentionChipStyle(parsed.color)}
-                >
-                  {label}
-                </a>
-              );
-            }
-            return (
-              <a href={href} rel="noreferrer">
-                {linkChildren}
-              </a>
-            );
-          },
-        }}
-      >
+      <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
         {children}
       </Markdown>
     </div>

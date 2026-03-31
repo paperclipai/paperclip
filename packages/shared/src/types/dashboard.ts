@@ -48,4 +48,10 @@ export interface DashboardSummary {
   };
   pendingApprovals: number;
   agentWorkload: AgentWorkload;
+  budgets: {
+    activeIncidents: number;
+    pendingApprovals: number;
+    pausedAgents: number;
+    pausedProjects: number;
+  };
 }

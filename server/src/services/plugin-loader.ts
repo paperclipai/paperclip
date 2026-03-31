@@ -1302,6 +1302,7 @@ export function pluginLoader(
       const plugin = (await registry.getById(pluginId)) as {
         id: string;
         packageName: string;
+        packagePath: string | null;
         manifestJson: PaperclipPluginManifestV1;
       } | null;
       if (!plugin) throw new Error(`Plugin not found: ${pluginId}`);
@@ -1309,7 +1310,10 @@ export function pluginLoader(
       const oldManifest = plugin.manifestJson;
       const {
         packageName = plugin.packageName,
-        localPath,
+        // For local-path installs, fall back to the stored packagePath so
+        // `upgradePlugin` can re-read the manifest from disk without needing
+        // the caller to re-supply the path every time.
+        localPath = plugin.packagePath ?? undefined,
         version,
       } = upgradeOptions;
 
