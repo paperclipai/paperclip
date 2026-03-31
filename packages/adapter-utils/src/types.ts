@@ -345,6 +345,7 @@ export interface CreateConfigValues {
   url: string;
   directory?: string;
   providerID?: string;
+  timeoutSec?: number;
   bootstrapPrompt: string;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
