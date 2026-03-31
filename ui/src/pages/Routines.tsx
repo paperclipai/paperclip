@@ -547,7 +547,13 @@ export function Routines() {
                           <span className="font-medium">
                             {routine.title}
                           </span>
-                          {(isArchived || routine.status === "paused") && (
+                          {routine.status === "draft" && (
+                            <div className="mt-1 flex items-center gap-1 text-xs text-amber-500">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                              Needs setup — assign agent & project
+                            </div>
+                          )}
+                          {routine.status !== "draft" && (isArchived || routine.status === "paused") && (
                             <div className="mt-1 text-xs text-muted-foreground">
                               {isArchived ? "archived" : "paused"}
                             </div>

@@ -8,12 +8,12 @@ import {
 } from "../constants.js";
 
 export const createRoutineSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
   description: z.string().optional().nullable(),
-  assigneeAgentId: z.string().uuid(),
+  assigneeAgentId: z.string().uuid().optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),

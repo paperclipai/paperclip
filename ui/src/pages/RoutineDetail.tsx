@@ -316,8 +316,8 @@ export function RoutineDetail() {
         ? {
             title: routine.title,
             description: routine.description ?? "",
-            projectId: routine.projectId,
-            assigneeAgentId: routine.assigneeAgentId,
+            projectId: routine.projectId ?? "",
+            assigneeAgentId: routine.assigneeAgentId ?? "",
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,

@@ -18,6 +18,7 @@ import {
   companyService,
   logActivity,
   playbookService,
+  routineService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -30,6 +31,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const playbooksvc = playbookService(db);
+  const routinesvc = routineService(db);
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -240,11 +242,12 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         req.actor.userId ?? "board",
       );
     }
-    // Auto-seed default playbooks for every new company
+    // Auto-seed default playbooks and routines for every new company
     try {
       await playbooksvc.seedDefaults(company.id);
+      await routinesvc.seedDefaults(company.id);
     } catch {
-      // Non-fatal — company is created even if playbook seeding fails
+      // Non-fatal — company is created even if seeding fails
     }
 
     res.status(201).json(company);

@@ -766,8 +766,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       const row = await getRoutineById(id);
       if (!row) return null;
       const [project, assignee, parentIssue, triggers, recentRuns, activeIssue] = await Promise.all([
-        db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null),
-        db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null),
+        row.projectId ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null) : null,
+        row.assigneeAgentId ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null) : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
         db
@@ -852,8 +852,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId);
-      await assertAssignableAgent(companyId, input.assigneeAgentId);
+      if (input.projectId) await assertProject(companyId, input.projectId);
+      if (input.assigneeAgentId) await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const [created] = await db
@@ -884,8 +884,8 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       if (!existing) return null;
       const nextProjectId = patch.projectId ?? existing.projectId;
       const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
-      if (patch.projectId) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.projectId && nextProjectId) await assertProject(existing.companyId, nextProjectId);
+      if (patch.assigneeAgentId && nextAssigneeAgentId) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       const [updated] = await db
@@ -1295,6 +1295,70 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         });
       }
       return null;
+    },
+
+    /**
+     * Seed default routine templates for a company (idempotent).
+     * These are draft routines (no agent/project assigned) that the Board
+     * can configure and activate after onboarding.
+     */
+    async seedDefaults(companyId: string): Promise<{ seeded: boolean; count: number }> {
+      const existing = await db
+        .select({ id: routines.id })
+        .from(routines)
+        .where(and(eq(routines.companyId, companyId), eq(routines.status, "draft")))
+        .limit(1);
+
+      if (existing.length > 0) return { seeded: false, count: 0 };
+
+      const seeds = [
+        {
+          title: "Daily Standup",
+          description: "CEO reviews inbox, checks agent status, delegates new work, and resolves blockers. Runs every morning.",
+          priority: "medium",
+          status: "draft",
+        },
+        {
+          title: "Weekly Performance Review",
+          description: "VP of HR reviews the Agent Performance page, flags underperformers, recommends improvements, and reports findings to CEO.",
+          priority: "medium",
+          status: "draft",
+        },
+        {
+          title: "Weekly Security Scan",
+          description: "Security Engineer runs a dependency audit and code security review across all active projects. Produces a findings summary.",
+          priority: "high",
+          status: "draft",
+        },
+        {
+          title: "Monthly Operations Report",
+          description: "CEO compiles monthly metrics: tasks completed, goals progress, budget utilization, agent performance ratings. Distributes to stakeholders.",
+          priority: "low",
+          status: "draft",
+        },
+        {
+          title: "Content Calendar Review",
+          description: "Content Marketer reviews upcoming content calendar, checks deadlines, and ensures pipeline coverage for the next two weeks.",
+          priority: "medium",
+          status: "draft",
+        },
+      ];
+
+      let count = 0;
+      for (const seed of seeds) {
+        await db.insert(routines).values({
+          companyId,
+          title: seed.title,
+          description: seed.description,
+          priority: seed.priority,
+          status: seed.status,
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+        });
+        count++;
+      }
+
+      return { seeded: true, count };
     },
   };
 }
