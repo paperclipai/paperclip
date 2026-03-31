@@ -880,21 +880,24 @@ export function IssuesList({
                     <>
                       {issue.goalId && goalName(issue.goalId) && (
                         <span className="hidden items-center md:flex">
-                          <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 truncate max-w-[120px]">
+                          <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
                             {goalName(issue.goalId)}
                           </span>
                         </span>
                       )}
                       {issue.originKind === "routine_execution" && issue.originId && (
                         <span className="hidden items-center md:flex">
-                          <span className="inline-flex items-center rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 truncate max-w-[140px]">
+                          <span className="inline-flex items-center rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 whitespace-nowrap">
                             {routineName(issue.originId) ?? "Playbook"}
                           </span>
                         </span>
                       )}
                       {issue.status === "blocked" && (
                         <span className="hidden items-center md:flex">
-                          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 truncate max-w-[180px]">
+                          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 truncate max-w-[220px]" title={(() => {
+                              const depMatch = issue.description?.match(/Depends on:\s*(.+?)(?:\n|$)/i);
+                              return depMatch ? `Blocked by: ${depMatch[1].trim()}` : "Blocked";
+                            })()}>
                             {(() => {
                               const depMatch = issue.description?.match(/Depends on:\s*(.+?)(?:\n|$)/i);
                               if (depMatch) return `Blocked by: ${depMatch[1].trim()}`;
