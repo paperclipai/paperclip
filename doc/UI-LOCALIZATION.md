@@ -52,6 +52,14 @@
 - 内部 API 路径和数据结构
 - 文件路径、代码块、日志原文、模型原文、用户自由输入内容
 
+补充规则：
+
+- 命令名归一化不等于命令调用方式归一化
+- `paperclipai -> penclip` 属于品牌/命令名边界
+- `pnpm penclip`、`penclip`、`npx penclip` 要按受众区分，不要机械全仓替换
+- 仓库内开发、维护、脚本和工作树说明，默认保留 `pnpm penclip`
+- 面向公开安装用户、运行中实例 operator、CLI 错误恢复、onboarding/snippet/generated text 的命令，优先使用 `penclip` 或 `npx penclip`
+
 ### 2.3 渐进迁移优先于一次性重写
 
 新增或修改本地化时，优先顺序如下：
@@ -149,6 +157,11 @@ Paperclip CN 品牌替换必须遵守以下边界：
 - 历史兼容 key
 
 如果某处既是技术标识又会被最终用户直接看到，优先用显示层包装，而不是修改底层标识。
+
+对命令类文案也是同样原则：
+
+- 先判断命令的受众是谁，再决定保留 `pnpm penclip` 还是改成 `penclip` / `npx penclip`
+- 不要因为这处文案最终会展示给用户，就顺手改掉底层脚本、workspace 命令或内部技术标识
 
 ## 5. 术语表
 

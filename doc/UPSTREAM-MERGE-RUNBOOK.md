@@ -265,6 +265,14 @@ git merge origin/master
 - `Paperclip` 是否该改回 `Paperclip CN`
 - `paperclipai` / `penclipai` 是否落在正确边界
 - package name、CLI 名、环境变量名是否被误改
+- 命令提示是否区分了 repo-local 与 public/runtime 场景
+
+补充判断规则：
+
+- 不要机械把 `pnpm penclip` 改成 `npx penclip`
+- 也不要机械把 `npx penclip` 改回 `pnpm penclip`
+- repo 内开发、维护、脚本、工作树说明通常保留 `pnpm penclip`
+- 运行中实例返回给 operator 的 remediation、CLI 错误恢复、onboarding manifest / onboarding.txt、UI snippet / generated text，需要单独判断是否应使用 `penclip` 或 `npx penclip`
 
 ### 7.2 UI 本地化审计
 
@@ -284,6 +292,7 @@ git merge origin/master
 - 服务端仍返回 `Content-Language` 和 `Vary: Accept-Language`
 - wizard / dialog 默认草稿仍只同步“未编辑”的默认值
 - 共享组件没有把状态、优先级、图例文案重新写死
+- CLI 错误提示、server 纯文本/JSON remediation、onboarding manifest / onboarding.txt、导出或邀请 snippet 等运行期文案，没有被遗漏在审计范围之外
 
 术语以 `doc/UI-LOCALIZATION.md` 为准，尤其留意：
 
