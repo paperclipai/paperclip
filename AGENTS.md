@@ -20,6 +20,18 @@ Before making changes, read in this order:
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
 
+## 2.5 Operator Memory
+
+Before starting technical work, check Darwin Brain tenant `codex-cli` for relevant environment, repo, and recovery memory when that tool is available.
+
+Use it for durable operator context such as:
+- local Paperclip/OpenClaw runtime quirks
+- known recovery procedures
+- Darwin bridge integration facts
+- repo-specific engineering gotchas
+
+Do not treat `codex-cli` as a source of truth over the codebase. It is a fast context layer to reduce repeated mistakes and re-discovery.
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
