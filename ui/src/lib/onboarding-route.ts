@@ -49,3 +49,11 @@ export function shouldRedirectCompanylessRouteToOnboarding(params: {
 }): boolean {
   return !params.hasCompanies && !isOnboardingPath(params.pathname);
 }
+
+export function shouldRedirectGlobalOnboardingToBoard(params: {
+  pathname: string;
+  hasCompanies: boolean;
+}): boolean {
+  const segments = params.pathname.split("/").filter(Boolean);
+  return params.hasCompanies && segments.length === 1 && segments[0]?.toLowerCase() === "onboarding";
+}

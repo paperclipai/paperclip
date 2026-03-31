@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isOnboardingPath,
   resolveRouteOnboardingOptions,
+  shouldRedirectGlobalOnboardingToBoard,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./onboarding-route";
 
@@ -74,6 +75,35 @@ describe("shouldRedirectCompanylessRouteToOnboarding", () => {
       shouldRedirectCompanylessRouteToOnboarding({
         pathname: "/issues",
         hasCompanies: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRedirectGlobalOnboardingToBoard", () => {
+  it("redirects the global onboarding route back to the board when companies exist", () => {
+    expect(
+      shouldRedirectGlobalOnboardingToBoard({
+        pathname: "/onboarding",
+        hasCompanies: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not redirect company-prefixed onboarding routes", () => {
+    expect(
+      shouldRedirectGlobalOnboardingToBoard({
+        pathname: "/pap/onboarding",
+        hasCompanies: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not redirect global onboarding when no companies exist", () => {
+    expect(
+      shouldRedirectGlobalOnboardingToBoard({
+        pathname: "/onboarding",
+        hasCompanies: false,
       }),
     ).toBe(false);
   });
