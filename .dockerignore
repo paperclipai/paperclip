@@ -2,6 +2,8 @@
 .github
 .paperclip
 .pnpm-store
+._*
+**/._*
 node_modules
 **/node_modules
 coverage
