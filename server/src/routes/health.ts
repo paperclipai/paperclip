@@ -54,6 +54,17 @@ export function healthRoutes(
       return;
     }
 
+    try {
+      await db.execute(sql`SELECT 1`);
+    } catch {
+      res.status(503).json({
+        status: "unhealthy",
+        version: serverVersion,
+        error: "database_unreachable",
+      });
+      return;
+    }
+
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
     if (opts.deploymentMode === "authenticated") {

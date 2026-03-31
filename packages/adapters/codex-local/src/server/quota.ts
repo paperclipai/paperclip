@@ -432,6 +432,13 @@ class CodexRpcClient {
       }
       this.pending.clear();
     });
+    this.proc.on("error", (err: Error) => {
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
+      }
+      this.pending.clear();
+    });
   }
 
   private onStdout(chunk: string) {

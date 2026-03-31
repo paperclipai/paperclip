@@ -6,7 +6,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 
@@ -114,6 +114,29 @@ function configuredWorkspaceLabel(
   }
 }
 
+function projectWorkspaceDetailLink(input: {
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+}) {
+  if (!input.projectId || !input.projectWorkspaceId) return null;
+  return projectWorkspaceUrl({ id: input.projectId, urlKey: input.projectId }, input.projectWorkspaceId);
+}
+
+function workspaceDetailLink(input: {
+  projectId: string | null | undefined;
+  issueProjectWorkspaceId: string | null | undefined;
+  workspace: ExecutionWorkspace | null | undefined;
+}) {
+  const linkedProjectWorkspaceId = input.workspace?.projectWorkspaceId ?? input.issueProjectWorkspaceId ?? null;
+  if (input.workspace?.mode === "shared_workspace") {
+    return projectWorkspaceDetailLink({
+      projectId: input.projectId,
+      projectWorkspaceId: linkedProjectWorkspaceId,
+    });
+  }
+  return input.workspace ? `/execution-workspaces/${input.workspace.id}` : null;
+}
+
 function statusBadge(status: string) {
   const colors: Record<string, string> = {
     active: "bg-green-500/15 text-green-700 dark:text-green-400",
@@ -208,6 +231,17 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
   const configuredReusableWorkspace =
     deduplicatedReusableWorkspaces.find((w) => w.id === draftExecutionWorkspaceId)
     ?? (draftExecutionWorkspaceId === issue.executionWorkspaceId ? selectedReusableExecutionWorkspace : null);
+
+  const selectedReusableWorkspaceLink = workspaceDetailLink({
+    projectId: project?.id,
+    issueProjectWorkspaceId: issue.projectWorkspaceId,
+    workspace: selectedReusableExecutionWorkspace,
+  });
+  const currentWorkspaceLink = workspaceDetailLink({
+    projectId: project?.id,
+    issueProjectWorkspaceId: issue.projectWorkspaceId,
+    workspace,
+  });
 
   const canSaveWorkspaceConfig = draftSelection !== "reuse_existing" || draftExecutionWorkspaceId.length > 0;
 
@@ -317,18 +351,22 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
             <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
               Reusing:{" "}
-              <Link
-                to={`/execution-workspaces/${selectedReusableExecutionWorkspace.id}`}
-                className="hover:text-foreground hover:underline"
-              >
+              {selectedReusableWorkspaceLink ? (
+                <Link
+                  to={selectedReusableWorkspaceLink}
+                  className="hover:text-foreground hover:underline"
+                >
+                  <BreakablePath text={selectedReusableExecutionWorkspace.name} />
+                </Link>
+              ) : (
                 <BreakablePath text={selectedReusableExecutionWorkspace.name} />
-              </Link>
+              )}
             </div>
           )}
-          {workspace && (
+          {workspace && currentWorkspaceLink && (
             <div className="pt-0.5">
               <Link
-                to={`/execution-workspaces/${workspace.id}`}
+                to={currentWorkspaceLink}
                 className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
               >
                 View workspace details →
@@ -385,12 +423,16 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
             <div className="text-[11px] text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
               <div style={{ overflowWrap: "anywhere" }}>
                 Current:{" "}
-                <Link
-                  to={`/execution-workspaces/${workspace.id}`}
-                  className="hover:text-foreground hover:underline"
-                >
+                {currentWorkspaceLink ? (
+                  <Link
+                    to={currentWorkspaceLink}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    <BreakablePath text={workspace.name} />
+                  </Link>
+                ) : (
                   <BreakablePath text={workspace.name} />
-                </Link>
+                )}
                 {" · "}
                 {workspace.status}
               </div>

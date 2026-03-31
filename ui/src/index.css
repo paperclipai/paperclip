@@ -343,6 +343,17 @@
   margin-top: 1.1em;
 }
 
+.paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
+  color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.dark .paperclip-mdxeditor-content a:not(.paperclip-mention-chip):not(.paperclip-project-mention-chip) {
+  color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
+}
+
 .paperclip-mdxeditor-content a.paperclip-mention-chip,
 .paperclip-mdxeditor-content a.paperclip-project-mention-chip {
   display: inline-flex;
@@ -661,12 +672,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 76%, #0969da 24%);
-  text-decoration: none;
-}
-
-.paperclip-markdown a:hover {
   text-decoration: underline;
   text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.paperclip-markdown a.paperclip-mention-chip {
+  text-decoration: none;
 }
 
 .dark .paperclip-markdown a {

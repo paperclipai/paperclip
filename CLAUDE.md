@@ -15,6 +15,10 @@ upstream codebase.
 We periodically rebase from the upstream (`paperclipai/paperclip`). Every rebase
 must be reviewed with the SaaS context in mind:
 
+- **Prefer upstream** — Always adhere to upstream where possible. If upstream
+  implements something we already have, prefer their solution over ours and layer
+  our SaaS-specific additions on top. During rebases, adapt or drop fork-specific
+  code that upstream now covers.
 - **Localhost assumptions** — Upstream code assumes a single-user, localhost
   environment. Watch for hardcoded `localhost` URLs, `pnpm dev` instructions in
   error messages, embedded Postgres usage, and TTY-only prompts. These are fine
