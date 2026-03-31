@@ -69,6 +69,33 @@ pnpm --filter @paperclipai/plugin-sdk test
 pnpm test -- plugin-e2e-lifecycle
 ```
 
+### Autonomous Validation
+
+Plugin system has automated hourly validation via cron:
+
+```sh
+# Manual validation
+./scripts/validate-plugins.sh
+
+# Install cron job (hourly validation)
+sudo ./scripts/install-cron.sh
+
+# View logs
+tail -f /var/log/paperclip-plugin-validation.log
+
+# JSON reports
+ls /tmp/paperclip-plugin-validation-*.json
+```
+
+**Validation steps (7 total, ~30s):**
+1. Script self-tests
+2. SDK typecheck
+3. SDK unit tests (131 tests)
+4. E2E lifecycle tests (30 tests, no Postgres)
+5. Plugin typecheck (playwright-mcp, ruflo-bridge, skills-hub)
+6. Plugin build
+7. Documentation validation
+
 ### Plugin Validation Checklist
 
 1. **Discovery:** Plugin in `packages/plugins/<name>` with valid `package.json`
