@@ -1,7 +1,34 @@
 FROM node:lts-trixie-slim AS base
+ARG UV_VERSION=0.6.17
+ARG YQ_VERSION=v4.44.5
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    fd-find \
+    file \
+    git \
+    jq \
+    less \
+    openssh-client \
+    procps \
+    python-is-python3 \
+    python3 \
+    python3-pip \
+    python3-venv \
+    ripgrep \
   && rm -rf /var/lib/apt/lists/*
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+  && arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+    amd64) yq_arch=amd64 ;; \
+    arm64) yq_arch=arm64 ;; \
+    *) echo "Unsupported arch: $arch" >&2; exit 1 ;; \
+  esac \
+  && curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${yq_arch}" \
+  && chmod +x /usr/local/bin/yq \
+  && curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh
 RUN corepack enable
 
 FROM base AS deps
@@ -38,6 +65,7 @@ FROM base AS production
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && ln -sf /app/scripts/agent-env-report.sh /usr/local/bin/agent-env-report \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
