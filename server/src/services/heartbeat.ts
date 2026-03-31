@@ -15,6 +15,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  runTodos,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -726,6 +727,41 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   };
 }
 
+function extractTodoWriteFromStdoutLine(line: string): Array<{ content: string; status: string }> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const event = parsed as Record<string, unknown>;
+  if (event.type !== "assistant") return null;
+  const message = event.message;
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return null;
+  const content = (message as Record<string, unknown>).content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "tool_use" || b.name !== "TodoWrite") continue;
+    const input = b.input;
+    if (typeof input !== "object" || input === null || Array.isArray(input)) continue;
+    const todos = (input as Record<string, unknown>).todos;
+    if (!Array.isArray(todos)) continue;
+    const result: Array<{ content: string; status: string }> = [];
+    for (const todo of todos) {
+      if (typeof todo !== "object" || todo === null || Array.isArray(todo)) continue;
+      const t = todo as Record<string, unknown>;
+      const todoContent = typeof t.content === "string" ? t.content : "";
+      const status = typeof t.status === "string" ? t.status : "pending";
+      if (todoContent) result.push({ content: todoContent, status });
+    }
+    if (result.length > 0) return result;
+  }
+  return null;
+}
+
 function describeSessionResetReason(contextSnapshot: Record<string, unknown> | null | undefined) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
@@ -948,6 +984,45 @@ export function heartbeatService(db: Db) {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+
+  async function upsertTodosForRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    todos: Array<{ label: string; status: "pending" | "in_progress" | "completed"; seq: number }>,
+    issueId: string | null,
+  ) {
+    if (todos.length === 0) return;
+    await db.delete(runTodos).where(eq(runTodos.runId, run.id));
+    const inserted = await db
+      .insert(runTodos)
+      .values(
+        todos.map((t) => ({
+          companyId: run.companyId,
+          runId: run.id,
+          agentId: run.agentId,
+          issueId: issueId ?? null,
+          label: t.label,
+          status: t.status,
+          seq: t.seq,
+          updatedAt: new Date(),
+        })),
+      )
+      .returning();
+    publishLiveEvent({
+      companyId: run.companyId,
+      type: "heartbeat.run.todos",
+      payload: {
+        runId: run.id,
+        agentId: run.agentId,
+        todos: inserted.map((t) => ({
+          id: t.id,
+          label: t.label,
+          status: t.status,
+          seq: t.seq,
+        })),
+      },
+    });
+    return inserted;
+  }
 
   async function getAgent(agentId: string) {
     return db
@@ -2525,6 +2600,7 @@ export function heartbeatService(db: Db) {
           .where(eq(heartbeatRuns.id, runId));
 
         const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+        let stdoutLineBuffer = "";
         const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
           if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
@@ -2556,6 +2632,30 @@ export function heartbeatService(db: Db) {
               truncated: payloadChunk.length !== sanitizedChunk.length,
             },
           });
+
+          // Real-time TodoWrite capture: buffer stdout lines and detect TodoWrite tool calls
+          if (stream === "stdout") {
+            stdoutLineBuffer += chunk;
+            const lines = stdoutLineBuffer.split("\n");
+            stdoutLineBuffer = lines.pop() ?? "";
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              const todos = extractTodoWriteFromStdoutLine(trimmed);
+              if (todos && todos.length > 0) {
+                const mappedTodos = todos.map((t, i) => ({
+                  label: t.content,
+                  status: (["pending", "in_progress", "completed"].includes(t.status) ? t.status : "pending") as
+                    | "pending"
+                    | "in_progress"
+                    | "completed",
+                  seq: i + 1,
+                }));
+                // Fire and forget — don't block log streaming
+                upsertTodosForRun(run, mappedTodos, issueId).catch(() => {});
+              }
+            }
+          }
         };
         for (const warning of runtimeWorkspaceWarnings) {
           const logEntry = formatRuntimeWorkspaceWarningLog(warning);
@@ -4099,6 +4199,17 @@ export function heartbeatService(db: Db) {
         .where(and(eq(heartbeatRunEvents.runId, runId), gt(heartbeatRunEvents.seq, afterSeq)))
         .orderBy(asc(heartbeatRunEvents.seq))
         .limit(Math.max(1, Math.min(limit, 1000))),
+
+    listTodos: (runId: string) =>
+      db.select().from(runTodos).where(eq(runTodos.runId, runId)).orderBy(asc(runTodos.seq)),
+
+    listTodosForIssue: async (issueId: string) => {
+      // Return todos from the most recent active or last run for this issue
+      const rows = await db.select().from(runTodos).where(eq(runTodos.issueId, issueId)).orderBy(asc(runTodos.seq));
+      return rows;
+    },
+
+    upsertTodos: upsertTodosForRun,
 
     readLog: async (runId: string, opts?: { offset?: number; limitBytes?: number }) => {
       const run = await getRun(runId);
