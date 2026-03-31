@@ -329,7 +329,7 @@ async function resolveSpawnTarget(
       try {
         const cmdContent = await fs.readFile(executable, "utf8");
         // npm-generated .cmd wrappers contain: "%dp0%\path\to\entry.js"
-        const jsMatch = cmdContent.match(/%dp0%\\([^\s"]+\.js)/);
+        const jsMatch = cmdContent.match(/%(?:~)?dp0%?\\([^\s"]+\.js)/i);
         if (jsMatch) {
           const jsFile = path.join(path.dirname(executable), jsMatch[1]!);
           if (await pathExists(jsFile)) {
