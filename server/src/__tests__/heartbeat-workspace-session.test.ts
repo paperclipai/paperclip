@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -6,6 +9,7 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  ensureAgentHomeBootstrap,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -54,6 +58,52 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+describe("ensureAgentHomeBootstrap", () => {
+  const paperclipHomeRoot = path.join(
+    os.tmpdir(),
+    `paperclip-heartbeat-home-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+
+  beforeEach(() => {
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHomeRoot);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(paperclipHomeRoot, { recursive: true, force: true });
+  });
+
+  it("creates the minimal PARA skeleton and today's daily note", async () => {
+    const agentId = "agent-para-1";
+    const now = new Date("2026-03-26T09:30:00");
+
+    const home = await ensureAgentHomeBootstrap(agentId, now);
+
+    expect(home).toBe(resolveDefaultAgentWorkspaceDir(agentId));
+    await expect(fs.readFile(path.join(home, "MEMORY.md"), "utf8")).resolves.toContain("# Memory");
+    await expect(fs.readFile(path.join(home, "life", "index.md"), "utf8")).resolves.toContain("# Life");
+    for (const dir of ["projects", "areas", "resources", "archives"]) {
+      const stat = await fs.stat(path.join(home, "life", dir));
+      expect(stat.isDirectory()).toBe(true);
+    }
+    await expect(fs.readFile(path.join(home, "memory", "2026-03-26.md"), "utf8")).resolves.toContain("## Today's Plan");
+    await expect(fs.readFile(path.join(home, "memory", "2026-03-26.md"), "utf8")).resolves.toContain("## Timeline");
+  });
+
+  it("does not overwrite an existing daily note", async () => {
+    const agentId = "agent-para-2";
+    const now = new Date("2026-03-26T09:30:00");
+    const home = resolveDefaultAgentWorkspaceDir(agentId);
+
+    await fs.mkdir(path.join(home, "memory"), { recursive: true });
+    await fs.writeFile(path.join(home, "memory", "2026-03-26.md"), "custom note", "utf8");
+
+    await ensureAgentHomeBootstrap(agentId, now);
+
+    await expect(fs.readFile(path.join(home, "memory", "2026-03-26.md"), "utf8")).resolves.toBe("custom note");
+  });
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {

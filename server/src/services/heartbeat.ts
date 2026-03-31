@@ -172,6 +172,46 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
+function formatAgentHomeDate(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+async function writeAgentHomeFileIfMissing(targetPath: string, content: string) {
+  const existing = await fs.stat(targetPath).catch(() => null);
+  if (existing?.isFile() || existing?.isDirectory()) return;
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.writeFile(targetPath, content, "utf8");
+}
+
+export async function ensureAgentHomeBootstrap(agentId: string, now = new Date()): Promise<string> {
+  const home = resolveDefaultAgentWorkspaceDir(agentId);
+  const dateStamp = formatAgentHomeDate(now);
+
+  await fs.mkdir(home, { recursive: true });
+  await Promise.all([
+    fs.mkdir(path.join(home, "memory"), { recursive: true }),
+    fs.mkdir(path.join(home, "life"), { recursive: true }),
+    fs.mkdir(path.join(home, "life", "projects"), { recursive: true }),
+    fs.mkdir(path.join(home, "life", "areas"), { recursive: true }),
+    fs.mkdir(path.join(home, "life", "resources"), { recursive: true }),
+    fs.mkdir(path.join(home, "life", "archives"), { recursive: true }),
+  ]);
+
+  await Promise.all([
+    writeAgentHomeFileIfMissing(path.join(home, "MEMORY.md"), "# Memory\n"),
+    writeAgentHomeFileIfMissing(path.join(home, "life", "index.md"), "# Life\n"),
+    writeAgentHomeFileIfMissing(
+      path.join(home, "memory", `${dateStamp}.md`),
+      `# ${dateStamp}\n\n## Today's Plan\n\n## Timeline\n`,
+    ),
+  ]);
+
+  return home;
+}
+
 async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
@@ -2382,11 +2422,7 @@ export function heartbeatService(db: Db) {
       repoRef: executionWorkspace.repoRef,
       branchName: executionWorkspace.branchName,
       worktreePath: executionWorkspace.worktreePath,
-      agentHome: await (async () => {
-        const home = resolveDefaultAgentWorkspaceDir(agent.id);
-        await fs.mkdir(home, { recursive: true });
-        return home;
-      })(),
+      agentHome: await ensureAgentHomeBootstrap(agent.id),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {

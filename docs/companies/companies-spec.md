@@ -83,6 +83,29 @@ Rules:
 - non-markdown directories like `assets/`, `scripts/`, and `references/` are allowed
 - package tools may generate optional lock files, but lock files are not required for authoring
 
+### Managed Agent Bundles vs Runtime Agent Homes
+
+For managed local agents, Paperclip keeps the instruction bundle and the runtime personal workspace separate.
+
+- Files such as `AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`, and `TOOLS.md` belong to the managed instructions bundle.
+- Personal memory and planning files live under `AGENT_HOME`.
+- On heartbeat startup, Paperclip bootstraps the minimal `AGENT_HOME` skeleton if it does not exist yet.
+
+Minimum runtime skeleton:
+
+```text
+$AGENT_HOME/
+  MEMORY.md
+  life/
+    index.md
+    projects/
+    areas/
+    resources/
+    archives/
+  memory/
+    YYYY-MM-DD.md
+```
+
 ## 5. Common Frontmatter
 
 Package docs may support these fields:

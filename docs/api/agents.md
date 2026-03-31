@@ -65,6 +65,30 @@ POST /api/companies/{companyId}/agents
 }
 ```
 
+## Managed Instructions And Runtime Home
+
+For managed local agents, Paperclip maintains two separate filesystem surfaces:
+
+- **Instructions bundle** — the managed instruction files materialized for the agent adapter. The default CEO bundle contains `AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`, and `TOOLS.md`.
+- **`AGENT_HOME` runtime workspace** — the agent's personal working directory. If it is missing when a heartbeat starts, Paperclip bootstraps the minimal memory skeleton before handing control to the adapter.
+
+The default runtime bootstrap includes:
+
+```text
+$AGENT_HOME/
+  MEMORY.md
+  life/
+    index.md
+    projects/
+    areas/
+    resources/
+    archives/
+  memory/
+    YYYY-MM-DD.md
+```
+
+Use the instructions bundle for role and execution guidance. Use `AGENT_HOME` for personal notes, plans, and memory files.
+
 ## Update Agent
 
 ```

@@ -361,6 +361,12 @@ describe("agent skill routes", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const bundledFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as Record<string, string>;
+    expect(bundledFiles["AGENTS.md"]).toContain("You are the CEO.");
+    expect(bundledFiles["AGENTS.md"]).not.toContain("$AGENT_HOME/HEARTBEAT.md");
+    expect(bundledFiles["AGENTS.md"]).toContain("- `HEARTBEAT.md`");
+    expect(bundledFiles["AGENTS.md"]).toContain("- `SOUL.md`");
+    expect(bundledFiles["AGENTS.md"]).toContain("- `TOOLS.md`");
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "11111111-1111-4111-8111-111111111111",
@@ -368,7 +374,7 @@ describe("agent skill routes", () => {
         adapterType: "claude_local",
       }),
       expect.objectContaining({
-        "AGENTS.md": expect.stringContaining("You are the CEO."),
+        "AGENTS.md": expect.any(String),
         "HEARTBEAT.md": expect.stringContaining("CEO Heartbeat Checklist"),
         "SOUL.md": expect.stringContaining("CEO Persona"),
         "TOOLS.md": expect.stringContaining("# Tools"),
