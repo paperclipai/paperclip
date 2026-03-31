@@ -1056,13 +1056,7 @@ export function IssueDocumentsSection({
                       <div
                         className="cursor-text"
                         onClick={() => {
-                          setDraft({
-                            key: doc.key,
-                            title: doc.title ?? "",
-                            body: doc.body,
-                            baseRevisionId: doc.latestRevisionId,
-                            isNew: false,
-                          });
+                          beginEdit(doc.key);
                         }}
                       >
                         {displayedBody.trim()
