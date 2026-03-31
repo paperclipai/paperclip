@@ -289,3 +289,12 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  knowledgeTierSchema,
+  createCompanyKnowledgeSchema,
+  updateCompanyKnowledgeSchema,
+  type CreateCompanyKnowledge,
+  type UpdateCompanyKnowledge,
+  type KnowledgeTier,
+} from "./company-knowledge.js";

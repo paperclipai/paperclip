@@ -9,6 +9,7 @@ import {
   SquarePen,
   Network,
   Boxes,
+  BookOpen,
   Repeat,
   Settings,
 } from "lucide-react";
@@ -112,6 +113,7 @@ export function Sidebar() {
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/company/knowledge" label="Knowledge" icon={BookOpen} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

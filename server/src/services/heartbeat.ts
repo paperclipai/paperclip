@@ -15,6 +15,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  companyKnowledge,
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -2610,6 +2611,28 @@ export function heartbeatService(db: Db) {
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+
+      const injectedKnowledge = await db
+        .select()
+        .from(companyKnowledge)
+        .where(
+          and(
+            eq(companyKnowledge.companyId, agent.companyId),
+            eq(companyKnowledge.alwaysInject, true),
+          ),
+        )
+        .orderBy(asc(companyKnowledge.createdAt));
+
+      if (injectedKnowledge.length > 0) {
+        let knowledgeText = "## Company Knowledge Base\n\nThe following corporate knowledge is injected into your context. Adhere to these guidelines carefully.\n\n";
+        for (const k of injectedKnowledge) {
+          knowledgeText += `### [${k.tier.toUpperCase()}] ${k.title}\n${k.content}\n\n`;
+        }
+        context.paperclipCompanyKnowledge = knowledgeText.trim();
+      } else {
+        delete context.paperclipCompanyKnowledge;
+      }
+
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
