@@ -6,7 +6,8 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.4"
   }
 }
