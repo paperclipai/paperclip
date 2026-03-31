@@ -201,6 +201,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (fallbackModel && isClaudeModel(fallbackModel)) {
     const healthy = await isLocalEndpointHealthy(localBaseUrl);
     if (!healthy) {
+      if (!allowExtraCredit) {
+        const claudeQuotaBlocked = await isClaudeQuotaNearExhausted(quotaThreshold, true, onLog);
+        if (claudeQuotaBlocked) {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorCode: "extra_credit_disabled",
+            errorMessage:
+              `Local endpoint is unavailable and Claude fallback is blocked by quota policy (allowExtraCredit=false, threshold=${quotaThreshold}%).`,
+            clearSession: false,
+          };
+        }
+      }
+
       await onLog(
         "stdout",
         `[hybrid] Local endpoint not reachable at ${localBaseUrl} — skipping to Claude: ${fallbackModel}\n`,
@@ -223,7 +238,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  return executeLocalWithFallback(ctx, model, fallbackModel);
+  return executeLocalWithFallback(ctx, model, fallbackModel, allowExtraCredit, quotaThreshold);
 }
 
 // --- Claude primary with local fallback ---
@@ -281,6 +296,8 @@ async function executeLocalWithFallback(
   ctx: AdapterExecutionContext,
   model: string,
   fallbackModel: string,
+  allowExtraCredit: boolean,
+  quotaThreshold: number,
 ): Promise<AdapterExecutionResult> {
   const { onLog } = ctx;
 
@@ -328,6 +345,21 @@ async function executeLocalWithFallback(
       "stdout",
       `[hybrid] Local model unavailable (${message}). Falling back to Claude: ${fallbackModel}\n`,
     );
+
+    if (!allowExtraCredit) {
+      const claudeQuotaBlocked = await isClaudeQuotaNearExhausted(quotaThreshold, true, onLog);
+      if (claudeQuotaBlocked) {
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode: "extra_credit_disabled",
+          errorMessage:
+            `Local model failed and Claude fallback is blocked by quota policy (allowExtraCredit=false, threshold=${quotaThreshold}%).`,
+          clearSession: false,
+        };
+      }
+    }
 
     const claudeCtx: AdapterExecutionContext = {
       ...ctx,
