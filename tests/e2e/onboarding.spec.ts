@@ -33,7 +33,7 @@ test.describe("Onboarding wizard", () => {
       expect(wizardVisible || launcherVisible).toBe(true);
     }).toPass({ timeout: 15_000 });
 
-    if (await newCompanyBtn.isVisible()) {
+    if (!(await wizardHeading.isVisible()) && (await newCompanyBtn.isVisible())) {
       await newCompanyBtn.click();
     }
 
