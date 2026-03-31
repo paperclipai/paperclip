@@ -124,6 +124,137 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
+      {/* Auth and Identity - available in both create and edit modes */}
+      <SecretField
+        label="Gateway auth token"
+        value={
+          isCreate
+            ? values!.authToken ?? ""
+            : effectiveGatewayToken
+        }
+        onCommit={(v) =>
+          isCreate
+            ? set!({ authToken: v })
+            : commitGatewayToken(v)
+        }
+        placeholder="OpenClaw gateway token"
+      />
+
+      <Field label="Agent ID">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.agentId ?? ""
+              : eff("adapterConfig", "agentId", String(config.agentId ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ agentId: v })
+              : mark("adapterConfig", "agentId", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="agent-123"
+        />
+      </Field>
+
+      <Field label="Session strategy">
+        <select
+          value={
+            isCreate
+              ? values!.sessionKeyStrategy ?? "fixed"
+              : sessionStrategy
+          }
+          onChange={(e) =>
+            isCreate
+              ? set!({ sessionKeyStrategy: e.target.value })
+              : mark("adapterConfig", "sessionKeyStrategy", e.target.value)
+          }
+          className={inputClass}
+        >
+          <option value="fixed">Fixed</option>
+          <option value="issue">Per issue</option>
+          <option value="run">Per run</option>
+        </select>
+      </Field>
+
+      {(isCreate ? values!.sessionKeyStrategy ?? "fixed" : sessionStrategy) === "fixed" && (
+        <Field label="Session key">
+          <DraftInput
+            value={
+              isCreate
+                ? values!.sessionKey ?? ""
+                : eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))
+            }
+            onCommit={(v) =>
+              isCreate
+                ? set!({ sessionKey: v })
+                : mark("adapterConfig", "sessionKey", v || undefined)
+            }
+            immediate
+            className={inputClass}
+            placeholder="paperclip"
+          />
+        </Field>
+      )}
+
+      <SecretField
+        label="Password (alternative auth)"
+        value={
+          isCreate
+            ? values!.password ?? ""
+            : eff("adapterConfig", "password", String(config.password ?? ""))
+        }
+        onCommit={(v) =>
+          isCreate
+            ? set!({ password: v })
+            : mark("adapterConfig", "password", v || undefined)
+        }
+        placeholder="Gateway shared password"
+      />
+
+      <Field label="Role">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.role ?? ""
+              : eff("adapterConfig", "role", String(config.role ?? "operator"))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ role: v })
+              : mark("adapterConfig", "role", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="operator"
+        />
+      </Field>
+
+      <Field label="Scopes (comma-separated)">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.scopes ?? ""
+              : eff("adapterConfig", "scopes", parseScopes(config.scopes ?? ["operator.admin"]))
+          }
+          onCommit={(v) => {
+            const parsed = v
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter(Boolean);
+            if (isCreate) {
+              set!({ scopes: v });
+            } else {
+              mark("adapterConfig", "scopes", parsed.length > 0 ? parsed : undefined);
+            }
+          }}
+          immediate
+          className={inputClass}
+          placeholder="operator.admin"
+        />
+      </Field>
+
       <RuntimeServicesJsonField
         isCreate={isCreate}
         values={values}
@@ -147,63 +278,6 @@ export function OpenClawGatewayConfigFields({
               immediate
               className={inputClass}
               placeholder="https://paperclip.example"
-            />
-          </Field>
-
-          <Field label="Session strategy">
-            <select
-              value={sessionStrategy}
-              onChange={(e) => mark("adapterConfig", "sessionKeyStrategy", e.target.value)}
-              className={inputClass}
-            >
-              <option value="fixed">Fixed</option>
-              <option value="issue">Per issue</option>
-              <option value="run">Per run</option>
-            </select>
-          </Field>
-
-          {sessionStrategy === "fixed" && (
-            <Field label="Session key">
-              <DraftInput
-                value={eff("adapterConfig", "sessionKey", String(config.sessionKey ?? "paperclip"))}
-                onCommit={(v) => mark("adapterConfig", "sessionKey", v || undefined)}
-                immediate
-                className={inputClass}
-                placeholder="paperclip"
-              />
-            </Field>
-          )}
-
-          <SecretField
-            label="Gateway auth token (x-openclaw-token)"
-            value={effectiveGatewayToken}
-            onCommit={commitGatewayToken}
-            placeholder="OpenClaw gateway token"
-          />
-
-          <Field label="Role">
-            <DraftInput
-              value={eff("adapterConfig", "role", String(config.role ?? "operator"))}
-              onCommit={(v) => mark("adapterConfig", "role", v || undefined)}
-              immediate
-              className={inputClass}
-              placeholder="operator"
-            />
-          </Field>
-
-          <Field label="Scopes (comma-separated)">
-            <DraftInput
-              value={eff("adapterConfig", "scopes", parseScopes(config.scopes ?? ["operator.admin"]))}
-              onCommit={(v) => {
-                const parsed = v
-                  .split(",")
-                  .map((entry) => entry.trim())
-                  .filter(Boolean);
-                mark("adapterConfig", "scopes", parsed.length > 0 ? parsed : undefined);
-              }}
-              immediate
-              className={inputClass}
-              placeholder="operator.admin"
             />
           </Field>
 
