@@ -163,11 +163,22 @@ export function initPaperclip(): PaperclipClient {
     'PAPERCLIP_API_URL',
     'PAPERCLIP_RUN_ID',
     'AGENT_SLUG',
+    'SPRINT_ID',
   ]
   const missing = required.filter((key) => !process.env[key])
 
   if (missing.length > 0) {
     throw new Error(`Missing env vars: ${missing.join(', ')}`)
+  }
+
+  // Validate SPRINT_ID format: should match pattern 'sprint-YYYY-MM-DD-NNN'
+  const sprintId = process.env.SPRINT_ID!
+  const sprintIdPattern = /^sprint-\d{4}-\d{2}-\d{2}-\d+$/
+  if (!sprintIdPattern.test(sprintId)) {
+    throw new Error(
+      `Invalid SPRINT_ID format: "${sprintId}". ` +
+      `Expected format: sprint-YYYY-MM-DD-NNN (e.g., sprint-2026-03-31-001)`
+    )
   }
 
   client = new PaperclipClient({
@@ -234,7 +245,7 @@ async function readBriefFromPaperclip(
 ) {
   const issue = await paperclip.getIssue(issueId)
 
-  if (!issue.assignedTo === 'planner') {
+  if (issue.assignedTo !== 'planner') {
     throw new Error(
       `Issue not assigned to planner (assigned to: ${issue.assignedTo})`
     )
@@ -520,7 +531,7 @@ async function routeEvalResult(
       phase: 'qa',
       result: 'FAIL',
       evalPath,
-      failCount: (featureIssueId.metadata.failCount || 0) + 1,
+      failCount: (issue.metadata.failCount || 0) + 1,
     })
 
     // Mention engineer with eval report summary
@@ -642,6 +653,7 @@ async function gatherPassingFeatures(
 // agents/delivery/deploy-and-report.ts
 async function deployAndReport(
   paperclip: PaperclipClient,
+  rootIssueId: string,
   sprintId: string,
   passingFeatures: Issue[]
 ) {
@@ -665,9 +677,9 @@ async function deployAndReport(
   await fs.promises.writeFile(reportPath, reportContent)
 
   // 4. Signal Orchestrator
-  await paperclip.mentionAgent(sprintId, ['orchestrator'])
+  await paperclip.mentionAgent(rootIssueId, ['orchestrator'])
   await paperclip.createComment(
-    sprintId,
+    rootIssueId,
     `Deployment complete. Live at ${deploymentUrl}. Report: ${reportPath}`
   )
 

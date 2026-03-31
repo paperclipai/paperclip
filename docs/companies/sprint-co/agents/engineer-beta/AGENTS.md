@@ -73,6 +73,11 @@ Write `handoff-[feature-id].md`:
 ```markdown
 # Handoff — [Feature ID]: [Feature Title] (Backend)
 
+**Paperclip Feature Issue**: [issue-id]
+**Paperclip Sprint Issue**: [issue-id]
+
+These fields enable context recovery across sessions. Include the issue IDs from Paperclip.
+
 ## Status
 READY FOR INTEGRATION / READY FOR QA
 

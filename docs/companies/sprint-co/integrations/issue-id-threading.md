@@ -151,10 +151,17 @@ async function recoverFromCrash(
   sprintId: string
 ) {
   // 1. Find all unfinished issues assigned to this agent in this sprint
-  const issues = await paperclip.listIssues({
+  const todoIssues = await paperclip.listIssues({
     assignedTo: agentSlug,
-    status: ['todo', 'blocked'], // not yet 'done'
+    status: 'todo',
   })
+  
+  const blockedIssues = await paperclip.listIssues({
+    assignedTo: agentSlug,
+    status: 'blocked',
+  })
+  
+  const issues = [...todoIssues, ...blockedIssues]
 
   // 2. Filter by sprint
   const sprintIssues = issues.filter(

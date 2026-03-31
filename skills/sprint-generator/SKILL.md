@@ -250,7 +250,7 @@ npm run dev
 
 ---
 
-## 5. Responding to QA Feedback
+## 6. Responding to QA Feedback
 
 When QA returns a FAIL report, you have two options:
 

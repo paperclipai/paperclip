@@ -19,7 +19,7 @@ The Delivery Engineer ships QA-passing sprint artifacts to production within 15 
 
 Before deploying, verify:
 ```
-[ ] QA eval-report.md status is PASS
+[ ] All QA eval reports at ./sprints/[sprint-id]/eval-[TASK-ID].md show PASS
 [ ] All 4 criteria scored ≥6
 [ ] Build succeeds locally (npm run build)
 [ ] Environment variables are set in Cloudflare dashboard
@@ -163,8 +163,8 @@ curl -s -o /dev/null -w "%{http_code}" https://[production-url]
 # Expected: 200
 
 # Check API health (if backend)
-curl -s https://[api-url]/health
-# Expected: {"status": "ok"} or similar
+curl -o /dev/null -w "%{http_code}" https://[api-url]/health
+# Expected: 200
 ```
 
 ### Manual Checks (via browser)

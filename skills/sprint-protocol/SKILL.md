@@ -210,19 +210,19 @@ Every agent in Sprint Co maps to a Paperclip agent slug:
 
 ```
 POST /api/issues/{issueId}/comments
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 {
-  "body": "@[role-slug] [message describing handoff]",
-  "headers": { "X-Paperclip-Run-Id": "$PAPERCLIP_RUN_ID" }
+  "body": "@[role-slug] [message describing handoff]"
 }
 ```
 
 And optionally:
 ```
 PATCH /api/issues/{issueId}
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 {
   "assigneeAgentId": "[resolved target agent ID]",
-  "status": "[todo | blocked | done]",
-  "headers": { "X-Paperclip-Run-Id": "$PAPERCLIP_RUN_ID" }
+  "status": "[todo | blocked | done]"
 }
 ```
 
@@ -237,7 +237,7 @@ PATCH /api/issues/{issueId}
 **Signal Delivery Engineer** (QA PASS → Deployment)
 - Trigger: QA passes feature
 - Operation:
-  1. POST comment: "@delivery-engineer Ready to deploy. QA passed. See eval-report.md"
+  1. POST comment: "@delivery-engineer Ready to deploy. QA passed. See ./sprints/[sprint-id]/eval-[TASK-ID].md"
   2. PATCH task: `assigneeAgentId` = delivery-engineer's agent ID, `status` = `todo`
 
 **Signal Engineer [Alpha/Beta]** (Rework requested)
@@ -263,6 +263,7 @@ PATCH /api/issues/{issueId}
 The Paperclip task representing the sprint uses these status values:
 
 - **`todo`**: Sprint is in progress, waiting for current agent to finish
+- **`in_progress`**: Sprint task is currently being worked on by the active agent
 - **`blocked`**: A blocker has been encountered; requires escalation or decision-making
 - **`done`**: Sprint completed and deployed
 
@@ -279,7 +280,7 @@ This header ties all operations within a single sprint execution to one audit tr
 
 These variables are injected by Paperclip at runtime:
 
-- `PAPERCLIP_TASK_ID` — ID of the sprint task (e.g., "issues/12345")
+- `PAPERCLIP_TASK_ID` — ID of the sprint task (e.g., "issue-12345")
 - `PAPERCLIP_RUN_ID` — Unique ID for this sprint execution
 - `PAPERCLIP_API_URL` — Base URL for Paperclip API (e.g., "https://api.paperclip.ai")
 - `PAPERCLIP_API_KEY` — Authentication token for API calls

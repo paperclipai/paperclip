@@ -28,6 +28,27 @@ The three signaling primitives are:
 
 ---
 
+## Agent Slug Reference Table
+
+To avoid conflicts, all references to agents must use the correct slug format:
+
+| Agent Name | AGENTS.md Slug | Short Slug (API) | @-Mention Format | Role |
+|---|---|---|---|---|
+| Sprint Orchestrator | `sprint-orchestrator` | `orchestrator` | `@Sprint Orchestrator` | Creates sprint, routes work, closes sprint |
+| Product Planner | `product-planner` | `planner` | `@Product Planner` | Writes sprint plan, estimates work |
+| Sprint Lead | `sprint-lead` | `lead` | `@Sprint Lead` | Writes architecture, assigns features |
+| Engineer Alpha | `engineer-alpha` | `alpha` | `@Engineer Alpha` | Implements features (parallel track 1) |
+| Engineer Beta | `engineer-beta` | `beta` | `@Engineer Beta` | Implements features (parallel track 2) |
+| QA Engineer | `qa-engineer` | `qa` | `@QA Engineer` | Evaluates features, gates deployment |
+| Delivery Engineer | `delivery-engineer` | `delivery` | `@Delivery Engineer` | Deploys to production |
+
+**Key Rules**:
+- Use `Short Slug` (lowercase, no spaces) in all API calls: `assignedTo`, `assigneeAgentId`, query filters
+- Use `@-Mention Format` (with spaces) in comments for human readability
+- AGENTS.md maintains the canonical slug; Short Slug is the normalized form for API use
+
+---
+
 ## The Ten Handoffs in Sprint Co
 
 ### Handoff 1: Sprint Orchestrator → Product Planner (Brief Ready)
@@ -57,7 +78,7 @@ Response: {id: "SPR-PPP"}
 
 Step 3: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Product Planner Sprint brief received. Plan due in 20 minutes.\n\nBrief: [text]"
+  "content": "@Product Planner Sprint brief received. Plan due in 20 minutes.\n\nBrief: [text]"
 }
 ```
 
@@ -73,7 +94,7 @@ Step 3: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-PPP/documents/plan
 {
-  "body": "[entire sprint-plan.md content]",
+  "content": "[entire sprint-plan.md content]",
   "baseRevisionId": "[current latestRevisionId]"
 }
 
@@ -85,7 +106,7 @@ Step 2: PATCH /api/issues/SPR-PPP
 
 Step 3: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Sprint Orchestrator Sprint plan ready. Total V1 estimate: [X] min.\n\nPlan: /SPR-NNN/documents/plan"
+  "content": "@Sprint Orchestrator Sprint plan ready. Total V1 estimate: [X] min.\n\nPlan: /SPR-NNN/documents/plan"
 }
 ```
 
@@ -110,7 +131,7 @@ Response: {id: "SPR-AAA"}
 
 Step 2: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Sprint Lead Architecture phase starting. Task: write task-breakdown.md in 20 min.\n\nPlan: /SPR-NNN/documents/plan\nBudget: 100 min of implementation"
+  "content": "@Sprint Lead Architecture phase starting. Task: write task-breakdown.md in 20 min.\n\nPlan: /SPR-NNN/documents/plan\nBudget: 100 min of implementation"
 }
 ```
 
@@ -126,7 +147,7 @@ Step 2: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-AAA/documents/task-breakdown
 {
-  "body": "[entire task-breakdown.md content]",
+  "content": "[entire task-breakdown.md content]",
   "baseRevisionId": "[current]"
 }
 
@@ -156,7 +177,7 @@ Response: {id: "SPR-F002"}
 
 Step 5: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Engineer Alpha @Engineer Beta Features assigned. Alpha: [TASK-001], Beta: [TASK-002].\n\nBreakdown: /SPR-NNN/documents/task-breakdown"
+  "content": "@Engineer Alpha @Engineer Beta Features assigned. Alpha: [TASK-001], Beta: [TASK-002].\n\nBreakdown: /SPR-NNN/documents/task-breakdown"
 }
 ```
 
@@ -172,13 +193,13 @@ Step 5: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-F001/documents/handoff
 {
-  "body": "[entire handoff artifact]",
+  "content": "[entire handoff artifact]",
   "baseRevisionId": "[current]"
 }
 
 Step 2: PATCH /api/issues/SPR-F001
 {
-  "status": "in_review",
+  "status": "done",
   "comment": "Feature complete. All self-eval checks passed. Ready for QA.\n\nHandoff: /SPR-F001/documents/handoff"
 }
 
@@ -193,7 +214,7 @@ Response: {id: "SPR-Q001"}
 
 Step 4: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@QA Engineer [TASK-001] ready for evaluation. Handoff: /SPR-F001/documents/handoff"
+  "content": "@QA Engineer [TASK-001] ready for evaluation. Handoff: /SPR-F001/documents/handoff"
 }
 ```
 
@@ -209,7 +230,7 @@ Step 4: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-F001/documents/eval-report
 {
-  "body": "[entire eval report, Result: PASS]",
+  "content": "[entire eval report, Result: PASS]",
   "baseRevisionId": "[current]"
 }
 
@@ -230,7 +251,7 @@ Response: {id: "SPR-D001"}
 
 Step 4: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Delivery Engineer [TASK-001] passed QA. Ready to ship.\n\nEval: /SPR-F001/documents/eval-report"
+  "content": "@Delivery Engineer [TASK-001] passed QA. Ready to ship.\n\nEval: /SPR-F001/documents/eval-report"
 }
 ```
 
@@ -246,7 +267,7 @@ Step 4: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-F001/documents/eval-report
 {
-  "body": "[entire eval report, Result: FAIL, Required Fixes: [...]]",
+  "content": "[entire eval report, Result: FAIL, Required Fixes: [...]]",
   "baseRevisionId": "[current]"
 }
 
@@ -259,7 +280,7 @@ Step 2: PATCH /api/issues/SPR-F001
 
 Step 3: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Engineer Alpha [TASK-001] QA failed. Refine required.\n\nEval: /SPR-F001/documents/eval-report"
+  "content": "@Engineer Alpha [TASK-001] QA failed. Refine required.\n\nEval: /SPR-F001/documents/eval-report"
 }
 ```
 
@@ -275,7 +296,7 @@ Step 3: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-F001/documents/eval-report
 {
-  "body": "[eval report, Result: FAIL x2, Escalation Required]",
+  "content": "[eval report, Result: FAIL x2, Escalation Required]",
   "baseRevisionId": "[current]"
 }
 
@@ -287,11 +308,81 @@ Step 2: PATCH /api/issues/SPR-F001
 
 Step 3: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Sprint Lead Feature [TASK-001] failed QA twice. Decision needed: drop, simplify, or continue refining?\n\nEval: /SPR-F001/documents/eval-report"
+  "content": "@Sprint Lead Feature [TASK-001] failed QA twice. Decision needed: drop, simplify, or continue refining?\n\nEval: /SPR-F001/documents/eval-report"
 }
 ```
 
 **Result**: Sprint Lead's heartbeat fires
+
+---
+
+### Handoff 6c Decision Loop: Sprint Lead Reviews Escalated Feature
+
+**Trigger**: QA has failed a feature twice (Handoff 6c escalates to Lead)  
+**Lead's Three Decision Paths**:
+
+#### Path 1: Drop Feature (Mark as Dropped)
+
+```
+Step 1: PATCH /api/issues/SPR-F001
+{
+  "status": "done",
+  "comment": "Feature dropped per sprint lead decision. Reason: [explanation]. Archive: /SPR-F001/documents/eval-report"
+}
+
+Step 2: Remove from deployment queue
+→ Delivery Engineer will skip this feature when gathering passing features
+```
+
+**When to drop**: Risk is too high, or requirement is out of scope for this sprint.
+
+#### Path 2: Simplify Scope (Modify Acceptance Criteria)
+
+```
+Step 1: POST /api/issues/SPR-F001/comments
+{
+  "content": "Scope reduced. New acceptance criteria:\n- [simplified criterion 1]\n- [simplified criterion 2]\n\nReason: [explanation]. Please re-implement and retest."
+}
+
+Step 2: PATCH /api/issues/SPR-F001
+{
+  "status": "todo",
+  "assignedTo": "alpha"
+}
+
+Step 3: Optional - POST /api/issues/SPR-NNN/comments
+{
+  "content": "@Engineer Alpha [TASK-001] scope simplified. See /SPR-F001/documents/eval-report for QA feedback."
+}
+```
+
+**When to simplify**: Feature is possible but current scope is too ambitious. Reducing MVP scope allows shipping.
+
+#### Path 3: Allow Third Attempt (Reassign for Refinement)
+
+```
+Step 1: POST /api/issues/SPR-F001/comments
+{
+  "content": "Third attempt authorized. Critical notes:\n- Focus on: [specific fix needed]\n- Time remaining: [X minutes]\n- If this fails, feature will be dropped.\n\nEval feedback: /SPR-F001/documents/eval-report"
+}
+
+Step 2: PATCH /api/issues/SPR-F001
+{
+  "status": "todo",
+  "assignedTo": "alpha",
+  "metadata": {
+    "failCount": 2,
+    "finalAttempt": true
+  }
+}
+```
+
+**When to allow third attempt**: Engineer has a clear path to fix and time is available.
+
+**Outcome** (after Lead's decision):
+- **Dropped**: Issue marked done, removed from deployment
+- **Simplified**: New criteria posted, engineer re-implements
+- **Third Attempt**: Engineer refines, QA re-evaluates with understanding that failure = drop
 
 ---
 
@@ -303,7 +394,7 @@ Step 3: POST /api/issues/SPR-NNN/comments
 ```
 Step 1: PUT /api/issues/SPR-NNN/documents/sprint-report
 {
-  "body": "[entire sprint-report.md]",
+  "content": "[entire sprint-report.md]",
   "baseRevisionId": "[current]"
 }
 
@@ -315,11 +406,40 @@ Step 2: PATCH /api/issues/SPR-NNN
 
 Step 3: POST /api/issues/SPR-NNN/comments
 {
-  "body": "@Sprint Orchestrator Sprint [ID] shipped successfully.\n\nProduction: [URL]\nFeatures: [N] shipped, [M] dropped\nTime: [elapsed] / 3:00"
+  "content": "@Sprint Orchestrator Sprint [ID] shipped successfully.\n\nProduction: [URL]\nFeatures: [N] shipped, [M] dropped\nTime: [elapsed] / 3:00"
 }
 ```
 
 **Result**: Sprint Orchestrator receives final signal. Sprint issue marked `done`.
+
+---
+
+### Handoff 10: Sprint Orchestrator → Sprint Closed (Cleanup & Archive)
+
+**Trigger**: All features deployed and sprint-report.md finalized  
+**API Sequence**:
+
+```
+Step 1: PATCH /api/issues/SPR-NNN
+{
+  "status": "done",
+  "comment": "Sprint [ID] complete. [N] features shipped, [M] dropped. Total runtime: [HH:MM]. Archive: /sprints/[sprintId]/sprint-report.md"
+}
+
+Step 2: POST /api/issues/SPR-NNN/comments
+{
+  "content": "Sprint closed. All artifacts archived. Next sprint coordination ready."
+}
+```
+
+**Result**: Sprint issue fully closed. All child issues inherit 'done' status. Artifacts are immutable and available for post-mortems.
+
+**Archive Structure** (for Orchestrator record):
+- `/sprints/[sprintId]/sprint-plan.md` — Original brief and scope
+- `/sprints/[sprintId]/task-breakdown.md` — Architecture decisions
+- `/sprints/[sprintId]/handoff-alpha.md`, `handoff-beta.md` — Feature implementation details
+- `/sprints/[sprintId]/eval-*.md` — QA evaluation records
+- `/sprints/[sprintId]/sprint-report.md` — Final deployment summary
 
 ---
 
