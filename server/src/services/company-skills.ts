@@ -2331,7 +2331,7 @@ export function companySkillService(db: Db) {
     }
     const markdown = data.skillMd;
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
-    const slug = data.slug || agentSkillSlug;
+    const slug = agentSkillSlug;
     const sourceUrl = `https://agentskill.sh/${slug}`;
 
     // Build file inventory and content map from API response
