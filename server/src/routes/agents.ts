@@ -2231,6 +2231,57 @@ export function agentRoutes(db: Db) {
     res.json(redactedEvents);
   });
 
+  router.get("/heartbeat-runs/:runId/todos", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const todos = await heartbeat.listTodos(runId);
+    res.json(todos);
+  });
+
+  router.post("/heartbeat-runs/:runId/todos", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const { todos, issueId } = req.body as {
+      todos: Array<{ label: string; status: "pending" | "in_progress" | "completed"; seq: number }>;
+      issueId?: string | null;
+    };
+
+    if (!Array.isArray(todos)) {
+      res.status(400).json({ error: "todos must be an array" });
+      return;
+    }
+
+    const result = await heartbeat.upsertTodos(run, todos, issueId ?? null);
+    res.json(result);
+  });
+
+  router.get("/issues/:issueId/run-todos", async (req, res) => {
+    const rawId = req.params.issueId as string;
+    const issueSvc = issueService(db);
+    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
+    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const todos = await heartbeat.listTodosForIssue(issue.id);
+    res.json(todos);
+  });
+
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRun(runId);

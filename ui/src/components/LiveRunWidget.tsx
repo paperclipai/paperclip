@@ -10,6 +10,7 @@ import { StatusBadge } from "./StatusBadge";
 import { RunTranscriptView } from "./transcript/RunTranscriptView";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { BoardInterventionPanel, InterventionButton } from "./BoardInterventionPanel";
+import { RunTodosWidget } from "./RunTodosWidget";
 
 interface LiveRunWidgetProps {
   issueId: string;
@@ -64,9 +65,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         issueId,
       });
     }
-    return [...deduped.values()].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    return [...deduped.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [activeRun, issueId, liveRuns]);
 
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({ runs, companyId });
@@ -144,14 +143,18 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                 </div>
               </div>
 
-              <div className="max-h-[320px] overflow-y-auto pr-1">
+              <RunTodosWidget issueId={issueId} runId={run.id} companyId={companyId} isActive={isActive} />
+
+              <div className="mt-3 max-h-[320px] overflow-y-auto pr-1">
                 <RunTranscriptView
                   entries={transcript}
                   density="compact"
                   limit={8}
                   streaming={isActive}
                   collapseStdout
-                  emptyMessage={hasOutputForRun(run.id) ? "Waiting for transcript parsing..." : "Waiting for run output..."}
+                  emptyMessage={
+                    hasOutputForRun(run.id) ? "Waiting for transcript parsing..." : "Waiting for run output..."
+                  }
                 />
               </div>
             </section>
@@ -159,11 +162,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         })}
       </div>
 
-      <BoardInterventionPanel
-        issueId={issueId}
-        open={interventionOpen}
-        onOpenChange={setInterventionOpen}
-      />
+      <BoardInterventionPanel issueId={issueId} open={interventionOpen} onOpenChange={setInterventionOpen} />
     </div>
   );
 }

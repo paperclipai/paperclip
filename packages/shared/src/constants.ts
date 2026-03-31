@@ -284,6 +284,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.status",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.todos",
   "agent.status",
   "activity.logged",
   "plugin.ui.updated",
