@@ -6,10 +6,13 @@ import {
   computeInboxBadgeData,
   getApprovalsForTab,
   getInboxWorkItems,
+  getInboxKeyboardSelectionIndex,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
+  isMineInboxTab,
   loadLastInboxTab,
   RECENT_ISSUES_LIMIT,
+  resolveInboxSelectionIndex,
   saveLastInboxTab,
   shouldShowInboxSection,
 } from "./inbox";
@@ -399,5 +402,25 @@ describe("inbox helpers", () => {
   it("maps legacy new-tab storage to mine", () => {
     localStorage.setItem("paperclip:inbox:last-tab", "new");
     expect(loadLastInboxTab()).toBe("mine");
+  });
+
+  it("enables swipe archive only on the mine tab", () => {
+    expect(isMineInboxTab("mine")).toBe(true);
+    expect(isMineInboxTab("recent")).toBe(false);
+    expect(isMineInboxTab("unread")).toBe(false);
+    expect(isMineInboxTab("all")).toBe(false);
+  });
+
+  it("anchors Mine selection to the first available inbox row", () => {
+    expect(resolveInboxSelectionIndex(-1, 3)).toBe(-1);
+    expect(resolveInboxSelectionIndex(5, 3)).toBe(2);
+    expect(resolveInboxSelectionIndex(1, 0)).toBe(-1);
+  });
+
+  it("selects the first row only after keyboard navigation starts", () => {
+    expect(getInboxKeyboardSelectionIndex(-1, 3, "next")).toBe(0);
+    expect(getInboxKeyboardSelectionIndex(-1, 3, "previous")).toBe(0);
+    expect(getInboxKeyboardSelectionIndex(0, 3, "next")).toBe(1);
+    expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 });

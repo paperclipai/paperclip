@@ -1290,7 +1290,9 @@ export function OnboardingWizard() {
                           {agentName}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {getUIAdapter(adapterType).label}
+                          {t(getUIAdapter(adapterType).label, {
+                            defaultValue: getUIAdapter(adapterType).label,
+                          })}
                         </p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />

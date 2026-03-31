@@ -479,21 +479,22 @@ describe("worktree helpers", () => {
   });
 
   it("rebinds same-repo workspace paths onto the current worktree root", () => {
+    const targetRepoRoot = path.resolve("/Users/example/paperclip-pr-432");
     expect(
       rebindWorkspaceCwd({
         sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        targetRepoRoot,
         workspaceCwd: "/Users/example/paperclip",
       }),
-    ).toBe("/Users/example/paperclip-pr-432");
+    ).toBe(targetRepoRoot);
 
     expect(
       rebindWorkspaceCwd({
         sourceRepoRoot: "/Users/example/paperclip",
-        targetRepoRoot: "/Users/example/paperclip-pr-432",
+        targetRepoRoot,
         workspaceCwd: "/Users/example/paperclip/packages/db",
       }),
-    ).toBe("/Users/example/paperclip-pr-432/packages/db");
+    ).toBe(path.resolve(targetRepoRoot, "packages/db"));
   });
 
   it("does not rebind paths outside the source repo root", () => {
@@ -546,7 +547,9 @@ describe("worktree helpers", () => {
         copied: true,
       });
       expect(fs.readFileSync(targetHookPath, "utf8")).toBe("#!/usr/bin/env bash\nexit 0\n");
-      expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(targetHookPath).mode & 0o111).not.toBe(0);
+      }
       expect(fs.readFileSync(targetTokensPath, "utf8")).toBe("secret-token\n");
     } finally {
       execFileSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot, stdio: "ignore" });

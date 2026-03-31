@@ -6,6 +6,7 @@ import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { translateRuntimeErrorMessage } from "../lib/error-i18n";
+import { displaySeededName } from "../lib/seeded-display";
 import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
@@ -54,18 +55,18 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("Status", { defaultValue: "Status" })}>
           <StatusBadge status={agent.status} />
         </PropertyRow>
-        <PropertyRow label="Role">
+        <PropertyRow label={t("Role", { defaultValue: "Role" })}>
           <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
         </PropertyRow>
         {agent.title && (
-          <PropertyRow label="Title">
-            <span className="text-sm">{agent.title}</span>
+          <PropertyRow label={t("Title", { defaultValue: "Title" })}>
+            <span className="text-sm">{displaySeededName(agent.title)}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Adapter">
+        <PropertyRow label={t("Adapter", { defaultValue: "Adapter" })}>
           <span className="text-sm font-mono">
             {t(adapterLabels[agent.adapterType] ?? agent.adapterType, {
               defaultValue: adapterLabels[agent.adapterType] ?? agent.adapterType,
@@ -78,36 +79,36 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
 
       <div className="space-y-1">
         {(runtimeState?.sessionDisplayId ?? runtimeState?.sessionId) && (
-          <PropertyRow label="Session">
+          <PropertyRow label={t("Session", { defaultValue: "Session" })}>
             <span className="text-xs font-mono">
               {String(runtimeState.sessionDisplayId ?? runtimeState.sessionId).slice(0, 12)}...
             </span>
           </PropertyRow>
         )}
         {runtimeState?.lastError && (
-          <PropertyRow label="Last error">
+          <PropertyRow label={t("Last error", { defaultValue: "Last error" })}>
             <span className="text-xs text-red-600 dark:text-red-400 truncate max-w-[160px]">
               {translateRuntimeErrorMessage(t, runtimeState.lastError)}
             </span>
           </PropertyRow>
         )}
         {agent.lastHeartbeatAt && (
-          <PropertyRow label="Last Heartbeat">
+          <PropertyRow label={t("Last Heartbeat", { defaultValue: "Last Heartbeat" })}>
             <span className="text-sm">{formatDate(agent.lastHeartbeatAt)}</span>
           </PropertyRow>
         )}
         {agent.reportsTo && (
-          <PropertyRow label="Reports To">
+          <PropertyRow label={t("Reports To", { defaultValue: "Reports To" })}>
             {reportsToAgent ? (
               <Link to={agentUrl(reportsToAgent)} className="hover:underline">
-                <Identity name={reportsToAgent.name} size="sm" />
+                <Identity name={displaySeededName(reportsToAgent.name)} size="sm" />
               </Link>
             ) : (
               <span className="text-sm font-mono">{agent.reportsTo.slice(0, 8)}</span>
             )}
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
+        <PropertyRow label={t("Created", { defaultValue: "Created" })}>
           <span className="text-sm">{formatDate(agent.createdAt)}</span>
         </PropertyRow>
       </div>

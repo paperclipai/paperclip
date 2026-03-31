@@ -10,6 +10,7 @@ import { EntityRow } from "../components/EntityRow";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { displaySeededName } from "../lib/seeded-display";
 import { formatDate, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Hexagon, Plus } from "lucide-react";
@@ -67,7 +68,7 @@ export function Projects() {
           {projects.map((project) => (
             <EntityRow
               key={project.id}
-              title={project.name}
+              title={displaySeededName(project.name)}
               subtitle={project.description ?? undefined}
               to={projectUrl(project)}
               trailing={

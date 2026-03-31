@@ -73,6 +73,7 @@ export function Issues() {
       createIssueDetailLocationState(
         issuesLabel,
         `${location.pathname}${location.search}${location.hash}`,
+        "issues",
       ),
     [issuesLabel, location.pathname, location.search, location.hash],
   );

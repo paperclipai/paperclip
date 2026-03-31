@@ -9,6 +9,7 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
+import { displaySeededName } from "../lib/seeded-display";
 import {
   CommandDialog,
   CommandEmpty,
@@ -94,7 +95,8 @@ export function CommandPalette() {
 
   const agentName = (id: string | null) => {
     if (!id) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
+    const agent = agents.find((a) => a.id === id);
+    return agent ? displaySeededName(agent.name) : null;
   };
 
   const visibleIssues = useMemo(
@@ -216,7 +218,7 @@ export function CommandPalette() {
               {agents.slice(0, 10).map((agent) => (
                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
                   <Bot className="mr-2 h-4 w-4" />
-                  {agent.name}
+                  {displaySeededName(agent.name)}
                   <span className="text-xs text-muted-foreground ml-2">{agent.role}</span>
                 </CommandItem>
               ))}
@@ -231,7 +233,7 @@ export function CommandPalette() {
               {projects.slice(0, 10).map((project) => (
                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
                   <Hexagon className="mr-2 h-4 w-4" />
-                  {project.name}
+                  {displaySeededName(project.name)}
                 </CommandItem>
               ))}
             </CommandGroup>

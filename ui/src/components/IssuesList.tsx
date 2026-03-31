@@ -11,6 +11,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import { formatDate, cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { displaySeededName } from "../lib/seeded-display";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
@@ -293,7 +294,8 @@ export function IssuesList({
 
   const agentName = useCallback((id: string | null) => {
     if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
+    const agent = agents.find((a) => a.id === id);
+    return agent ? displaySeededName(agent.name) : null;
   }, [agents]);
 
   const filtered = useMemo(() => {
@@ -528,7 +530,7 @@ export function IssuesList({
                               checked={viewState.assignees.includes(agent.id)}
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
                             />
-                            <span className="text-sm">{agent.name}</span>
+                            <span className="text-sm">{displaySeededName(agent.name)}</span>
                           </label>
                         ))}
                       </div>
@@ -562,7 +564,7 @@ export function IssuesList({
                                 checked={viewState.projects.includes(project.id)}
                                 onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
                               />
-                              <span className="text-sm">{project.name}</span>
+                              <span className="text-sm">{displaySeededName(project.name)}</span>
                             </label>
                           ))}
                         </div>
@@ -858,9 +860,9 @@ export function IssuesList({
                             {(agents ?? [])
                               .filter((agent) => {
                                 if (!assigneeSearch.trim()) return true;
-                                return agent.name
-                                  .toLowerCase()
-                                  .includes(assigneeSearch.toLowerCase());
+                                const query = assigneeSearch.toLowerCase();
+                                const localizedName = displaySeededName(agent.name).toLowerCase();
+                                return agent.name.toLowerCase().includes(query) || localizedName.includes(query);
                               })
                               .map((agent) => (
                                 <button
@@ -875,7 +877,7 @@ export function IssuesList({
                                     assignIssue(issue.id, agent.id, null);
                                   }}
                                 >
-                                  <Identity name={agent.name} size="sm" className="min-w-0" />
+                                  <Identity name={displaySeededName(agent.name)} size="sm" className="min-w-0" />
                                 </button>
                               ))}
                           </div>

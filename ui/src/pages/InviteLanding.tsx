@@ -72,6 +72,7 @@ export function InviteLandingPage() {
   });
 
   const invite = inviteQuery.data;
+  const companyName = invite?.companyName?.trim() || null;
   const allowedJoinTypes = invite?.allowedJoinTypes ?? "both";
   const joinTypeLabel = (type: JoinType) =>
     t(type === "human" ? "invite.joinType.human" : "invite.joinType.agent");
@@ -240,6 +241,9 @@ export function InviteLandingPage() {
         <h1 className="text-xl font-semibold">
           {invite.inviteType === "bootstrap_ceo" ? t("invite.bootstrapTitle") : t("invite.joinCompanyTitle")}
         </h1>
+        {invite.inviteType !== "bootstrap_ceo" && companyName ? (
+          <p className="mt-2 text-sm text-muted-foreground">{companyName}</p>
+        ) : null}
         <p className="mt-2 text-sm text-muted-foreground">{t("invite.expiresAt", { value: dateTime(invite.expiresAt) })}</p>
 
         {invite.inviteType !== "bootstrap_ceo" && (

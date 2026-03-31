@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Agent } from "@penclipai/shared";
+import { useTranslation } from "react-i18next";
 import {
   Popover,
   PopoverContent,
@@ -9,6 +10,7 @@ import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
 import { AgentIcon } from "./AgentIconPicker";
+import { displaySeededName } from "../lib/seeded-display";
 
 export function ReportsToPicker({
   agents,
@@ -16,8 +18,8 @@ export function ReportsToPicker({
   onChange,
   disabled = false,
   excludeAgentIds = [],
-  disabledEmptyLabel = "Reports to: N/A (CEO)",
-  chooseLabel = "Reports to...",
+  disabledEmptyLabel,
+  chooseLabel,
 }: {
   agents: Agent[];
   value: string | null;
@@ -27,6 +29,7 @@ export function ReportsToPicker({
   disabledEmptyLabel?: string;
   chooseLabel?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
   const rows = agents.filter(
@@ -35,6 +38,17 @@ export function ReportsToPicker({
   const current = value ? agents.find((a) => a.id === value) : null;
   const terminatedManager = current?.status === "terminated";
   const unknownManager = Boolean(value && !current);
+  const resolvedDisabledEmptyLabel =
+    disabledEmptyLabel ??
+    t("Reports to: N/A (CEO)", {
+      defaultValue: "Reports to: N/A (CEO)",
+    });
+  const resolvedChooseLabel =
+    chooseLabel ??
+    t("Reports to...", {
+      defaultValue: "Reports to...",
+    });
+  const currentName = current ? displaySeededName(current.name) : null;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -51,7 +65,11 @@ export function ReportsToPicker({
           {unknownManager ? (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate text-muted-foreground">Unknown manager (stale ID)</span>
+              <span className="min-w-0 truncate text-muted-foreground">
+                {t("Unknown manager (stale ID)", {
+                  defaultValue: "Unknown manager (stale ID)",
+                })}
+              </span>
             </>
           ) : current ? (
             <>
@@ -62,14 +80,22 @@ export function ReportsToPicker({
                   terminatedManager && "text-amber-900 dark:text-amber-200",
                 )}
               >
-                {`Reports to ${current.name}${terminatedManager ? " (terminated)" : ""}`}
+                {terminatedManager
+                  ? t("Reports to {{name}} (terminated)", {
+                      defaultValue: "Reports to {{name}} (terminated)",
+                      name: currentName,
+                    })
+                  : t("Reports to {{name}}", {
+                      defaultValue: "Reports to {{name}}",
+                      name: currentName,
+                    })}
               </span>
             </>
           ) : (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate">
-                {disabled ? disabledEmptyLabel : chooseLabel}
+                {disabled ? resolvedDisabledEmptyLabel : resolvedChooseLabel}
               </span>
             </>
           )}
@@ -87,19 +113,27 @@ export function ReportsToPicker({
             setOpen(false);
           }}
         >
-          No manager
+          {t("No manager", {
+            defaultValue: "No manager",
+          })}
         </button>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
             <span className="min-w-0 truncate">
-              Current: {current.name} (terminated)
+              {t("Current: {{name}} (terminated)", {
+                defaultValue: "Current: {{name}} (terminated)",
+                name: currentName,
+              })}
             </span>
           </div>
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
+            {t("Saved manager is missing from this company. Choose a new manager or clear.", {
+              defaultValue:
+                "Saved manager is missing from this company. Choose a new manager or clear.",
+            })}
           </div>
         )}
         {rows.map((a) => (
@@ -116,7 +150,7 @@ export function ReportsToPicker({
             }}
           >
             <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            <span className="min-w-0 truncate">{a.name}</span>
+            <span className="min-w-0 truncate">{displaySeededName(a.name)}</span>
             <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
           </button>
         ))}

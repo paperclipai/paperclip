@@ -1,4 +1,5 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import { useTranslation } from "react-i18next";
 import {
   Field,
   ToggleField,
@@ -21,10 +22,17 @@ export function OpenCodeLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
+
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field
+          label={t("agentConfig.instructionsFileLabel")}
+          hint={t("agentConfig.instructionsFileHint", {
+            defaultValue: instructionsFileHint,
+          })}
+        >
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -43,14 +51,14 @@ export function OpenCodeLocalConfigFields({
               }
               immediate
               className={inputClass}
-              placeholder="/absolute/path/to/AGENTS.md"
+              placeholder={t("agentConfig.instructionsFilePlaceholder")}
             />
             <ChoosePathButton />
           </div>
         </Field>
       )}
       <ToggleField
-        label="Skip permissions"
+        label={t("Skip permissions", { defaultValue: "Skip permissions" })}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate

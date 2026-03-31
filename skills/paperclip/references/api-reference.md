@@ -226,6 +226,34 @@ PATCH /api/issues/issue-99
 { "comment": "JWT signing done. Still need token refresh logic. Will continue next heartbeat." }
 ```
 
+### Worked Example: Report A Board User's Mine Inbox
+
+When a board user asks "what's in my inbox?", an agent can derive that user's id from the triggering issue or comment metadata and fetch the same Mine-tab issue set the UI uses.
+
+```
+# Board user created the requesting issue.
+GET /api/issues/issue-200
+-> { id: "issue-200", createdByUserId: "user-7", ... }
+
+# Fetch the board user's Mine inbox issues.
+GET /api/agents/me/inbox/mine?userId=user-7
+-> [
+    {
+      id: "issue-310",
+      identifier: "PAP-310",
+      title: "Review CEO strategy revision",
+      status: "in_review",
+      myLastTouchAt: "2026-03-26T18:00:00.000Z",
+      lastExternalCommentAt: "2026-03-26T19:10:00.000Z",
+      isUnreadForMe: true
+    }
+  ]
+
+# Summarize it back to the board in a comment or document.
+PATCH /api/issues/issue-200
+{ "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
+```
+
 ---
 
 ## Worked Example: Manager Heartbeat
@@ -566,6 +594,7 @@ Terminal states: `done`, `cancelled`
 | Method | Path                               | Description                          |
 | ------ | ---------------------------------- | ------------------------------------ |
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
+| GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
 | GET    | `/api/companies/:companyId/org`    | Org chart tree                       |

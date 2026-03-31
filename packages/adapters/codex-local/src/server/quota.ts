@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@penclipai/adapter-utils";
+import { ensurePathInEnv, resolveCommandForLogs } from "@penclipai/adapter-utils/server-utils";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
@@ -407,18 +408,15 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
+  private proc: ChildProcessWithoutNullStreams;
 
   private nextId = 1;
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
 
-  constructor() {
+  constructor(proc: ChildProcessWithoutNullStreams) {
+    this.proc = proc;
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
@@ -432,6 +430,26 @@ class CodexRpcClient {
       }
       this.pending.clear();
     });
+    this.proc.on("error", (err: Error) => {
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
+      }
+      this.pending.clear();
+    });
+  }
+
+  static async create(): Promise<CodexRpcClient> {
+    const runtimeEnv = ensurePathInEnv(process.env);
+    // Reuse the shared Windows command resolution so npm .cmd shims win over
+    // bare Unix launcher scripts in %APPDATA%\npm.
+    const command = await resolveCommandForLogs("codex", process.cwd(), runtimeEnv);
+    const proc = spawn(
+      command,
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      { stdio: ["pipe", "pipe", "pipe"], env: runtimeEnv },
+    );
+    return new CodexRpcClient(proc);
   }
 
   private onStdout(chunk: string) {
@@ -505,7 +523,7 @@ class CodexRpcClient {
 }
 
 export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
-  const client = new CodexRpcClient();
+  const client = await CodexRpcClient.create();
   try {
     await client.initialize();
     const [limits, account] = await Promise.all([

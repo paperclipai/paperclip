@@ -6,12 +6,15 @@ import type { agents } from "@penclipai/db";
 import { sessionCodec as codexSessionCodec } from "@penclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applyPersistedExecutionWorkspaceConfig,
+  buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
   ensureDefaultAgentHome,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -151,6 +154,147 @@ describe("ensureDefaultAgentHome", () => {
     expect(archivesStats.isDirectory()).toBe(true);
     expect(memoryStats.isDirectory()).toBe(true);
     await expect(fs.readFile(path.join(home, "MEMORY.md"), "utf8")).resolves.toContain("# Memory");
+  });
+});
+
+describe("applyPersistedExecutionWorkspaceConfig", () => {
+  it("does not add workspace runtime when only the project workspace had manual runtime config", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: null,
+      mode: "isolated_workspace",
+    });
+
+    expect("workspaceRuntime" in result).toBe(false);
+  });
+
+  it("applies explicit persisted execution workspace runtime config when present", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        workspaceRuntime: {
+          services: [{ name: "workspace-web" }],
+        },
+      },
+      mode: "isolated_workspace",
+    });
+
+    expect(result.workspaceRuntime).toEqual({
+      services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
+  it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
+    const result = buildRealizedExecutionWorkspaceFromPersisted({
+      base: buildResolvedWorkspace({
+        cwd: "/tmp/project-primary",
+        repoRef: "main",
+      }),
+      workspace: {
+        id: "execution-workspace-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "PAP-880-thumbs-capture-for-evals-feature",
+        status: "active",
+        cwd: "/tmp/reused-worktree",
+        repoUrl: "https://example.com/paperclip.git",
+        baseRef: "main",
+        branchName: "PAP-880-thumbs-capture-for-evals-feature",
+        providerType: "git_worktree",
+        providerRef: "/tmp/reused-worktree",
+        derivedFromExecutionWorkspaceId: null,
+        lastUsedAt: new Date(),
+        openedAt: new Date(),
+        closedAt: null,
+        cleanupEligibleAt: null,
+        cleanupReason: null,
+        config: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    expect(result.created).toBe(false);
+    expect(result.strategy).toBe("git_worktree");
+    expect(result.cwd).toBe("/tmp/reused-worktree");
+    expect(result.worktreePath).toBe("/tmp/reused-worktree");
+    expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
+    expect(result.source).toBe("task_session");
+  });
+
+  it("falls back to realization when the persisted workspace has no local path yet", () => {
+    const result = buildRealizedExecutionWorkspaceFromPersisted({
+      base: buildResolvedWorkspace({
+        cwd: "/tmp/project-primary",
+        repoRef: "main",
+      }),
+      workspace: {
+        id: "execution-workspace-2",
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-2",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "PAP-999-missing-provider-ref",
+        status: "active",
+        cwd: null,
+        repoUrl: "https://example.com/paperclip.git",
+        baseRef: "main",
+        branchName: "feature/PAP-999-missing-provider-ref",
+        providerType: "git_worktree",
+        providerRef: null,
+        derivedFromExecutionWorkspaceId: null,
+        lastUsedAt: new Date(),
+        openedAt: new Date(),
+        closedAt: null,
+        cleanupEligibleAt: null,
+        cleanupReason: null,
+        config: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
+  it("removes workspace runtime before heartbeat execution", () => {
+    const input = {
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+      workspaceRuntime: {
+        services: [{ name: "web" }],
+      },
+    };
+
+    const result = stripWorkspaceRuntimeFromExecutionRunConfig(input);
+
+    expect(result).toEqual({
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+    });
+    expect(input.workspaceRuntime).toEqual({
+      services: [{ name: "web" }],
+    });
   });
 });
 

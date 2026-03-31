@@ -105,11 +105,13 @@ export function ToggleField({
   hint,
   checked,
   onChange,
+  toggleTestId,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  toggleTestId?: string;
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -119,6 +121,8 @@ export function ToggleField({
       </div>
       <button
         data-slot="toggle"
+        data-testid={toggleTestId}
+        type="button"
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
           checked ? "bg-green-600" : "bg-muted"

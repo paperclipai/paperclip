@@ -219,6 +219,33 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
   return redacted;
 }
 
+export function buildInvocationEnvForLogs(
+  env: Record<string, string>,
+  options: {
+    runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
+    includeRuntimeKeys?: string[];
+    resolvedCommand?: string | null;
+    resolvedCommandEnvKey?: string;
+  } = {},
+): Record<string, string> {
+  const merged: Record<string, string> = { ...env };
+  const runtimeEnv = options.runtimeEnv ?? {};
+
+  for (const key of options.includeRuntimeKeys ?? []) {
+    if (key in merged) continue;
+    const value = runtimeEnv[key];
+    if (typeof value !== "string" || value.length === 0) continue;
+    merged[key] = value;
+  }
+
+  const resolvedCommand = options.resolvedCommand?.trim();
+  if (resolvedCommand) {
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+  }
+
+  return redactEnvForLogs(merged);
+}
+
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -277,7 +304,7 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
       process.platform === "win32"
         ? hasExtension
           ? [path.join(dir, command)]
-          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+          : [...exts.map((ext) => path.join(dir, `${command}${ext}`)), path.join(dir, command)]
         : [path.join(dir, command)];
     for (const candidate of candidates) {
       if (await pathExists(candidate)) return candidate;
@@ -287,10 +314,64 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   return null;
 }
 
+export async function resolveCommandForLogs(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+  return (await resolveCommandPath(command, cwd, env)) ?? command;
+}
+
 function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
   const escaped = arg.replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+async function readShebangTokens(executable: string): Promise<string[] | null> {
+  try {
+    const handle = await fs.open(executable, "r");
+    try {
+      const buffer = Buffer.alloc(512);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const firstLine = buffer.toString("utf8", 0, bytesRead).split(/\r?\n/u, 1)[0]?.trim() ?? "";
+      if (!firstLine.startsWith("#!")) return null;
+      const shebang = firstLine.slice(2).trim();
+      return shebang ? shebang.split(/\s+/u).filter(Boolean) : null;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function resolveShebangSpawnTarget(
+  executable: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<SpawnTarget | null> {
+  const tokens = await readShebangTokens(executable);
+  if (!tokens || tokens.length === 0) return null;
+
+  let [interpreter, ...interpreterArgs] = tokens;
+  const interpreterBase = path.posix.basename(interpreter).toLowerCase();
+  if (interpreterBase === "env" || interpreterBase === "env.exe") {
+    if (interpreterArgs[0] === "-S") interpreterArgs = interpreterArgs.slice(1);
+    interpreter = interpreterArgs.shift() ?? "";
+  }
+
+  const normalizedBase = path.posix.basename(interpreter).toLowerCase().replace(/\.exe$/u, "");
+  const resolvedInterpreter =
+    normalizedBase === "node"
+      ? process.execPath
+      : normalizedBase === "sh"
+        ? await resolveCommandPath("bash", cwd, env)
+        : normalizedBase
+          ? await resolveCommandPath(normalizedBase, cwd, env)
+          : null;
+
+  if (!resolvedInterpreter) return null;
+  return {
+    command: resolvedInterpreter,
+    args: [...interpreterArgs, executable],
+  };
 }
 
 async function resolveSpawnTarget(
@@ -312,6 +393,14 @@ async function resolveSpawnTarget(
     return {
       command: shell,
       args: ["/d", "/s", "/c", commandLine],
+    };
+  }
+
+  const shebangTarget = await resolveShebangSpawnTarget(executable, cwd, env);
+  if (shebangTarget) {
+    return {
+      command: shebangTarget.command,
+      args: [...shebangTarget.args, ...args],
     };
   }
 
