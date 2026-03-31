@@ -18,6 +18,10 @@ packages/shared/ # types, constants, validators
 packages/adapters/ # agent adapters (Claude, Codex, Cursor)
 packages/adapter-utils/ # shared adapter utilities
 packages/plugins/ # plugin system
+  sdk/           # Plugin SDK (definePlugin, testing, bundlers)
+  playwright-mcp/ # Browser automation plugin (10 tools)
+  ruflo-bridge/  # Ruflo MCP bridge plugin (9 tools)
+  skills-hub/    # Agent skills plugin (12 tools)
 doc/             # operational/product docs
 ```
 
@@ -51,6 +55,29 @@ pnpm install && pnpm dev
 ```sh
 pnpm -r typecheck && pnpm test:run && pnpm build
 ```
+
+## Plugin Development
+
+### Plugin SDK Commands
+
+```sh
+# SDK typecheck and tests
+pnpm --filter @paperclipai/plugin-sdk typecheck
+pnpm --filter @paperclipai/plugin-sdk test
+
+# Plugin E2E lifecycle tests (no Postgres required)
+pnpm test -- plugin-e2e-lifecycle
+```
+
+### Plugin Validation Checklist
+
+1. **Discovery:** Plugin in `packages/plugins/<name>` with valid `package.json`
+2. **Build:** `dist/worker.js` compiled and < 1MB
+3. **Tools:** Manifest declares tools, worker implements each
+4. **Docs:** README.md with usage examples
+5. **Tests:** SDK unit tests + E2E lifecycle tests
+
+See `doc/plugins/PLUGIN_SPEC.md` and `doc/plugins/PLUGIN_AUTHORING_GUIDE.md` for full spec.
 
 ## API/Auth
 
