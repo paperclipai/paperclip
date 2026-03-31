@@ -104,12 +104,12 @@ export function Sidebar() {
         <SidebarAgents />
 
         <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/org" label="Org Chart" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/library" label="Library" icon={BookOpen} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/performance" label="Agent Performance" icon={BarChart3} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/activity" label="Company Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

@@ -62,7 +62,12 @@ export function computeAgentPerformance(
   range: TimeRange,
 ): AgentPerfRow[] {
   const rangedIssues = range === "all" ? issues : issues.filter((i) => isInRange(i.updatedAt, range));
-  const days = range === "7d" ? 7 : range === "30d" ? 30 : Math.max(1, Math.ceil((Date.now() - Math.min(...issues.map((i) => new Date(i.createdAt).getTime()))) / (24 * 60 * 60 * 1000)));
+  const days = range === "7d" ? 7 : range === "30d" ? 30 : (() => {
+    if (issues.length === 0) return 1;
+    let earliest = Date.now();
+    for (const i of issues) { const t = new Date(i.createdAt).getTime(); if (t < earliest) earliest = t; }
+    return Math.max(1, Math.ceil((Date.now() - earliest) / (24 * 60 * 60 * 1000)));
+  })();
 
   const rows: AgentPerfRow[] = [];
 
