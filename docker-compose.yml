@@ -43,7 +43,7 @@ services:
 volumes:
   pgdata:
   paperclip-data:
-  claude-bin:
+  paperclip-claude-adi6ix_claude-bin:
     external: true
-  claude-config:
+  paperclip-claude-adi6ix_claude-config:
     external: true
