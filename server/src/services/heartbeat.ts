@@ -263,6 +263,26 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+type ProjectWorkspaceManifest = {
+  projectId: string | null;
+  taskKey: string | null;
+  workspaceId: string | null;
+  relativeCwd: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+};
+
+export type RecoveredProjectWorkspaceFromManifest = {
+  cwd: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+  manifestPath: string;
+};
+
+const PROJECT_WORKSPACE_MANIFEST_FILENAME = "paperclip-workspace.json";
+const PROJECT_WORKSPACE_REPO_DIRNAME = "repo";
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -544,6 +564,145 @@ export function parseSessionCompactionPolicy(agent: typeof agents.$inferSelect):
   return resolveSessionCompactionPolicy(agent.adapterType, agent.runtimeConfig).policy;
 }
 
+async function isDirectory(dir: string | null | undefined) {
+  if (!dir) return false;
+  return fs
+    .stat(dir)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false);
+}
+
+async function listDirectories(dir: string) {
+  const entries = await fs
+    .readdir(dir, { withFileTypes: true })
+    .catch(() => [] as Array<{ isDirectory(): boolean; name: string }>);
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+}
+
+function matchesTruncatedPathSegment(segment: string, identifier: string | null) {
+  if (!identifier) return false;
+  return segment === identifier || identifier.startsWith(segment);
+}
+
+function parseProjectWorkspaceManifest(raw: string): ProjectWorkspaceManifest | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  const record = parseObject(parsed);
+  const workspaceId = readNonEmptyString(record.workspaceId);
+  if (!workspaceId) return null;
+  return {
+    projectId: readNonEmptyString(record.projectId),
+    taskKey: readNonEmptyString(record.taskKey),
+    workspaceId,
+    relativeCwd: readNonEmptyString(record.relativeCwd),
+    repoUrl: readNonEmptyString(record.repoUrl),
+    repoRef: readNonEmptyString(record.repoRef),
+  };
+}
+
+async function resolveRecoveredManifestWorkspaceCwd(
+  manifestPath: string,
+  relativeCwd: string | null,
+) {
+  const manifestDir = path.dirname(manifestPath);
+  const repoDir = path.resolve(manifestDir, PROJECT_WORKSPACE_REPO_DIRNAME);
+  if (!(await isDirectory(repoDir))) {
+    return null;
+  }
+  if (!relativeCwd) {
+    return repoDir;
+  }
+
+  const candidate = path.resolve(repoDir, relativeCwd);
+  if (candidate !== repoDir && !candidate.startsWith(`${repoDir}${path.sep}`)) {
+    return null;
+  }
+  if (!(await isDirectory(candidate))) {
+    return null;
+  }
+  return candidate;
+}
+
+export async function recoverProjectWorkspaceFromManifest(input: {
+  agentId: string;
+  projectId: string | null;
+  taskKey: string | null;
+  workspaceIds: string[];
+}): Promise<RecoveredProjectWorkspaceFromManifest | null> {
+  if (!input.projectId) return null;
+
+  const projectWorkspacesRoot = path.join(
+    resolveDefaultAgentWorkspaceDir(input.agentId),
+    "project-workspaces",
+  );
+  const projectDirs = (await listDirectories(projectWorkspacesRoot)).filter((dir) =>
+    matchesTruncatedPathSegment(path.basename(dir), input.projectId),
+  );
+  if (projectDirs.length === 0) {
+    return null;
+  }
+
+  const trackedWorkspaceIds = new Set(
+    input.workspaceIds.filter((workspaceId) => workspaceId.trim().length > 0),
+  );
+  let bestCandidate: (RecoveredProjectWorkspaceFromManifest & { score: number }) | null = null;
+
+  for (const projectDir of projectDirs) {
+    const taskDirs = await listDirectories(projectDir);
+    for (const taskDir of taskDirs) {
+      const workspaceDirs = await listDirectories(taskDir);
+      for (const workspaceDir of workspaceDirs) {
+        const manifestPath = path.join(workspaceDir, PROJECT_WORKSPACE_MANIFEST_FILENAME);
+        const manifestRaw = await fs.readFile(manifestPath, "utf8").catch(() => null);
+        if (!manifestRaw) continue;
+
+        const manifest = parseProjectWorkspaceManifest(manifestRaw);
+        if (!manifest || manifest.projectId !== input.projectId) continue;
+        if (input.taskKey && manifest.taskKey && manifest.taskKey !== input.taskKey) continue;
+        if (
+          trackedWorkspaceIds.size > 0 &&
+          (!manifest.workspaceId || !trackedWorkspaceIds.has(manifest.workspaceId))
+        ) {
+          continue;
+        }
+
+        const recoveredCwd = await resolveRecoveredManifestWorkspaceCwd(
+          manifestPath,
+          manifest.relativeCwd,
+        );
+        if (!recoveredCwd) continue;
+
+        const score =
+          (manifest.workspaceId && trackedWorkspaceIds.has(manifest.workspaceId) ? 2 : 0) +
+          (input.taskKey && manifest.taskKey === input.taskKey ? 1 : 0);
+        if (bestCandidate && bestCandidate.score >= score) continue;
+
+        bestCandidate = {
+          cwd: recoveredCwd,
+          workspaceId: manifest.workspaceId,
+          repoUrl: manifest.repoUrl,
+          repoRef: manifest.repoRef,
+          manifestPath,
+          score,
+        };
+      }
+    }
+  }
+
+  if (!bestCandidate) return null;
+  return {
+    cwd: bestCandidate.cwd,
+    workspaceId: bestCandidate.workspaceId,
+    repoUrl: bestCandidate.repoUrl,
+    repoRef: bestCandidate.repoRef,
+    manifestPath: bestCandidate.manifestPath,
+  };
+}
 export function resolveRuntimeSessionParamsForWorkspace(input: {
   agentId: string;
   previousSessionParams: Record<string, unknown> | null;
@@ -1353,11 +1512,7 @@ export function heartbeatService(db: Db) {
           }
         }
         hasConfiguredProjectCwd = true;
-        const projectCwdExists = await fs
-          .stat(projectCwd)
-          .then((stats) => stats.isDirectory())
-          .catch(() => false);
-        if (projectCwdExists) {
+        if (await isDirectory(projectCwd)) {
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
@@ -1376,6 +1531,45 @@ export function heartbeatService(db: Db) {
             `Selected project workspace path "${projectCwd}" is not available yet.`;
         }
         missingProjectCwds.push(projectCwd);
+      }
+
+      const recoveredWorkspace = await recoverProjectWorkspaceFromManifest({
+        agentId: agent.id,
+        projectId: resolvedProjectId,
+        taskKey: deriveTaskKey(context, null),
+        workspaceIds: projectWorkspaceRows.map((workspace) => workspace.id),
+      });
+      if (recoveredWorkspace) {
+        const recoveredHints = workspaceHints.map((workspace) =>
+          workspace.workspaceId === recoveredWorkspace.workspaceId
+            ? {
+                ...workspace,
+                cwd: recoveredWorkspace.cwd,
+                repoUrl: recoveredWorkspace.repoUrl ?? workspace.repoUrl,
+                repoRef: recoveredWorkspace.repoRef ?? workspace.repoRef,
+              }
+            : workspace,
+        );
+        const firstMissing = missingProjectCwds[0];
+        const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
+        const recoveryPrefix =
+          missingProjectCwds.length > 0
+            ? extraMissingCount > 0
+              ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available.`
+              : `Project workspace path "${firstMissing}" is not available.`
+            : `Project workspace has no local cwd configured.`;
+        return {
+          cwd: recoveredWorkspace.cwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: recoveredWorkspace.workspaceId,
+          repoUrl: recoveredWorkspace.repoUrl,
+          repoRef: recoveredWorkspace.repoRef,
+          workspaceHints: recoveredHints,
+          warnings: [
+            `${recoveryPrefix} Recovered managed workspace "${recoveredWorkspace.cwd}" from manifest "${recoveredWorkspace.manifestPath}" for this run.`,
+          ],
+        };
       }
 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
