@@ -189,7 +189,6 @@ function AgentSkillReview({
       setSubmitting(false);
     }
   }
-  }
 
   if (submitted) {
     return (
