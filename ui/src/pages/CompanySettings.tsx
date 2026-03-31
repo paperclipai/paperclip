@@ -8,7 +8,7 @@ import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, Loader2, Link2, Unlink } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -376,6 +376,9 @@ export function CompanySettings() {
         </div>
       )}
 
+      {/* Linear Integration */}
+      {selectedCompanyId && <LinearConnectionSection companyId={selectedCompanyId} />}
+
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -548,6 +551,121 @@ export function CompanySettings() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LinearConnectionSection({ companyId }: { companyId: string }) {
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    configured: boolean;
+    openIssueCount: number | null;
+    teamKey: string | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const fetchStatus = () => {
+    fetch(`/api/auth/linear/status?companyId=${companyId}`)
+      .then((r) => r.json())
+      .then((data) => { setStatus(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchStatus(); }, [companyId]);
+
+  function handleConnect() {
+    const popup = window.open(
+      `/api/auth/linear/start?companyId=${companyId}`,
+      "linear-oauth",
+      "width=600,height=700",
+    );
+    const poll = setInterval(() => {
+      if (popup?.closed) {
+        clearInterval(poll);
+        fetchStatus();
+      }
+    }, 500);
+  }
+
+  async function handleDisconnect() {
+    setDisconnecting(true);
+    try {
+      await fetch(`/api/auth/linear/disconnect?companyId=${companyId}`, {
+        method: "POST",
+      });
+      setStatus({ connected: false, configured: status?.configured ?? false, openIssueCount: null, teamKey: null });
+    } catch { /* best effort */ }
+    setDisconnecting(false);
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Linear Integration
+        </div>
+        <div className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin inline mr-2" />
+          Checking connection...
+        </div>
+      </div>
+    );
+  }
+
+  if (!status?.configured) {
+    return (
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Linear Integration
+        </div>
+        <div className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground">
+          Linear OAuth not configured. Set PAPERCLIP_LINEAR_CLIENT_ID and PAPERCLIP_LINEAR_CLIENT_SECRET.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Linear Integration
+      </div>
+      <div className="rounded-md border border-border px-4 py-3">
+        {status.connected ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-green-500" />
+              <span className="text-sm">
+                Connected{status.teamKey ? ` (${status.teamKey})` : ""}
+              </span>
+              {status.openIssueCount !== null && (
+                <span className="text-xs text-muted-foreground">
+                  · {status.openIssueCount} open issues
+                </span>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive border-destructive/30 hover:bg-destructive/10"
+              onClick={handleDisconnect}
+              disabled={disconnecting}
+            >
+              <Unlink className="h-3.5 w-3.5 mr-1" />
+              {disconnecting ? "Disconnecting..." : "Disconnect"}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Not connected</span>
+            <Button variant="outline" size="sm" onClick={handleConnect}>
+              <Link2 className="h-3.5 w-3.5 mr-1" />
+              Connect Linear
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

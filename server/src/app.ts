@@ -28,6 +28,8 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { linearAuthRoutes } from "./routes/linear-auth.js";
+import { loadConfig } from "./config.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -122,9 +124,21 @@ export async function createApp(
       },
     });
   });
+  // Linear OAuth routes — must be mounted BEFORE Better-Auth's catch-all
+  const appConfig = loadConfig();
+  if (appConfig.linearOAuthClientId) {
+    app.use("/api/auth/linear", linearAuthRoutes(db, {
+      clientId: appConfig.linearOAuthClientId,
+      clientSecret: appConfig.linearOAuthClientSecret,
+      redirectUri: appConfig.linearOAuthRedirectUri,
+      secretsProvider: appConfig.secretsProvider,
+    }));
+  }
+
   if (opts.betterAuthHandler) {
     app.all("/api/auth/*authPath", opts.betterAuthHandler);
   }
+
   app.use(llmRoutes(db));
 
   // Mount API routes
