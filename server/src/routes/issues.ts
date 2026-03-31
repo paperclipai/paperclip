@@ -1217,7 +1217,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
       updateFields.status = "todo";
     }
-    let issue;
+    let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       issue = await svc.update(id, updateFields);
     } catch (err) {
