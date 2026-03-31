@@ -79,7 +79,7 @@ async function findAvailablePort(startPort: number): Promise<number> {
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   try {
     const mod = await import("embedded-postgres");
-    return mod.default as EmbeddedPostgresCtor;
+    return mod.default as unknown as EmbeddedPostgresCtor;
   } catch {
     throw new Error(
       "Embedded PostgreSQL support requires dependency `embedded-postgres`. Reinstall dependencies and try again.",

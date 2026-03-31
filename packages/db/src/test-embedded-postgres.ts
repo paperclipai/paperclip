@@ -35,7 +35,7 @@ let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null 
 
 async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
+  return mod.default as unknown as EmbeddedPostgresCtor;
 }
 
 async function getAvailablePort(): Promise<number> {
