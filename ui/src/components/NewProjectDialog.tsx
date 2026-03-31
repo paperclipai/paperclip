@@ -122,7 +122,9 @@ export function NewProjectDialog() {
     try {
       const parsed = new URL(value);
       const host = parsed.hostname.toLowerCase();
-      if (host !== "github.com" && host !== "www.github.com") return false;
+      const isGitHubDotCom = host === "github.com" || host === "www.github.com";
+      const isGHE = host.endsWith(".ghe.com") && host.length > ".ghe.com".length;
+      if (!isGitHubDotCom && !isGHE) return false;
       const segments = parsed.pathname.split("/").filter(Boolean);
       return segments.length >= 2;
     } catch {
