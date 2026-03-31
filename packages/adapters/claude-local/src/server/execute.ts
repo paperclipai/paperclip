@@ -592,6 +592,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
+      // If the retry also failed, suppress any session ID captured from the system/init
+      // event before the failure. Claude emits system/init (with a new session_id) before
+      // crashing, so parsedStream.sessionId is non-null even on a failed run. Without this
+      // guard, that ephemeral ID gets persisted as agent_runtime_state.session_id, the next
+      // run tries --resume <id> and fails again, and the loop repeats indefinitely.
+      const retrySucceeded = !retry.proc.timedOut && (retry.proc.exitCode ?? 0) === 0;
+      if (!retrySucceeded) {
+        retry.parsedStream.sessionId = null;
+      }
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
