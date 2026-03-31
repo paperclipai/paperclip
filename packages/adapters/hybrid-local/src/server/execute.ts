@@ -122,7 +122,7 @@ function attachRoutingMeta(
 // --- Main execute ---
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { config, onLog } = ctx;
+  const { config, onLog, context } = ctx;
   const model = asString(config.model, "");
   const fallbackModel = asString(config.fallbackModel, "");
   const localBaseUrl = resolveBaseUrl(config.localBaseUrl);
@@ -363,12 +363,14 @@ async function executeLocal(
     });
   }
 
-  // Only enable tool use when cwd is explicitly set in adapterConfig.
-  // Agents without an explicit cwd (support, content, strategy roles) run
-  // single-shot — they don't need bash access and tool turns burn context.
+  // Use explicitly configured cwd if set; otherwise fall back to the
+  // paperclip workspace cwd passed in context, then process.cwd().
+  // Tools are always enabled — agents need bash access to do real work.
   const explicitCwd = typeof config.cwd === "string" && (config.cwd as string).trim().length > 0
     ? (config.cwd as string).trim()
     : null;
+
+  const effectiveCwd = explicitCwd ?? (context?.paperclipWorkspace?.cwd as string | undefined) ?? process.cwd();
 
   // Read instructionsFilePath as system prompt if configured.
   // Gives local models the same architectural context that Claude agents get
@@ -390,8 +392,8 @@ async function executeLocal(
     model,
     prompt,
     systemPrompt,
-    cwd: explicitCwd ?? process.cwd(),
-    enableTools: explicitCwd !== null,
+    cwd: effectiveCwd,
+    enableTools: true,
     timeoutMs: timeoutSec * 1000,
     onLog,
   });
