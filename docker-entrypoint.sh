@@ -3,6 +3,7 @@ set -e
 
 CONFIG_DIR="/paperclip/instances/default"
 CONFIG_FILE="$CONFIG_DIR/config.json"
+ENV_FILE="$CONFIG_DIR/.env"
 
 # Create config.json if it doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -35,6 +36,18 @@ if [ ! -f "$CONFIG_FILE" ]; then
 }
 CONFIGEOF
   echo "Config created at $CONFIG_FILE"
+fi
+
+# Create .env with agent JWT secret if it doesn't exist
+if [ ! -f "$ENV_FILE" ] && [ -z "$PAPERCLIP_AGENT_JWT_SECRET" ]; then
+  echo "============================================"
+  echo "Generating Agent JWT secret..."
+  echo "============================================"
+  JWT_SECRET=$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+  echo "PAPERCLIP_AGENT_JWT_SECRET=$JWT_SECRET" > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  export PAPERCLIP_AGENT_JWT_SECRET="$JWT_SECRET"
+  echo "Agent JWT secret generated and saved to $ENV_FILE"
 fi
 
 # Start the server in the background
