@@ -192,6 +192,7 @@ export async function testEnvironment(
           code: "gemini_hello_probe_timed_out",
           level: "warn",
           message: "Gemini hello probe timed out.",
+          ...(detail ? { detail } : {}),
           hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {

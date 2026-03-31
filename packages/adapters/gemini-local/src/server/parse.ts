@@ -64,7 +64,7 @@ function accumulateUsage(
   );
   target.cachedInputTokens += asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, 0)),
+    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0))),
   );
   target.outputTokens += asNumber(
     source.output_tokens,
@@ -97,9 +97,10 @@ export function parseGeminiJsonl(stdout: string) {
 
     const type = asString(event.type, "").trim();
 
-    if (type === "assistant") {
-      messages.push(...collectMessageText(event.message));
-      const messageObj = parseObject(event.message);
+    if (type === "assistant" || (type === "message" && asString(event.role, "") === "assistant")) {
+      const msgData = event.message ?? event.content ?? event;
+      messages.push(...collectMessageText(msgData));
+      const messageObj = parseObject(msgData);
       const content = Array.isArray(messageObj.content) ? messageObj.content : [];
       for (const partRaw of content) {
         const part = parseObject(partRaw);
@@ -123,7 +124,7 @@ export function parseGeminiJsonl(stdout: string) {
 
     if (type === "result") {
       resultEvent = event;
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       const resultText =
         asString(event.result, "").trim() ||
         asString(event.text, "").trim() ||
@@ -160,8 +161,8 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
-    if (type === "step_finish" || event.usage || event.usageMetadata) {
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+    if (type === "step_finish" || event.usage || event.usageMetadata || event.stats) {
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
       continue;
     }
