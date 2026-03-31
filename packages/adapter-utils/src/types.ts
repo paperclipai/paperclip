@@ -293,6 +293,46 @@ export interface ServerAdapterModule {
    * the adapter does not support detection or no config is found.
    */
   detectModel?: () => Promise<{ model: string; provider: string; source: string } | null>;
+  /**
+   * Optional: start a persistent agent instance.
+   * If not implemented, execute() is called once per heartbeat (stateless mode).
+   * Implement this for adapters that manage long-running processes.
+   */
+  start?: (ctx: {
+    agentId: string;
+    companyId: string;
+    config: Record<string, unknown>;
+  }) => Promise<{
+    instanceId: string;
+    pid?: number;
+    endpoint?: string;
+  }>;
+  /**
+   * Optional: stop a persistent agent instance gracefully.
+   * Should allow in-flight work to complete before terminating.
+   */
+  stop?: (ctx: {
+    agentId: string;
+    instanceId: string;
+    config: Record<string, unknown>;
+  }) => Promise<void>;
+  /**
+   * Optional: scale to N concurrent instances.
+   * Returns list of active instance IDs.
+   */
+  scale?: (ctx: {
+    agentId: string;
+    companyId: string;
+    config: Record<string, unknown>;
+    count: number;
+  }) => Promise<{ instances: Array<{ instanceId: string; pid?: number; status: string }> }>;
+  /**
+   * Optional: list running instances for this agent.
+   */
+  listInstances?: (ctx: {
+    agentId: string;
+    config: Record<string, unknown>;
+  }) => Promise<Array<{ instanceId: string; pid?: number; status: string; startedAt: string }>>;
 }
 
 // ---------------------------------------------------------------------------

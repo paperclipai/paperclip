@@ -36,6 +36,7 @@ const CONFIG_REVISION_FIELDS = [
   "runtimeConfig",
   "budgetMonthlyCents",
   "metadata",
+  "instanceId",
 ] as const;
 
 type ConfigRevisionField = (typeof CONFIG_REVISION_FIELDS)[number];
@@ -96,6 +97,7 @@ function buildConfigSnapshot(
     runtimeConfig,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
+    instanceId: row.instanceId,
   };
 }
 
@@ -519,6 +521,20 @@ export function agentService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return updated ? normalizeAgentRow(updated) : null;
+    },
+
+    updateRuntimeStatus: async (
+      agentId: string,
+      update: { status: "running" | "idle"; instanceId: string | null },
+    ) => {
+      await db
+        .update(agents)
+        .set({
+          status: update.status,
+          instanceId: update.instanceId,
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, agentId));
     },
 
     listConfigRevisions: async (id: string) =>

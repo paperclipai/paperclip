@@ -13,6 +13,7 @@ import {
   deriveAgentUrlKey,
   isUuidLike,
   resetAgentSessionSchema,
+  scaleAgentSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
@@ -27,6 +28,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
+import type { ServerAdapterModule } from "@paperclipai/adapter-utils";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
@@ -62,6 +64,8 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+
+const STATELESS_INSTANCE_ID = "stateless";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -251,6 +255,13 @@ export function agentRoutes(db: Db) {
     if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
       throw forbidden("Agent key cannot access another company");
     }
+  }
+
+  function assertBoardOrAgentOwner(req: Request, agent: { id: string; companyId: string }) {
+    if (req.actor.type === "board") return;
+    assertCompanyAccess(req, agent.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId === agent.id) return;
+    throw forbidden("Only board members or the agent owner can perform this action");
   }
 
   async function resolveCompanyIdForAgentReference(req: Request): Promise<string | null> {
@@ -653,6 +664,72 @@ export function agentRoutes(db: Db) {
       status: String(node.status),
       reports,
     };
+  }
+
+  async function manualScale(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    targetCount: number,
+    adapter: ServerAdapterModule,
+    config: Record<string, unknown>,
+  ): Promise<Array<{ instanceId: string; status: string }>> {
+    const current = adapter.listInstances
+      ? await adapter.listInstances({ agentId: agent.id, config })
+      : agent.instanceId
+        ? [
+            {
+              instanceId: agent.instanceId,
+              status: "running",
+              pid: undefined as number | undefined,
+              startedAt: "",
+            },
+          ]
+        : [];
+
+    const currentCount = current.length;
+
+    if (targetCount === 0) {
+      for (const inst of current) {
+        if (adapter.stop) {
+          await adapter.stop({ agentId: agent.id, instanceId: inst.instanceId, config });
+        }
+      }
+      await svc.updateRuntimeStatus(agent.id, { status: "idle", instanceId: null });
+      return [];
+    }
+
+    if (targetCount > currentCount) {
+      const toStart = targetCount - currentCount;
+      const newInstances: Array<{ instanceId: string; status: string }> = [];
+      for (let i = 0; i < toStart; i++) {
+        if (adapter.start) {
+          const result = await adapter.start({ agentId: agent.id, companyId: agent.companyId, config });
+          newInstances.push({ instanceId: result.instanceId, status: "running" });
+        }
+      }
+      const allInstances = [
+        ...current.map((i) => ({ instanceId: i.instanceId, status: i.status })),
+        ...newInstances,
+      ];
+      if (newInstances.length > 0) {
+        await svc.updateRuntimeStatus(agent.id, {
+          status: "running",
+          instanceId: newInstances[0].instanceId,
+        });
+      }
+      return allInstances;
+    }
+
+    if (targetCount < currentCount) {
+      const toStop = current.slice(targetCount);
+      for (const inst of toStop) {
+        if (adapter.stop) {
+          await adapter.stop({ agentId: agent.id, instanceId: inst.instanceId, config });
+        }
+      }
+      return current.slice(0, targetCount).map((i) => ({ instanceId: i.instanceId, status: i.status }));
+    }
+
+    return current.map((i) => ({ instanceId: i.instanceId, status: i.status }));
   }
 
   router.param("id", async (req, _res, next, rawId) => {
@@ -2333,6 +2410,159 @@ export function agentRoutes(db: Db) {
       agentName: agent.name,
       adapterType: agent.adapterType,
     });
+  });
+
+  router.post("/agents/:id/start", async (req, res) => {
+    const agent = await svc.getById(req.params.id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (agent.status === "running") {
+      res.status(409).json({ error: "Agent is already running" });
+      return;
+    }
+
+    assertBoardOrAgentOwner(req, agent);
+    const adapter = findServerAdapter(agent.adapterType);
+    if (!adapter) {
+      res.status(500).json({ error: "Adapter not found" });
+      return;
+    }
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      agent.adapterConfig as Record<string, unknown>,
+    );
+
+    let instanceId: string;
+    if (adapter.start) {
+      const result = await adapter.start({ agentId: agent.id, companyId: agent.companyId, config: runtimeConfig });
+      instanceId = result.instanceId;
+    } else {
+      await adapter.execute({
+        runId: `manual-start-${agent.id}-${Date.now()}`,
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: agent.adapterType,
+          adapterConfig: agent.adapterConfig,
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: runtimeConfig,
+        context: {},
+        onLog: async () => {},
+      });
+      instanceId = STATELESS_INSTANCE_ID;
+    }
+
+    try {
+      await svc.updateRuntimeStatus(agent.id, { status: "running", instanceId });
+    } catch (err) {
+      if (adapter.stop) {
+        await adapter.stop({ agentId: agent.id, instanceId, config: runtimeConfig }).catch(() => {});
+      }
+      res.status(500).json({ error: "Failed to persist status" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.started",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+
+    res.json({ status: "running", instanceId });
+  });
+
+  router.post("/agents/:id/stop", async (req, res) => {
+    const agent = await svc.getById(req.params.id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (agent.status === "idle") {
+      res.status(409).json({ error: "Agent is already idle" });
+      return;
+    }
+
+    assertBoardOrAgentOwner(req, agent);
+    const adapter = findServerAdapter(agent.adapterType);
+    if (!adapter) {
+      res.status(500).json({ error: "Adapter not found" });
+      return;
+    }
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      agent.adapterConfig as Record<string, unknown>,
+    );
+
+    if (adapter.stop) {
+      await adapter.stop({
+        agentId: agent.id,
+        instanceId: agent.instanceId ?? STATELESS_INSTANCE_ID,
+        config: runtimeConfig,
+      });
+    } else {
+      await heartbeat.cancelActiveForAgent(agent.id);
+    }
+
+    await svc.updateRuntimeStatus(agent.id, { status: "idle", instanceId: null });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.stopped",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+
+    res.json({ status: "idle" });
+  });
+
+  router.post("/agents/:id/scale", validate(scaleAgentSchema), async (req, res) => {
+    const agentId = req.params.id as string;
+    const agent = await svc.getById(agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    assertBoardOrAgentOwner(req, agent);
+    const { count } = req.body as { count: number };
+    const adapter = findServerAdapter(agent.adapterType);
+    if (!adapter) {
+      res.status(500).json({ error: "Adapter not found" });
+      return;
+    }
+    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+      agent.companyId,
+      agent.adapterConfig as Record<string, unknown>,
+    );
+
+    let instances: Array<{ instanceId: string; status: string }>;
+    if (adapter.scale) {
+      const result = await adapter.scale({ agentId: agent.id, companyId: agent.companyId, config: runtimeConfig, count });
+      instances = result.instances;
+    } else {
+      instances = await manualScale(agent, count, adapter, runtimeConfig);
+    }
+    res.json({ instances });
   });
 
   return router;

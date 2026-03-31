@@ -163,6 +163,13 @@ export const paperclipConfigSchema = z
     }
   });
 
+// Agent lifecycle schemas
+export const startAgentSchema = z.object({});
+export const stopAgentSchema = z.object({});
+export const scaleAgentSchema = z.object({
+  count: z.number().int().min(0).max(100),
+});
+
 export type PaperclipConfig = z.infer<typeof paperclipConfigSchema>;
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
 export type DatabaseConfig = z.infer<typeof databaseConfigSchema>;
