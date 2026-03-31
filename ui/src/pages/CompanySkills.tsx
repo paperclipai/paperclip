@@ -169,7 +169,7 @@ function AgentSkillReview({
     if (rating === 0) return;
     setSubmitting(true);
     try {
-      await fetch(`https://agentskill.sh/api/skills/${encodeURIComponent(slug)}/agent-feedback`, {
+      await fetch(`https://agentskill.sh/api/skills/${slug.split("/").map(encodeURIComponent).join("/")}/agent-feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1623,6 +1623,14 @@ export function CompanySkills() {
     let installed = 0;
     let failed = 0;
     try {
+      const lowSecuritySkills = skillset.skillDetails?.filter((s) => s.securityScore < 50) ?? [];
+      if (lowSecuritySkills.length > 0) {
+        const names = lowSecuritySkills.map((s) => `${s.name} (${s.securityScore}/100)`).join(", ");
+        if (!window.confirm(`${lowSecuritySkills.length} skill(s) have low security scores: ${names}. Install anyway?`)) {
+          setInstallingSkillset(null);
+          return;
+        }
+      }
       for (const slug of skillset.skills) {
         try {
           const sourceUrl = `https://agentskill.sh/${slug}`;
