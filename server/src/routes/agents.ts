@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
@@ -93,6 +93,114 @@ export function agentRoutes(db: Db) {
     return {
       enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
     };
+  }
+
+  const OPENCLAW_HOME = path.join(process.env.HOME ?? "", ".openclaw");
+  const OPENCLAW_CRON_JOBS_PATH = path.join(OPENCLAW_HOME, "cron", "jobs.json");
+  const KATYA_MEMORY_DIR = path.join(OPENCLAW_HOME, "agents", "katya", "memory");
+  const KATYA_SESSIONS_PATH = path.join(OPENCLAW_HOME, "agents", "katya", "sessions", "sessions.json");
+  const PELERGY_HANDOFFS_PATH = path.join(process.env.HOME ?? "", "life", "projects", "pelergy", "ops", "handoffs.md");
+  const PELERGY_SENT_LEDGER_PATH = path.join(process.env.HOME ?? "", "life", "projects", "pelergy", "content", "sent-ledger.md");
+  const REQUIRED_SECRETS_PATH = path.join(OPENCLAW_HOME, "required-secrets.json");
+
+  type SecretsManifestEntry = {
+    key: string;
+    skill: string;
+    configPath: string;
+    description: string;
+  };
+
+  function toAbsoluteHomePath(configPath: string): string {
+    if (configPath.startsWith("~/")) {
+      return path.join(process.env.HOME ?? "", configPath.slice(2));
+    }
+    return configPath;
+  }
+
+  async function readCronJobsFromDisk() {
+    const raw = await readFile(OPENCLAW_CRON_JOBS_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { jobs?: unknown[] };
+    return Array.isArray(parsed.jobs) ? parsed.jobs : [];
+  }
+
+  function mapCronJobsForApi(jobs: unknown[]) {
+    return jobs.map((job) => {
+      const j = (job ?? {}) as Record<string, unknown>;
+      const state = ((j.state ?? {}) as Record<string, unknown>);
+      const schedule = ((j.schedule ?? {}) as Record<string, unknown>);
+      return {
+        id: String(j.id ?? ""),
+        name: String(j.name ?? ""),
+        enabled: Boolean(j.enabled),
+        agentId: j.agentId == null ? null : String(j.agentId),
+        sessionKey: j.sessionKey == null ? null : String(j.sessionKey),
+        sessionTarget: j.sessionTarget == null ? null : String(j.sessionTarget),
+        scheduleKind: schedule.kind == null ? null : String(schedule.kind),
+        scheduleExpr: schedule.expr == null ? null : String(schedule.expr),
+        scheduleTz: schedule.tz == null ? null : String(schedule.tz),
+        everyMs: typeof schedule.everyMs === "number" ? schedule.everyMs : null,
+        nextRunAtMs: typeof state.nextRunAtMs === "number" ? state.nextRunAtMs : null,
+        lastRunAtMs: typeof state.lastRunAtMs === "number" ? state.lastRunAtMs : null,
+        lastRunStatus: state.lastRunStatus == null ? null : String(state.lastRunStatus),
+        consecutiveErrors: typeof state.consecutiveErrors === "number" ? state.consecutiveErrors : 0,
+      };
+    });
+  }
+
+  async function readSecretsManifest(): Promise<SecretsManifestEntry[]> {
+    const raw = await readFile(REQUIRED_SECRETS_PATH, "utf8");
+    const parsed = JSON.parse(raw) as { required?: unknown[] };
+    const required = Array.isArray(parsed.required) ? parsed.required : [];
+    return required
+      .map((item) => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        if (typeof entry.key !== "string" || typeof entry.skill !== "string" || typeof entry.configPath !== "string") {
+          return null;
+        }
+        return {
+          key: entry.key,
+          skill: entry.skill,
+          configPath: entry.configPath,
+          description: typeof entry.description === "string" ? entry.description : "",
+        };
+      })
+      .filter((entry): entry is SecretsManifestEntry => Boolean(entry));
+  }
+
+  async function buildSecretsHealth() {
+    const entries = await readSecretsManifest();
+    const secrets = await Promise.all(entries.map(async (entry) => {
+      const resolvedPath = toAbsoluteHomePath(entry.configPath);
+      try {
+        const file = await readFile(resolvedPath, "utf8");
+        const status = file.trim().length > 0 ? "ok" : "missing";
+        return {
+          key: entry.key,
+          skill: entry.skill,
+          description: entry.description,
+          status,
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return {
+            key: entry.key,
+            skill: entry.skill,
+            description: entry.description,
+            status: "missing" as const,
+          };
+        }
+        throw error;
+      }
+    }));
+    return { secrets };
+  }
+
+  function normalizeRunStatus(status: string | null | undefined): "success" | "failure" {
+    const value = (status ?? "").toLowerCase();
+    if (["completed", "success", "succeeded", "ok"].includes(value)) {
+      return "success";
+    }
+    return "failure";
   }
 
   function canCreateAgents(agent: { role: string; permissions: Record<string, unknown> | null | undefined }) {
@@ -908,35 +1016,9 @@ export function agentRoutes(db: Db) {
   router.get("/instance/openclaw-cron-jobs", async (req, res) => {
     assertBoard(req);
 
-    const jobsPath = path.join(process.env.HOME ?? "", ".openclaw", "cron", "jobs.json");
     try {
-      const raw = await readFile(jobsPath, "utf8");
-      const parsed = JSON.parse(raw) as { jobs?: unknown[] };
-      const jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
-
-      const items = jobs.map((job) => {
-        const j = (job ?? {}) as Record<string, unknown>;
-        const state = ((j.state ?? {}) as Record<string, unknown>);
-        const schedule = ((j.schedule ?? {}) as Record<string, unknown>);
-        return {
-          id: String(j.id ?? ""),
-          name: String(j.name ?? ""),
-          enabled: Boolean(j.enabled),
-          agentId: j.agentId == null ? null : String(j.agentId),
-          sessionKey: j.sessionKey == null ? null : String(j.sessionKey),
-          sessionTarget: j.sessionTarget == null ? null : String(j.sessionTarget),
-          scheduleKind: schedule.kind == null ? null : String(schedule.kind),
-          scheduleExpr: schedule.expr == null ? null : String(schedule.expr),
-          scheduleTz: schedule.tz == null ? null : String(schedule.tz),
-          everyMs: typeof schedule.everyMs === "number" ? schedule.everyMs : null,
-          nextRunAtMs: typeof state.nextRunAtMs === "number" ? state.nextRunAtMs : null,
-          lastRunAtMs: typeof state.lastRunAtMs === "number" ? state.lastRunAtMs : null,
-          lastRunStatus: state.lastRunStatus == null ? null : String(state.lastRunStatus),
-          consecutiveErrors: typeof state.consecutiveErrors === "number" ? state.consecutiveErrors : 0,
-        };
-      });
-
-      res.json(items);
+      const jobs = await readCronJobsFromDisk();
+      res.json(mapCronJobsForApi(jobs));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         res.json([]);
@@ -944,6 +1026,72 @@ export function agentRoutes(db: Db) {
       }
       throw error;
     }
+  });
+
+  router.get("/instance/katya-rss-latest", async (req, res) => {
+    assertBoard(req);
+
+    try {
+      const files = await readdir(KATYA_MEMORY_DIR);
+      const rssFiles = files
+        .filter((name) => /^\d{4}-\d{2}-\d{2}-rss\.md$/.test(name))
+        .sort((a, b) => b.localeCompare(a));
+
+      if (rssFiles.length === 0) {
+        res.json({ date: null, content: null });
+        return;
+      }
+
+      const latest = rssFiles[0] ?? "";
+      const filePath = path.join(KATYA_MEMORY_DIR, latest);
+      const content = await readFile(filePath, "utf8");
+      const date = latest.slice(0, 10);
+
+      res.json({ date, content, filePath });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json({ date: null, content: null });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.get("/instance/handoffs", async (req, res) => {
+    assertBoard(req);
+
+    const content = await readFile(PELERGY_HANDOFFS_PATH, "utf8");
+    const fileStat = await stat(PELERGY_HANDOFFS_PATH);
+    res.json({ content, lastModified: fileStat.mtime.toISOString() });
+  });
+
+  router.get("/instance/sent-ledger", async (req, res) => {
+    assertBoard(req);
+
+    const content = await readFile(PELERGY_SENT_LEDGER_PATH, "utf8");
+    const fileStat = await stat(PELERGY_SENT_LEDGER_PATH);
+    res.json({ content, lastModified: fileStat.mtime.toISOString() });
+  });
+
+  router.get("/instance/katya-session-state", async (req, res) => {
+    assertBoard(req);
+
+    try {
+      const raw = await readFile(KATYA_SESSIONS_PATH, "utf8");
+      res.json(JSON.parse(raw));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        res.json({});
+        return;
+      }
+      throw error;
+    }
+  });
+
+  router.get("/instance/secrets-health", async (req, res) => {
+    assertBoard(req);
+    const health = await buildSecretsHealth();
+    res.json(health);
   });
 
   router.get("/companies/:companyId/org", async (req, res) => {
@@ -2058,6 +2206,76 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(result);
+  });
+
+  router.get("/companies/:id/ops-summary", async (req, res) => {
+    const companyId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+
+    const runs = await db
+      .select({
+        agentId: agentsTable.id,
+        agentName: agentsTable.name,
+        runId: heartbeatRuns.id,
+        runStatus: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .orderBy(desc(heartbeatRuns.createdAt));
+
+    const grouped = new Map<string, {
+      agentId: string;
+      agentName: string;
+      recentRuns: Array<{ runId: string; runAt: string | null; status: "success" | "failure"; durationMs: number | null }>;
+    }>();
+
+    for (const row of runs) {
+      const current = grouped.get(row.agentId) ?? {
+        agentId: row.agentId,
+        agentName: row.agentName,
+        recentRuns: [],
+      };
+      if (current.recentRuns.length < 3) {
+        const runAt = row.finishedAt ?? row.startedAt ?? row.createdAt;
+        const durationMs = row.startedAt && row.finishedAt
+          ? Math.max(0, new Date(row.finishedAt).getTime() - new Date(row.startedAt).getTime())
+          : null;
+        current.recentRuns.push({
+          runId: row.runId,
+          runAt: runAt ? new Date(runAt).toISOString() : null,
+          status: normalizeRunStatus(row.runStatus),
+          durationMs,
+        });
+      }
+      grouped.set(row.agentId, current);
+    }
+
+    const agents = Array.from(grouped.values()).map((item) => ({
+      agentId: item.agentId,
+      agentName: item.agentName,
+      lastHeartbeat: item.recentRuns[0]?.runAt ?? null,
+      lastStatus: item.recentRuns[0]?.status ?? null,
+      recentRuns: item.recentRuns,
+    }));
+
+    let cronJobs: ReturnType<typeof mapCronJobsForApi> = [];
+    try {
+      cronJobs = mapCronJobsForApi(await readCronJobsFromDisk());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    const secretsHealth = (await buildSecretsHealth()).secrets;
+
+    res.json({
+      agents,
+      cronJobs,
+      secretsHealth,
+    });
   });
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
