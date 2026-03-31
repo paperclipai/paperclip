@@ -99,6 +99,44 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("resolves codex from PAPERCLIP_EXTRA_COMMAND_PATHS when PATH does not include it", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-extra-path-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "extra-bin");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(binDir, "codex");
+    const previousExtraPaths = process.env.PAPERCLIP_EXTRA_COMMAND_PATHS;
+
+    try {
+      await fs.mkdir(binDir, { recursive: true });
+      await fs.writeFile(fakeCodex, "#!/bin/sh\nexit 0\n", "utf8");
+      await fs.chmod(fakeCodex, 0o755);
+      process.env.PAPERCLIP_EXTRA_COMMAND_PATHS = binDir;
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: "codex",
+          cwd,
+          env: {
+            PATH: "",
+            OPENAI_API_KEY: "test-key",
+          },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_command_resolvable")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_command_unresolvable")).toBe(false);
+    } finally {
+      if (previousExtraPaths === undefined) delete process.env.PAPERCLIP_EXTRA_COMMAND_PATHS;
+      else process.env.PAPERCLIP_EXTRA_COMMAND_PATHS = previousExtraPaths;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),
