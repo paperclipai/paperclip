@@ -11,7 +11,8 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication (assertBoard middleware).
+ * Most routes require board-level authentication (assertBoard middleware);
+ * tool discovery and execution routes accept any authenticated caller (assertAuthenticated).
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
@@ -558,7 +559,7 @@ export function pluginRoutes(
         res.status(403).json({ error: "runContext.agentId must match authenticated agent" });
         return;
       }
-      if (req.actor.runId && runContext.runId !== req.actor.runId) {
+      if (req.actor.runId !== runContext.runId) {
         res.status(403).json({ error: "runContext.runId must match authenticated run" });
         return;
       }
