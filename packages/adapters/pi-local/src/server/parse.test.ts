@@ -209,6 +209,20 @@ describe("parsePiJsonl", () => {
     expect(parsed.usage.cachedInputTokens).toBe(25);
     expect(parsed.usage.costUsd).toBe(0.003);
   });
+
+  it("surfaces failed auto-retry exhaustion as an error", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "auto_retry_end",
+        success: false,
+        attempt: 3,
+        finalError: "Cloud Code Assist API error (429): RESOURCE_EXHAUSTED",
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual(["Cloud Code Assist API error (429): RESOURCE_EXHAUSTED"]);
+  });
 });
 
 describe("isPiUnknownSessionError", () => {
