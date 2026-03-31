@@ -48,6 +48,16 @@ ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && CURSOR_AGENT_HOME="$(mktemp -d)" \
+  && HOME="$CURSOR_AGENT_HOME" sh -lc 'curl -fsSL https://cursor.com/install | bash' \
+  && CURSOR_AGENT_DIR="$(dirname "$(readlink -f "$CURSOR_AGENT_HOME/.local/bin/agent")")" \
+  && CURSOR_AGENT_VERSION="$(basename "$CURSOR_AGENT_DIR")" \
+  && mkdir -p /usr/local/share/cursor-agent/versions \
+  && rm -rf "/usr/local/share/cursor-agent/versions/$CURSOR_AGENT_VERSION" \
+  && mv "$CURSOR_AGENT_DIR" "/usr/local/share/cursor-agent/versions/$CURSOR_AGENT_VERSION" \
+  && ln -sf "/usr/local/share/cursor-agent/versions/$CURSOR_AGENT_VERSION/cursor-agent" /usr/local/bin/agent \
+  && ln -sf /usr/local/bin/agent /usr/local/bin/cursor-agent \
+  && rm -rf "$CURSOR_AGENT_HOME" \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
@@ -56,6 +66,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
+  PATH=/paperclip/.local/bin:$PATH \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
