@@ -53,7 +53,7 @@ export function PluginPage() {
   const pageSlot = useMemo(() => {
     if (!contributions) return null;
     if (pluginId) {
-      const contribution = contributions.find((c) => c.pluginId === pluginId);
+      const contribution = contributions.find((c) => c.pluginId === pluginId || c.pluginKey === pluginId);
       if (!contribution) return null;
       const slot = contribution.slots.find((s) => s.type === "page");
       if (!slot) return null;

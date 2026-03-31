@@ -609,6 +609,7 @@ export function createPluginWorkerHandle(
     // secrets (like DATABASE_URL, internal API keys, etc.).
     const workerEnv: Record<string, string> = {
       ...options.env,
+      HOME: process.env.HOME ?? "",
       PATH: process.env.PATH ?? "",
       NODE_PATH: process.env.NODE_PATH ?? "",
       PAPERCLIP_PLUGIN_ID: pluginId,
@@ -1187,6 +1188,11 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+  /**
+   * Global callback for stream notifications from any worker (streams.open/emit/close).
+   * Wired to the PluginStreamBus to fan out events to SSE clients.
+   */
+  onStreamNotification?: (pluginId: string, method: string, params: Record<string, unknown>) => void;
 }
 
 /**
@@ -1242,7 +1248,16 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      // Wire manager-level stream notification callback into per-worker options
+      const mergedOptions = managerOptions?.onStreamNotification && !options.onStreamNotification
+        ? {
+            ...options,
+            onStreamNotification: (method: string, params: Record<string, unknown>) => {
+              managerOptions.onStreamNotification!(pluginId, method, params);
+            },
+          }
+        : options;
+      const handle = createPluginWorkerHandle(pluginId, mergedOptions);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding

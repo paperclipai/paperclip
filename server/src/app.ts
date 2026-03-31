@@ -170,7 +170,22 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(instanceSettingsRoutes(db));
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = createPluginWorkerManager();
+  const { createPluginStreamBus } = await import("./services/plugin-stream-bus.js");
+  const streamBus = createPluginStreamBus();
+  const workerManager = createPluginWorkerManager({
+    onStreamNotification: (pluginId, method, params) => {
+      const channel = String(params.channel ?? "");
+      const companyId = String(params.companyId ?? "");
+      if (!channel) return;
+      if (method === "streams.emit") {
+        streamBus.publish(pluginId, channel, companyId, params.event ?? params.data);
+      } else if (method === "streams.close") {
+        streamBus.publish(pluginId, channel, companyId, null, "close");
+      } else if (method === "streams.open") {
+        streamBus.publish(pluginId, channel, companyId, null, "open");
+      }
+    },
+  });
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
@@ -229,7 +244,7 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      { workerManager, streamBus },
     ),
   );
   api.use(

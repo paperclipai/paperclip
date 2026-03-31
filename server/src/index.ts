@@ -45,6 +45,7 @@ import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
  */
 const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-linear",
+  "@lucitra/paperclip-plugin-chat",
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
@@ -52,9 +53,9 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
   const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
   const baseUrl = `http://127.0.0.1:${port}`;
 
+  // Install npm-based bundled plugins
   for (const pkg of BUNDLED_PLUGINS) {
     try {
-      // Check if already installed and ready
       const listRes = await fetch(`${baseUrl}/api/plugins`);
       if (listRes.ok) {
         const plugins = (await listRes.json()) as Array<{ packageName: string; pluginKey: string; status: string }>;
@@ -74,13 +75,37 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
         logger.info({ pluginKey: result.pluginKey, status: result.status }, "bundled plugin installed and loaded");
       } else {
         const err = (await installRes.json()) as { error?: string };
-        // "already installed" is fine
         if (!err.error?.includes("already installed")) {
           logger.warn({ package: pkg, error: err.error }, "bundled plugin install failed");
         }
       }
     } catch (err) {
       logger.warn({ package: pkg, err }, "failed to auto-install bundled plugin");
+    }
+  }
+
+  // For dev: if npm install failed for chat plugin, try local path fallback
+  {
+    const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
+    const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
+    const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
+    if (!chatInstalled) {
+      try {
+        const { resolve } = await import("path");
+        const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
+        logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
+        const res = await fetch(`${baseUrl}/api/plugins/install`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
+        });
+        if (res.ok) {
+          const result = (await res.json()) as { pluginKey?: string; status?: string };
+          logger.info({ pluginKey: result.pluginKey, status: result.status }, "chat plugin installed from local path");
+        }
+      } catch (err) {
+        logger.warn({ err }, "local chat plugin install failed");
+      }
     }
   }
 }

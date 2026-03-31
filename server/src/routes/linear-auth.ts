@@ -301,7 +301,32 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             // Tunnel module not critical
           }
 
-          // Don't auto-trigger import — let the UI prompt the user
+          // Auto-trigger import then full sync after connect.
+          // Import pulls issues first, sync enriches with projects + labels.
+          try {
+            const port = process.env.PAPERCLIP_LISTEN_PORT || process.env.PORT || "3100";
+            const baseUrl = `http://127.0.0.1:${port}/api/auth/linear`;
+            void (async () => {
+              try {
+                // Step 1: Import all issues from Linear
+                const importRes = await fetch(`${baseUrl}/import?companyId=${companyId}`, { method: "POST" });
+                if (importRes.ok) {
+                  const importResult = await importRes.json() as { imported?: number };
+                  console.log(`[linear-auth] auto-import: ${importResult.imported} issues`);
+                }
+                // Step 2: Full sync to pull projects, labels, and update fields
+                const syncRes = await fetch(`${baseUrl}/sync?companyId=${companyId}`, { method: "POST" });
+                if (syncRes.ok) {
+                  const syncResult = await syncRes.json() as { synced?: number; projects?: number; labels?: number };
+                  console.log(`[linear-auth] auto-sync: ${syncResult.synced} issues, ${syncResult.projects} projects, ${syncResult.labels} labels`);
+                }
+              } catch (err) {
+                console.warn("[linear-auth] auto-import/sync failed:", err);
+              }
+            })();
+          } catch {
+            // Non-critical — user can trigger manually from settings
+          }
         }
       } catch (err) {
         console.warn("[linear-auth] could not auto-configure plugin:", err);

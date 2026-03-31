@@ -2269,7 +2269,7 @@ export function agentRoutes(db: Db) {
   router.get("/issues/:issueId/live-runs", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
+    const isIdentifier = /^[A-Z]+-[A-Z0-9]+$/i.test(rawId);
     const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -2307,7 +2307,7 @@ export function agentRoutes(db: Db) {
   router.get("/issues/:issueId/active-run", async (req, res) => {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
-    const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
+    const isIdentifier = /^[A-Z]+-[A-Z0-9]+$/i.test(rawId);
     const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
