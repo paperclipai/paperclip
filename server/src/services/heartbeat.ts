@@ -753,6 +753,18 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+function killProcessByPid(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    return false;
+  }
+}
+
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -3682,12 +3694,27 @@ export function heartbeatService(db: Db) {
     if (run.status !== "running" && run.status !== "queued") return run;
 
     const running = runningProcesses.get(run.id);
+    const agent = await getAgent(run.agentId);
     if (running) {
       running.child.kill("SIGTERM");
       const graceMs = Math.max(1, running.graceSec) * 1000;
       setTimeout(() => {
         if (!running.child.killed) {
           running.child.kill("SIGKILL");
+        }
+      }, graceMs);
+    } else if (
+      agent &&
+      isTrackedLocalChildProcessAdapter(agent.adapterType) &&
+      run.processPid &&
+      isProcessAlive(run.processPid)
+    ) {
+      const pid = run.processPid;
+      killProcessByPid(pid, "SIGTERM");
+      const graceMs = 15_000;
+      setTimeout(() => {
+        if (isProcessAlive(pid)) {
+          killProcessByPid(pid, "SIGKILL");
         }
       }, graceMs);
     }
@@ -3704,7 +3731,7 @@ export function heartbeatService(db: Db) {
     });
 
     if (cancelled) {
-      await appendRunEvent(cancelled, 1, {
+      await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
@@ -3726,23 +3753,7 @@ export function heartbeatService(db: Db) {
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
 
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-        errorCode: "cancelled",
-      });
-
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-      });
-
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        running.child.kill("SIGTERM");
-        runningProcesses.delete(run.id);
-      }
-      await releaseIssueExecutionAndPromote(run);
+      await cancelRunInternal(run.id, reason);
     }
 
     return runs.length;
@@ -3952,7 +3963,7 @@ export function heartbeatService(db: Db) {
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 
     cancelBudgetScopeWork,
 

@@ -1798,6 +1798,7 @@ export function agentRoutes(db: Db) {
     }
 
     const actor = getActorInfo(req);
+    const previousHeartbeatPolicy = parseSchedulerHeartbeatPolicy(existing.runtimeConfig);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
         createdByAgentId: actor.agentId,
@@ -1808,6 +1809,11 @@ export function agentRoutes(db: Db) {
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
+    }
+
+    const nextHeartbeatPolicy = parseSchedulerHeartbeatPolicy(agent.runtimeConfig);
+    if (previousHeartbeatPolicy.enabled && !nextHeartbeatPolicy.enabled) {
+      await heartbeat.cancelActiveForAgent(id, "Cancelled because heartbeat was disabled");
     }
 
     await logActivity(db, {
@@ -1846,6 +1852,33 @@ export function agentRoutes(db: Db) {
     });
 
     res.json(agent);
+  });
+
+  router.post("/agents/:id/stop", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const cancelledRuns = await heartbeat.cancelActiveForAgent(
+      id,
+      "Cancelled by operator",
+    );
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "heartbeat.cancelled",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { cancelledRuns, source: "agent_stop" },
+    });
+
+    res.json({ agent, cancelledRuns });
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
