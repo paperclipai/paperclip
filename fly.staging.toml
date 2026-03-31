@@ -1,0 +1,26 @@
+app = "tye-paperclip-staging"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3100
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[env]
+  PORT = "3100"
+  HOST = "0.0.0.0"
+  PAPERCLIP_DEPLOYMENT_MODE = "authenticated"
+  PAPERCLIP_DEPLOYMENT_EXPOSURE = "public"
+  PAPERCLIP_AUTH_BASE_URL_MODE = "explicit"
+  PAPERCLIP_AUTH_PUBLIC_BASE_URL = "https://staging.app.tye.ai"
+  PAPERCLIP_STORAGE_PROVIDER = "s3"
+  PAPERCLIP_STORAGE_S3_REGION = "auto"
+  PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE = "true"
+  PAPERCLIP_SECRETS_STRICT_MODE = "true"
+

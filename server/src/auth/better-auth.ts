@@ -69,6 +69,25 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
+  const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  const microsoftClientId = process.env.MICROSOFT_CLIENT_ID?.trim();
+  const microsoftClientSecret = process.env.MICROSOFT_CLIENT_SECRET?.trim();
+  const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {};
+
+  if (googleClientId && googleClientSecret) {
+    socialProviders.google = {
+      clientId: googleClientId,
+      clientSecret: googleClientSecret,
+    };
+  }
+
+  if (microsoftClientId && microsoftClientSecret) {
+    socialProviders.microsoft = {
+      clientId: microsoftClientId,
+      clientSecret: microsoftClientSecret,
+    };
+  }
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
@@ -91,6 +110,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    ...(Object.keys(socialProviders).length > 0 ? { socialProviders } : {}),
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
 

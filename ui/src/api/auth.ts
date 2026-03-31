@@ -2,6 +2,7 @@ export type AuthSession = {
   session: { id: string; userId: string };
   user: { id: string; email: string | null; name: string | null };
 };
+export type SocialAuthProvider = "google" | "microsoft";
 
 function toSession(value: unknown): AuthSession | null {
   if (!value || typeof value !== "object") return null;
@@ -66,6 +67,46 @@ export const authApi = {
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
+  },
+
+  signInSocial: async (input: {
+    provider: SocialAuthProvider;
+    callbackURL?: string;
+    errorCallbackURL?: string;
+    newUserCallbackURL?: string;
+  }) => {
+    const payload = await authPost("/sign-in/social", {
+      provider: input.provider,
+      callbackURL: input.callbackURL,
+      errorCallbackURL: input.errorCallbackURL,
+      newUserCallbackURL: input.newUserCallbackURL,
+      disableRedirect: true,
+    });
+
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+    const data = record?.data && typeof record.data === "object" ? record.data as Record<string, unknown> : null;
+    const redirectUrlCandidates = [
+      record?.url,
+      record?.redirectURL,
+      record?.redirectUrl,
+      data?.url,
+      data?.redirectURL,
+      data?.redirectUrl,
+    ];
+    const redirectUrl = redirectUrlCandidates.find((candidate) => typeof candidate === "string") as string | undefined;
+
+    if (redirectUrl) {
+      window.location.assign(redirectUrl);
+      return;
+    }
+
+    const query = new URLSearchParams({
+      provider: input.provider,
+      callbackURL: input.callbackURL ?? "/",
+    });
+    if (input.errorCallbackURL) query.set("errorCallbackURL", input.errorCallbackURL);
+    if (input.newUserCallbackURL) query.set("newUserCallbackURL", input.newUserCallbackURL);
+    window.location.assign(`/api/auth/sign-in/social?${query.toString()}`);
   },
 
   signOut: async () => {

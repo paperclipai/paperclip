@@ -1,0 +1,44 @@
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gate-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy gate (doctor must pass)
+        env:
+          BETTER_AUTH_SECRET: ${{ secrets.STAGING_BETTER_AUTH_SECRET }}
+          PAPERCLIP_AUTH_PUBLIC_BASE_URL: https://staging.app.tye.ai
+          PAPERCLIP_DEPLOYMENT_MODE: authenticated
+          PAPERCLIP_DEPLOYMENT_EXPOSURE: public
+          PAPERCLIP_AUTH_BASE_URL_MODE: explicit
+          PAPERCLIP_SECRETS_STRICT_MODE: "true"
+        run: bash scripts/deploy-gate.sh
+
+      - name: Setup Flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy staging
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_STAGING }}
+        run: flyctl deploy --config fly.staging.toml --remote-only
+

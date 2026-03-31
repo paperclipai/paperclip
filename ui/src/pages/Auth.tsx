@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import type { SocialAuthProvider } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
@@ -12,6 +13,7 @@ type AuthMode = "sign_in" | "sign_up";
 export function AuthPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const [mode, setMode] = useState<AuthMode>("sign_in");
   const [name, setName] = useState("");
@@ -20,6 +22,25 @@ export function AuthPage() {
   const [error, setError] = useState<string | null>(null);
 
   const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
+  useEffect(() => {
+    const requestedMode = (searchParams.get("mode") || "").trim().toLowerCase();
+    if (
+      location.pathname.endsWith("/signup") ||
+      requestedMode === "sign_up" ||
+      requestedMode === "signup"
+    ) {
+      setMode("sign_up");
+      return;
+    }
+    if (
+      location.pathname.endsWith("/login") ||
+      requestedMode === "sign_in" ||
+      requestedMode === "signin"
+    ) {
+      setMode("sign_in");
+    }
+  }, [location.pathname, searchParams]);
+
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -52,6 +73,18 @@ export function AuthPage() {
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Authentication failed");
+    },
+  });
+  const socialMutation = useMutation({
+    mutationFn: async (provider: SocialAuthProvider) => {
+      await authApi.signInSocial({
+        provider,
+        callbackURL: nextPath,
+        errorCallbackURL: "/login",
+      });
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Social authentication failed");
     },
   });
 
@@ -87,8 +120,41 @@ export function AuthPage() {
               : "Create an account for this instance. Email confirmation is not required in v1."}
           </p>
 
+          <div className="mt-6 space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={socialMutation.isPending}
+              onClick={() => {
+                setError(null);
+                socialMutation.mutate("google");
+              }}
+            >
+              Continue with Google
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={socialMutation.isPending}
+              onClick={() => {
+                setError(null);
+                socialMutation.mutate("microsoft");
+              }}
+            >
+              Continue with Microsoft
+            </Button>
+          </div>
+
+          <div className="my-5 flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">or</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
           <form
-            className="mt-6 space-y-4"
+            className="space-y-4"
             method="post"
             action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
             onSubmit={(event) => {
