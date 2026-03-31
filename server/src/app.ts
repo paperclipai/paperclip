@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import iconvLite from "iconv-lite";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -85,6 +86,28 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Defensive middleware: re-decode CP949-encoded bodies from Windows agents.
+  // On Windows with CJK system locales (CP949/CP932/GBK), curl encodes -d argument
+  // strings using the ANSI Code Page. express.json() decodes the bytes as UTF-8,
+  // replacing each invalid sequence with U+FFFD. If corruption is detected, try
+  // re-decoding the raw body as CP949 and substitute the correctly parsed object.
+  app.use((req, _res, next) => {
+    const rawBody = (req as unknown as { rawBody?: Buffer }).rawBody;
+    if (!rawBody || req.method === "GET" || req.method === "HEAD") return next();
+    const body = req.body;
+    if (!body || typeof body !== "object") return next();
+    const bodyStr = JSON.stringify(body);
+    if (!bodyStr.includes("\uFFFD")) return next();
+    try {
+      const reDecoded = iconvLite.decode(rawBody, "CP949");
+      if (!reDecoded.includes("\uFFFD")) {
+        req.body = JSON.parse(reDecoded) as unknown;
+      }
+    } catch {
+      // Leave req.body as-is on any error.
+    }
+    next();
+  });
   app.use(httpLogger);
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";

@@ -139,6 +139,20 @@ If you are asked to install a skill for the company or an agent you MUST read:
 
 ## Critical Rules
 
+- **Windows encoding — never inline non-ASCII text in curl `-d`/`--data` arguments.**
+  On Windows with a CJK system locale (CP949, CP932, GBK, etc.), curl encodes command-line
+  argument strings using the ANSI Code Page, corrupting any non-ASCII content before it reaches
+  the server. Use a temp file instead:
+
+  ```bash
+  cat > /tmp/payload.json << 'EOF'
+  {"title": "한글 제목"}
+  EOF
+  curl ... --data-binary @/tmp/payload.json
+  ```
+
+  This applies to all non-ASCII content in request bodies (issue titles, descriptions, comments).
+
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
 - **Never look for unassigned work.**

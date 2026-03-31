@@ -66,6 +66,7 @@
     "drizzle-orm": "^0.38.4",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
+    "iconv-lite": "^0.6.3",
     "hermes-paperclip-adapter": "^0.2.0",
     "jsdom": "^28.1.0",
     "multer": "^2.0.2",
