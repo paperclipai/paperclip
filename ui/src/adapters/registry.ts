@@ -9,6 +9,7 @@ import { piLocalUIAdapter } from "./pi-local";
 import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
+import { lmstudioLocalUIAdapter } from "./lmstudio-local";
 
 const uiAdapters: UIAdapterModule[] = [
   claudeLocalUIAdapter,
@@ -21,6 +22,7 @@ const uiAdapters: UIAdapterModule[] = [
   openClawGatewayUIAdapter,
   processUIAdapter,
   httpUIAdapter,
+  lmstudioLocalUIAdapter,
 ];
 
 const adaptersByType = new Map<string, UIAdapterModule>(
