@@ -273,6 +273,7 @@ export function NewAgent() {
                 <input
                   className="w-full rounded px-2 py-1 text-xs bg-transparent border border-border outline-none placeholder:text-muted-foreground/50"
                   placeholder="Custom role…"
+                  maxLength={64}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       const v = e.currentTarget.value.trim();
@@ -280,6 +281,8 @@ export function NewAgent() {
                     }
                   }}
                   onBlur={(e) => {
+                    const popover = e.currentTarget.closest("[data-radix-popper-content-wrapper]");
+                    if (popover?.contains(e.relatedTarget as Node)) return;
                     const v = e.currentTarget.value.trim();
                     if (v) { setRole(v); setRoleOpen(false); }
                   }}
