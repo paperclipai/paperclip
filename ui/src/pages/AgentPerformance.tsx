@@ -615,27 +615,17 @@ function PerformanceInsights({ rows }: { rows: AgentPerfRow[] }) {
         {insights.slice(0, 8).map((insight, i) => (
           <div
             key={`${insight.agent}-${i}`}
-            className={cn(
-              "flex items-start gap-2.5 rounded-lg px-3 py-2 text-sm",
-              insight.type === "warning" && "bg-red-500/[0.04] border border-red-500/15",
-              insight.type === "suggestion" && "bg-amber-500/[0.04] border border-amber-500/15",
-              insight.type === "positive" && "bg-emerald-500/[0.04] border border-emerald-500/15",
-            )}
+            className="flex items-start gap-2.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-sm"
           >
-            {insight.type === "warning" && <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-red-400" />}
-            {insight.type === "suggestion" && <TrendingDown className="h-4 w-4 shrink-0 mt-0.5 text-amber-400" />}
+            {insight.type === "warning" && <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
+            {insight.type === "suggestion" && <Lightbulb className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />}
             {insight.type === "positive" && <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-emerald-400" />}
             <div className="flex-1 min-w-0">
               <span className="text-muted-foreground">{insight.message}</span>
-              <span className="mx-1.5">·</span>
+              <span className="mx-1.5 text-border">·</span>
               <Link
                 to={insight.actionHref}
-                className={cn(
-                  "text-xs font-medium underline underline-offset-2 transition-colors",
-                  insight.type === "warning" && "text-red-400 hover:text-red-300",
-                  insight.type === "suggestion" && "text-amber-400 hover:text-amber-300",
-                  insight.type === "positive" && "text-emerald-400 hover:text-emerald-300",
-                )}
+                className="text-xs font-medium text-foreground/70 underline underline-offset-2 hover:text-foreground transition-colors"
               >
                 {insight.actionLabel} &rarr;
               </Link>
