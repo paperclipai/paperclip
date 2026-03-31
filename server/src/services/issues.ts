@@ -1383,12 +1383,12 @@ export function issueService(db: Db) {
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
-                ${issueComments.createdAt} > ${anchorCreatedAt}
-                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} > ${anchor.id})
+                ${issueComments.createdAt} > ${anchorCreatedAt}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAt}::timestamptz AND ${issueComments.id} > ${anchor.id})
               )`
             : sql<boolean>`(
-                ${issueComments.createdAt} < ${anchorCreatedAt}
-                OR (${issueComments.createdAt} = ${anchorCreatedAt} AND ${issueComments.id} < ${anchor.id})
+                ${issueComments.createdAt} < ${anchorCreatedAt}::timestamptz
+                OR (${issueComments.createdAt} = ${anchorCreatedAt}::timestamptz AND ${issueComments.id} < ${anchor.id})
               )`,
         );
       }
