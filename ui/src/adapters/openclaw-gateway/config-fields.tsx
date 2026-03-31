@@ -263,49 +263,145 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
-      {!isCreate && (
-        <>
-          <Field label="Paperclip API URL override">
-            <DraftInput
-              value={
-                eff(
-                  "adapterConfig",
-                  "paperclipApiUrl",
-                  String(config.paperclipApiUrl ?? ""),
-                )
+      <Field label="Paperclip API URL override">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.paperclipApiUrl ?? ""
+              : eff("adapterConfig", "paperclipApiUrl", String(config.paperclipApiUrl ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ paperclipApiUrl: v })
+              : mark("adapterConfig", "paperclipApiUrl", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="https://paperclip.example"
+        />
+      </Field>
+
+      <Field label="Timeout (seconds)">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.timeoutSec != null ? String(values!.timeoutSec) : ""
+              : eff("adapterConfig", "timeoutSec", String(config.timeoutSec ?? ""))
+          }
+          onCommit={(v) => {
+            const parsed = Number.parseInt(v.trim(), 10);
+            const val = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+            if (isCreate) {
+              set!({ timeoutSec: val });
+            } else {
+              mark("adapterConfig", "timeoutSec", val);
+            }
+          }}
+          immediate
+          className={inputClass}
+          placeholder="60"
+        />
+      </Field>
+
+      <Field label="Wait timeout (ms)">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.waitTimeoutMs != null ? String(values!.waitTimeoutMs) : ""
+              : eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? ""))
+          }
+          onCommit={(v) => {
+            const parsed = Number.parseInt(v.trim(), 10);
+            const val = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+            if (isCreate) {
+              set!({ waitTimeoutMs: val });
+            } else {
+              mark("adapterConfig", "waitTimeoutMs", val);
+            }
+          }}
+          immediate
+          className={inputClass}
+          placeholder="30000"
+        />
+      </Field>
+
+      <Field label="Headers JSON">
+        <textarea
+          value={
+            isCreate
+              ? values!.headersJson ?? ""
+              : eff("adapterConfig", "headersJson", JSON.stringify(config.headers ?? {}, null, 2))
+          }
+          onChange={(e) => {
+            const next = e.target.value;
+            if (isCreate) {
+              set!({ headersJson: next });
+            } else {
+              const trimmed = next.trim();
+              if (!trimmed) {
+                mark("adapterConfig", "headers", undefined);
+                return;
               }
-              onCommit={(v) => mark("adapterConfig", "paperclipApiUrl", v || undefined)}
-              immediate
-              className={inputClass}
-              placeholder="https://paperclip.example"
-            />
-          </Field>
+              try {
+                const parsed = JSON.parse(trimmed);
+                if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+                  mark("adapterConfig", "headers", parsed);
+                }
+              } catch {
+                // Keep draft until JSON is valid
+              }
+            }
+          }}
+          rows={3}
+          className={inputClass}
+          placeholder='{"x-custom-header": "value"}'
+        />
+      </Field>
 
-          <Field label="Wait timeout (ms)">
-            <DraftInput
-              value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "120000"))}
-              onCommit={(v) => {
-                const parsed = Number.parseInt(v.trim(), 10);
-                mark(
-                  "adapterConfig",
-                  "waitTimeoutMs",
-                  Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
-                );
-              }}
-              immediate
-              className={inputClass}
-              placeholder="120000"
-            />
-          </Field>
+      <Field label="Disable device auth">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={
+              isCreate
+                ? values!.disableDeviceAuth ?? false
+                : eff("adapterConfig", "disableDeviceAuth", Boolean(config.disableDeviceAuth ?? false))
+            }
+            onChange={(e) =>
+              isCreate
+                ? set!({ disableDeviceAuth: e.target.checked })
+                : mark("adapterConfig", "disableDeviceAuth", e.target.checked || undefined)
+            }
+          />
+          Skip device key authentication
+        </label>
+      </Field>
 
-          <Field label="Device auth">
-            <div className="text-xs text-muted-foreground leading-relaxed">
-              Always enabled for gateway agents. Paperclip persists a device key during onboarding so pairing approvals
-              remain stable across runs.
-            </div>
-          </Field>
-        </>
-      )}
+      <Field label="Auto-pair on first connect">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={
+              isCreate
+                ? values!.autoPairOnFirstConnect ?? true
+                : eff("adapterConfig", "autoPairOnFirstConnect", config.autoPairOnFirstConnect !== false)
+            }
+            onChange={(e) =>
+              isCreate
+                ? set!({ autoPairOnFirstConnect: e.target.checked })
+                : mark("adapterConfig", "autoPairOnFirstConnect", e.target.checked)
+            }
+          />
+          Automatically approve device pairing
+        </label>
+      </Field>
+
+      <Field label="Device auth">
+        <div className="text-xs text-muted-foreground leading-relaxed">
+          When enabled, Paperclip persists a device key during onboarding so pairing approvals
+          remain stable across runs.
+        </div>
+      </Field>
     </>
   );
 }

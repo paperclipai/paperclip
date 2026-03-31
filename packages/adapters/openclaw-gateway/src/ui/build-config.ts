@@ -44,10 +44,15 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   // Paperclip API override
   if (v.paperclipApiUrl) ac.paperclipApiUrl = v.paperclipApiUrl;
   
-  // Headers
+  // Headers — parse headersJson first, then inject authToken on top
   const headers = parseJsonObject(v.headersJson ?? "");
   if (headers) ac.headers = headers;
-  
+  if (v.authToken) {
+    const h = (ac.headers as Record<string, unknown>) ?? {};
+    h["x-openclaw-token"] = v.authToken;
+    ac.headers = h;
+  }
+
   // Payload template
   const payloadTemplate = parseJsonObject(v.payloadTemplateJson ?? "");
   if (payloadTemplate) ac.payloadTemplate = payloadTemplate;
@@ -57,6 +62,13 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (runtimeServices && Array.isArray(runtimeServices.services)) {
     ac.workspaceRuntime = runtimeServices;
   }
-  
+
+  // Safe defaults — applied when fields are not explicitly set
+  if (!ac.timeoutSec) ac.timeoutSec = 60;
+  if (!ac.waitTimeoutMs) ac.waitTimeoutMs = 30000;
+  if (!ac.sessionKeyStrategy) ac.sessionKeyStrategy = "issue";
+  if (!ac.role) ac.role = "operator";
+  if (!ac.scopes) ac.scopes = ["operator.admin"];
+
   return ac;
 }
