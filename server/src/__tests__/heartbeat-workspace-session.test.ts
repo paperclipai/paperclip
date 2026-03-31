@@ -12,6 +12,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldUseAgentRuntimeSessionForTaskScope,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -325,6 +326,35 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldUseAgentRuntimeSessionForTaskScope", () => {
+  it("does not reuse agent runtime sessions when a task key is present", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: "issue-123",
+        resetTaskSession: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reuse agent runtime sessions when a fresh task session is required", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: null,
+        resetTaskSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("reuses agent runtime sessions for unscoped heartbeats", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: null,
+        resetTaskSession: false,
+      }),
+    ).toBe(true);
   });
 });
 
