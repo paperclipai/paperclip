@@ -1700,6 +1700,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipWhenIdle: asBoolean(heartbeat.skipWhenIdle, false),
     };
   }
 
@@ -3930,6 +3931,27 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (policy.skipWhenIdle) {
+          const [{ count: openIssueCount }] = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, agent.companyId),
+                eq(issues.assigneeAgentId, agent.id),
+                inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+              ),
+            );
+
+          if (Number(openIssueCount ?? 0) === 0) {
+            skipped += 1;
+            await db
+              .update(agents)
+              .set({ lastHeartbeatAt: now, updatedAt: now })
+              .where(eq(agents.id, agent.id));
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
