@@ -238,10 +238,12 @@ export function resolveRuntimeCommand(runtime: string, model: string, stdinPromp
     case "claude":
       // Claude Code: full agentic mode with tool use, session management, JSONL streaming.
       // Uses --print for non-interactive, --output-format stream-json for JSONL output,
+      // --verbose is required for stream-json with --print,
       // --permission-mode bypassPermissions for headless operation (no TTY approval prompts).
       // Prompt is passed via stdin (same as the local opencode adapter).
       return ["claude", "--print",
         "--output-format", "stream-json",
+        "--verbose",
         "--permission-mode", "bypassPermissions",
         ...(model ? ["--model", model] : [])];
     case "codex":
@@ -263,6 +265,7 @@ export function resolveRuntimeCommand(runtime: string, model: string, stdinPromp
       // Default to Claude Code for the best agent experience
       return ["claude", "--print",
         "--output-format", "stream-json",
+        "--verbose",
         "--permission-mode", "bypassPermissions",
         ...(model ? ["--model", model] : [])];
   }
