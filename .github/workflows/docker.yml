@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "master"
+      - "integration"
     tags:
       - "v*"
   workflow_dispatch:
@@ -40,6 +41,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=integration,enable=${{ github.ref == 'refs/heads/integration' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
