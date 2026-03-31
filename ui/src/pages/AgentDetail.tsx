@@ -2822,6 +2822,7 @@ function RunsTab({
   adapterType: string;
 }) {
   const { isMobile } = useSidebar();
+  const [statusFilter, setStatusFilter] = useState("");
 
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">No runs yet.</p>;
@@ -2831,10 +2832,11 @@ function RunsTab({
   const sorted = [...runs].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
+  const filtered = statusFilter ? sorted.filter((r) => r.status === statusFilter) : sorted;
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
-  const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? filtered[0]?.id ?? null);
+  const selectedRun = filtered.find((r) => r.id === effectiveRunId) ?? null;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -2853,10 +2855,25 @@ function RunsTab({
       );
     }
     return (
-      <div className="border border-border rounded-lg overflow-x-hidden">
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
-        ))}
+      <div>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="mb-2 h-8 rounded-md border border-border bg-background px-2 text-xs"
+          aria-label="Filter runs by status"
+        >
+          <option value="">All runs ({sorted.length})</option>
+          <option value="succeeded">Succeeded</option>
+          <option value="failed">Failed</option>
+          <option value="running">Running</option>
+          <option value="timed_out">Timed out</option>
+        </select>
+        <div className="border border-border rounded-lg overflow-x-hidden">
+          {filtered.map((run) => (
+            <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
+          ))}
+          {filtered.length === 0 && <p className="px-3 py-4 text-xs text-muted-foreground text-center">No runs matching filter.</p>}
+        </div>
       </div>
     );
   }
@@ -2870,9 +2887,24 @@ function RunsTab({
         selectedRun ? "w-72" : "w-full",
       )}>
         <div className="sticky top-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 2rem)" }}>
-        {sorted.map((run) => (
-          <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
-        ))}
+          <div className="px-2 py-2 border-b border-border">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full h-7 rounded-md border border-border bg-background px-2 text-xs"
+              aria-label="Filter runs by status"
+            >
+              <option value="">All runs ({sorted.length})</option>
+              <option value="succeeded">Succeeded</option>
+              <option value="failed">Failed</option>
+              <option value="running">Running</option>
+              <option value="timed_out">Timed out</option>
+            </select>
+          </div>
+          {filtered.map((run) => (
+            <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
+          ))}
+          {filtered.length === 0 && <p className="px-3 py-4 text-xs text-muted-foreground text-center">No runs matching filter.</p>}
         </div>
       </div>
 
