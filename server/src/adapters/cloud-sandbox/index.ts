@@ -15,7 +15,7 @@ Adapter: cloud_sandbox
 Runs agent CLIs in isolated Kubernetes pods. Requires cloud sandbox to be enabled on the instance.
 
 Core fields:
-- runtime (string, optional): agent runtime — "claude", "codex", "opencode", or "multi" (default: "multi")
+- runtime (string, optional): agent runtime — "claude" (recommended), "codex", "opencode", "gemini", "pi" (default: "claude")
 - model (string, optional): model override passed to the runtime CLI
 - runtimeImage (string, optional): container image for the sandbox pod
 - isolation (string, optional): "shared" (one pod per company) or "isolated" (one pod per agent)

@@ -204,7 +204,7 @@ interface ParsedConfig {
 
 function parseConfig(config: Record<string, unknown>): ParsedConfig {
   return {
-    runtime: (config.runtime as string) || "multi",
+    runtime: (config.runtime as string) || "claude",
     model: (config.model as string) || "",
     image: (config.runtimeImage as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest",
     isolation: (config.isolation as string) || "shared",
@@ -235,13 +235,20 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
 
 export function resolveRuntimeCommand(runtime: string, model: string, stdinPrompt?: string): string[] {
   switch (runtime) {
+    case "claude":
+      // Claude Code: full agentic mode with tool use, session management, JSONL streaming.
+      // Uses --print for non-interactive, --output-format stream-json for JSONL output,
+      // --permission-mode bypassPermissions for headless operation (no TTY approval prompts).
+      // Prompt is passed via stdin (same as the local opencode adapter).
+      return ["claude", "--print",
+        "--output-format", "stream-json",
+        "--permission-mode", "bypassPermissions",
+        ...(model ? ["--model", model] : [])];
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
-      // opencode requires -p for non-interactive mode (no TTY in containers).
-      // -q suppresses the spinner (no TTY available).
-      // -f json for structured output.
+      // Go-based opencode: -p for non-interactive, -q to suppress spinner, -f json for output.
       if (stdinPrompt) {
         return ["opencode", "-p", shellEscape(stdinPrompt), "-f", "json", "-q"];
       }
@@ -253,7 +260,10 @@ export function resolveRuntimeCommand(runtime: string, model: string, stdinPromp
       return ["pi-pods",
         ...(model ? ["--model", model] : [])];
     default:
-      return ["codex", "--full-auto",
+      // Default to Claude Code for the best agent experience
+      return ["claude", "--print",
+        "--output-format", "stream-json",
+        "--permission-mode", "bypassPermissions",
         ...(model ? ["--model", model] : [])];
   }
 }
