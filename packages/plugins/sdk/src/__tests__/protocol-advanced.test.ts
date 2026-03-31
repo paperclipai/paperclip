@@ -324,8 +324,8 @@ describe('JSON-RPC Protocol - Additional Coverage', () => {
         parseMessage(longString);
         expect.fail('Should have thrown');
       } catch (e) {
-        expect(e.message).toContain('Invalid JSON');
-        expect(e.message.length).toBeLessThan(300); // Truncated
+        expect((e as Error).message).toContain('Invalid JSON');
+        expect((e as Error).message.length).toBeLessThan(300); // Truncated
       }
     });
   });
