@@ -97,6 +97,24 @@ export class TelemetryClient {
     }
   }
 
+  startPeriodicFlush(intervalMs: number = 60_000): void {
+    if (this.flushInterval) return;
+    this.flushInterval = setInterval(() => {
+      void this.flush();
+    }, intervalMs);
+    // Allow the process to exit even if the interval is still active
+    if (typeof this.flushInterval === "object" && "unref" in this.flushInterval) {
+      this.flushInterval.unref();
+    }
+  }
+
+  stop(): void {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+  }
+
   hashPrivateRef(value: string): string {
     const state = this.getState();
     return createHash("sha256")
