@@ -15,6 +15,7 @@ import {
   resolveRuntimeSessionParamsForWorkspace,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
+  shouldUseAgentRuntimeSessionForTaskScope,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 
@@ -331,6 +332,7 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+<<<<<<< HEAD
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -382,6 +384,35 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+});
+
+describe("shouldUseAgentRuntimeSessionForTaskScope", () => {
+  it("does not reuse agent runtime sessions when a task key is present", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: "issue-123",
+        resetTaskSession: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reuse agent runtime sessions when a fresh task session is required", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: null,
+        resetTaskSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("reuses agent runtime sessions for unscoped heartbeats", () => {
+    expect(
+      shouldUseAgentRuntimeSessionForTaskScope({
+        taskKey: null,
+        resetTaskSession: false,
+      }),
+    ).toBe(true);
   });
 });
 
