@@ -167,13 +167,17 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+const CLAUDE_SESSION_ERROR_RE = /no conversation found with session id|unknown session|session .* not found/i;
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
     .map((msg) => msg.trim())
     .filter(Boolean);
 
-  return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
-  );
+  return allMessages.some((msg) => CLAUDE_SESSION_ERROR_RE.test(msg));
+}
+
+export function isClaudeUnknownSessionStderr(stderr: string): boolean {
+  return stderr.split(/\r?\n/).some((line) => CLAUDE_SESSION_ERROR_RE.test(line.trim()));
 }
