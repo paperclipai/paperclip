@@ -5,7 +5,23 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
 const MAX_TOOL_TURNS = 30;
+const MAX_TOOLS_PER_TURN = 5;
+const MAX_MESSAGE_HISTORY = 1000;
+const MAX_TOTAL_TOKENS = 100_000; // Cap across all 30 turns
 const BASH_TIMEOUT_MS = 120_000;
+
+// Commands that are too dangerous to execute via local model
+const DANGEROUS_PATTERNS = [
+  /\brm\s+-rf\b/, // recursive delete
+  /\bsudo\b/, // privilege escalation
+  /\bdd\b/, // disk dumping
+  /\bfdisk\b/, // partition manipulation
+  /\bformat\b/, // format drives
+];
+
+function isDangerousCommand(command: string): boolean {
+  return DANGEROUS_PATTERNS.some(pattern => pattern.test(command));
+}
 
 export interface OpenAICompatResult {
   summary: string;
@@ -213,6 +229,18 @@ export async function executeLocalModel(opts: {
   }
 
   while (turn < MAX_TOOL_TURNS) {
+    // Guard: check token accumulation across all turns
+    if (totalUsage.inputTokens + totalUsage.outputTokens >= MAX_TOTAL_TOKENS) {
+      await onLog("stderr", `[hybrid] Local: token limit reached (${totalUsage.inputTokens + totalUsage.outputTokens}/${MAX_TOTAL_TOKENS})\n`);
+      break;
+    }
+
+    // Guard: check message history size
+    if (messages.length >= MAX_MESSAGE_HISTORY) {
+      await onLog("stderr", "[hybrid] Local: message history too large, exiting\n");
+      break;
+    }
+
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       await onLog("stderr", "[hybrid] Local: timeout reached\n");
@@ -242,11 +270,22 @@ export async function executeLocalModel(opts: {
       throw new Error(`OpenAI-compatible endpoint returned ${response.status}: ${errorBody || response.statusText}`);
     }
 
-    const body = (await response.json()) as ChatCompletionResponse;
+    let body: ChatCompletionResponse;
+    try {
+      body = (await response.json()) as ChatCompletionResponse;
+    } catch (err) {
+      throw new Error(`Failed to parse endpoint response: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Guard: validate response structure
+    if (!Array.isArray(body.choices) || body.choices.length === 0) {
+      throw new Error("Invalid response: missing or empty choices array");
+    }
+
     totalUsage = accumulateUsage(totalUsage, body.usage);
     responseModel = body.model || model;
 
-    const choice = body.choices?.[0];
+    const choice = body.choices[0];
     const finishReason = choice?.finish_reason ?? null;
     const assistantMessage = choice?.message;
     const toolCalls = assistantMessage?.tool_calls;
@@ -276,19 +315,42 @@ export async function executeLocalModel(opts: {
       tool_calls: toolCalls,
     });
 
+    // Guard: limit tool calls per turn to prevent runaway execution
+    const safeToolCalls = toolCalls.slice(0, MAX_TOOLS_PER_TURN);
+    if (toolCalls.length > MAX_TOOLS_PER_TURN) {
+      await onLog("stdout", `[hybrid] Local: truncating ${toolCalls.length} tool calls to ${MAX_TOOLS_PER_TURN}\n`);
+    }
+
     // Execute each tool call and collect results
     const toolResults: ToolResultMessage[] = [];
-    for (const toolCall of toolCalls) {
+    for (const toolCall of safeToolCalls) {
       let result: string;
       if (toolCall.function.name === "bash") {
-        let args: { command?: string } = {};
-        try {
-          args = JSON.parse(toolCall.function.arguments) as { command?: string };
-        } catch {
-          args = {};
+        // Guard: validate tool call has arguments
+        if (!toolCall.function.arguments) {
+          result = "ERROR: bash tool call missing arguments";
+        } else {
+          let args: { command?: string } = {};
+          try {
+            args = JSON.parse(toolCall.function.arguments) as { command?: string };
+          } catch (err) {
+            result = `ERROR: failed to parse bash arguments: ${err instanceof Error ? err.message : String(err)}`;
+            toolResults.push({ role: "tool", tool_call_id: toolCall.id, content: result });
+            continue;
+          }
+
+          const command = typeof args.command === "string" ? args.command : "";
+
+          if (!command) {
+            result = "ERROR: no command provided";
+          } else if (isDangerousCommand(command)) {
+            // Guard: block dangerous commands
+            result = `ERROR: dangerous command blocked: ${command}`;
+            await onLog("stderr", `[hybrid] Blocked dangerous command: ${command}\n`);
+          } else {
+            result = await runBash(command, cwd, onLog);
+          }
         }
-        const command = typeof args.command === "string" ? args.command : "";
-        result = command ? await runBash(command, cwd, onLog) : "ERROR: no command provided";
       } else {
         result = `ERROR: unknown tool "${toolCall.function.name}"`;
       }
@@ -297,6 +359,15 @@ export async function executeLocalModel(opts: {
         role: "tool",
         tool_call_id: toolCall.id,
         content: result,
+      });
+    }
+
+    // Guard: if we truncated tool calls, add a note so the model knows
+    if (toolCalls.length > MAX_TOOLS_PER_TURN) {
+      toolResults.push({
+        role: "tool",
+        tool_call_id: "system",
+        content: `System: truncated to first ${MAX_TOOLS_PER_TURN} tools. Try fewer tool calls next turn.`,
       });
     }
 
