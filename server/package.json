@@ -78,6 +78,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.0.5",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/jsdom": "^28.0.0",
