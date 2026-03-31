@@ -84,11 +84,23 @@ export function OnboardingWizard() {
           companyPrefix,
           companies,
         });
+  const [routeOnboardingSnapshot, setRouteOnboardingSnapshot] = useState(
+    routeOnboardingOptions
+  );
+
+  useEffect(() => {
+    if (routeOnboardingOptions !== null) {
+      setRouteOnboardingSnapshot(routeOnboardingOptions);
+    }
+  }, [routeOnboardingOptions]);
+
   const effectiveOnboardingOpen =
-    onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
+    onboardingOpen ||
+    ((routeOnboardingOptions !== null || routeOnboardingSnapshot !== null) &&
+      !routeDismissed);
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
-    : routeOnboardingOptions ?? {};
+    : routeOnboardingOptions ?? routeOnboardingSnapshot ?? {};
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
@@ -152,6 +164,7 @@ export function OnboardingWizard() {
 
   useEffect(() => {
     setRouteDismissed(false);
+    setRouteOnboardingSnapshot(routeOnboardingOptions);
   }, [location.pathname]);
 
   // Sync step and company when onboarding opens with options.
@@ -278,6 +291,7 @@ export function OnboardingWizard() {
   }, [filteredModels, adapterType]);
 
   function reset() {
+    setRouteOnboardingSnapshot(routeOnboardingOptions);
     setStep(1);
     setLoading(false);
     setError(null);
