@@ -69,7 +69,7 @@ export const adapterLabels: Record<string, string> = {
   http: "HTTP",
 };
 
-export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+export const roleLabels = AGENT_ROLE_LABELS;
 
 /* ---- Primitive components ---- */
 
