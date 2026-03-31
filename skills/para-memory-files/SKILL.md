@@ -14,6 +14,18 @@ description: >
 
 Persistent, file-based memory organized by Tiago Forte's PARA method. Three layers: a knowledge graph, daily notes, and tacit knowledge. All paths are relative to `$AGENT_HOME`.
 
+## Directory Setup (required before first use)
+
+This skill is a prompt — it cannot create directories automatically. Before writing any memory files, ensure these directories exist under `$AGENT_HOME`:
+
+```bash
+mkdir -p "$AGENT_HOME/life/projects" "$AGENT_HOME/life/areas/people" \
+         "$AGENT_HOME/life/areas/companies" "$AGENT_HOME/life/resources" \
+         "$AGENT_HOME/life/archives" "$AGENT_HOME/memory"
+```
+
+If any path is missing on first write, create it. Do not assume lazy creation is handled elsewhere.
+
 ## Three Memory Layers
 
 ### Layer 1: Knowledge Graph (`$AGENT_HOME/life/` -- PARA)
