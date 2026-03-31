@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev-runner.mjs watch",
-    "dev:watch": "node scripts/dev-runner.mjs watch",
-    "dev:once": "node scripts/dev-runner.mjs dev",
+    "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
+    "dev:once": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts dev",
+    "dev:list": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts list",
+    "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
     "build": "pnpm -r build",
@@ -32,11 +34,12 @@
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
-    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed"
+    "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
   },
   "devDependencies": {
-    "cross-env": "^10.1.0",
     "@playwright/test": "^1.58.2",
+    "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
@@ -44,5 +47,10 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "patchedDependencies": {
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+    }
+  }
 }

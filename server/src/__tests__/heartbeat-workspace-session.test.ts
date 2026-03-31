@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
+import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  applyPersistedExecutionWorkspaceConfig,
+  buildRealizedExecutionWorkspaceFromPersisted,
+  buildExplicitResumeSessionOverride,
+  deriveTaskKeyWithHeartbeatFallback,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
+  stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -118,6 +124,147 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
   });
 });
 
+describe("applyPersistedExecutionWorkspaceConfig", () => {
+  it("does not add workspace runtime when only the project workspace had manual runtime config", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: null,
+      mode: "isolated_workspace",
+    });
+
+    expect("workspaceRuntime" in result).toBe(false);
+  });
+
+  it("applies explicit persisted execution workspace runtime config when present", () => {
+    const result = applyPersistedExecutionWorkspaceConfig({
+      config: {},
+      workspaceConfig: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        workspaceRuntime: {
+          services: [{ name: "workspace-web" }],
+        },
+      },
+      mode: "isolated_workspace",
+    });
+
+    expect(result.workspaceRuntime).toEqual({
+      services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("buildRealizedExecutionWorkspaceFromPersisted", () => {
+  it("reuses the persisted execution workspace path instead of deriving a new worktree", () => {
+    const result = buildRealizedExecutionWorkspaceFromPersisted({
+      base: buildResolvedWorkspace({
+        cwd: "/tmp/project-primary",
+        repoRef: "main",
+      }),
+      workspace: {
+        id: "execution-workspace-1",
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "PAP-880-thumbs-capture-for-evals-feature",
+        status: "active",
+        cwd: "/tmp/reused-worktree",
+        repoUrl: "https://example.com/paperclip.git",
+        baseRef: "main",
+        branchName: "PAP-880-thumbs-capture-for-evals-feature",
+        providerType: "git_worktree",
+        providerRef: "/tmp/reused-worktree",
+        derivedFromExecutionWorkspaceId: null,
+        lastUsedAt: new Date(),
+        openedAt: new Date(),
+        closedAt: null,
+        cleanupEligibleAt: null,
+        cleanupReason: null,
+        config: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    expect(result.created).toBe(false);
+    expect(result.strategy).toBe("git_worktree");
+    expect(result.cwd).toBe("/tmp/reused-worktree");
+    expect(result.worktreePath).toBe("/tmp/reused-worktree");
+    expect(result.branchName).toBe("PAP-880-thumbs-capture-for-evals-feature");
+    expect(result.source).toBe("task_session");
+  });
+
+  it("falls back to realization when the persisted workspace has no local path yet", () => {
+    const result = buildRealizedExecutionWorkspaceFromPersisted({
+      base: buildResolvedWorkspace({
+        cwd: "/tmp/project-primary",
+        repoRef: "main",
+      }),
+      workspace: {
+        id: "execution-workspace-2",
+        companyId: "company-1",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-2",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "PAP-999-missing-provider-ref",
+        status: "active",
+        cwd: null,
+        repoUrl: "https://example.com/paperclip.git",
+        baseRef: "main",
+        branchName: "feature/PAP-999-missing-provider-ref",
+        providerType: "git_worktree",
+        providerRef: null,
+        derivedFromExecutionWorkspaceId: null,
+        lastUsedAt: new Date(),
+        openedAt: new Date(),
+        closedAt: null,
+        cleanupEligibleAt: null,
+        cleanupReason: null,
+        config: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    });
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("stripWorkspaceRuntimeFromExecutionRunConfig", () => {
+  it("removes workspace runtime before heartbeat execution", () => {
+    const input = {
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+      workspaceRuntime: {
+        services: [{ name: "web" }],
+      },
+    };
+
+    const result = stripWorkspaceRuntimeFromExecutionRunConfig(input);
+
+    expect(result).toEqual({
+      cwd: "/tmp/project",
+      workspaceStrategy: {
+        type: "git_worktree",
+      },
+    });
+    expect(input.workspaceRuntime).toEqual({
+      services: [{ name: "web" }],
+    });
+  });
+});
+
 describe("shouldResetTaskSessionForWake", () => {
   it("resets session context on assignment wake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
@@ -179,6 +326,85 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("deriveTaskKeyWithHeartbeatFallback", () => {
+  it("returns explicit taskKey when present", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
+  });
+
+  it("returns explicit issueId when no taskKey", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ issueId: "issue-456" }, null)).toBe("issue-456");
+  });
+
+  it("returns __heartbeat__ for timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBe("__heartbeat__");
+  });
+
+  it("prefers explicit key over heartbeat fallback even on timer wakes", () => {
+    expect(
+      deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer", taskKey: "issue-789" }, null),
+    ).toBe("issue-789");
+  });
+
+  it("returns null for non-timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "on_demand" }, null)).toBeNull();
+  });
+
+  it("returns null for empty context", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
+describe("buildExplicitResumeSessionOverride", () => {
+  it("reuses saved task session params when they belong to the selected failed run", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "session-after",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "session-after",
+        lastRunId: "run-1",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+        cwd: "/tmp/project",
+      },
+    });
+  });
+
+  it("falls back to the selected run session id when no matching task session params are available", () => {
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "other-session",
+          cwd: "/tmp/project",
+        },
+        sessionDisplayId: "other-session",
+        lastRunId: "run-2",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+      },
+    });
   });
 });
 

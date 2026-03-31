@@ -10,9 +10,12 @@ import type {
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
+import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
+import { getProjectOrderStorageKey, writeProjectOrder } from "../lib/project-order";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
@@ -342,6 +345,45 @@ function prefixedName(prefix: string | null, originalName: string): string {
   return `${prefix}-${originalName}`;
 }
 
+function applyImportedSidebarOrder(
+  preview: CompanyPortabilityPreviewResult | null,
+  result: {
+    company: { id: string };
+    agents: Array<{ slug: string; id: string | null }>;
+    projects: Array<{ slug: string; id: string | null }>;
+  },
+  userId: string | null | undefined,
+) {
+  const sidebar = preview?.manifest.sidebar;
+  if (!sidebar) return;
+  if (!userId?.trim()) return;
+
+  const agentIdBySlug = new Map(
+    result.agents
+      .filter((agent): agent is { slug: string; id: string } => typeof agent.id === "string" && agent.id.length > 0)
+      .map((agent) => [agent.slug, agent.id]),
+  );
+  const projectIdBySlug = new Map(
+    result.projects
+      .filter((project): project is { slug: string; id: string } => typeof project.id === "string" && project.id.length > 0)
+      .map((project) => [project.slug, project.id]),
+  );
+
+  const orderedAgentIds = sidebar.agents
+    .map((slug) => agentIdBySlug.get(slug))
+    .filter((id): id is string => Boolean(id));
+  const orderedProjectIds = sidebar.projects
+    .map((slug) => projectIdBySlug.get(slug))
+    .filter((id): id is string => Boolean(id));
+
+  if (orderedAgentIds.length > 0) {
+    writeAgentOrder(getAgentOrderStorageKey(result.company.id, userId), orderedAgentIds);
+  }
+  if (orderedProjectIds.length > 0) {
+    writeProjectOrder(getProjectOrderStorageKey(result.company.id, userId), orderedProjectIds);
+  }
+}
+
 // ── Conflict resolution UI ───────────────────────────────────────────
 
 function ConflictResolutionList({
@@ -611,6 +653,11 @@ export function CompanyImport() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
   // Source state
   const [sourceMode, setSourceMode] = useState<"github" | "local">("github");
@@ -800,6 +847,18 @@ export function CompanyImport() {
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const importedCompany = await companiesApi.get(result.company.id);
+      const refreshedSession = currentUserId
+        ? null
+        : await queryClient.fetchQuery({
+          queryKey: queryKeys.auth.session,
+          queryFn: () => authApi.getSession(),
+        });
+      const sidebarOrderUserId =
+        currentUserId
+        ?? refreshedSession?.user?.id
+        ?? refreshedSession?.session?.userId
+        ?? null;
+      applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
       setSelectedCompanyId(importedCompany.id);
       pushToast({
         tone: "success",

@@ -14,6 +14,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
   authUsers,
+  companies,
   invites,
   joinRequests
 } from "@paperclipai/db";
@@ -856,7 +857,8 @@ export function normalizeAgentDefaultsForJoin(input: {
 function toInviteSummaryResponse(
   req: Request,
   token: string,
-  invite: typeof invites.$inferSelect
+  invite: typeof invites.$inferSelect,
+  companyName: string | null = null
 ) {
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
@@ -865,6 +867,7 @@ function toInviteSummaryResponse(
   return {
     id: invite.id,
     companyId: invite.companyId,
+    companyName,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     expiresAt: invite.expiresAt,
@@ -993,6 +996,7 @@ function buildInviteOnboardingManifest(
   token: string,
   invite: typeof invites.$inferSelect,
   opts: {
+    companyName?: string | null;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     bindHost: string;
@@ -1024,7 +1028,12 @@ function buildInviteOnboardingManifest(
   });
 
   return {
-    invite: toInviteSummaryResponse(req, token, invite),
+    invite: toInviteSummaryResponse(
+      req,
+      token,
+      invite,
+      opts.companyName ?? null
+    ),
     onboarding: {
       instructions:
         "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
@@ -1084,6 +1093,7 @@ export function buildInviteOnboardingTextDocument(
   token: string,
   invite: typeof invites.$inferSelect,
   opts: {
+    companyName?: string | null;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     bindHost: string;
@@ -1132,6 +1142,10 @@ export function buildInviteOnboardingTextDocument(
     - allowedJoinTypes: ${invite.allowedJoinTypes}
     - expiresAt: ${invite.expiresAt.toISOString()}
   `);
+
+  if (manifest.invite.companyName) {
+    lines.push(`- companyName: ${manifest.invite.companyName}`);
+  }
 
   if (onboarding.inviteMessage) {
     appendBlock(`
@@ -1409,6 +1423,25 @@ function grantsFromDefaults(
     });
   }
   return result;
+}
+
+export function agentJoinGrantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  return [
+    ...grants,
+    {
+      permissionKey: "tasks:assign",
+      scope: null
+    }
+  ];
 }
 
 type JoinRequestManagerCandidate = {
@@ -1863,6 +1896,16 @@ export function accessRoutes(
     return { token, created, normalizedAgentMessage };
   }
 
+  async function getInviteCompanyName(companyId: string | null) {
+    if (!companyId) return null;
+    const company = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    return company?.name ?? null;
+  }
+
   router.get("/skills/available", (_req, res) => {
     res.json({ skills: listAvailableSkills() });
   });
@@ -1923,11 +1966,18 @@ export function accessRoutes(
         }
       });
 
-      const inviteSummary = toInviteSummaryResponse(req, token, created);
+      const companyName = await getInviteCompanyName(created.companyId);
+      const inviteSummary = toInviteSummaryResponse(
+        req,
+        token,
+        created,
+        companyName
+      );
       res.status(201).json({
         ...created,
         token,
         inviteUrl: `/invite/${token}`,
+        companyName,
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,
         inviteMessage: inviteSummary.inviteMessage
@@ -1968,11 +2018,18 @@ export function accessRoutes(
         }
       });
 
-      const inviteSummary = toInviteSummaryResponse(req, token, created);
+      const companyName = await getInviteCompanyName(created.companyId);
+      const inviteSummary = toInviteSummaryResponse(
+        req,
+        token,
+        created,
+        companyName
+      );
       res.status(201).json({
         ...created,
         token,
         inviteUrl: `/invite/${token}`,
+        companyName,
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,
         inviteMessage: inviteSummary.inviteMessage
@@ -1997,7 +2054,8 @@ export function accessRoutes(
       throw notFound("Invite not found");
     }
 
-    res.json(toInviteSummaryResponse(req, token, invite));
+    const companyName = await getInviteCompanyName(invite.companyId);
+    res.json(toInviteSummaryResponse(req, token, invite, companyName));
   });
 
   router.get("/invites/:token/onboarding", async (req, res) => {
@@ -2012,7 +2070,11 @@ export function accessRoutes(
       throw notFound("Invite not found");
     }
 
-    res.json(buildInviteOnboardingManifest(req, token, invite, opts));
+    const companyName = await getInviteCompanyName(invite.companyId);
+    res.json(buildInviteOnboardingManifest(req, token, invite, {
+      ...opts,
+      companyName
+    }));
   });
 
   router.get("/invites/:token/onboarding.txt", async (req, res) => {
@@ -2027,9 +2089,15 @@ export function accessRoutes(
       throw notFound("Invite not found");
     }
 
+    const companyName = await getInviteCompanyName(invite.companyId);
     res
       .type("text/plain; charset=utf-8")
-      .send(buildInviteOnboardingTextDocument(req, token, invite, opts));
+      .send(
+        buildInviteOnboardingTextDocument(req, token, invite, {
+          ...opts,
+          companyName
+        })
+      );
   });
 
   router.get("/invites/:token/test-resolution", async (req, res) => {
@@ -2439,11 +2507,15 @@ export function accessRoutes(
 
       const response = toJoinRequestResponse(created);
       if (claimSecret) {
+        const companyName = await getInviteCompanyName(invite.companyId);
         const onboardingManifest = buildInviteOnboardingManifest(
           req,
           token,
           invite,
-          opts
+          {
+            ...opts,
+            companyName
+          }
         );
         res.status(202).json({
           ...response,
@@ -2618,17 +2690,8 @@ export function accessRoutes(
           "member",
           "active"
         );
-        await access.setPrincipalPermission(
-          companyId,
-          "agent",
-          created.id,
-          "tasks:assign",
-          true,
-          req.actor.userId ?? null
-        );
-        const grants = grantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null,
-          "agent"
+        const grants = agentJoinGrantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null
         );
         await access.setPrincipalGrants(
           companyId,

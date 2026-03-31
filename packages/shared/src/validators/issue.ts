@@ -32,6 +32,7 @@ export const createIssueSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
@@ -66,6 +67,7 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 
@@ -118,5 +120,8 @@ export const upsertIssueDocumentSchema = z.object({
   baseRevisionId: z.string().uuid().nullable().optional(),
 });
 
+export const restoreIssueDocumentRevisionSchema = z.object({});
+
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
+export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
