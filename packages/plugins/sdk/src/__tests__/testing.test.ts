@@ -11,10 +11,14 @@ import { definePlugin } from '../define-plugin.js';
 
 const createMockManifest = (overrides?: Partial<PaperclipPluginManifestV1>): PaperclipPluginManifestV1 => ({
   id: 'test-plugin',
-  name: 'Test Plugin',
+  apiVersion: 1,
+  displayName: 'Test Plugin',
   version: '1.0.0',
   description: 'Test plugin for unit tests',
+  author: 'Test Author',
+  categories: ['automation'],
   capabilities: ['plugin.state.read', 'plugin.state.write'],
+  entrypoints: { worker: './dist/worker.js' },
   ...overrides,
 });
 
@@ -31,11 +35,11 @@ describe('createTestHarness', () => {
       expect(harness.metrics).toEqual([]);
     });
 
-    it('initializes with default config', () => {
+    it('initializes with default config', async () => {
       const manifest = createMockManifest();
       const harness = createTestHarness({ manifest });
       
-      expect(harness.ctx.config.get()).resolves.toEqual({});
+      await expect(harness.ctx.config.get()).resolves.toEqual({});
     });
 
     it('initializes with provided config', async () => {

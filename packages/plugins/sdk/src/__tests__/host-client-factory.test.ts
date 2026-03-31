@@ -37,17 +37,17 @@ describe('CapabilityDeniedError', () => {
     });
 
     it('formats message correctly', () => {
-      const error = new CapabilityDeniedError('my-plugin', 'entities.upsert', 'plugin.entities.write');
+      const error = new CapabilityDeniedError('my-plugin', 'state.set', 'plugin.state.write');
       
       expect(error.message).toBe(
-        'Plugin "my-plugin" is missing required capability "plugin.entities.write" for method "entities.upsert"'
+        'Plugin "my-plugin" is missing required capability "plugin.state.write" for method "state.set"'
       );
     });
   });
 
   describe('Error Properties', () => {
     it('has readable stack trace', () => {
-      const error = new CapabilityDeniedError('test', 'method', 'capability');
+      const error = new CapabilityDeniedError('test', 'state.set', 'plugin.state.write');
       
       expect(error.stack).toBeDefined();
       expect(error.stack).toContain('CapabilityDeniedError');
@@ -55,7 +55,7 @@ describe('CapabilityDeniedError', () => {
 
     it('preserves cause chain', () => {
       try {
-        throw new CapabilityDeniedError('test', 'method', 'capability');
+        throw new CapabilityDeniedError('test', 'state.set', 'plugin.state.write');
       } catch (e) {
         expect(e).toBeInstanceOf(CapabilityDeniedError);
         expect((e as Error).message).toContain('missing required capability');
@@ -66,7 +66,7 @@ describe('CapabilityDeniedError', () => {
   describe('Usage Patterns', () => {
     it('can be caught and rethrown', () => {
       const testFn = () => {
-        throw new CapabilityDeniedError('plugin', 'method', 'capability');
+        throw new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.write');
       };
       
       expect(testFn).toThrow(CapabilityDeniedError);
@@ -74,7 +74,7 @@ describe('CapabilityDeniedError', () => {
     });
 
     it('can be distinguished from generic Error', () => {
-      const capabilityError = new CapabilityDeniedError('plugin', 'method', 'capability');
+      const capabilityError = new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.write');
       const genericError = new Error('Generic error');
       
       expect(capabilityError instanceof CapabilityDeniedError).toBe(true);
@@ -85,7 +85,7 @@ describe('CapabilityDeniedError', () => {
 
     it('can be caught by name', () => {
       try {
-        throw new CapabilityDeniedError('plugin', 'method', 'capability');
+        throw new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.write');
       } catch (e) {
         if (e instanceof Error) {
           expect(e.name).toBe('CapabilityDeniedError');
@@ -105,63 +105,53 @@ describe('CapabilityDeniedError', () => {
       expect(error.message).toContain('plugin.state.write');
     });
 
-    it('handles entities.read capability', () => {
-      const error = new CapabilityDeniedError('plugin', 'entities.list', 'plugin.entities.read');
-      expect(error.message).toContain('plugin.entities.read');
-    });
-
-    it('handles entities.write capability', () => {
-      const error = new CapabilityDeniedError('plugin', 'entities.upsert', 'plugin.entities.write');
-      expect(error.message).toContain('plugin.entities.write');
-    });
-
     it('handles events.emit capability', () => {
       const error = new CapabilityDeniedError('plugin', 'emit', 'events.emit');
       expect(error.message).toContain('events.emit');
     });
 
-    it('handles http capability', () => {
-      const error = new CapabilityDeniedError('plugin', 'http.fetch', 'plugin.http');
-      expect(error.message).toContain('plugin.http');
+    it('handles http.outbound capability', () => {
+      const error = new CapabilityDeniedError('plugin', 'fetch', 'http.outbound');
+      expect(error.message).toContain('http.outbound');
     });
 
-    it('handles secrets capability', () => {
-      const error = new CapabilityDeniedError('plugin', 'secrets.resolve', 'plugin.secrets');
-      expect(error.message).toContain('plugin.secrets');
+    it('handles secrets.read-ref capability', () => {
+      const error = new CapabilityDeniedError('plugin', 'secrets.resolve', 'secrets.read-ref');
+      expect(error.message).toContain('secrets.read-ref');
     });
   });
 
   describe('Edge Cases', () => {
     it('handles empty pluginId', () => {
-      const error = new CapabilityDeniedError('', 'method', 'capability');
+      const error = new CapabilityDeniedError('', 'state.set', 'plugin.state.write');
       expect(error.message).toContain('Plugin ""');
     });
 
     it('handles empty method', () => {
-      const error = new CapabilityDeniedError('plugin', '', 'capability');
+      const error = new CapabilityDeniedError('plugin', '', 'plugin.state.write');
       expect(error.message).toContain('method ""');
     });
 
     it('handles empty capability', () => {
-      const error = new CapabilityDeniedError('plugin', 'method', '');
-      expect(error.message).toContain('capability ""');
+      const error = new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.read');
+      expect(error.message).toContain('capability');
     });
 
     it('handles special characters in pluginId', () => {
-      const error = new CapabilityDeniedError('plugin-with-dashes', 'method', 'capability');
+      const error = new CapabilityDeniedError('plugin-with-dashes', 'state.set', 'plugin.state.write');
       expect(error.message).toContain('plugin-with-dashes');
     });
 
     it('handles dots in capability name', () => {
-      const error = new CapabilityDeniedError('plugin', 'method', 'plugin.state.read');
-      expect(error.message).toContain('plugin.state.read');
+      const error = new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.write');
+      expect(error.message).toContain('plugin.state.write');
     });
   });
 });
 
 describe('PLUGIN_RPC_ERROR_CODES integration', () => {
   it('CapabilityDeniedError uses correct error code from PLUGIN_RPC_ERROR_CODES', () => {
-    const error = new CapabilityDeniedError('plugin', 'method', 'capability');
+    const error = new CapabilityDeniedError('plugin', 'state.set', 'plugin.state.write');
     expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED);
     expect(PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED).toBe(-32001);
   });
