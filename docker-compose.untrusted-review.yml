@@ -11,9 +11,11 @@ services:
       HOME: "/home/reviewer"
       CODEX_HOME: "/home/reviewer/.codex"
       CLAUDE_HOME: "/home/reviewer/.claude"
+      GEMINI_HOME: "/home/reviewer/.gemini"
       PAPERCLIP_HOME: "/home/reviewer/.paperclip-review"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:GEMINI_API_KEY:-}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     ports:
       - "${REVIEW_PAPERCLIP_PORT:-3100}:3100"
