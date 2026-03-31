@@ -1317,6 +1317,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(interruptedRunId ? { interruptedRunId } : {}),
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
@@ -1379,6 +1380,7 @@ export function issueRoutes(
           identifier: issue.identifier,
           issueTitle: issue.title,
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
         },
       });
