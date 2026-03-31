@@ -1,4 +1,4 @@
-DROP INDEX "issues_company_identifier_idx";--> statement-breakpoint
+DROP INDEX IF EXISTS "issues_company_identifier_idx";--> statement-breakpoint
 
 -- Rebuild issue prefixes to be company-specific and globally unique.
 -- Base prefix is first 3 letters of company name (A-Z only), fallback "CMP".
