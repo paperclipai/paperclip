@@ -233,7 +233,10 @@ release_info "==> Step 4/7: Building publishable CLI bundle..."
 release_info "  ✓ CLI bundle ready"
 
 VERSIONED_PACKAGE_INFO="$(list_public_package_info)"
-VERSION_IN_CLI_PACKAGE="$(node -e "console.log(require('$CLI_DIR/package.json').version)")"
+VERSION_IN_CLI_PACKAGE="$(
+  cd "$CLI_DIR"
+  node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version)"
+)"
 if [ "$VERSION_IN_CLI_PACKAGE" != "$TARGET_PUBLISH_VERSION" ]; then
   release_fail "versioning drift detected. Expected $TARGET_PUBLISH_VERSION but found $VERSION_IN_CLI_PACKAGE."
 fi
