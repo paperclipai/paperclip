@@ -425,20 +425,20 @@ class CodexRpcClient {
     this.proc.stderr.on("data", (chunk: string) => {
       this.stderr += chunk;
     });
+    this.proc.on("error", (error) => {
+      this.failPending(error.message);
+    });
     this.proc.on("exit", () => {
-      for (const request of this.pending.values()) {
-        clearTimeout(request.timer);
-        request.reject(new Error(this.stderr.trim() || "codex app-server closed unexpectedly"));
-      }
-      this.pending.clear();
+      this.failPending(this.stderr.trim() || "codex app-server closed unexpectedly");
     });
-    this.proc.on("error", (err: Error) => {
-      for (const request of this.pending.values()) {
-        clearTimeout(request.timer);
-        request.reject(err);
-      }
-      this.pending.clear();
-    });
+  }
+
+  private failPending(message: string) {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(new Error(message));
+    }
+    this.pending.clear();
   }
 
   private onStdout(chunk: string) {
