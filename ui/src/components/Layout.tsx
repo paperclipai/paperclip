@@ -340,7 +340,7 @@ export function Layout() {
             <PropertiesPanel />
           </div>
           <footer className="flex items-center justify-between px-4 py-1.5 border-t border-border text-xs text-muted-foreground shrink-0">
-            <span>Ironworks by Steel Motion LLC</span>
+            <span>IronWorks by Steel Motion LLC</span>
             <div className="flex items-center gap-2">
               <Link to="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
               <CookieSettingsLink />

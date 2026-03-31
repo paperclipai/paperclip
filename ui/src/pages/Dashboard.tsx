@@ -17,26 +17,79 @@ import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { cn, formatCents } from "../lib/utils";
-import { AlertTriangle, Bot, CircleDot, DollarSign, ShieldCheck, Swords, PauseCircle } from "lucide-react";
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, CircleDot, DollarSign, ShieldCheck, Swords, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, PriorityChart, IssueStatusChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@ironworksai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
-/* ── Activity noise filter ── */
+/* ── Activity noise filter + aggregation ── */
 
-const FILTERED_EVENT_TYPES = new Set([
-  "cost_event_logged",
-  "cost_event",
-  "heartbeat_run_cost",
-]);
-
-function isActivityEventMeaningful(event: { action?: string; eventType?: string }): boolean {
-  const action = event.action ?? event.eventType ?? "";
-  if (FILTERED_EVENT_TYPES.has(action)) return false;
-  if (action.startsWith("cost_event")) return false;
+function isActivityEventMeaningful(event: { action?: string }): boolean {
+  const action = event.action ?? "";
+  if (action.startsWith("cost.")) return false;
   return true;
+}
+
+interface AggregatedGroup {
+  key: string;
+  action: string;
+  actorName: string;
+  count: number;
+  models: string[];
+  latestEvent: import("@ironworksai/shared").ActivityEvent;
+  events: import("@ironworksai/shared").ActivityEvent[];
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  "cost.reported": "cost events",
+  "cost.recorded": "cost events",
+  "issue.created": "issues",
+  "issue.updated": "issue updates",
+  "issue.comment_added": "comments",
+  "agent.created": "agents",
+  "project.created": "projects",
+  "goal.created": "goals",
+};
+
+function aggregateActivityEvents(
+  events: import("@ironworksai/shared").ActivityEvent[],
+  agentMap: Map<string, Agent>,
+): (import("@ironworksai/shared").ActivityEvent | AggregatedGroup)[] {
+  const result: (import("@ironworksai/shared").ActivityEvent | AggregatedGroup)[] = [];
+  let i = 0;
+  while (i < events.length) {
+    const event = events[i];
+    let j = i + 1;
+    const fiveMinutes = 5 * 60 * 1000;
+    const eventTime = new Date(event.createdAt).getTime();
+    while (j < events.length) {
+      const next = events[j];
+      if (next.action === event.action && next.actorId === event.actorId && Math.abs(eventTime - new Date(next.createdAt).getTime()) < fiveMinutes) j++;
+      else break;
+    }
+    if (j - i >= 3) {
+      const groupEvents = events.slice(i, j);
+      const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
+      const actorName = actor?.name ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown");
+      const models = new Set<string>();
+      for (const e of groupEvents) {
+        const model = (e.details as Record<string, unknown> | null)?.model as string | undefined;
+        if (model) models.add(model);
+      }
+      result.push({ key: `agg-${event.id}`, action: event.action, actorName, count: j - i, models: [...models], latestEvent: event, events: groupEvents });
+      i = j;
+    } else {
+      result.push(event);
+      i++;
+    }
+  }
+  return result;
+}
+
+function isAggregated(item: import("@ironworksai/shared").ActivityEvent | AggregatedGroup): item is AggregatedGroup {
+  return "count" in item && "key" in item;
 }
 
 /* ── Main component ── */
@@ -46,6 +99,7 @@ export function Dashboard() {
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
+  const [expandedAgg, setExpandedAgg] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
@@ -111,11 +165,40 @@ export function Dashboard() {
     staleTime: 30_000,
   });
 
+  /* ── Maps ── */
+
+  const agentMap = useMemo(() => {
+    const map = new Map<string, Agent>();
+    for (const a of agents ?? []) map.set(a.id, a);
+    return map;
+  }, [agents]);
+
+  const entityNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
+    for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
+    for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
+    return map;
+  }, [issues, agents, projects]);
+
+  const entityTitleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    return map;
+  }, [issues]);
+
   /* ── Derived data ── */
 
-  const recentActivity = useMemo(
-    () => (activity ?? []).filter(isActivityEventMeaningful).slice(0, 10),
+  const filteredActivity = useMemo(
+    () => (activity ?? []).filter(isActivityEventMeaningful).slice(0, 20),
     [activity],
+  );
+
+  const recentActivity = filteredActivity;
+
+  const aggregatedActivity = useMemo(
+    () => aggregateActivityEvents(filteredActivity, agentMap).slice(0, 12),
+    [filteredActivity, agentMap],
   );
 
   // Blocked issues
@@ -271,28 +354,6 @@ export function Dashboard() {
   }, [recentActivity]);
 
   useEffect(() => () => { for (const t of activityAnimationTimersRef.current) window.clearTimeout(t); }, []);
-
-  /* ── Maps ── */
-
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents ?? []) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
-  const entityNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
-    for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
-    for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
-    return map;
-  }, [issues, agents, projects]);
-
-  const entityTitleMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
-    return map;
-  }, [issues]);
 
   /* ── Empty states ── */
 
@@ -598,7 +659,7 @@ export function Dashboard() {
           />
 
           {/* ── 6. RECENT ACTIVITY ── */}
-          {recentActivity.length > 0 && (
+          {aggregatedActivity.length > 0 && (
             <div>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -608,17 +669,69 @@ export function Dashboard() {
                   View all activity
                 </Link>
               </div>
-              <div className="border border-border divide-y divide-border overflow-hidden">
-                {recentActivity.map((event) => (
-                  <ActivityRow
-                    key={event.id}
-                    event={event}
-                    agentMap={agentMap}
-                    entityNameMap={entityNameMap}
-                    entityTitleMap={entityTitleMap}
-                    className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
-                  />
-                ))}
+              <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
+                {aggregatedActivity.map((item) =>
+                  isAggregated(item) ? (
+                    <div key={item.key}>
+                      <button
+                        onClick={() => setExpandedAgg((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(item.key)) next.delete(item.key); else next.add(item.key);
+                          return next;
+                        })}
+                        className="w-full px-4 py-2.5 text-sm flex items-center justify-between hover:bg-accent/30 transition-colors text-left"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {expandedAgg.has(item.key) ? (
+                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          ) : (
+                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          )}
+                          <span className="inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-muted text-[10px] font-bold text-muted-foreground shrink-0">
+                            {item.count}
+                          </span>
+                          <span>
+                            <span className="font-medium">{item.actorName}</span>
+                            <span className="text-muted-foreground ml-1">
+                              logged {item.count} {ACTION_LABELS[item.action] ?? item.action.replace(/[._]/g, " ")}
+                            </span>
+                            {item.models.length > 0 && (
+                              <span className="text-muted-foreground ml-1">
+                                — {item.models.slice(0, 3).join(", ")}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                          {new Date(item.latestEvent.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      </button>
+                      {expandedAgg.has(item.key) && (
+                        <div className="border-t border-border/50 bg-muted/10">
+                          {item.events.map((event) => (
+                            <ActivityRow
+                              key={event.id}
+                              event={event}
+                              agentMap={agentMap}
+                              entityNameMap={entityNameMap}
+                              entityTitleMap={entityTitleMap}
+                              className="pl-12"
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <ActivityRow
+                      key={item.id}
+                      event={item}
+                      agentMap={agentMap}
+                      entityNameMap={entityNameMap}
+                      entityTitleMap={entityTitleMap}
+                      className={animatedActivityIds.has(item.id) ? "activity-row-enter" : undefined}
+                    />
+                  ),
+                )}
               </div>
             </div>
           )}
