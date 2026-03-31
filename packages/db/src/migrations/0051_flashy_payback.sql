@@ -1,0 +1,1 @@
+ALTER TABLE "goals" ADD COLUMN "target_date" timestamp with time zone;

@@ -78,6 +78,16 @@ function GoalCard({
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold truncate">{goal.title}</h3>
             <StatusBadge status={goal.status} />
+            {(goal as Goal & { targetDate?: string | null }).targetDate && (
+              <span className={cn(
+                "text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
+                new Date((goal as Goal & { targetDate?: string | null }).targetDate!) < new Date()
+                  ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                  : "bg-muted text-muted-foreground",
+              )}>
+                {new Date((goal as Goal & { targetDate?: string | null }).targetDate!).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+              </span>
+            )}
           </div>
           {goal.description && (
             <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{goal.description}</p>
