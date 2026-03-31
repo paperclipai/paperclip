@@ -429,6 +429,11 @@ export function OrgChart() {
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
                     </span>
                   )}
+                  {agent?.capabilities && (
+                    <span className="text-[10px] text-muted-foreground/50 leading-tight mt-0.5 line-clamp-2">
+                      {agent.capabilities}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
