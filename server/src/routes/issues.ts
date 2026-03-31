@@ -117,6 +117,41 @@ export function issueRoutes(db: Db, storage: StorageService) {
     throw unauthorized();
   }
 
+  const CODE_DELIVERY_TYPES = new Set(["branch", "commit", "pull_request"]);
+  const PR_VALID_STATUSES = new Set(["active", "ready_for_review", "approved", "merged"]);
+
+  async function assertDeliveryGate(
+    workProducts: ReturnType<typeof workProductService>,
+    req: Request,
+    issue: { id: string; executionWorkspaceId: string | null },
+    targetStatus: string,
+  ): Promise<{ gate: string; reason: string } | null> {
+    if (req.actor.type !== "agent") return null;
+    if (!issue.executionWorkspaceId) return null;
+
+    const products = await workProducts.listForIssue(issue.id);
+
+    if (targetStatus === "in_review") {
+      const hasCodeArtifact = products.some(wp => CODE_DELIVERY_TYPES.has(wp.type));
+      if (!hasCodeArtifact) return {
+        gate: "in_review_requires_artifact",
+        reason: "Cannot move to in_review without a pushed branch, commit, or pull request.",
+      };
+    }
+
+    if (targetStatus === "done") {
+      const hasValidPR = products.some(
+        wp => wp.type === "pull_request" && PR_VALID_STATUSES.has(wp.status),
+      );
+      if (!hasValidPR) return {
+        gate: "done_requires_pr",
+        reason: "Cannot mark done without a pull request. Create a PR first.",
+      };
+    }
+
+    return null;
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -851,6 +886,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+
+    // Delivery gate: agents must push code before transitioning code issues
+    if (req.body.status && req.body.status !== existing.status) {
+      const gateResult = await assertDeliveryGate(workProductsSvc, req, existing, req.body.status);
+      if (gateResult) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.delivery_gate_blocked",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { gate: gateResult.gate, reason: gateResult.reason, targetStatus: req.body.status },
+        });
+        res.status(422).json({ error: gateResult.reason, gate: gateResult.gate });
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const isClosed = existing.status === "done" || existing.status === "cancelled";

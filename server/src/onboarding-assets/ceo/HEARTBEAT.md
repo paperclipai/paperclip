@@ -34,6 +34,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Always checkout before working: `POST /api/issues/{id}/checkout`.
 - Never retry a 409 -- that task belongs to someone else.
 - Do the work. Update status and comment when done.
+- For code tasks: ensure code is pushed and a PR exists before marking done. The system enforces this for all agents.
 
 ## 6. Delegation
 
@@ -63,6 +64,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Budget awareness: Above 80% spend, focus only on critical tasks.
 - Never look for unassigned work -- only work on what is assigned to you.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
+- Code delivery enforcement: Agents cannot mark code tasks done without a pull request. If an agent is blocked by this gate, help them push their code or reassign to the Platform Engineer.
 
 ## Rules
 

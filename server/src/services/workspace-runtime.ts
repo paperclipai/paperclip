@@ -1566,5 +1566,12 @@ export function buildWorkspaceReadyComment(input: {
     const suffix = service.reused ? " (reused)" : "";
     lines.push(`- Service: ${detail}${suffix}`);
   }
+  // Delivery requirements reminder
+  lines.push("");
+  lines.push("### Delivery Requirements");
+  lines.push("Before moving this issue to `in_review`, push your branch to the remote.");
+  lines.push("Before marking `done`, create a pull request linked to this issue.");
+  lines.push("Status transitions will be rejected if these artifacts are missing.");
+
   return lines.join("\n");
 }
