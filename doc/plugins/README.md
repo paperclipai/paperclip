@@ -109,6 +109,77 @@ See [`/AGENTS.md`](../../AGENTS.md#plugin-development) for the full checklist.
 
 ---
 
+## Autonomous Validation
+
+### Hourly Cron Job
+
+The plugin system is validated automatically every hour via cron:
+
+```bash
+# Install the cron job (requires root)
+sudo ./scripts/install-cron.sh
+
+# Or install and run initial validation immediately
+sudo ./scripts/install-cron.sh --run-now
+```
+
+**Schedule:** `0 * * * *` (every hour)  
+**Log:** `/var/log/paperclip-plugin-validation.log`  
+**Reports:** `/tmp/paperclip-plugin-validation-<timestamp>.json`
+
+### Manual Validation
+
+```bash
+# Full validation (7 steps, ~30s)
+./scripts/validate-plugins.sh
+
+# Script self-tests only
+./scripts/test-validate-plugins.sh
+./scripts/test-install-cron.sh
+```
+
+### Validation Steps
+
+1. **Script Self-Tests** — Unit tests for validation scripts themselves
+2. **SDK Typecheck** — TypeScript validation for `@paperclipai/plugin-sdk`
+3. **SDK Unit Tests** — 131 tests, ~500ms
+4. **E2E Lifecycle Tests** — 30 tests, no Postgres required
+5. **Plugin Typecheck** — All 3 production plugins
+6. **Plugin Build** — Compile all plugins
+7. **Documentation Validation** — Check required docs present
+8. **Install Script Validation** — Verify cron install script is ready
+
+### JSON Report Schema
+
+```json
+{
+  "timestamp": "ISO-8601",
+  "commit": "short-hash",
+  "overall_status": "pass|fail",
+  "total_duration_seconds": number,
+  "steps": {
+    "self_tests": {"status": "pass|fail", "duration_seconds": number},
+    "typecheck": {"status": "pass|fail", "duration_seconds": number},
+    "tests": {"status": "pass|fail", "duration_seconds": number},
+    "e2e": {"status": "pass|fail", "duration_seconds": number},
+    "typecheck_plugins": {"status": "pass|fail", "duration_seconds": number},
+    "build": {"status": "pass|fail", "duration_seconds": number},
+    "docs": {"status": "pass|fail", "duration_seconds": number},
+    "install_script": {"status": "pass|fail", "duration_seconds": number}
+  },
+  "plugins": {
+    "playwright-mcp": "pass|fail",
+    "ruflo-bridge": "pass|fail",
+    "skills-hub": "pass|fail"
+  },
+  "documentation": {
+    "<file-path>": "present|missing"
+  }
+}
+```
+
+---
+
 ## Architecture Overview
 
 ### Worker-Side Host APIs (Alpha)
