@@ -30,6 +30,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { NewPlaybookDialog } from "../components/NewPlaybookDialog";
+import { RunPlaybookDialog } from "../components/RunPlaybookDialog";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -265,6 +266,7 @@ export function Playbooks() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [showRunDialog, setShowRunDialog] = useState(false);
 
   const { data: playbooksList, isLoading } = useQuery({
     queryKey: queryKeys.playbooks.list(selectedCompanyId!),
@@ -273,14 +275,15 @@ export function Playbooks() {
   });
 
   const runMutation = useMutation({
-    mutationFn: (playbookId: string) =>
-      playbooksApi.run(selectedCompanyId!, playbookId),
+    mutationFn: ({ playbookId, name, repoUrl }: { playbookId: string; name?: string; repoUrl?: string }) =>
+      playbooksApi.run(selectedCompanyId!, playbookId, undefined /* projectId */, name, repoUrl),
     onSuccess: (data) => {
       pushToast({
         title: "Playbook started",
         body: `${data.stepsCreated} tasks created`,
         tone: "success",
       });
+      setShowRunDialog(false);
       queryClient.invalidateQueries({ queryKey: queryKeys.playbooks.list(selectedCompanyId!) });
       if (selectedId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.playbooks.detail(selectedCompanyId!, selectedId) });
@@ -413,7 +416,7 @@ export function Playbooks() {
           <PlaybookDetail
             companyId={selectedCompanyId}
             playbookId={selectedId}
-            onRun={() => runMutation.mutate(selectedId)}
+            onRun={() => setShowRunDialog(true)}
             isRunning={runMutation.isPending}
           />
         ) : (
@@ -449,6 +452,16 @@ export function Playbooks() {
         onSubmit={(payload) => createMutation.mutate(payload)}
         isPending={createMutation.isPending}
       />
+
+      {selectedId && (
+        <RunPlaybookDialog
+          open={showRunDialog}
+          onOpenChange={setShowRunDialog}
+          playbookName={filteredPlaybooks.find((p) => p.id === selectedId)?.name ?? "Playbook"}
+          onRun={(input) => runMutation.mutate({ playbookId: selectedId, ...input })}
+          isPending={runMutation.isPending}
+        />
+      )}
     </div>
   );
 }

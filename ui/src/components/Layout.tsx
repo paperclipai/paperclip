@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
+import { CookieSettingsLink } from "./CookieConsent";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
@@ -427,6 +428,13 @@ export function Layout() {
             </main>
             <PropertiesPanel />
           </div>
+          <footer className="flex items-center justify-between px-4 py-2 border-t border-border text-xs text-muted-foreground shrink-0">
+            <span>Ironworks by Steel Motion LLC</span>
+            <div className="flex items-center gap-4">
+              <Link to="/privacy" className="hover:text-foreground transition-colors">Privacy Policy</Link>
+              <CookieSettingsLink />
+            </div>
+          </footer>
         </div>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}

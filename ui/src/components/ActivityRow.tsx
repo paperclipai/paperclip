@@ -5,43 +5,59 @@ import { cn } from "../lib/utils";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@ironworksai/shared";
 
 const ACTION_VERBS: Record<string, string> = {
-  "issue.created": "created",
-  "issue.updated": "updated",
-  "issue.checked_out": "checked out",
-  "issue.released": "released",
-  "issue.comment_added": "commented on",
-  "issue.attachment_added": "attached file to",
-  "issue.attachment_removed": "removed attachment from",
-  "issue.document_created": "created document for",
-  "issue.document_updated": "updated document on",
-  "issue.document_deleted": "deleted document from",
-  "issue.commented": "commented on",
-  "issue.deleted": "deleted",
-  "agent.created": "created",
-  "agent.updated": "updated",
-  "agent.paused": "paused",
-  "agent.resumed": "resumed",
-  "agent.terminated": "terminated",
-  "agent.key_created": "created API key for",
-  "agent.budget_updated": "updated budget for",
-  "agent.runtime_session_reset": "reset session for",
-  "heartbeat.invoked": "invoked heartbeat for",
-  "heartbeat.cancelled": "cancelled heartbeat for",
+  "issue.created": "created issue",
+  "issue.updated": "updated issue",
+  "issue.checked_out": "checked out issue",
+  "issue.released": "released issue",
+  "issue.comment_added": "commented on issue",
+  "issue.attachment_added": "attached file to issue",
+  "issue.attachment_removed": "removed attachment from issue",
+  "issue.document_created": "created document for issue",
+  "issue.document_updated": "updated document on issue",
+  "issue.document_deleted": "deleted document from issue",
+  "issue.commented": "commented on issue",
+  "issue.deleted": "deleted issue",
+  "agent.created": "hired agent",
+  "agent.updated": "updated agent",
+  "agent.paused": "paused agent",
+  "agent.resumed": "resumed agent",
+  "agent.terminated": "terminated agent",
+  "agent.key_created": "created API key for agent",
+  "agent.budget_updated": "updated budget for agent",
+  "agent.runtime_session_reset": "reset session for agent",
+  "heartbeat.invoked": "invoked heartbeat for agent",
+  "heartbeat.cancelled": "cancelled heartbeat for agent",
   "approval.created": "requested approval",
-  "approval.approved": "approved",
-  "approval.rejected": "rejected",
-  "project.created": "created",
-  "project.updated": "updated",
-  "project.deleted": "deleted",
-  "goal.created": "created",
-  "goal.updated": "updated",
-  "goal.deleted": "deleted",
-  "cost.reported": "reported cost for",
-  "cost.recorded": "recorded cost for",
+  "approval.approved": "approved request",
+  "approval.rejected": "rejected request",
+  "project.created": "created project",
+  "project.updated": "updated project",
+  "project.deleted": "deleted project",
+  "goal.created": "created goal",
+  "goal.updated": "updated goal",
+  "goal.deleted": "deleted goal",
+  "cost.reported": "logged cost event",
+  "cost.recorded": "recorded cost event",
   "company.created": "created company",
-  "company.updated": "updated company",
-  "company.archived": "archived",
-  "company.budget_updated": "updated budget for",
+  "company.updated": "updated company settings",
+  "company.archived": "archived company",
+  "company.budget_updated": "updated company budget",
+  "company.imported": "imported company data",
+  "privacy.erasure_requested": "requested data erasure",
+};
+
+const ACTION_COLORS: Record<string, string> = {
+  created: "text-emerald-500",
+  hired: "text-emerald-500",
+  deleted: "text-red-500",
+  terminated: "text-red-500",
+  paused: "text-amber-500",
+  archived: "text-amber-500",
+  rejected: "text-red-500",
+  approved: "text-emerald-500",
+  resumed: "text-blue-500",
+  updated: "text-blue-500",
+  commented: "text-muted-foreground",
 };
 
 function humanizeValue(value: unknown): string {
@@ -90,16 +106,34 @@ interface ActivityRowProps {
 export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
   const verb = formatVerb(event.action, event.details);
 
+  // Determine verb color
+  const verbColor = Object.entries(ACTION_COLORS).find(
+    ([keyword]) => verb.toLowerCase().includes(keyword),
+  )?.[1] ?? "text-muted-foreground";
+
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
     ? (event.details as Record<string, unknown> | null)?.agentId as string | undefined
     : undefined;
 
+  const isCostEvent = event.action.startsWith("cost.");
+  const details = event.details as Record<string, unknown> | null;
+
+  // For cost events, try to find the agent name from details
+  const costAgentId = isCostEvent ? (details?.agentId as string | undefined) : undefined;
+  const costAgentName = costAgentId ? entityNameMap.get(`agent:${costAgentId}`) : null;
+  const costModel = isCostEvent ? (details?.model as string | undefined) : undefined;
+  const costProvider = isCostEvent ? (details?.provider as string | undefined) : undefined;
+
   const name = isHeartbeatEvent
     ? (heartbeatAgentId ? entityNameMap.get(`agent:${heartbeatAgentId}`) : null)
-    : entityNameMap.get(`${event.entityType}:${event.entityId}`);
+    : isCostEvent
+      ? costAgentName
+      : entityNameMap.get(`${event.entityType}:${event.entityId}`);
 
-  const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
+  const entityTitle = isCostEvent
+    ? (costModel ? `${costProvider ?? ""}${costProvider && costModel ? " · " : ""}${costModel}` : undefined)
+    : entityTitleMap?.get(`${event.entityType}:${event.entityId}`);
 
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
@@ -116,7 +150,7 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
           size="xs"
           className="align-baseline"
         />
-        <span className="text-muted-foreground ml-1">{verb} </span>
+        <span className={cn("ml-1", verbColor)}>{verb} </span>
         {name && <span className="font-medium">{name}</span>}
         {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
       </p>

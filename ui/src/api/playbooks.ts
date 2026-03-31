@@ -119,10 +119,10 @@ export const playbooksApi = {
       {},
     ),
 
-  run: (companyId: string, playbookId: string, projectId?: string) =>
+  run: (companyId: string, playbookId: string, projectId?: string, name?: string, repoUrl?: string) =>
     api.post<RunPlaybookResult>(
       `/companies/${encodeURIComponent(companyId)}/playbooks/${encodeURIComponent(playbookId)}/run`,
-      { projectId },
+      { projectId, name, repoUrl },
     ),
 
   listRuns: (companyId: string, playbookId?: string) =>
