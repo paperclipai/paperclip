@@ -255,6 +255,10 @@ clone_and_build() {
 # ── Phase 8: Claude Code & Codex CLI ────────────────────────────────────────
 
 install_cli_tools() {
+  mkdir -p "${PAPERCLIP_HOME}/.claude" "${PAPERCLIP_HOME}/.codex"
+  touch "${PAPERCLIP_HOME}/.claude.json"
+  chown -R "${PAPERCLIP_USER}":"${PAPERCLIP_USER}" "${PAPERCLIP_HOME}/.claude" "${PAPERCLIP_HOME}/.codex" "${PAPERCLIP_HOME}/.claude.json"
+
   # Ensure ~/.local/bin is in PATH for the paperclip user
   local bashrc="${PAPERCLIP_HOME}/.bashrc"
   if ! grep -q '.local/bin' "${bashrc}" 2>/dev/null; then
