@@ -10,6 +10,9 @@ export type SeatStatus = (typeof SEAT_STATUSES)[number];
 export const SEAT_OPERATING_MODES = ["vacant", "assisted", "shadowed"] as const;
 export type SeatOperatingMode = (typeof SEAT_OPERATING_MODES)[number];
 
+export const SEAT_PAUSE_REASONS = ["budget_enforcement", "manual_admin", "maintenance"] as const;
+export type SeatPauseReason = (typeof SEAT_PAUSE_REASONS)[number];
+
 export const SEAT_OCCUPANT_TYPES = ["agent", "user"] as const;
 export type SeatOccupantType = (typeof SEAT_OCCUPANT_TYPES)[number];
 

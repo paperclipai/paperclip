@@ -936,7 +936,7 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const tree = await seatsSvc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     res.json(leanTree);
   });
 
@@ -945,7 +945,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
     const tree = await seatsSvc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     const svg = renderOrgChartSvg(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/svg+xml");
     res.setHeader("Cache-Control", "no-cache");
@@ -957,7 +957,7 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
     const tree = await seatsSvc.orgForCompany(companyId);
-    const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
+    const leanTree = tree.map((node) => toLeanOrgNode(node as unknown as Record<string, unknown>));
     const png = await renderOrgChartPng(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "no-cache");

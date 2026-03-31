@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { assertNoSeatCycle, MAX_SEAT_TREE_DEPTH } from "./seat-tree.js";
 
 describe("assertNoSeatCycle", () => {
+  it("allows a valid parent assignment when no cycle is introduced", () => {
+    expect(() =>
+      assertNoSeatCycle({
+        seatId: "seat-c",
+        proposedParentSeatId: "seat-b",
+        parentSeatIdBySeatId: new Map([
+          ["seat-a", null],
+          ["seat-b", "seat-a"],
+          ["seat-c", null],
+        ]),
+      }),
+    ).not.toThrow();
+  });
+
   it("throws when a seat is assigned as its own parent", () => {
     expect(() =>
       assertNoSeatCycle({
@@ -20,6 +34,20 @@ describe("assertNoSeatCycle", () => {
         parentSeatIdBySeatId: new Map([
           ["seat-a", null],
           ["seat-b", "seat-a"],
+        ]),
+      }),
+    ).toThrow("Seat hierarchy would create cycle");
+  });
+
+  it("throws when a proposed parent would create an indirect three-node cycle", () => {
+    expect(() =>
+      assertNoSeatCycle({
+        seatId: "seat-a",
+        proposedParentSeatId: "seat-c",
+        parentSeatIdBySeatId: new Map([
+          ["seat-a", null],
+          ["seat-b", "seat-a"],
+          ["seat-c", "seat-b"],
         ]),
       }),
     ).toThrow("Seat hierarchy would create cycle");

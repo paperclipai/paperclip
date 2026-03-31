@@ -8,6 +8,7 @@ import {
   seats,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { delegatedPermissionsFromMetadata } from "./seat-permissions.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -117,7 +118,7 @@ export function accessService(db: Db) {
           : null;
     if (!allowedOccupancyRole) return false;
 
-    const row = await db
+    const rows = await db
       .select({ seatId: seats.id, seatType: seats.seatType, metadata: seats.metadata })
       .from(seatOccupancies)
       .innerJoin(seats, eq(seatOccupancies.seatId, seats.id))
@@ -132,24 +133,25 @@ export function accessService(db: Db) {
           eq(seats.status, "active"),
         ),
       )
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows);
 
-    if (!row) return false;
+    if (rows.length === 0) return false;
 
-    if (row.seatType === "ceo" && CEO_SEAT_DERIVED_PERMISSION_KEYS.has(input.permissionKey)) {
-      return true;
+    for (const row of rows) {
+      if (row.seatType === "ceo" && CEO_SEAT_DERIVED_PERMISSION_KEYS.has(input.permissionKey)) {
+        return true;
+      }
+
+      const delegatedPermissions = delegatedPermissionsFromMetadata(
+        row.metadata as Record<string, unknown> | null | undefined,
+      );
+
+      if (delegatedPermissions.includes(input.permissionKey)) {
+        return true;
+      }
     }
 
-    const delegatedPermissions =
-      row.metadata &&
-      typeof row.metadata === "object" &&
-      !Array.isArray(row.metadata) &&
-      Array.isArray((row.metadata as Record<string, unknown>).delegatedPermissions)
-        ? ((row.metadata as Record<string, unknown>).delegatedPermissions as unknown[])
-            .filter((value): value is PermissionKey => typeof value === "string")
-        : [];
-
-    return delegatedPermissions.includes(input.permissionKey);
+    return false;
   }
 
   async function listMembers(companyId: string) {

@@ -8,7 +8,7 @@ export const costEventSeatAttributions = pgTable(
   {
     costEventId: uuid("cost_event_id").primaryKey().references(() => costEvents.id, { onDelete: "cascade" }),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    seatId: uuid("seat_id").notNull().references(() => seats.id),
+    seatId: uuid("seat_id").notNull().references(() => seats.id, { onDelete: "cascade" }),
     attributionSource: text("attribution_source").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

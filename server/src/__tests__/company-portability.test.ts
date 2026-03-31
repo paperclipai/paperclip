@@ -62,6 +62,7 @@ const assetSvc = {
 const seatSvc = {
   attachHuman: vi.fn(),
   attachShadowAgent: vi.fn(),
+  reassignPrimaryAgent: vi.fn(),
 };
 
 const agentInstructionsSvc = {
@@ -352,6 +353,8 @@ describe("company portability", () => {
     seatSvc.attachHuman.mockResolvedValue(undefined);
     seatSvc.attachShadowAgent.mockReset();
     seatSvc.attachShadowAgent.mockResolvedValue(undefined);
+    seatSvc.reassignPrimaryAgent.mockReset();
+    seatSvc.reassignPrimaryAgent.mockResolvedValue(undefined);
     accessSvc.setPrincipalPermission.mockResolvedValue(undefined);
     assetSvc.create.mockResolvedValue({
       id: "asset-created",
@@ -967,6 +970,13 @@ describe("company portability", () => {
       [
         {
           seatId: "seat-1",
+          occupantType: "agent",
+          occupantId: "agent-1",
+          occupancyRole: "primary_agent",
+          status: "active",
+        },
+        {
+          seatId: "seat-1",
           occupantType: "user",
           occupantId: "user-1",
           occupancyRole: "human_operator",
@@ -1044,9 +1054,12 @@ describe("company portability", () => {
       title: "Software Engineer Seat",
       seatType: "individual",
       status: "active",
+      pauseReason: null,
+      pauseReasons: [],
       operatingMode: "assisted",
       parentSeatSlug: null,
       occupancy: {
+        primaryAgentSlug: "claudecoder",
         humanUserId: "user-1",
         shadowAgentSlug: null,
       },
@@ -1054,6 +1067,78 @@ describe("company portability", () => {
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("seat:");
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('slug: "claudecoder-seat"');
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('operatingMode: "assisted"');
+  });
+
+  it("exports explicit seat pause reasons when they are present", async () => {
+    const pendingSelects: unknown[] = [
+      [
+        {
+          id: "seat-1",
+          companyId: "company-1",
+          parentSeatId: null,
+          slug: "claudecoder-seat",
+          name: "ClaudeCoder Seat",
+          title: "Software Engineer Seat",
+          seatType: "individual",
+          status: "paused",
+          operatingMode: "vacant",
+          defaultAgentId: "agent-1",
+          currentHumanUserId: null,
+          metadata: {
+            pause: {
+              reason: "maintenance",
+              reasons: ["maintenance"],
+            },
+          },
+        },
+      ],
+      [],
+    ];
+    const dbStub = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn(async () => pendingSelects.shift() ?? []),
+        }),
+      })),
+    };
+
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        status: "idle",
+        role: "engineer",
+        title: "Software Engineer",
+        icon: "code",
+        reportsTo: null,
+        seatId: "seat-1",
+        seatRole: "primary_agent",
+        capabilities: "Writes code",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+    ]);
+
+    const portability = companyPortabilityService(dbStub as any);
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(exported.manifest.agents[0]?.seat).toMatchObject({
+      status: "paused",
+      pauseReason: "maintenance",
+      pauseReasons: ["maintenance"],
+    });
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('pauseReason: "maintenance"');
   });
 
   it("parses seat metadata from .paperclip.yaml into preview manifests", async () => {
@@ -1075,6 +1160,7 @@ describe("company portability", () => {
         '      operatingMode: "assisted"',
         '      parentSeatSlug: null',
         '      occupancy:',
+        '        primaryAgentSlug: "claudecoder"',
         '        humanUserId: "user-1"',
         '        shadowAgentSlug: null',
         "",
@@ -1095,9 +1181,12 @@ describe("company portability", () => {
       title: "Software Engineer Seat",
       seatType: "individual",
       status: "active",
+      pauseReason: null,
+      pauseReasons: [],
       operatingMode: "assisted",
       parentSeatSlug: null,
       occupancy: {
+        primaryAgentSlug: "claudecoder",
         humanUserId: "user-1",
         shadowAgentSlug: null,
       },
@@ -1136,6 +1225,7 @@ describe("company portability", () => {
         '      operatingMode: "assisted"',
         '      parentSeatSlug: null',
         '      occupancy:',
+        '        primaryAgentSlug: "claudecoder"',
         '        humanUserId: "user-1"',
         '        shadowAgentSlug: null',
         "",
@@ -1198,7 +1288,105 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1", undefined as any);
 
+    expect(seatSvc.reassignPrimaryAgent).toHaveBeenCalledWith("company-imported", "seat-created", "agent-created");
     expect(seatSvc.attachHuman).toHaveBeenCalledWith("company-imported", "seat-created", "user-1");
+  });
+
+  it("reassigns imported primary agent occupancy when occupancy metadata includes primaryAgentSlug", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create
+      .mockResolvedValueOnce({ id: "agent-primary", name: "ClaudeCoder" })
+      .mockResolvedValueOnce({ id: "agent-shadow", name: "ShadowAgent" });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const files = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "agents/claudecoder/AGENTS.md": ['---', 'name: "ClaudeCoder"', "---", "", "You write code.", ""].join("\n"),
+      "agents/shadowagent/AGENTS.md": ['---', 'name: "ShadowAgent"', "---", "", "You observe.", ""].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "agents:",
+        '  claudecoder:',
+        '    role: "engineer"',
+        "    seat:",
+        '      slug: "claudecoder-seat"',
+        '      name: "ClaudeCoder Seat"',
+        '      title: "Software Engineer Seat"',
+        '      seatType: "individual"',
+        '      status: "active"',
+        '      operatingMode: "assisted"',
+        '      parentSeatSlug: null',
+        '      occupancy:',
+        '        primaryAgentSlug: "shadowagent"',
+        '        humanUserId: null',
+        '        shadowAgentSlug: null',
+        "",
+      ].join("\n"),
+    };
+
+    const pendingSelects: unknown[] = [
+      [],
+      [
+        {
+          id: "seat-created",
+          companyId: "company-imported",
+          parentSeatId: null,
+          slug: "claudecoder-seat",
+          name: "ClaudeCoder Seat",
+          title: "Software Engineer Seat",
+          seatType: "individual",
+          status: "active",
+          operatingMode: "vacant",
+          defaultAgentId: "agent-primary",
+          currentHumanUserId: null,
+        },
+      ],
+      [
+        {
+          id: "seat-created",
+          companyId: "company-imported",
+          parentSeatId: null,
+          slug: "claudecoder-seat",
+          name: "ClaudeCoder Seat",
+          title: "Software Engineer Seat",
+          seatType: "individual",
+          status: "active",
+          operatingMode: "vacant",
+          defaultAgentId: "agent-primary",
+          currentHumanUserId: null,
+        },
+      ],
+    ];
+    const dbStub = {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn(async () => pendingSelects.shift() ?? []),
+        }),
+      })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    };
+
+    const portabilityWithDb = companyPortabilityService(dbStub as any);
+    await portabilityWithDb.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: false, issues: false, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1", undefined as any);
+
+    expect(seatSvc.reassignPrimaryAgent).toHaveBeenCalledWith("company-imported", "seat-created", "agent-shadow");
   });
 
   it("attaches imported shadow agent occupancy when occupancy metadata includes shadowAgentSlug", async () => {

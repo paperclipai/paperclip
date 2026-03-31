@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Check, ChevronDown, ChevronRight, Copy, Download, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { useI18n } from "../i18n";
 
 type DraftState = {
   key: string;
@@ -98,7 +99,121 @@ export function IssueDocumentsSection({
   extraActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
+  const { locale } = useI18n();
   const location = useLocation();
+  const copy = locale === "ko"
+      ? {
+          deleteFailed: "문서를 삭제하지 못했습니다",
+          invalidKey: "소문자, 숫자, -, _만 사용하고 문자나 숫자로 시작하세요.",
+          keyAndBodyRequired: "문서 키와 본문이 필요합니다",
+          bodyRequired: "문서 본문은 비워둘 수 없습니다",
+          invalidPattern: "문서 키는 문자나 숫자로 시작하고 소문자, 숫자, -, _만 사용할 수 있습니다.",
+          remoteChanged: "문서가 원격에서 바뀌었고 최신 버전을 불러오지 못했습니다",
+          saveFailed: "문서를 저장하지 못했습니다",
+          copyFailed: "문서를 복사할 수 없습니다",
+          newDocument: "새 문서",
+          documents: "문서",
+          documentKey: "문서 키",
+          optionalTitle: "선택 제목",
+          markdownBody: "마크다운 본문",
+          cancel: "취소",
+          createDocument: "문서 생성",
+          saving: "저장 중...",
+          copied: "복사됨",
+          copyDocument: "문서 복사",
+          documentActions: "문서 작업",
+          downloadDocument: "문서 다운로드",
+          deleteDocument: "문서 삭제",
+          outOfDate: "오래된 버전",
+          outOfDateBody: "편집하는 동안 이 문서가 변경되었습니다. 로컬 초안은 보존되고 autosave는 일시중지됩니다.",
+          hideRemote: "원격 숨기기",
+          reviewRemote: "원격 검토",
+          keepMyDraft: "내 초안 유지",
+          reloadRemote: "원격 다시 불러오기",
+          overwriteRemote: "원격 덮어쓰기",
+          remoteRevision: "원격 리비전 {{rev}}",
+          updated: "업데이트 {{time}}",
+          autosaving: "자동 저장 중...",
+          saved: "저장됨",
+          couldNotSave: "저장할 수 없음",
+          deleteConfirm: "이 문서를 삭제할까요? 되돌릴 수 없습니다.",
+          deleting: "삭제 중...",
+        }
+    : locale === "ja"
+        ? {
+          deleteFailed: "ドキュメントを削除できませんでした",
+          invalidKey: "小文字、数字、-、_のみを使用し、英数字で開始してください。",
+          keyAndBodyRequired: "ドキュメントキーと本文が必要です",
+          bodyRequired: "ドキュメント本文は空にできません",
+          invalidPattern: "ドキュメントキーは英数字で始まり、小文字、数字、-、_のみ使用できます。",
+          remoteChanged: "ドキュメントがリモートで変更され、最新バージョンを読み込めませんでした",
+          saveFailed: "ドキュメントを保存できませんでした",
+          copyFailed: "ドキュメントをコピーできませんでした",
+          newDocument: "新しいドキュメント",
+          documents: "ドキュメント",
+          documentKey: "ドキュメントキー",
+          optionalTitle: "任意のタイトル",
+          markdownBody: "Markdown 本文",
+          cancel: "キャンセル",
+          createDocument: "ドキュメントを作成",
+          saving: "保存中...",
+          copied: "コピー済み",
+          copyDocument: "ドキュメントをコピー",
+          documentActions: "ドキュメント操作",
+          downloadDocument: "ドキュメントをダウンロード",
+          deleteDocument: "ドキュメントを削除",
+          outOfDate: "古い状態です",
+          outOfDateBody: "編集中にこのドキュメントが変更されました。ローカル下書きは保持され、autosave は一時停止しています。",
+          hideRemote: "リモートを隠す",
+          reviewRemote: "リモートを確認",
+          keepMyDraft: "自分の下書きを保持",
+          reloadRemote: "リモートを再読み込み",
+          overwriteRemote: "リモートを上書き",
+          remoteRevision: "リモート revision {{rev}}",
+          updated: "{{time}} に更新",
+          autosaving: "自動保存中...",
+          saved: "保存済み",
+          couldNotSave: "保存できません",
+          deleteConfirm: "このドキュメントを削除しますか？ 元に戻せません。",
+          deleting: "削除中...",
+        }
+      : {
+          deleteFailed: "Failed to delete document",
+          invalidKey: "Use lowercase letters, numbers, -, or _, and start with a letter or number.",
+          keyAndBodyRequired: "Document key and body are required",
+          bodyRequired: "Document body cannot be empty",
+          invalidPattern: "Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.",
+          remoteChanged: "Document changed remotely and the latest version could not be loaded",
+          saveFailed: "Failed to save document",
+          copyFailed: "Could not copy document",
+          newDocument: "New document",
+          documents: "Documents",
+          documentKey: "Document key",
+          optionalTitle: "Optional title",
+          markdownBody: "Markdown body",
+          cancel: "Cancel",
+          createDocument: "Create document",
+          saving: "Saving...",
+          copied: "Copied",
+          copyDocument: "Copy document",
+          documentActions: "Document actions",
+          downloadDocument: "Download document",
+          deleteDocument: "Delete document",
+          outOfDate: "Out of date",
+          outOfDateBody: "This document changed while you were editing. Your local draft is preserved and autosave is paused.",
+          hideRemote: "Hide remote",
+          reviewRemote: "Review remote",
+          keepMyDraft: "Keep my draft",
+          reloadRemote: "Reload remote",
+          overwriteRemote: "Overwrite remote",
+          remoteRevision: "Remote revision {{rev}}",
+          updated: "updated {{time}}",
+          autosaving: "Autosaving...",
+          saved: "Saved",
+          couldNotSave: "Could not save",
+          deleteConfirm: "Delete this document? This cannot be undone.",
+          deleting: "Deleting...",
+        };
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
@@ -145,7 +260,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : copy.deleteFailed);
     },
   });
 
@@ -161,7 +276,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? copy.invalidKey
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -233,9 +348,9 @@ export function IssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError("Document key and body are required");
+        setError(copy.keyAndBodyRequired);
       } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
+        setError(copy.bodyRequired);
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -244,7 +359,7 @@ export function IssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+      setError(copy.invalidPattern);
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -322,11 +437,11 @@ export function IssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
+          setError(copy.remoteChanged);
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
+      setError(err instanceof Error ? err.message : copy.saveFailed);
       return false;
     }
   }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
@@ -387,7 +502,7 @@ export function IssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError("Could not copy document");
+      setError(copy.copyFailed);
     }
   }, []);
 
@@ -523,19 +638,19 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{copy.newDocument}</span>
+            <span className="sm:hidden">{copy.newDocument}</span>
           </Button>
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2 min-w-0">
-          <h3 className="text-sm font-medium text-muted-foreground shrink-0">Documents</h3>
+          <h3 className="text-sm font-medium text-muted-foreground shrink-0">{copy.documents}</h3>
           <div className="flex items-center gap-2 min-w-0">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{copy.newDocument}</span>
+              <span className="sm:hidden">{copy.newDocument}</span>
             </Button>
           </div>
         </div>
@@ -555,7 +670,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={copy.documentKey}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -566,7 +681,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={copy.optionalTitle}
             />
           )}
           <MarkdownEditor
@@ -574,7 +689,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={copy.markdownBody}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -585,14 +700,14 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {copy.cancel}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? copy.saving : copy.createDocument}
             </Button>
           </div>
         </div>
@@ -666,7 +781,7 @@ export function IssueDocumentsSection({
                       "text-muted-foreground transition-colors",
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
-                    title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                    title={copiedDocumentKey === doc.key ? copy.copied : copy.copyDocument}
                     onClick={() => void copyDocumentBody(doc.key, activeDraft?.body ?? doc.body)}
                   >
                     {copiedDocumentKey === doc.key ? (
@@ -681,7 +796,7 @@ export function IssueDocumentsSection({
                         variant="ghost"
                         size="icon-xs"
                         className="text-muted-foreground"
-                        title="Document actions"
+                        title={copy.documentActions}
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
@@ -691,7 +806,7 @@ export function IssueDocumentsSection({
                         onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}
                       >
                         <Download className="h-3.5 w-3.5" />
-                        Download document
+                        {copy.downloadDocument}
                       </DropdownMenuItem>
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
                       {canDeleteDocuments ? (
@@ -700,7 +815,7 @@ export function IssueDocumentsSection({
                           onClick={() => setConfirmDeleteKey(doc.key)}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                          Delete document
+                          {copy.deleteDocument}
                         </DropdownMenuItem>
                       ) : null}
                     </DropdownMenuContent>
@@ -731,9 +846,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-200">{copy.outOfDate}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            {copy.outOfDateBody}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -748,37 +863,37 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? copy.hideRemote : copy.reviewRemote}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            Keep my draft
+                            {copy.keepMyDraft}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            Reload remote
+                            {copy.reloadRemote}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? copy.saving : copy.overwriteRemote}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-                            <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
+                            <span>{copy.remoteRevision.replace("{{rev}}", String(activeConflict.serverDocument.latestRevisionNumber))}</span>
                             <span>•</span>
-                            <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
+                            <span>{copy.updated.replace("{{time}}", relativeTime(activeConflict.serverDocument.updatedAt))}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -795,7 +910,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={copy.optionalTitle}
                     />
                   )}
                   <div
@@ -820,7 +935,7 @@ export function IssueDocumentsSection({
                           };
                         });
                       }}
-                      placeholder="Markdown body"
+                      placeholder={copy.markdownBody}
                       bordered={false}
                       className="bg-transparent"
                       contentClassName={documentBodyContentClassName}
@@ -844,11 +959,11 @@ export function IssueDocumentsSection({
                           ? "Out of date"
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? "Autosaving..."
+                              ? copy.autosaving
                               : autosaveState === "saved"
-                                ? "Saved"
+                                ? copy.saved
                                 : autosaveState === "error"
-                                  ? "Could not save"
+                                  ? copy.couldNotSave
                                   : ""
                             : ""
                         : ""}
@@ -860,7 +975,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {copy.deleteConfirm}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -869,7 +984,7 @@ export function IssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      Cancel
+                      {copy.cancel}
                     </Button>
                     <Button
                       variant="destructive"
@@ -877,7 +992,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? copy.deleting : copy.deleteDocument}
                     </Button>
                   </div>
                 </div>

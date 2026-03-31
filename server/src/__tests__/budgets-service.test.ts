@@ -333,15 +333,24 @@ describe("budgetService", () => {
         companyId: "company-1",
         name: "Platform Seat",
         status: "active",
+        metadata: null,
       }],
-      [],
       [],
       [{ total: 0 }],
       [{
         companyId: "company-1",
         name: "Platform Seat",
         status: "active",
+        metadata: null,
       }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "active",
+        metadata: null,
+      }],
+      [{ total: 0 }],
     ]);
 
     dbStub.queueInsert([seatPolicy]);
@@ -396,9 +405,9 @@ describe("budgetService", () => {
         companyId: "company-1",
         name: "Platform Seat",
         status: "active",
+        metadata: null,
       }],
       [seatPolicy],
-      [{ costEventId: "event-1" }],
       [{ total: 120 }],
     ]);
 
@@ -410,6 +419,100 @@ describe("budgetService", () => {
       scopeId: "seat-1",
       scopeName: "Platform Seat",
       reason: "Seat cannot start work because its budget hard-stop is still exceeded.",
+    });
+  });
+
+  it("does not resume a manually paused seat when raising its budget", async () => {
+    const createdSeatPolicy = {
+      id: "policy-seat-1",
+      companyId: "company-1",
+      scopeType: "seat",
+      scopeId: "seat-1",
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "paused",
+        metadata: null,
+      }],
+      [],
+      [{ total: 20 }],
+      [{
+        status: "paused",
+        metadata: null,
+      }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Platform Seat",
+        status: "paused",
+        metadata: null,
+      }],
+      [{ total: 20 }],
+    ]);
+
+    dbStub.queueInsert([createdSeatPolicy]);
+
+    const service = budgetService(dbStub.db as any);
+    await service.upsertPolicy(
+      "company-1",
+      {
+        scopeType: "seat",
+        scopeId: "seat-1",
+        amount: 200,
+      },
+      "board-user",
+    );
+
+    expect(
+      dbStub.updateSet.mock.calls.some(([value]) => value && typeof value === "object" && (value as Record<string, unknown>).status === "active"),
+    ).toBe(false);
+  });
+
+  it("surfaces a budget-owned seat pause distinctly from a generic seat pause", async () => {
+    const dbStub = createDbStub([
+      [{
+        status: "idle",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+        seatId: "seat-1",
+      }],
+      [{
+        status: "active",
+        name: "Paperclip",
+      }],
+      [],
+      [],
+      [{
+        id: "seat-1",
+        name: "Platform Seat",
+        status: "paused",
+        metadata: {
+          budgetPause: {
+            source: "budget",
+          },
+        },
+      }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    expect(block).toEqual({
+      scopeType: "seat",
+      scopeId: "seat-1",
+      scopeName: "Platform Seat",
+      reason: "Seat is paused because its budget hard-stop was reached.",
     });
   });
 });

@@ -25,6 +25,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { addSeatPauseReason, getSeatPauseInfo, removeSeatPauseReason } from "./seat-pause.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -80,6 +81,19 @@ function normalizeScopeName(scopeType: BudgetScopeType, name: string) {
   return name.trim().length > 0 ? name : scopeType;
 }
 
+function seatHasBudgetPause(status: string | null | undefined, metadata: unknown): boolean {
+  return getSeatPauseInfo({ status, metadata }).pauseReasons.includes("budget_enforcement");
+}
+
+function mapSeatPauseReasonToScopeReason(
+  pauseReason: ReturnType<typeof getSeatPauseInfo>["pauseReason"],
+): ScopeRecord["pauseReason"] {
+  if (pauseReason === "budget_enforcement") return "budget";
+  if (pauseReason === "maintenance") return "system";
+  if (pauseReason === "manual_admin") return "manual";
+  return null;
+}
+
 async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: string): Promise<ScopeRecord> {
   if (scopeType === "company") {
     const row = await db
@@ -128,16 +142,21 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
         companyId: seats.companyId,
         name: seats.name,
         status: seats.status,
+        metadata: seats.metadata,
       })
       .from(seats)
       .where(eq(seats.id, scopeId))
       .then((rows) => rows[0] ?? null);
     if (!row) throw notFound("Seat not found");
+    const pauseInfo = getSeatPauseInfo({
+      status: row.status,
+      metadata: row.metadata,
+    });
     return {
       companyId: row.companyId,
       name: row.name,
       paused: row.status === "paused",
-      pauseReason: null,
+      pauseReason: mapSeatPauseReasonToScopeReason(pauseInfo.pauseReason),
     };
   }
 
@@ -170,18 +189,15 @@ async function computeObservedAmount(
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
   if (policy.scopeType === "seat") {
-    const attributedCostEventIds = await db
-      .select({ costEventId: costEventSeatAttributions.costEventId })
-      .from(costEventSeatAttributions)
-      .where(
-        and(
-          eq(costEventSeatAttributions.companyId, policy.companyId),
-          eq(costEventSeatAttributions.seatId, policy.scopeId),
-        ),
-      );
-    const ids = attributedCostEventIds.map((row) => row.costEventId);
-    if (ids.length === 0) return 0;
-    conditions.push(inArray(costEvents.id, ids));
+    conditions.push(
+      sql`exists (
+        select 1
+        from ${costEventSeatAttributions}
+        where ${costEventSeatAttributions.costEventId} = ${costEvents.id}
+          and ${costEventSeatAttributions.companyId} = ${policy.companyId}
+          and ${costEventSeatAttributions.seatId} = ${policy.scopeId}
+      )`,
+    );
   }
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
   if (policy.windowKind === "calendar_month_utc") {
@@ -273,10 +289,25 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     }
 
     if (policy.scopeType === "seat") {
+      const seat = await db
+        .select({
+          status: seats.status,
+          metadata: seats.metadata,
+        })
+        .from(seats)
+        .where(eq(seats.id, policy.scopeId))
+        .then((rows) => rows[0] ?? null);
+      if (!seat || seat.status === "archived") return;
       await db
         .update(seats)
         .set({
           status: "paused",
+          metadata: addSeatPauseReason({
+            metadata: seat.metadata,
+            currentStatus: seat.status,
+            reason: "budget_enforcement",
+            now,
+          }),
           updatedAt: now,
         })
         .where(eq(seats.id, policy.scopeId));
@@ -331,10 +362,25 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     }
 
     if (policy.scopeType === "seat") {
+      const seat = await db
+        .select({
+          status: seats.status,
+          metadata: seats.metadata,
+        })
+        .from(seats)
+        .where(eq(seats.id, policy.scopeId))
+        .then((rows) => rows[0] ?? null);
+      if (!seat || !seatHasBudgetPause(seat.status, seat.metadata)) return;
+      const nextPauseInfo = removeSeatPauseReason({
+        metadata: seat.metadata,
+        currentStatus: seat.status,
+        reason: "budget_enforcement",
+      });
       await db
         .update(seats)
         .set({
-          status: "active",
+          status: seat.status === "paused" && nextPauseInfo.pauseReasons.length === 0 ? "active" : seat.status,
+          metadata: nextPauseInfo.metadata,
           updatedAt: now,
         })
         .where(eq(seats.id, policy.scopeId));
@@ -732,12 +778,13 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .where(eq(costEventSeatAttributions.costEventId, event.id))
           .then((rows) => rows[0] ?? null)
         : null;
+      const attributedSeatId = seatAttribution?.seatId ?? null;
 
       const relevantPolicies = candidatePolicies.filter((policy) => {
         if (policy.scopeType === "company") return policy.scopeId === event.companyId;
         if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
         if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
-        if (policy.scopeType === "seat") return Boolean(seatAttribution?.seatId) && policy.scopeId === seatAttribution.seatId;
+        if (policy.scopeType === "seat") return Boolean(attributedSeatId) && policy.scopeId === attributedSeatId;
         return false;
       });
 
@@ -896,17 +943,27 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             id: seats.id,
             name: seats.name,
             status: seats.status,
+            metadata: seats.metadata,
           })
           .from(seats)
           .where(eq(seats.id, agent.seatId))
           .then((rows) => rows[0] ?? null);
 
         if (seat?.status === "paused") {
+          const pauseInfo = getSeatPauseInfo({
+            status: seat.status,
+            metadata: seat.metadata,
+          });
           return {
             scopeType: "seat" as const,
             scopeId: seat.id,
             scopeName: seat.name,
-            reason: "Seat is paused and cannot start new work.",
+            reason:
+              pauseInfo.pauseReason === "budget_enforcement"
+                ? "Seat is paused because its budget hard-stop was reached."
+                : pauseInfo.pauseReason === "maintenance"
+                  ? "Seat is paused for maintenance and cannot start new work."
+                  : "Seat is paused by an operator and cannot start new work.",
           };
         }
 

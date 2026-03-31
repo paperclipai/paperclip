@@ -3,18 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useI18n } from "../i18n";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
-];
+const PRESETS: SchedulePreset[] = ["every_minute", "every_hour", "every_day", "weekdays", "weekly", "monthly", "custom"];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
@@ -114,6 +107,7 @@ function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWe
 }
 
 function describeSchedule(cron: string): string {
+  // legacy helper kept for existing consumers
   const { preset, hour, minute, dayOfWeek, dayOfMonth } = parseCronToPreset(cron);
   const hourLabel = HOURS.find((h) => h.value === hour)?.label ?? `${hour}`;
   const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
@@ -153,6 +147,66 @@ export function ScheduleEditor({
   value: string;
   onChange: (cron: string) => void;
 }) {
+  const { locale } = useI18n();
+  const copy = locale === "ko"
+    ? {
+        everyMinute: "매분",
+        everyHour: "매시간",
+        everyDay: "매일",
+        weekdays: "평일",
+        weekly: "매주",
+        monthly: "매월",
+        customCron: "직접 입력 (cron)",
+        chooseFrequency: "주기 선택...",
+        fiveFields: "다섯 필드: 분 시 일(월 기준) 월 요일",
+        atMinute: "분",
+        onDay: "매월",
+        noScheduleSet: "일정이 설정되지 않았습니다",
+        everyHourAt: "매시간 :{{minute}}",
+        everyDayAt: "매일 {{time}}",
+        weekdaysAt: "평일 {{time}}",
+        everyDayNameAt: "매주 {{day}} {{time}}",
+        monthlyOnAt: "매월 {{day}}일 {{time}}",
+      }
+    : locale === "ja"
+      ? {
+          everyMinute: "毎分",
+          everyHour: "毎時",
+          everyDay: "毎日",
+          weekdays: "平日",
+          weekly: "毎週",
+          monthly: "毎月",
+          customCron: "カスタム (cron)",
+          chooseFrequency: "頻度を選択...",
+          fiveFields: "5 フィールド: 分 時 日(月内) 月 曜日",
+          atMinute: "分",
+          onDay: "日付",
+          noScheduleSet: "スケジュール未設定",
+          everyHourAt: "毎時 :{{minute}}",
+          everyDayAt: "毎日 {{time}}",
+          weekdaysAt: "平日 {{time}}",
+          everyDayNameAt: "毎週 {{day}} {{time}}",
+          monthlyOnAt: "毎月 {{day}}日 {{time}}",
+        }
+      : {
+          everyMinute: "Every minute",
+          everyHour: "Every hour",
+          everyDay: "Every day",
+          weekdays: "Weekdays",
+          weekly: "Weekly",
+          monthly: "Monthly",
+          customCron: "Custom (cron)",
+          chooseFrequency: "Choose frequency...",
+          fiveFields: "Five fields: minute hour day-of-month month day-of-week",
+          atMinute: "at minute",
+          onDay: "on day",
+          noScheduleSet: "No schedule set",
+          everyHourAt: "Every hour at :{{minute}}",
+          everyDayAt: "Every day at {{time}}",
+          weekdaysAt: "Weekdays at {{time}}",
+          everyDayNameAt: "Every {{day}} at {{time}}",
+          monthlyOnAt: "Monthly on the {{day}} at {{time}}",
+        };
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -160,6 +214,17 @@ export function ScheduleEditor({
   const [dayOfWeek, setDayOfWeek] = useState(parsed.dayOfWeek);
   const [dayOfMonth, setDayOfMonth] = useState(parsed.dayOfMonth);
   const [customCron, setCustomCron] = useState(preset === "custom" ? value : "");
+  const presetLabel = (preset: SchedulePreset) => {
+    switch (preset) {
+      case "every_minute": return copy.everyMinute;
+      case "every_hour": return copy.everyHour;
+      case "every_day": return copy.everyDay;
+      case "weekdays": return copy.weekdays;
+      case "weekly": return copy.weekly;
+      case "monthly": return copy.monthly;
+      case "custom": return copy.customCron;
+    }
+  };
 
   // Sync from external value changes
   useEffect(() => {
@@ -195,16 +260,16 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full">
-          <SelectValue placeholder="Choose frequency..." />
-        </SelectTrigger>
-        <SelectContent>
-          {PRESETS.map((p) => (
-            <SelectItem key={p.value} value={p.value}>
-              {p.label}
+          <SelectTrigger className="w-full">
+          <SelectValue placeholder={copy.chooseFrequency} />
+          </SelectTrigger>
+          <SelectContent>
+            {PRESETS.map((p) => (
+            <SelectItem key={p} value={p}>
+              {presetLabel(p)}
             </SelectItem>
-          ))}
-        </SelectContent>
+            ))}
+          </SelectContent>
       </Select>
 
       {preset === "custom" ? (
@@ -219,7 +284,7 @@ export function ScheduleEditor({
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {copy.fiveFields}
           </p>
         </div>
       ) : (
@@ -269,7 +334,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{copy.atMinute}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -316,7 +381,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{copy.onDay}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

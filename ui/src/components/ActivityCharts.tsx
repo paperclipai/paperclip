@@ -1,4 +1,5 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
+import { useI18n } from "../i18n";
 
 /* ---- Utilities ---- */
 
@@ -59,6 +60,7 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 /* ---- Chart Components ---- */
 
 export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
+  const { t } = useI18n();
   const days = getLast14Days();
 
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
@@ -75,7 +77,7 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => v.succeeded + v.failed + v.other), 1);
   const hasData = Array.from(grouped.values()).some(v => v.succeeded + v.failed + v.other > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("activityCharts.noRunsYet")}</p>;
 
   return (
     <div>
@@ -114,6 +116,7 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  const { t } = useI18n();
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -127,7 +130,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("activityCharts.noIssues")}</p>;
 
   return (
     <div>
@@ -152,7 +155,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map((p) => ({ color: priorityColors[p], label: t(`activityCharts.priorities.${p}`) }))} />
     </div>
   );
 }
@@ -178,6 +181,7 @@ const statusLabels: Record<string, string> = {
 };
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  const { t } = useI18n();
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -194,7 +198,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("activityCharts.noIssues")}</p>;
 
   return (
     <div>
@@ -219,12 +223,22 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map((s) => ({
+        color: statusColors[s] ?? "#6b7280",
+        label: s === "in_progress"
+          ? t("activityCharts.statuses.inProgress")
+          : s === "in_review"
+            ? t("activityCharts.statuses.inReview")
+            : s in statusLabels
+              ? t(`activityCharts.statuses.${s}`)
+              : s,
+      }))} />
     </div>
   );
 }
 
 export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
+  const { t } = useI18n();
   const days = getLast14Days();
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });
@@ -237,7 +251,7 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
   }
 
   const hasData = Array.from(grouped.values()).some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("activityCharts.noRunsYet")}</p>;
 
   return (
     <div>

@@ -1,5 +1,7 @@
 import type {
   Agent,
+  AgentRole,
+  AgentStatus,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -11,6 +13,8 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  SeatOperatingMode,
+  SeatType,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -46,10 +50,10 @@ export interface OrgNode {
   id: string;
   seatId: string | null;
   name: string;
-  role: string;
-  seatType: string | null;
-  operatingMode: string | null;
-  status: string;
+  role: AgentRole | string;
+  seatType: SeatType | null;
+  operatingMode: SeatOperatingMode | null;
+  status: AgentStatus | "terminated";
   reports: OrgNode[];
 }
 

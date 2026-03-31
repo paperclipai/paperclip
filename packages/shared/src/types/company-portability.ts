@@ -1,3 +1,5 @@
+import type { SeatOperatingMode, SeatPauseReason, SeatStatus, SeatType } from "../constants.js";
+
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
@@ -123,11 +125,14 @@ export interface CompanyPortabilityAgentManifestEntry {
     slug: string;
     name: string;
     title: string | null;
-    seatType: string;
-    status: string | null;
-    operatingMode: string | null;
+    seatType: SeatType;
+    status: SeatStatus | null;
+    pauseReason: SeatPauseReason | null;
+    pauseReasons: SeatPauseReason[];
+    operatingMode: SeatOperatingMode | null;
     parentSeatSlug: string | null;
     occupancy: {
+      primaryAgentSlug: string | null;
       humanUserId: string | null;
       shadowAgentSlug: string | null;
     } | null;

@@ -94,6 +94,17 @@ type CompanyInviteCreated = {
   inviteMessage?: string | null;
 };
 
+export type CompanyMember = {
+  id: string;
+  companyId: string;
+  principalType: string;
+  principalId: string;
+  membershipRole: string | null;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export const accessApi = {
   createCompanyInvite: (
     companyId: string,
@@ -134,6 +145,9 @@ export const accessApi = {
 
   rejectJoinRequest: (companyId: string, requestId: string) =>
     api.post<JoinRequest>(`/companies/${companyId}/join-requests/${requestId}/reject`, {}),
+
+  listMembers: (companyId: string) =>
+    api.get<CompanyMember[]>(`/companies/${companyId}/members`),
 
   claimJoinRequestApiKey: (requestId: string, claimSecret: string) =>
     api.post<{ keyId: string; token: string; agentId: string; createdAt: string }>(

@@ -34,6 +34,10 @@ import {
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
+  SEAT_OPERATING_MODES,
+  SEAT_PAUSE_REASONS,
+  SEAT_STATUSES,
+  SEAT_TYPES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
@@ -60,6 +64,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { applySeatPauseInfo, getSeatPauseInfo } from "./seat-pause.js";
 import { seatService } from "./seats.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
@@ -160,8 +165,19 @@ function buildPortableSeatByAgentSlug(input: {
 
   function toPortableSeatEntry(seat: SeatRow): PortableSeatManifestEntry {
     const occupancyRows = input.occupancyRows?.filter((row) => row.seatId === seat.id && row.status === "active") ?? [];
+    const activePrimary = occupancyRows.find((row) => row.occupantType === "agent" && row.occupancyRole === "primary_agent") ?? null;
     const activeHuman = occupancyRows.find((row) => row.occupantType === "user" && row.occupancyRole === "human_operator") ?? null;
     const activeShadow = occupancyRows.find((row) => row.occupantType === "agent" && row.occupancyRole === "shadow_agent") ?? null;
+    const primaryAgentSlug = activePrimary
+      ? input.agents
+        .map((agent) => {
+          const record = agent as Record<string, unknown>;
+          return asString(record.id) === activePrimary.occupantId
+            ? (normalizeAgentUrlKey(asString(record.name) ?? "") ?? asString(record.id) ?? null)
+            : null;
+        })
+        .find((value): value is string => Boolean(value)) ?? null
+      : null;
     const shadowAgentSlug = activeShadow
       ? input.agents
         .map((agent) => {
@@ -172,16 +188,29 @@ function buildPortableSeatByAgentSlug(input: {
         })
         .find((value): value is string => Boolean(value)) ?? null
       : null;
+    const pauseInfo = getSeatPauseInfo({
+      status: seat.status,
+      metadata: seat.metadata,
+    });
     return {
       slug: seat.slug,
       name: seat.name,
       title: seat.title ?? null,
-      seatType: seat.seatType,
-      status: seat.status ?? null,
-      operatingMode: seat.operatingMode ?? null,
+      seatType: SEAT_TYPES.includes(seat.seatType as (typeof SEAT_TYPES)[number])
+        ? (seat.seatType as (typeof SEAT_TYPES)[number])
+        : "individual",
+      status: SEAT_STATUSES.includes(seat.status as (typeof SEAT_STATUSES)[number])
+        ? (seat.status as (typeof SEAT_STATUSES)[number])
+        : null,
+      pauseReason: pauseInfo.pauseReason,
+      pauseReasons: pauseInfo.pauseReasons,
+      operatingMode: SEAT_OPERATING_MODES.includes(seat.operatingMode as (typeof SEAT_OPERATING_MODES)[number])
+        ? (seat.operatingMode as (typeof SEAT_OPERATING_MODES)[number])
+        : null,
       parentSeatSlug: seat.parentSeatId ? (slugBySeatId.get(seat.parentSeatId) ?? null) : null,
-      occupancy: activeHuman || activeShadow
+      occupancy: activePrimary || activeHuman || activeShadow
         ? {
+          primaryAgentSlug,
           humanUserId: activeHuman?.occupantId ?? null,
           shadowAgentSlug,
         }
@@ -2449,12 +2478,30 @@ function buildManifestFromPackageFiles(
           slug: asString(extensionSeat.slug) ?? slug,
           name: asString(extensionSeat.name) ?? (asString(frontmatter.name) ?? title ?? slug),
           title: asString(extensionSeat.title),
-          seatType: asString(extensionSeat.seatType) ?? "individual",
-          status: asString(extensionSeat.status),
-          operatingMode: asString(extensionSeat.operatingMode),
+          seatType: SEAT_TYPES.includes(asString(extensionSeat.seatType) as (typeof SEAT_TYPES)[number])
+            ? (asString(extensionSeat.seatType) as (typeof SEAT_TYPES)[number])
+            : "individual",
+          status: SEAT_STATUSES.includes(asString(extensionSeat.status) as (typeof SEAT_STATUSES)[number])
+            ? (asString(extensionSeat.status) as (typeof SEAT_STATUSES)[number])
+            : null,
+          pauseReason: SEAT_PAUSE_REASONS.includes(asString(extensionSeat.pauseReason) as (typeof SEAT_PAUSE_REASONS)[number])
+            ? (asString(extensionSeat.pauseReason) as (typeof SEAT_PAUSE_REASONS)[number])
+            : null,
+          pauseReasons: Array.isArray(extensionSeat.pauseReasons)
+            ? extensionSeat.pauseReasons.filter(
+              (reason): reason is (typeof SEAT_PAUSE_REASONS)[number] =>
+                SEAT_PAUSE_REASONS.includes(reason as (typeof SEAT_PAUSE_REASONS)[number]),
+            )
+            : [],
+          operatingMode: SEAT_OPERATING_MODES.includes(
+            asString(extensionSeat.operatingMode) as (typeof SEAT_OPERATING_MODES)[number],
+          )
+            ? (asString(extensionSeat.operatingMode) as (typeof SEAT_OPERATING_MODES)[number])
+            : null,
           parentSeatSlug: asString(extensionSeat.parentSeatSlug),
           occupancy: isPlainRecord(extensionSeat.occupancy)
             ? {
+              primaryAgentSlug: asString(extensionSeat.occupancy.primaryAgentSlug),
               humanUserId: asString(extensionSeat.occupancy.humanUserId),
               shadowAgentSlug: asString(extensionSeat.occupancy.shadowAgentSlug),
             }
@@ -4155,6 +4202,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               title: manifestAgent.seat.title ?? null,
               seatType: manifestAgent.seat.seatType,
               status: manifestAgent.seat.status ?? seat.status,
+              metadata: applySeatPauseInfo({
+                metadata: seat.metadata,
+                status: manifestAgent.seat.status ?? seat.status,
+                pauseReason: manifestAgent.seat.pauseReason ?? null,
+                pauseReasons: manifestAgent.seat.pauseReasons,
+              }),
               operatingMode: manifestAgent.seat.operatingMode ?? seat.operatingMode,
               updatedAt: new Date(),
             })
@@ -4198,6 +4251,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             .set({ parentSeatId, updatedAt: new Date() })
             .where(eq(seats.id, seat.id));
           parentSeatIdBySeatId.set(seat.id, parentSeatId);
+        }
+
+        for (const manifestAgent of plan.selectedAgents) {
+          const primaryAgentSlug = manifestAgent.seat?.occupancy?.primaryAgentSlug ?? null;
+          if (!primaryAgentSlug) continue;
+          const ownerAgentId = importedSlugToAgentId.get(manifestAgent.slug);
+          const primaryAgentId = importedSlugToAgentId.get(primaryAgentSlug) ?? existingSlugToAgentId.get(primaryAgentSlug) ?? null;
+          if (!ownerAgentId || !primaryAgentId) continue;
+          const seat = seatByDefaultAgentIdRefreshed.get(ownerAgentId);
+          if (!seat) continue;
+          try {
+            await seatsSvc.reassignPrimaryAgent(targetCompany.id, seat.id, primaryAgentId);
+          } catch (err) {
+            warnings.push(`Could not assign primary agent ${primaryAgentSlug} to imported seat ${manifestAgent.seat?.slug ?? seat.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
 
         for (const manifestAgent of plan.selectedAgents) {

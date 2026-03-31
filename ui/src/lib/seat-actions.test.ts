@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type { OrgNode } from "../api/agents";
 import { orgNodeCanManageSeat, primarySeatAction } from "./seat-actions";
 
-const baseNode = {
+const baseNode: OrgNode = {
   id: "agent-1",
   seatId: "seat-1",
   name: "Platform Seat",
@@ -22,6 +23,8 @@ describe("seat action helpers", () => {
     expect(primarySeatAction(baseNode)).toBe("attach");
     expect(primarySeatAction({ ...baseNode, operatingMode: "assisted" })).toBe("detach");
     expect(primarySeatAction({ ...baseNode, operatingMode: "shadowed" })).toBe("detach");
+    expect(primarySeatAction({ ...baseNode, status: "paused" })).toBeNull();
+    expect(primarySeatAction({ ...baseNode, status: "terminated" })).toBeNull();
     expect(primarySeatAction({ ...baseNode, seatId: null })).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import type { PermissionKey } from "@paperclipai/shared";
 import { PERMISSION_KEYS } from "@paperclipai/shared";
 
 export function formatDelegatedPermissions(values: string[]): string {
@@ -15,7 +16,16 @@ export function parseDelegatedPermissions(input: string): string[] {
   );
 }
 
+const LABELS: Record<string, string> = {
+  "agents:create": "Create agents",
+  "users:invite": "Invite users",
+  "users:manage_permissions": "Manage permissions",
+  "tasks:assign": "Assign tasks",
+  "tasks:assign_scope": "Assign tasks in scope",
+  "joins:approve": "Approve joins",
+};
+
 export const seatPermissionOptions = PERMISSION_KEYS.map((key) => ({
   key,
-  label: key,
-})) as Array<{ key: string; label: string }>;
+  label: LABELS[key] ?? key,
+})) as Array<{ key: PermissionKey; label: string }>;

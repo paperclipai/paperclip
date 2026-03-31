@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { createDb } from "./client.js";
-import { companies, agents, issues, seats, seatOccupancies } from "./schema/index.js";
+import { companies, agents, goals, issues, projects, routines, seats, seatOccupancies } from "./schema/index.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -63,7 +63,7 @@ describeEmbeddedPostgres("backfillSeatModel", () => {
         runtimeConfig: {},
       }).returning();
 
-      const result = await backfillSeatModel(db, { companyId: company.id });
+      const result = await backfillSeatModel(db, { companyId: company.id, batchSize: 1 });
 
       expect(result.seatsCreated).toBe(2);
       expect(result.primaryOccupanciesCreated).toBe(2);
@@ -90,7 +90,7 @@ describeEmbeddedPostgres("backfillSeatModel", () => {
   );
 
   it(
-    "backfills issue owner seats, warns on user-only issues, and falls back from terminated agents",
+    "backfills issue/project/goal/routine seat owners, warns on user-only issues, and falls back from terminated agents",
     async () => {
       const db = await createTempDb();
 
@@ -150,6 +150,47 @@ describeEmbeddedPostgres("backfillSeatModel", () => {
         },
       ]).returning();
 
+      const [liveProject, terminatedProject] = await db.insert(projects).values([
+        {
+          companyId: company.id,
+          name: "CEO Project",
+          leadAgentId: ceo.id,
+        },
+        {
+          companyId: company.id,
+          name: "Terminated Project",
+          leadAgentId: terminatedEngineer.id,
+        },
+      ]).returning();
+
+      const [liveGoal, terminatedGoal] = await db.insert(goals).values([
+        {
+          companyId: company.id,
+          title: "CEO Goal",
+          ownerAgentId: ceo.id,
+        },
+        {
+          companyId: company.id,
+          title: "Terminated Goal",
+          ownerAgentId: terminatedEngineer.id,
+        },
+      ]).returning();
+
+      const [liveRoutine, terminatedRoutine] = await db.insert(routines).values([
+        {
+          companyId: company.id,
+          projectId: liveProject.id,
+          title: "CEO Routine",
+          assigneeAgentId: ceo.id,
+        },
+        {
+          companyId: company.id,
+          projectId: liveProject.id,
+          title: "Terminated Routine",
+          assigneeAgentId: terminatedEngineer.id,
+        },
+      ]).returning();
+
       const result = await backfillSeatModel(db, { companyId: company.id });
 
       const ceoSeat = await db
@@ -180,17 +221,68 @@ describeEmbeddedPostgres("backfillSeatModel", () => {
         .from(issues)
         .where(eq(issues.id, unassignedIssue.id))
         .then((rows) => rows[0] ?? null);
+      const refreshedLiveProject = await db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, liveProject.id))
+        .then((rows) => rows[0] ?? null);
+      const refreshedTerminatedProject = await db
+        .select()
+        .from(projects)
+        .where(eq(projects.id, terminatedProject.id))
+        .then((rows) => rows[0] ?? null);
+      const refreshedLiveGoal = await db
+        .select()
+        .from(goals)
+        .where(eq(goals.id, liveGoal.id))
+        .then((rows) => rows[0] ?? null);
+      const refreshedTerminatedGoal = await db
+        .select()
+        .from(goals)
+        .where(eq(goals.id, terminatedGoal.id))
+        .then((rows) => rows[0] ?? null);
+      const refreshedLiveRoutine = await db
+        .select()
+        .from(routines)
+        .where(eq(routines.id, liveRoutine.id))
+        .then((rows) => rows[0] ?? null);
+      const refreshedTerminatedRoutine = await db
+        .select()
+        .from(routines)
+        .where(eq(routines.id, terminatedRoutine.id))
+        .then((rows) => rows[0] ?? null);
 
       expect(refreshedLiveIssue?.ownerSeatId).toBe(ceoSeat?.id ?? null);
       expect(refreshedUserOnlyIssue?.ownerSeatId).toBeNull();
       expect(refreshedTerminatedIssue?.ownerSeatId).toBe(ceoSeat?.id ?? null);
       expect(refreshedUnassignedIssue?.ownerSeatId).toBeNull();
+      expect(refreshedLiveProject?.leadSeatId).toBe(ceoSeat?.id ?? null);
+      expect(refreshedTerminatedProject?.leadSeatId).toBe(ceoSeat?.id ?? null);
+      expect(refreshedLiveGoal?.ownerSeatId).toBe(ceoSeat?.id ?? null);
+      expect(refreshedTerminatedGoal?.ownerSeatId).toBe(ceoSeat?.id ?? null);
+      expect(refreshedLiveRoutine?.assigneeSeatId).toBe(ceoSeat?.id ?? null);
+      expect(refreshedTerminatedRoutine?.assigneeSeatId).toBe(ceoSeat?.id ?? null);
+      expect(result.ownershipBackfills).toEqual({
+        issues: 2,
+        projects: 2,
+        goals: 2,
+        routines: 2,
+      });
 
       expect(
         result.warnings.some((warning) => warning.code === "issue_user_only_without_owner_seat"),
       ).toBe(true);
       expect(
         result.warnings.some((warning) => warning.code === "issue_rehomed_from_terminated_agent"),
+      ).toBe(true);
+      expect(
+        result.warnings.some((warning) => warning.code === "project_rehomed_from_terminated_agent"),
+      ).toBe(true);
+      expect(
+        result.warnings.some((warning) => warning.code === "goal_rehomed_from_terminated_agent"),
+      ).toBe(true);
+      expect(
+        result.warnings.some((warning) => warning.code === "routine_rehomed_from_terminated_agent"),
       ).toBe(true);
       expect(
         result.warnings.some((warning) => warning.code === "issue_without_assignee_during_seat_backfill"),
@@ -300,6 +392,138 @@ describeEmbeddedPostgres("backfillSeatModel", () => {
       expect(seatA).toBeTruthy();
       expect(seatB).toBeTruthy();
       expect([seatA?.parentSeatId ?? null, seatB?.parentSeatId ?? null].filter(Boolean)).toHaveLength(1);
+    },
+    20_000,
+  );
+
+  it(
+    "replaces a conflicting active primary occupancy instead of failing on rerun",
+    async () => {
+      const db = await createTempDb();
+
+      const [company] = await db.insert(companies).values({
+        name: "Seat Rebind Co",
+        issuePrefix: "SRC",
+      }).returning();
+
+      const [agent, otherAgent] = await db.insert(agents).values([
+        {
+          companyId: company.id,
+          name: "Primary Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+        },
+        {
+          companyId: company.id,
+          name: "Conflicting Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+        },
+      ]).returning();
+
+      const [seat] = await db.insert(seats).values({
+        companyId: company.id,
+        slug: "primary-seat",
+        name: "Primary Seat",
+        seatType: "individual",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agent.id,
+      }).returning();
+
+      await db.insert(seatOccupancies).values({
+        companyId: company.id,
+        seatId: seat.id,
+        occupantType: "agent",
+        occupantId: otherAgent.id,
+        occupancyRole: "primary_agent",
+        status: "active",
+      });
+
+      const result = await backfillSeatModel(db, { companyId: company.id });
+      expect(result.seatsUpdated).toBeGreaterThanOrEqual(1);
+
+      const activePrimary = await db
+        .select()
+        .from(seatOccupancies)
+        .where(
+          and(
+            eq(seatOccupancies.seatId, seat.id),
+            eq(seatOccupancies.occupancyRole, "primary_agent"),
+            eq(seatOccupancies.status, "active"),
+          ),
+        );
+      expect(activePrimary).toHaveLength(1);
+      expect(activePrimary[0]?.occupantId).toBe(agent.id);
+    },
+    20_000,
+  );
+
+  it(
+    "uses multiple transactions instead of one long-running transaction for the full backfill",
+    async () => {
+      const db = await createTempDb();
+
+      const [company] = await db.insert(companies).values({
+        name: "Seat Transaction Co",
+        issuePrefix: "STC",
+      }).returning();
+
+      const [ceo] = await db.insert(agents).values({
+        companyId: company.id,
+        name: "CEO Agent",
+        role: "ceo",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+      }).returning();
+
+      const [engineer] = await db.insert(agents).values({
+        companyId: company.id,
+        name: "Engineer Agent",
+        role: "engineer",
+        status: "idle",
+        reportsTo: ceo.id,
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+      }).returning();
+
+      await db.insert(issues).values([
+        {
+          companyId: company.id,
+          title: "CEO issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: ceo.id,
+        },
+        {
+          companyId: company.id,
+          title: "Engineer issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: engineer.id,
+        },
+      ]);
+
+      let transactionCount = 0;
+      const countedDb = Object.assign(Object.create(db), db, {
+        transaction: async (...args: Parameters<typeof db.transaction>) => {
+          transactionCount += 1;
+          return db.transaction(...args);
+        },
+      });
+
+      await backfillSeatModel(countedDb as typeof db, { companyId: company.id, batchSize: 1 });
+
+      expect(transactionCount).toBeGreaterThan(1);
     },
     20_000,
   );

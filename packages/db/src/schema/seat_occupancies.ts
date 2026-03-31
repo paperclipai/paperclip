@@ -42,6 +42,9 @@ export const seatOccupancies = pgTable(
     oneActiveHumanPerSeatUq: uniqueIndex("seat_occupancies_one_active_human_per_seat_uq")
       .on(table.seatId)
       .where(sql`${table.occupancyRole} = 'human_operator' AND ${table.status} = 'active'`),
+    oneActiveShadowAgentPerSeatUq: uniqueIndex("seat_occupancies_one_active_shadow_agent_per_seat_uq")
+      .on(table.seatId)
+      .where(sql`${table.occupancyRole} = 'shadow_agent' AND ${table.status} = 'active'`),
     companyOccupantStatusIdx: index("seat_occupancies_company_occupant_status_idx").on(
       table.companyId,
       table.occupantType,

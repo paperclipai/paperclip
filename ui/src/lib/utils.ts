@@ -2,51 +2,63 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import { getRuntimeLocale } from "../i18n/runtime";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return new Intl.NumberFormat(getRuntimeLocale(), {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100);
 }
 
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+export function formatDate(date: Date | string | number): string {
+  return new Intl.DateTimeFormat(getRuntimeLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  }).format(new Date(date));
 }
 
-export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatDateTime(date: Date | string | number): string {
+  return new Intl.DateTimeFormat(getRuntimeLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  });
+  }).format(new Date(date));
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string | number): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  const formatter = new Intl.RelativeTimeFormat(getRuntimeLocale(), {
+    numeric: "auto",
+    style: "short",
+  });
+  if (diffSec < 60) return formatter.format(0, "second");
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return formatter.format(-diffMin, "minute");
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return formatter.format(-diffHr, "hour");
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return formatter.format(-diffDay, "day");
   return formatDate(date);
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+  return new Intl.NumberFormat(getRuntimeLocale(), {
+    notation: n >= 1_000 ? "compact" : "standard",
+    compactDisplay: "short",
+    maximumFractionDigits: n >= 1_000 ? 1 : 0,
+  }).format(n);
 }
 
 /** Map a raw provider slug to a display-friendly name. */

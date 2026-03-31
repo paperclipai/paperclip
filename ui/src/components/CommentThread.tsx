@@ -11,6 +11,7 @@ import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
+import { useI18n } from "../i18n";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -255,8 +256,9 @@ const TimelineList = memo(function TimelineList({
   projectId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const { t } = useI18n();
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("sharedUi.noCommentsOrRunsYet")}</p>;
   }
 
   return (
@@ -278,7 +280,7 @@ const TimelineList = memo(function TimelineList({
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">Run</span>
+                <span className="text-muted-foreground">{t("sharedUi.run")}</span>
                 <Link
                   to={`/agents/${run.agentId}/runs/${run.runId}`}
                   className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
@@ -327,6 +329,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
 }: CommentThreadProps) {
+  const { t } = useI18n();
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -467,7 +470,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
+      <h3 className="text-sm font-semibold">{t("sharedUi.commentsAndRuns", { count: timeline.length + queuedComments.length })}</h3>
 
       {timeline.length > 0 ? (
         <TimelineList
@@ -485,7 +488,7 @@ export function CommentThread({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
+              {t("sharedUi.queuedComments", { count: queuedComments.length })}
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
@@ -495,7 +498,7 @@ export function CommentThread({
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? t("sharedUi.interrupting") : t("sharedUi.interrupt")}
               </Button>
             ) : null}
           </div>
@@ -520,7 +523,7 @@ export function CommentThread({
           ref={editorRef}
           value={body}
           onChange={setBody}
-          placeholder="Leave a comment..."
+          placeholder={t("sharedUi.leaveComment")}
           mentions={mentions}
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
@@ -541,7 +544,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
+                title={t("sharedUi.attachImage")}
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -554,20 +557,20 @@ export function CommentThread({
               onChange={(e) => setReopen(e.target.checked)}
               className="rounded border-border"
             />
-            Re-open
+            {t("sharedUi.reopen")}
           </label>
           {enableReassign && reassignOptions.length > 0 && (
             <InlineEntitySelector
               value={reassignTarget}
               options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
+              placeholder={t("sharedUi.assignee")}
+              noneLabel={t("sharedUi.noAssignee")}
+              searchPlaceholder={t("sharedUi.searchAssignees")}
+              emptyMessage={t("sharedUi.noAssigneesFound")}
               onChange={setReassignTarget}
               className="text-xs h-8"
               renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                if (!option) return <span className="text-muted-foreground">{t("sharedUi.assignee")}</span>;
                 const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
@@ -595,7 +598,7 @@ export function CommentThread({
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
+            {submitting ? t("sharedUi.posting") : t("sharedUi.comment")}
           </Button>
         </div>
       </div>

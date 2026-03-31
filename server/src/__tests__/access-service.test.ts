@@ -301,4 +301,72 @@ describeEmbeddedPostgres("accessService seat-derived permissions", () => {
     await expect(access.canUser(companyId, userId, "users:invite")).resolves.toBe(true);
     await expect(access.canUser(companyId, userId, "agents:create")).resolves.toBe(false);
   });
+
+  it("grants permission if any active seat occupancy delegates it", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Operations Agent",
+      role: "general",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const [seatA, seatB] = await db.insert(seats).values([
+      {
+        companyId,
+        slug: "seat-a",
+        name: "Seat A",
+        seatType: "manager",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentId,
+        metadata: { delegatedPermissions: [] },
+      },
+      {
+        companyId,
+        slug: "seat-b",
+        name: "Seat B",
+        seatType: "manager",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentId,
+        metadata: { delegatedPermissions: ["users:invite"] },
+      },
+    ]).returning();
+
+    await db.insert(seatOccupancies).values([
+      {
+        companyId,
+        seatId: seatA.id,
+        occupantType: "agent",
+        occupantId: agentId,
+        occupancyRole: "primary_agent",
+        status: "active",
+      },
+      {
+        companyId,
+        seatId: seatB.id,
+        occupantType: "agent",
+        occupantId: agentId,
+        occupancyRole: "primary_agent",
+        status: "active",
+      },
+    ]);
+
+    await expect(accessService(db).hasPermission(companyId, "agent", agentId, "users:invite")).resolves.toBe(true);
+  });
 });

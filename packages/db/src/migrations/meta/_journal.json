@@ -337,6 +337,13 @@
       "when": 1774893600000,
       "tag": "0047_sparkling_lockjaw",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1774897200000,
+      "tag": "0048_tidy_seat_guards",
+      "breakpoints": true
     }
   ]
 }

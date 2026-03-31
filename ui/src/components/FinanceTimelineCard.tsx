@@ -8,6 +8,7 @@ import {
   formatDateTime,
   providerDisplayName,
 } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface FinanceTimelineCardProps {
   rows: FinanceEvent[];
@@ -18,11 +19,12 @@ export function FinanceTimelineCard({
   rows,
   emptyMessage = "No financial events in this period.",
 }: FinanceTimelineCardProps) {
+  const { t } = useI18n();
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
-        <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
+        <CardTitle className="text-base">{t("sharedUi.recentFinancialEvents")}</CardTitle>
+        <CardDescription>{t("sharedUi.financialEventsDescription")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-3">
         {rows.length === 0 ? (

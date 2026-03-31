@@ -16,5 +16,6 @@ describe("seat permission helpers", () => {
   it("exposes permission options from shared constants", () => {
     expect(seatPermissionOptions.some((option) => option.key === "tasks:assign")).toBe(true);
     expect(seatPermissionOptions.some((option) => option.key === "users:invite")).toBe(true);
+    expect(seatPermissionOptions.find((option) => option.key === "tasks:assign_scope")?.label).toBe("Assign tasks in scope");
   });
 });

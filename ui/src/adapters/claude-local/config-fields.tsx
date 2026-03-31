@@ -4,10 +4,11 @@ import {
   ToggleField,
   DraftInput,
   DraftNumberInput,
-  help,
+  useAgentConfigHelp,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import { useI18n } from "../../i18n";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -27,10 +28,12 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useI18n();
+  const help = useAgentConfigHelp();
   return (
     <>
       {!hideInstructionsFile && (
-        <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <Field label={t("agentConfig.fields.agentInstructionsFile")} hint={t("agentConfig.fields.agentInstructionsFileHint")}>
           <div className="flex items-center gap-2">
             <DraftInput
               value={
@@ -78,10 +81,12 @@ export function ClaudeLocalAdvancedFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useI18n();
+  const help = useAgentConfigHelp();
   return (
     <>
       <ToggleField
-        label="Enable Chrome"
+        label={t("agentConfig.fields.enableChrome")}
         hint={help.chrome}
         checked={
           isCreate
@@ -95,7 +100,7 @@ export function ClaudeLocalAdvancedFields({
         }
       />
       <ToggleField
-        label="Skip permissions"
+        label={t("agentConfig.fields.skipPermissions")}
         hint={help.dangerouslySkipPermissions}
         checked={
           isCreate
@@ -112,7 +117,7 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
-      <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
+      <Field label={t("agentConfig.fields.maxTurnsPerRun")} hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input
             type="number"

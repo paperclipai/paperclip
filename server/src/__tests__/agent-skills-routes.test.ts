@@ -49,6 +49,9 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
 }));
+const mockSeatService = vi.hoisted(() => ({
+  orgForCompany: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -68,6 +71,7 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => ({}),
   logActivity: mockLogActivity,
+  seatService: () => mockSeatService,
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -132,6 +136,7 @@ function makeAgent(adapterType: string) {
 describe("agent skill routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSeatService.orgForCompany.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),

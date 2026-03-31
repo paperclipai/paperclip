@@ -123,6 +123,7 @@ import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
+import { useI18n } from "../i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -173,6 +174,162 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /* ------------------------------------------------------------------ */
 
 export function DesignGuide() {
+  const { locale } = useI18n();
+  const copy = locale === "ko"
+    ? {
+        pageTitle: "디자인 가이드",
+        pageSubtitle: "Paperclip 전반에서 쓰는 컴포넌트, 스타일, 패턴 모음입니다.",
+        componentCoverage: "컴포넌트 커버리지",
+        componentCoverageDesc: "새 UI primitive나 앱 레벨 패턴이 추가되면 이 페이지도 함께 업데이트해야 합니다.",
+        uiPrimitives: "UI 프리미티브",
+        appComponents: "앱 컴포넌트",
+        colors: "색상",
+        core: "핵심",
+        sidebar: "사이드바",
+        chart: "차트",
+        typography: "타이포그래피",
+        radius: "라운드",
+        buttons: "버튼",
+        variants: "변형",
+        sizes: "크기",
+        iconButtons: "아이콘 버튼",
+        withIcons: "아이콘 포함",
+        states: "상태",
+        badges: "배지",
+        statusSystem: "상태 시스템",
+        formElements: "폼 요소",
+        select: "셀렉트",
+        dropdownMenu: "드롭다운 메뉴",
+        popover: "팝오버",
+        collapsible: "접기/펼치기",
+        sheet: "시트",
+        scrollArea: "스크롤 영역",
+        command: "커맨드(CMDK)",
+        breadcrumb: "브레드크럼",
+        cards: "카드",
+        tabs: "탭",
+        entityRows: "엔티티 행",
+        filterBar: "필터 바",
+        avatars: "아바타",
+        identity: "아이덴티티",
+        tooltips: "툴팁",
+        dialog: "다이얼로그",
+        emptyState: "빈 상태",
+        progressBars: "진행 바 (예산)",
+        logViewer: "로그 뷰어",
+        propertyRowPattern: "속성 행 패턴",
+        navigationPatterns: "네비게이션 패턴",
+        groupedListPattern: "그룹 리스트 패턴 (이슈)",
+        commentThreadPattern: "댓글 스레드 패턴",
+        costTablePattern: "비용 테이블 패턴",
+        skeletons: "스켈레톤",
+        separator: "구분선",
+        commonIcons: "공통 아이콘 (Lucide)",
+        keyboardShortcuts: "키보드 단축키",
+      }
+    : locale === "ja"
+      ? {
+          pageTitle: "デザインガイド",
+          pageSubtitle: "Paperclip 全体で使われるコンポーネント、スタイル、パターンの一覧です。",
+          componentCoverage: "コンポーネントカバレッジ",
+          componentCoverageDesc: "新しい UI primitive やアプリレベルのパターンを追加したら、このページも更新してください。",
+          uiPrimitives: "UI プリミティブ",
+          appComponents: "アプリコンポーネント",
+          colors: "カラー",
+          core: "コア",
+          sidebar: "サイドバー",
+          chart: "チャート",
+          typography: "タイポグラフィ",
+          radius: "角丸",
+          buttons: "ボタン",
+          variants: "バリエーション",
+          sizes: "サイズ",
+          iconButtons: "アイコンボタン",
+          withIcons: "アイコン付き",
+          states: "状態",
+          badges: "バッジ",
+          statusSystem: "ステータスシステム",
+          formElements: "フォーム要素",
+          select: "セレクト",
+          dropdownMenu: "ドロップダウンメニュー",
+          popover: "ポップオーバー",
+          collapsible: "折りたたみ",
+          sheet: "シート",
+          scrollArea: "スクロールエリア",
+          command: "コマンド (CMDK)",
+          breadcrumb: "パンくず",
+          cards: "カード",
+          tabs: "タブ",
+          entityRows: "エンティティ行",
+          filterBar: "フィルターバー",
+          avatars: "アバター",
+          identity: "アイデンティティ",
+          tooltips: "ツールチップ",
+          dialog: "ダイアログ",
+          emptyState: "空状態",
+          progressBars: "進行バー (予算)",
+          logViewer: "ログビューア",
+          propertyRowPattern: "プロパティ行パターン",
+          navigationPatterns: "ナビゲーションパターン",
+          groupedListPattern: "グループリストパターン (イシュー)",
+          commentThreadPattern: "コメントスレッドパターン",
+          costTablePattern: "コストテーブルパターン",
+          skeletons: "スケルトン",
+          separator: "区切り線",
+          commonIcons: "共通アイコン (Lucide)",
+          keyboardShortcuts: "キーボードショートカット",
+        }
+      : {
+          pageTitle: "Design Guide",
+          pageSubtitle: "Every component, style, and pattern used across Paperclip.",
+          componentCoverage: "Component Coverage",
+          componentCoverageDesc: "This page should be updated when new UI primitives or app-level patterns ship.",
+          uiPrimitives: "UI primitives",
+          appComponents: "App components",
+          colors: "Colors",
+          core: "Core",
+          sidebar: "Sidebar",
+          chart: "Chart",
+          typography: "Typography",
+          radius: "Radius",
+          buttons: "Buttons",
+          variants: "Variants",
+          sizes: "Sizes",
+          iconButtons: "Icon buttons",
+          withIcons: "With icons",
+          states: "States",
+          badges: "Badges",
+          statusSystem: "Status System",
+          formElements: "Form Elements",
+          select: "Select",
+          dropdownMenu: "Dropdown Menu",
+          popover: "Popover",
+          collapsible: "Collapsible",
+          sheet: "Sheet",
+          scrollArea: "Scroll Area",
+          command: "Command (CMDK)",
+          breadcrumb: "Breadcrumb",
+          cards: "Cards",
+          tabs: "Tabs",
+          entityRows: "Entity Rows",
+          filterBar: "Filter Bar",
+          avatars: "Avatars",
+          identity: "Identity",
+          tooltips: "Tooltips",
+          dialog: "Dialog",
+          emptyState: "Empty State",
+          progressBars: "Progress Bars (Budget)",
+          logViewer: "Log Viewer",
+          propertyRowPattern: "Property Row Pattern",
+          navigationPatterns: "Navigation Patterns",
+          groupedListPattern: "Grouped List (Issues pattern)",
+          commentThreadPattern: "Comment Thread Pattern",
+          costTablePattern: "Cost Table Pattern",
+          skeletons: "Skeletons",
+          separator: "Separator",
+          commonIcons: "Common Icons (Lucide)",
+          keyboardShortcuts: "Keyboard Shortcuts",
+        };
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -192,21 +349,21 @@ export function DesignGuide() {
     <div className="space-y-10 max-w-4xl">
       {/* Page header */}
       <div>
-        <h2 className="text-xl font-bold">Design Guide</h2>
+        <h2 className="text-xl font-bold">{copy.pageTitle}</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Every component, style, and pattern used across Paperclip.
+          {copy.pageSubtitle}
         </p>
       </div>
 
       {/* ============================================================ */}
       {/*  COVERAGE                                                     */}
       {/* ============================================================ */}
-      <Section title="Component Coverage">
+      <Section title={copy.componentCoverage}>
         <p className="text-sm text-muted-foreground">
-          This page should be updated when new UI primitives or app-level patterns ship.
+          {copy.componentCoverageDesc}
         </p>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="UI primitives">
+          <SubSection title={copy.uiPrimitives}>
             <div className="flex flex-wrap gap-2">
               {[
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
@@ -219,7 +376,7 @@ export function DesignGuide() {
               ))}
             </div>
           </SubSection>
-          <SubSection title="App components">
+          <SubSection title={copy.appComponents}>
             <div className="flex flex-wrap gap-2">
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
@@ -238,8 +395,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLORS                                                       */}
       {/* ============================================================ */}
-      <Section title="Colors">
-        <SubSection title="Core">
+      <Section title={copy.colors}>
+        <SubSection title={copy.core}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Background" cssVar="--background" />
             <Swatch name="Foreground" cssVar="--foreground" />
@@ -256,14 +413,14 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Sidebar">
+        <SubSection title={copy.sidebar}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Sidebar" cssVar="--sidebar" />
             <Swatch name="Sidebar border" cssVar="--sidebar-border" />
           </div>
         </SubSection>
 
-        <SubSection title="Chart">
+        <SubSection title={copy.chart}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             <Swatch name="Chart 1" cssVar="--chart-1" />
             <Swatch name="Chart 2" cssVar="--chart-2" />
@@ -277,7 +434,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Typography">
+      <Section title={copy.typography}>
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
           <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
@@ -304,7 +461,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SPACING & RADIUS                                             */}
       {/* ============================================================ */}
-      <Section title="Radius">
+      <Section title={copy.radius}>
         <div className="flex items-end gap-4 flex-wrap">
           {[
             ["sm", "var(--radius-sm)"],
@@ -327,8 +484,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BUTTONS                                                      */}
       {/* ============================================================ */}
-      <Section title="Buttons">
-        <SubSection title="Variants">
+      <Section title={copy.buttons}>
+        <SubSection title={copy.variants}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="default">Default</Button>
             <Button variant="secondary">Secondary</Button>
@@ -339,7 +496,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Sizes">
+        <SubSection title={copy.sizes}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button size="xs">Extra Small</Button>
             <Button size="sm">Small</Button>
@@ -348,7 +505,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Icon buttons">
+        <SubSection title={copy.iconButtons}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button variant="ghost" size="icon-xs"><Search /></Button>
             <Button variant="ghost" size="icon-sm"><Search /></Button>
@@ -357,7 +514,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="With icons">
+        <SubSection title={copy.withIcons}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button><Plus /> New Issue</Button>
             <Button variant="outline"><Upload /> Upload</Button>
@@ -366,7 +523,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="States">
+        <SubSection title={copy.states}>
           <div className="flex items-center gap-2 flex-wrap">
             <Button disabled>Disabled</Button>
             <Button variant="outline" disabled>Disabled Outline</Button>
@@ -377,8 +534,8 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BADGES                                                       */}
       {/* ============================================================ */}
-      <Section title="Badges">
-        <SubSection title="Variants">
+      <Section title={copy.badges}>
+        <SubSection title={copy.variants}>
           <div className="flex items-center gap-2 flex-wrap">
             <Badge variant="default">Default</Badge>
             <Badge variant="secondary">Secondary</Badge>
@@ -392,7 +549,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
-      <Section title="Status System">
+      <Section title={copy.statusSystem}>
         <SubSection title="StatusBadge (all statuses)">
           <div className="flex items-center gap-2 flex-wrap">
             {[
@@ -471,7 +628,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
-      <Section title="Form Elements">
+      <Section title={copy.formElements}>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Input">
             <Input placeholder="Default input" />
@@ -538,7 +695,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SELECT                                                       */}
       {/* ============================================================ */}
-      <Section title="Select">
+      <Section title={copy.select}>
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Default size">
             <Select value={selectValue} onValueChange={setSelectValue}>
@@ -574,7 +731,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
-      <Section title="Dropdown Menu">
+      <Section title={copy.dropdownMenu}>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
@@ -610,7 +767,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  POPOVER                                                      */}
       {/* ============================================================ */}
-      <Section title="Popover">
+      <Section title={copy.popover}>
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm">Open Popover</Button>
@@ -628,7 +785,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COLLAPSIBLE                                                  */}
       {/* ============================================================ */}
-      <Section title="Collapsible">
+      <Section title={copy.collapsible}>
         <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
           <CollapsibleTrigger asChild>
             <Button variant="outline" size="sm">
@@ -647,7 +804,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SHEET                                                        */}
       {/* ============================================================ */}
-      <Section title="Sheet">
+      <Section title={copy.sheet}>
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="outline" size="sm">Open Side Panel</Button>
@@ -678,7 +835,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SCROLL AREA                                                  */}
       {/* ============================================================ */}
-      <Section title="Scroll Area">
+      <Section title={copy.scrollArea}>
         <ScrollArea className="h-36 rounded-md border border-border">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
@@ -693,7 +850,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMAND                                                      */}
       {/* ============================================================ */}
-      <Section title="Command (CMDK)">
+      <Section title={copy.command}>
         <div className="rounded-md border border-border">
           <Command>
             <CommandInput placeholder="Type a command or search..." />
@@ -728,7 +885,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  BREADCRUMB                                                   */}
       {/* ============================================================ */}
-      <Section title="Breadcrumb">
+      <Section title={copy.breadcrumb}>
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
@@ -749,7 +906,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
-      <Section title="Cards">
+      <Section title={copy.cards}>
         <SubSection title="Standard Card">
           <Card>
             <CardHeader>
@@ -779,7 +936,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TABS                                                         */}
       {/* ============================================================ */}
-      <Section title="Tabs">
+      <Section title={copy.tabs}>
         <SubSection title="Default (pill) variant">
           <Tabs defaultValue="overview">
             <TabsList>
@@ -826,7 +983,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ENTITY ROWS                                                  */}
       {/* ============================================================ */}
-      <Section title="Entity Rows">
+      <Section title={copy.entityRows}>
         <div className="border border-border rounded-md">
           <EntityRow
             leading={
@@ -885,7 +1042,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  FILTER BAR                                                   */}
       {/* ============================================================ */}
-      <Section title="Filter Bar">
+      <Section title={copy.filterBar}>
         <FilterBar
           filters={filters}
           onRemove={(key) => setFilters((f) => f.filter((x) => x.key !== key))}
@@ -910,7 +1067,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  AVATARS                                                      */}
       {/* ============================================================ */}
-      <Section title="Avatars">
+      <Section title={copy.avatars}>
         <SubSection title="Sizes">
           <div className="flex items-center gap-3">
             <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
@@ -932,7 +1089,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
-      <Section title="Identity">
+      <Section title={copy.identity}>
         <SubSection title="Sizes">
           <div className="flex items-center gap-6">
             <Identity name="Agent Alpha" size="sm" />
@@ -957,7 +1114,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TOOLTIPS                                                     */}
       {/* ============================================================ */}
-      <Section title="Tooltips">
+      <Section title={copy.tooltips}>
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -977,7 +1134,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  DIALOG                                                       */}
       {/* ============================================================ */}
-      <Section title="Dialog">
+      <Section title={copy.dialog}>
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="outline">Open Dialog</Button>
@@ -1010,7 +1167,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  EMPTY STATE                                                  */}
       {/* ============================================================ */}
-      <Section title="Empty State">
+      <Section title={copy.emptyState}>
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
@@ -1024,7 +1181,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROGRESS BARS                                                */}
       {/* ============================================================ */}
-      <Section title="Progress Bars (Budget)">
+      <Section title={copy.progressBars}>
         <div className="space-y-3">
           {[
             { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
@@ -1050,7 +1207,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  LOG VIEWER                                                   */}
       {/* ============================================================ */}
-      <Section title="Log Viewer">
+      <Section title={copy.logViewer}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
           <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
           <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
@@ -1072,7 +1229,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  PROPERTY ROW PATTERN                                         */}
       {/* ============================================================ */}
-      <Section title="Property Row Pattern">
+      <Section title={copy.propertyRowPattern}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Status</span>
@@ -1099,7 +1256,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
-      <Section title="Navigation Patterns">
+      <Section title={copy.navigationPatterns}>
         <SubSection title="Sidebar nav items">
           <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
@@ -1141,7 +1298,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  GROUPED LIST (Issues pattern)                                */}
       {/* ============================================================ */}
-      <Section title="Grouped List (Issues pattern)">
+      <Section title={copy.groupedListPattern}>
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
@@ -1168,7 +1325,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COMMENT THREAD PATTERN                                       */}
       {/* ============================================================ */}
-      <Section title="Comment Thread Pattern">
+      <Section title={copy.commentThreadPattern}>
         <div className="space-y-3 max-w-2xl">
           <h3 className="text-sm font-semibold">Comments (2)</h3>
           <div className="space-y-3">
@@ -1197,7 +1354,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  COST TABLE PATTERN                                           */}
       {/* ============================================================ */}
-      <Section title="Cost Table Pattern">
+      <Section title={copy.costTablePattern}>
         <div className="border border-border rounded-lg overflow-hidden">
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
@@ -1231,7 +1388,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SKELETONS                                                    */}
       {/* ============================================================ */}
-      <Section title="Skeletons">
+      <Section title={copy.skeletons}>
         <SubSection title="Individual">
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
@@ -1256,7 +1413,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  SEPARATOR                                                    */}
       {/* ============================================================ */}
-      <Section title="Separator">
+      <Section title={copy.separator}>
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">Horizontal</p>
           <Separator />
@@ -1271,7 +1428,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  ICON REFERENCE                                               */}
       {/* ============================================================ */}
-      <Section title="Common Icons (Lucide)">
+      <Section title={copy.commonIcons}>
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">
           {[
             ["Inbox", Inbox],
@@ -1306,7 +1463,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  KEYBOARD SHORTCUTS                                           */}
       {/* ============================================================ */}
-      <Section title="Keyboard Shortcuts">
+      <Section title={copy.keyboardShortcuts}>
         <div className="border border-border rounded-md divide-y divide-border text-sm">
           {[
             ["Cmd+K / Ctrl+K", "Open Command Palette"],

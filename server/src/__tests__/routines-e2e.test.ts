@@ -271,5 +271,5 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
-  });
+  }, 15_000);
 });

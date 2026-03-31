@@ -32,6 +32,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { Clock3, Copy, GitBranch, Loader2 } from "lucide-react";
+import { useI18n } from "../i18n";
 
 /* ── Top-level tab types ── */
 
@@ -67,6 +68,7 @@ function OverviewContent({
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-6">
       <InlineEditor
@@ -74,21 +76,21 @@ function OverviewContent({
         onSave={(description) => onUpdate({ description })}
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projectProperties.fields.addDescription")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("projectProperties.labels.status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projectProperties.labels.targetDate")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -220,6 +222,7 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -249,7 +252,7 @@ function ProjectWorkspacesContent({
   });
 
   if (summaries.length === 0) {
-    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("executionWorkspace.noWorkspaceActivity")}</p>;
   }
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
@@ -278,13 +281,13 @@ function ProjectWorkspacesContent({
             </Link>
 
             <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1">
-                <GitBranch className="h-3.5 w-3.5" />
-                <span className="font-mono">{summary.branchName ?? "No branch info"}</span>
-              </span>
-              <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
-                {summary.runningServiceCount}/{summary.serviceCount} services running
-              </span>
+                <span className="inline-flex items-center gap-1">
+                  <GitBranch className="h-3.5 w-3.5" />
+                  <span className="font-mono">{summary.branchName ?? t("executionWorkspace.noBranchInfo")}</span>
+                </span>
+                <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
+                  {t("executionWorkspace.servicesRunning", { running: summary.runningServiceCount, total: summary.serviceCount })}
+                </span>
               {summary.executionWorkspaceStatus ? (
                 <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
                   {summary.executionWorkspaceStatus}
@@ -344,7 +347,7 @@ function ProjectWorkspacesContent({
               to={workspaceHref}
               className="text-xs font-medium text-foreground hover:underline"
             >
-              {summary.kind === "project_workspace" ? "Configure workspace" : "View workspace"}
+              {summary.kind === "project_workspace" ? t("executionWorkspace.configureWorkspace") : t("executionWorkspace.viewWorkspace")}
             </Link>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -365,7 +368,7 @@ function ProjectWorkspacesContent({
                 }
               >
                 {runtimeActionKey === `${summary.key}:start` ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                Start
+                {t("executionWorkspace.start")}
               </Button>
               <Button
                 variant="outline"
@@ -380,7 +383,7 @@ function ProjectWorkspacesContent({
                   })
                 }
               >
-                Stop
+                {t("executionWorkspace.stop")}
               </Button>
             </div>
             {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
@@ -393,7 +396,7 @@ function ProjectWorkspacesContent({
                   status: summary.executionWorkspaceStatus!,
                 })}
               >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                {summary.executionWorkspaceStatus === "cleanup_failed" ? t("executionWorkspace.retryClose") : t("executionWorkspace.closeWorkspace")}
               </Button>
             ) : null}
             <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
@@ -415,7 +418,7 @@ function ProjectWorkspacesContent({
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
             <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Cleanup attention needed
+              {t("executionWorkspace.cleanupAttentionNeeded")}
             </div>
             <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
               {cleanupFailedSummaries.map(renderSummaryRow)}

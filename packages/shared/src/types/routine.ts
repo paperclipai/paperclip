@@ -34,6 +34,7 @@ export interface Routine {
   title: string;
   description: string | null;
   assigneeAgentId: string;
+  assigneeSeatId: string | null;
   priority: string;
   status: string;
   concurrencyPolicy: string;
