@@ -24,11 +24,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+COREPACK_ENV_PREFIX="COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1"
 
 info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 success() { echo -e "${GREEN}[OK]${NC}   $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERR]${NC}  $*"; }
+
+run_as_paperclip() {
+  local command="$1"
+  sudo -u "${PAPERCLIP_USER}" bash -lc "export ${COREPACK_ENV_PREFIX}; ${command}"
+}
 
 # ── Phase 1: Pre-flight ─────────────────────────────────────────────────────
 
@@ -109,6 +115,7 @@ install_pnpm() {
   corepack enable >/dev/null 2>&1
   # Match the version in Paperclip's package.json packageManager field
   corepack prepare pnpm@9.15.4 --activate >/dev/null 2>&1
+  run_as_paperclip "corepack enable >/dev/null 2>&1 && corepack prepare pnpm@9.15.4 --activate >/dev/null 2>&1"
   success "pnpm $(pnpm --version) ready"
 }
 
@@ -225,16 +232,16 @@ clone_and_build() {
   fi
 
   info "Installing dependencies (this may take a few minutes)..."
-  sudo -u "${PAPERCLIP_USER}" bash -c "cd ${INSTALL_DIR} && pnpm install --frozen-lockfile" 2>&1 | tail -1
+  run_as_paperclip "cd '${INSTALL_DIR}' && pnpm install --frozen-lockfile --reporter append-only"
 
   info "Building UI..."
-  sudo -u "${PAPERCLIP_USER}" bash -c "cd ${INSTALL_DIR} && pnpm --filter @paperclipai/ui build" 2>&1 | tail -1
+  run_as_paperclip "cd '${INSTALL_DIR}' && pnpm --filter @paperclipai/ui build"
 
   info "Building plugin SDK..."
-  sudo -u "${PAPERCLIP_USER}" bash -c "cd ${INSTALL_DIR} && pnpm --filter @paperclipai/plugin-sdk build" 2>&1 | tail -1
+  run_as_paperclip "cd '${INSTALL_DIR}' && pnpm --filter @paperclipai/plugin-sdk build"
 
   info "Building server..."
-  sudo -u "${PAPERCLIP_USER}" bash -c "cd ${INSTALL_DIR} && pnpm --filter @paperclipai/server build" 2>&1 | tail -1
+  run_as_paperclip "cd '${INSTALL_DIR}' && pnpm --filter @paperclipai/server build"
 
   # Verify build output
   if [[ ! -f "${INSTALL_DIR}/server/dist/index.js" ]]; then
