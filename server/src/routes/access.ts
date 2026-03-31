@@ -1027,7 +1027,7 @@ function buildInviteOnboardingManifest(
     invite: toInviteSummaryResponse(req, token, invite),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Persist the claimed API key into this agent's own secret/env setup and run heartbeats with that agent-specific PAPERCLIP_API_KEY as structured runtime auth and/or adapter env bindings. Do not use any shared claimed-key file as the steady-state source. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1228,24 +1228,29 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
+    On successful claim, extract the claimed API key and PAPERCLIP_API_URL from the response and persist them into this agent's own environment/secret configuration.
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    Preferred steady-state installation:
+    - store the claimed PAPERCLIP_API_KEY as an agent-specific Paperclip secret
+    - bind adapterConfig.env.PAPERCLIP_API_KEY to that secret via {"type":"secret_ref","secretId":"...","version":"latest"}
+    - set adapterConfig.env.PAPERCLIP_API_URL to the reachable Paperclip base URL
 
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
+    Do not treat any shared file or ad-hoc local artifact as the steady-state runtime source for multiple agents.
+    Do not rely on payloadTemplate.message or other wake-text injection as the steady-state source of PAPERCLIP_API_KEY.
+
+    Set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
 
     e.g. 
 
     {
       env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
+        PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "...", version: "latest" },
+        PAPERCLIP_API_URL: { type: "plain", value: "http://host.docker.internal:3100" },
       },
     }
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    Then run every heartbeat with that agent-specific PAPERCLIP_API_KEY and PAPERCLIP_API_URL.
 
     Important:
     - claim secrets expire

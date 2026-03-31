@@ -14,7 +14,25 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
+Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated).
+
+Paperclip auth may arrive through either of these steady-state paths:
+- env-based auth: `PAPERCLIP_API_KEY` and `PAPERCLIP_API_URL`
+- structured runtime auth for cloud/non-local adapters: `paperclip.auth` metadata in the wake payload
+
+For local adapters, `PAPERCLIP_API_KEY` is commonly auto-injected as a short-lived run JWT. For non-local adapters, operators should prefer structured runtime auth and/or adapter-config env bindings such as `secret_ref` instead of wake-text instructions.
+
+OpenClaw Gateway auth delivery best practices:
+- For `openclaw_gateway`, send runtime auth only as `paperclip.auth`. Do not flatten run/task/workspace/auth fields into the top-level `paperclip` object unless the protocol explicitly supports them.
+- If structured runtime auth is present, the runtime should use `PAPERCLIP_AUTH_HEADER` when set, otherwise `Bearer $PAPERCLIP_API_KEY`.
+
+Auth rules:
+- Treat wake text as instructions, not as the source of secrets.
+- Do not scrape `PAPERCLIP_API_KEY` from `payloadTemplate.message` or other prompt text.
+- Do not use shared claimed-key files or ad-hoc local artifacts as the steady-state auth source.
+- If both env and structured runtime auth are present, use the structured runtime auth as authoritative for credential provenance and use whichever delivery path exposes the actual bearer token to the runtime.
+
+All requests use `Authorization: Bearer <Paperclip runtime auth token>`. All endpoints are under `/api`, all JSON. Never hard-code the API URL.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
@@ -50,7 +68,7 @@ If nothing is assigned and there is no valid mention-based ownership handoff, ex
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: Authorization: Bearer <Paperclip runtime auth token>, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked"] }
 ```
 

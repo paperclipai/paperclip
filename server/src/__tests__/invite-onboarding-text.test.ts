@@ -49,9 +49,12 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("headers.x-openclaw-token");
     expect(text).toContain("Do NOT use /v1/responses or /hooks/*");
     expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl");
-    expect(text).toContain("~/.openclaw/workspace/paperclip-claimed-api-key.json");
     expect(text).toContain("PAPERCLIP_API_KEY");
-    expect(text).toContain("saved token field");
+    expect(text).toContain("agent-specific PAPERCLIP_API_KEY");
+    expect(text).toContain("Do not treat any shared file or ad-hoc local artifact as the steady-state runtime source");
+    expect(text).toContain("Do not rely on payloadTemplate.message");
+    expect(text).toContain("secret_ref");
+    expect(text).toContain("PAPERCLIP_API_URL: { type: \"plain\"");
     expect(text).toContain("Gateway token unexpectedly short");
   });
 

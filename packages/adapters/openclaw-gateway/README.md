@@ -54,6 +54,15 @@ The agent request is built as:
 - optional additions:
   - all `payloadTemplate` fields merged in
   - `agentId` from config if set and not already in template
+  - `paperclip` structured context, including `paperclip.auth` for runtime-delivered Paperclip auth metadata
+
+## Paperclip Auth Delivery
+
+This adapter does **not** treat wake text as the steady-state source of Paperclip credentials.
+
+- Do not inject `PAPERCLIP_API_KEY` instructions via `payloadTemplate.message`.
+- Do not rely on shared claimed-key files as the steady-state runtime source.
+- Paperclip auth should be delivered via structured runtime context (`paperclip.auth`) and/or adapter config env bindings such as `secret_ref`.
 
 ## Timeouts
 

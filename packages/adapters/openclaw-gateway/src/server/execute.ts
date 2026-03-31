@@ -336,7 +336,6 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -358,6 +357,14 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
   }
 
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
+  const structuredPaperclipPreview = JSON.stringify({
+    taskId: payload.taskId ?? null,
+    issueId: payload.issueId ?? null,
+    issueIds: payload.issueIds,
+    companyId: paperclipEnv.PAPERCLIP_COMPANY_ID ?? null,
+    agentId: paperclipEnv.PAPERCLIP_AGENT_ID ?? null,
+    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+  });
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
   const lines = [
@@ -365,11 +372,19 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
     "",
-    "Set these values in your run context:",
+    "Paperclip runtime context available for this run:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    "Auth rule:",
+    "- Use the runtime-provided agent auth context for this run.",
+    "- Runtime auth is provided structurally in the OpenClaw request and is guaranteed on exec/tool command paths, not as a model-visible environment variable.",
+    "- For every Paperclip API call in this workflow, use exec/curl (or an equivalent command tool path) so PAPERCLIP_API_KEY / PAPERCLIP_AUTH_HEADER are available from the tool environment.",
+    "- Do not assume PAPERCLIP_API_KEY is directly visible in the model prompt/runtime unless an exec/tool command is reading it.",
+    "- Every /api request must send Authorization using PAPERCLIP_AUTH_HEADER when set, otherwise Bearer $PAPERCLIP_API_KEY.",
+    "- Every mutating /api request must also send X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID.",
+    "- If exec/tool env does not provide PAPERCLIP_API_KEY, do not attempt issue checkout/comment/update calls.",
+    "- Do not rely on a shared claimed-key file as the steady-state source of Paperclip auth.",
+    "- Do not treat wake text or payloadTemplate.message as the source of PAPERCLIP_API_KEY.",
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -379,25 +394,26 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     `approval_id=${payload.approvalId ?? ""}`,
     `approval_status=${payload.approvalStatus ?? ""}`,
     `linked_issue_ids=${payload.issueIds.join(",")}`,
+    `paperclip_json=${structuredPaperclipPreview}`,
     "",
     "HTTP rules:",
-    "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
+    "- Use Authorization derived from the runtime-provided Paperclip auth context on every API call.",
     "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
     "",
     "Workflow:",
-    "1) GET /api/agents/me",
+    "1) Use exec/curl to GET /api/agents/me.",
     `2) Determine issueId: PAPERCLIP_TASK_ID if present, otherwise issue_id (${issueIdHint}).`,
     "3) If issueId exists:",
-    "   - POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\"]}",
-    "   - GET /api/issues/{issueId}",
-    "   - GET /api/issues/{issueId}/comments",
+    "   - Use exec/curl to POST /api/issues/{issueId}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\"]}.",
+    "   - Use exec/curl to GET /api/issues/{issueId}.",
+    "   - Use exec/curl to GET /api/issues/{issueId}/comments.",
     "   - Execute the issue instructions exactly.",
-    "   - If instructions require a comment, POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
-    "   - PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
+    "   - If instructions require a comment, use exec/curl to POST /api/issues/{issueId}/comments with {\"body\":\"...\"}.",
+    "   - Use exec/curl to PATCH /api/issues/{issueId} with {\"status\":\"done\",\"comment\":\"what changed and why\"}.",
     "4) If issueId does not exist:",
-    "   - GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked",
+    "   - Use exec/curl to GET /api/companies/$PAPERCLIP_COMPANY_ID/issues?assigneeAgentId=$PAPERCLIP_AGENT_ID&status=todo,in_progress,blocked.",
     "   - Pick in_progress first, then todo, then blocked, then execute step 3.",
     "",
     "Useful endpoints for issue work:",
@@ -417,49 +433,22 @@ function appendWakeText(baseText: string, wakeText: string): string {
 
 function buildStandardPaperclipPayload(
   ctx: AdapterExecutionContext,
-  wakePayload: WakePayload,
+  _wakePayload: WakePayload,
   paperclipEnv: Record<string, string>,
   payloadTemplate: Record<string, unknown>,
 ): Record<string, unknown> {
   const templatePaperclip = parseObject(payloadTemplate.paperclip);
-  const workspace = asRecord(ctx.context.paperclipWorkspace);
-  const workspaces = Array.isArray(ctx.context.paperclipWorkspaces)
-    ? ctx.context.paperclipWorkspaces.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
-    : [];
-  const configuredWorkspaceRuntime = parseObject(ctx.config.workspaceRuntime);
-  const runtimeServiceIntents = Array.isArray(ctx.context.paperclipRuntimeServiceIntents)
-    ? ctx.context.paperclipRuntimeServiceIntents.filter(
-        (entry): entry is Record<string, unknown> => Boolean(asRecord(entry)),
-      )
-    : [];
 
   const standardPaperclip: Record<string, unknown> = {
-    runId: ctx.runId,
-    companyId: ctx.agent.companyId,
-    agentId: ctx.agent.id,
-    agentName: ctx.agent.name,
-    taskId: wakePayload.taskId,
-    issueId: wakePayload.issueId,
-    issueIds: wakePayload.issueIds,
-    wakeReason: wakePayload.wakeReason,
-    wakeCommentId: wakePayload.wakeCommentId,
-    approvalId: wakePayload.approvalId,
-    approvalStatus: wakePayload.approvalStatus,
-    apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+    auth: {
+      apiUrl: paperclipEnv.PAPERCLIP_API_URL ?? null,
+      runId: ctx.runId,
+      agentId: ctx.agent.id,
+      companyId: ctx.agent.companyId,
+      authToken: ctx.authToken ?? null,
+      authScheme: ctx.authToken ? "bearer" : null,
+    },
   };
-
-  if (workspace) {
-    standardPaperclip.workspace = workspace;
-  }
-  if (workspaces.length > 0) {
-    standardPaperclip.workspaces = workspaces;
-  }
-  if (runtimeServiceIntents.length > 0 || Object.keys(configuredWorkspaceRuntime).length > 0) {
-    standardPaperclip.workspaceRuntime = {
-      ...configuredWorkspaceRuntime,
-      ...(runtimeServiceIntents.length > 0 ? { services: runtimeServiceIntents } : {}),
-    };
-  }
 
   return {
     ...templatePaperclip,
@@ -1067,13 +1056,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
   const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
+  const issueBoundRun = Boolean(wakePayload.issueId || wakePayload.taskId || wakePayload.issueIds.length > 0);
+  if (issueBoundRun && !ctx.authToken) {
+    await ctx.onLog(
+      "stderr",
+      "[openclaw-gateway] issue-bound run missing runtime auth token; refusing to start because issue mutations would fall back to unauthenticated local requests\n",
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Issue-bound OpenClaw Gateway run missing runtime auth token",
+      errorCode: "openclaw_gateway_missing_runtime_auth",
+    };
+  }
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
     message,
     sessionKey,
     idempotencyKey: ctx.runId,
+    paperclip: paperclipPayload,
   };
+
+  const configuredModel = nonEmpty(ctx.config.model);
+  if (configuredModel && !nonEmpty(agentParams.model)) {
+    agentParams.model = configuredModel;
+  }
   delete agentParams.text;
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);

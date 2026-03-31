@@ -35,6 +35,7 @@ function buildContext(
       issueIds: ["issue-123"],
     },
     onLog: async () => {},
+    authToken: "test-auth-token",
     ...overrides,
   };
 }
@@ -411,6 +412,8 @@ describe("openclaw gateway adapter execute", () => {
             payloadTemplate: {
               message: "wake now",
             },
+            model: "claude-sonnet-4-6",
+            authProfileOverride: "anthropic:default",
             waitTimeoutMs: 2000,
           },
           {
@@ -456,6 +459,20 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).not.toContain("PAPERCLIP_API_KEY=<agent-specific token for this agent>");
+      expect(payload?.paperclip).toEqual({
+        auth: {
+          apiUrl: "http://localhost:3100",
+          runId: "run-123",
+          agentId: "agent-123",
+          companyId: "company-123",
+          authToken: "test-auth-token",
+          authScheme: "bearer",
+        },
+      });
+      expect(payload?.paperclipAuth).toBeUndefined();
+      expect(payload?.model).toBe("claude-sonnet-4-6");
+      expect(payload?.authProfileOverride).toBeUndefined();
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
     } finally {
@@ -549,6 +566,30 @@ describe("openclaw gateway adapter execute", () => {
       );
       expect(logs.some((entry) => entry.includes("auto-approved pairing request"))).toBe(true);
       expect(gateway.getAgentPayload()).toBeTruthy();
+    } finally {
+      await gateway.close();
+    }
+  });
+  it("fails fast for issue-bound runs when runtime auth token is missing", async () => {
+    const gateway = await createMockGatewayServer();
+    try {
+      const logs: string[] = [];
+      const result = await execute(
+        buildContext(
+          { url: gateway.url },
+          {
+            authToken: undefined,
+            onLog: async (_stream, chunk) => {
+              logs.push(String(chunk));
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("openclaw_gateway_missing_runtime_auth");
+      expect(logs.some((entry) => entry.includes("issue-bound run missing runtime auth token"))).toBe(true);
+      expect(gateway.getAgentPayload()).toBeNull();
     } finally {
       await gateway.close();
     }

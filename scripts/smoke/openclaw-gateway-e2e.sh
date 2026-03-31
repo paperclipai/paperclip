@@ -454,14 +454,13 @@ create_and_approve_gateway_join() {
   [[ -n "$AGENT_API_KEY" ]] || fail "claim response missing token"
 
   persist_claimed_key_artifacts "$RESPONSE_BODY"
-  inject_agent_api_key_payload_template
+  install_agent_api_key_secret_ref
 }
 
 persist_claimed_key_artifacts() {
   local claim_json="$1"
   local workspace_dir="${OPENCLAW_CONFIG_DIR%/}/workspace"
   local skill_dir="${OPENCLAW_CONFIG_DIR%/}/skills/paperclip"
-  local claimed_file="${workspace_dir}/paperclip-claimed-api-key.json"
   local claimed_raw_file="${workspace_dir}/paperclip-claimed-api-key.raw.json"
 
   mkdir -p "$workspace_dir" "$skill_dir"
@@ -471,18 +470,6 @@ persist_claimed_key_artifacts() {
 
   printf "%s\n" "$claim_json" > "$claimed_raw_file"
   chmod 600 "$claimed_raw_file"
-
-  jq -nc --arg token "$token" '{ token: $token, apiKey: $token }' > "$claimed_file"
-  # Keep this readable for OpenClaw runtime users across sandbox/container contexts.
-  chmod 644 "$claimed_file"
-
-  local container
-  container="$(detect_openclaw_container || true)"
-  if [[ -n "$container" ]]; then
-    docker exec "$container" sh -lc "mkdir -p /home/node/.openclaw/workspace" >/dev/null 2>&1 || true
-    docker cp "$claimed_file" "${container}:/home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
-    docker exec "$container" sh -lc "chmod 644 /home/node/.openclaw/workspace/paperclip-claimed-api-key.json" >/dev/null 2>&1 || true
-  fi
 
   if [[ "$AUTO_INSTALL_SKILL" == "1" ]]; then
     api_request "GET" "/skills/paperclip"
@@ -495,33 +482,60 @@ persist_claimed_key_artifacts() {
     chmod 600 "${skill_dir}/SKILL.md"
   fi
 
-  log "wrote claimed key artifacts to ${claimed_file} and ${claimed_raw_file}"
+  log "wrote raw claim artifact to ${claimed_raw_file} for diagnostics only; steady-state runtime auth is installed via adapterConfig.env secret_ref, not payloadTemplate injection"
 }
 
-inject_agent_api_key_payload_template() {
-  [[ -n "$AGENT_ID" ]] || fail "inject_agent_api_key_payload_template requires AGENT_ID"
-  [[ -n "$AGENT_API_KEY" ]] || fail "inject_agent_api_key_payload_template requires AGENT_API_KEY"
+install_agent_api_key_secret_ref() {
+  [[ -n "$AGENT_ID" ]] || fail "install_agent_api_key_secret_ref requires AGENT_ID"
+  [[ -n "$AGENT_API_KEY" ]] || fail "install_agent_api_key_secret_ref requires AGENT_API_KEY"
+  [[ -n "$COMPANY_ID" ]] || fail "install_agent_api_key_secret_ref requires COMPANY_ID"
+
+  local secret_name secret_description create_secret_payload rotate_secret_payload secret_id
+  secret_name="paperclip-api-key-${AGENT_ID}"
+  secret_description="Agent-specific Paperclip API key claimed during openclaw_gateway smoke onboarding"
+  create_secret_payload="$(jq -nc \
+    --arg name "$secret_name" \
+    --arg value "$AGENT_API_KEY" \
+    --arg description "$secret_description" \
+    '{name:$name, value:$value, description:$description}'
+  )"
+
+  api_request "POST" "/companies/${COMPANY_ID}/secrets" "$create_secret_payload"
+  if [[ "$RESPONSE_CODE" == "201" ]]; then
+    secret_id="$(jq -r '.id // empty' <<<"$RESPONSE_BODY")"
+    [[ -n "$secret_id" ]] || fail "secret create response missing id"
+  elif [[ "$RESPONSE_CODE" == "409" ]]; then
+    api_request "GET" "/companies/${COMPANY_ID}/secrets"
+    assert_status "200"
+    secret_id="$(jq -r --arg name "$secret_name" 'map(select(.name == $name)) | first | .id // empty' <<<"$RESPONSE_BODY")"
+    [[ -n "$secret_id" ]] || fail "secret conflict for ${secret_name} but existing secret id not found"
+
+    rotate_secret_payload="$(jq -nc --arg value "$AGENT_API_KEY" '{value:$value}')"
+    api_request "POST" "/secrets/${secret_id}/rotate" "$rotate_secret_payload"
+    assert_status "200"
+  else
+    assert_status "201"
+  fi
 
   api_request "GET" "/agents/${AGENT_ID}"
   assert_status "200"
 
-  local base_message
-  base_message="Set PAPERCLIP_API_KEY=${AGENT_API_KEY} in your run context before running Paperclip heartbeat steps."
-  if [[ -n "$PAYLOAD_TEMPLATE_MESSAGE_APPEND" ]]; then
-    base_message="${base_message}\n\n${PAYLOAD_TEMPLATE_MESSAGE_APPEND}"
-  fi
-
   local patch_payload
-  patch_payload="$(jq -c --arg message "$base_message" '
+  patch_payload="$(jq -c \
+    --arg secretId "$secret_id" \
+    --arg apiUrl "$PAPERCLIP_API_URL_FOR_OPENCLAW" '
     {adapterConfig: ((.adapterConfig // {}) + {
-      payloadTemplate: (((.adapterConfig // {}).payloadTemplate // {}) + {
-        message: $message
+      env: (((.adapterConfig // {}).env // {}) + {
+        PAPERCLIP_API_KEY: {type: "secret_ref", secretId: $secretId, version: "latest"},
+        PAPERCLIP_API_URL: {type: "plain", value: $apiUrl}
       })
     })}
   ' <<<"$RESPONSE_BODY")"
 
   api_request "PATCH" "/agents/${AGENT_ID}" "$patch_payload"
   assert_status "200"
+
+  log "installed agent-specific PAPERCLIP_API_KEY via secret_ref on adapterConfig.env for ${AGENT_ID} (secret ${secret_id})"
 }
 
 validate_joined_gateway_agent() {
@@ -530,12 +544,16 @@ validate_joined_gateway_agent() {
   api_request "GET" "/agents/${AGENT_ID}"
   assert_status "200"
 
-  local adapter_type gateway_url configured_token disable_device_auth device_key_len
+  local adapter_type gateway_url configured_token disable_device_auth device_key_len env_api_key_type env_api_key_secret_id env_api_url payload_template_message
   adapter_type="$(jq -r '.adapterType // empty' <<<"$RESPONSE_BODY")"
   gateway_url="$(jq -r '.adapterConfig.url // empty' <<<"$RESPONSE_BODY")"
   configured_token="$(jq -r '.adapterConfig.headers["x-openclaw-token"] // .adapterConfig.headers["x-openclaw-auth"] // empty' <<<"$RESPONSE_BODY")"
   disable_device_auth="$(jq -r 'if .adapterConfig.disableDeviceAuth == true then "true" else "false" end' <<<"$RESPONSE_BODY")"
   device_key_len="$(jq -r '(.adapterConfig.devicePrivateKeyPem // "" | length)' <<<"$RESPONSE_BODY")"
+  env_api_key_type="$(jq -r '.adapterConfig.env.PAPERCLIP_API_KEY.type // empty' <<<"$RESPONSE_BODY")"
+  env_api_key_secret_id="$(jq -r '.adapterConfig.env.PAPERCLIP_API_KEY.secretId // empty' <<<"$RESPONSE_BODY")"
+  env_api_url="$(jq -r '.adapterConfig.env.PAPERCLIP_API_URL.value // empty' <<<"$RESPONSE_BODY")"
+  payload_template_message="$(jq -r '.adapterConfig.payloadTemplate.message // empty' <<<"$RESPONSE_BODY")"
 
   [[ "$adapter_type" == "openclaw_gateway" ]] || fail "joined agent adapterType is '${adapter_type}', expected 'openclaw_gateway'"
   [[ "$gateway_url" =~ ^wss?:// ]] || fail "joined agent gateway url is invalid: '${gateway_url}'"
@@ -555,8 +573,14 @@ validate_joined_gateway_agent() {
   if (( device_key_len < 32 )); then
     fail "joined agent missing persistent devicePrivateKeyPem (length=${device_key_len})"
   fi
+  [[ "$env_api_key_type" == "secret_ref" ]] || fail "joined agent missing adapterConfig.env.PAPERCLIP_API_KEY secret_ref"
+  [[ -n "$env_api_key_secret_id" ]] || fail "joined agent PAPERCLIP_API_KEY secret_ref missing secretId"
+  [[ "$env_api_url" == "$PAPERCLIP_API_URL_FOR_OPENCLAW" ]] || fail "joined agent PAPERCLIP_API_URL env mismatch (expected '${PAPERCLIP_API_URL_FOR_OPENCLAW}', got '${env_api_url}')"
+  if grep -q "Set PAPERCLIP_API_KEY=" <<<"$payload_template_message"; then
+    fail "joined agent still relies on payloadTemplate message injection for PAPERCLIP_API_KEY"
+  fi
 
-  log "validated joined gateway agent config (token sha256 prefix ${configured_hash})"
+  log "validated joined gateway agent config (token sha256 prefix ${configured_hash}; auth env installed via secret_ref ${env_api_key_secret_id})"
 }
 
 run_log_contains_pairing_required() {
