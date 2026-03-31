@@ -628,6 +628,9 @@ importers:
       '@paperclipai/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
+      '@paperclipai/adapter-opencode-remote':
+        specifier: workspace:*
+        version: link:../packages/adapters/opencode-remote
       '@paperclipai/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
