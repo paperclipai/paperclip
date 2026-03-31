@@ -81,6 +81,8 @@ export interface DocumentRevision {
   issueId: string;
   key: string;
   revisionNumber: number;
+  title: string | null;
+  format: DocumentFormat;
   body: string;
   changeSummary: string | null;
   createdByAgentId: string | null;
