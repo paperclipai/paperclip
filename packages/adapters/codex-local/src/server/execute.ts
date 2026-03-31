@@ -405,9 +405,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
     );
   }
+  const responseLanguage = asString(config.responseLanguage, "").trim();
+  const languageDirective = responseLanguage
+    ? `\nIMPORTANT: You MUST write ALL responses, reports, comments, and output in ${responseLanguage}. This includes issue comments, status updates, code review comments, and any other human-readable text you produce.\n\n`
+    : "";
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  let instructionsPrefix = "";
+  let instructionsPrefix = languageDirective;
   let instructionsChars = 0;
   if (instructionsFilePath) {
     try {
@@ -415,7 +419,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsPrefix =
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+        `Resolve any relative file references from ${instructionsDir}.\n\n` +
+        languageDirective;
       instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

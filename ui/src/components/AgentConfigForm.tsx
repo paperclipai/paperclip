@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type {
   Agent,
@@ -167,7 +168,19 @@ const claudeThinkingEffortOptions = [
 
 /* ---- Form ---- */
 
+const RESPONSE_LANGUAGE_OPTIONS = [
+  { value: "", label: "Default (no override)" },
+  { value: "Korean (한국어)", label: "한국어 (Korean)" },
+  { value: "English", label: "English" },
+  { value: "Japanese (日本語)", label: "日本語 (Japanese)" },
+  { value: "Chinese (中文)", label: "中文 (Chinese)" },
+  { value: "Spanish (Español)", label: "Español (Spanish)" },
+  { value: "French (Français)", label: "Français (French)" },
+  { value: "German (Deutsch)", label: "Deutsch (German)" },
+] as const;
+
 export function AgentConfigForm(props: AgentConfigFormProps) {
+  const { t } = useTranslation();
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
@@ -552,6 +565,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </div>
               </>
             )}
+            <Field label={t("settings.language")} hint="Set the language for agent responses, reports, and comments.">
+              <select
+                value={eff("adapterConfig", "responseLanguage", String(config.responseLanguage ?? ""))}
+                onChange={(e) => mark("adapterConfig", "responseLanguage", e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {RESPONSE_LANGUAGE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
           </div>
         </div>
       )}

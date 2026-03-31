@@ -216,19 +216,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
 
+    const responseLanguage = asString(config.responseLanguage, "").trim();
+    const languageDirective = responseLanguage
+      ? `\nIMPORTANT: You MUST write ALL responses, reports, comments, and output in ${responseLanguage}. This includes issue comments, status updates, code review comments, and any other human-readable text you produce.\n\n`
+      : "";
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const resolvedInstructionsFilePath = instructionsFilePath
       ? path.resolve(cwd, instructionsFilePath)
       : "";
     const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
-    let instructionsPrefix = "";
+    let instructionsPrefix = languageDirective;
     if (resolvedInstructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
         instructionsPrefix =
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+          `Resolve any relative file references from ${instructionsDir}.\n\n` +
+          languageDirective;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(

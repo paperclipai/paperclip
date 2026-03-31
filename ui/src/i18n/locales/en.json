@@ -27,7 +27,18 @@
     "paused": "paused",
     "errors": "errors",
     "blocked": "blocked",
-    "beta": "Beta"
+    "beta": "Beta",
+    "creating": "Creating…",
+    "ok": "OK",
+    "choose": "Choose",
+    "recommended": "Recommended",
+    "live": "live",
+    "finished": "Finished",
+    "started": "Started",
+    "liveNow": "Live now",
+    "noAssignee": "No assignee",
+    "noProject": "No project",
+    "noLabels": "No labels"
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -88,13 +99,27 @@
     "issuesByStatus": "Issues by Status",
     "successRate": "Success Rate",
     "last14Days": "Last 14 days",
-    "noRunsYet": "No runs yet"
+    "noRunsYet": "No runs yet",
+    "noIssues": "No issues",
+    "noRecentRuns": "No recent agent runs."
   },
   "issues": {
     "title": "Issues",
     "selectCompany": "Select a company to view issues.",
     "noIssuesYet": "No issues yet.",
-    "addIssue": "Add Issue"
+    "addIssue": "Add Issue",
+    "searchLabels": "Search labels...",
+    "createLabel": "Create label",
+    "searchAssignees": "Search assignees...",
+    "assignToMe": "Assign to me",
+    "assignToRequester": "Assign to requester",
+    "searchProjects": "Search projects...",
+    "quickFilters": {
+      "all": "All",
+      "active": "Active",
+      "backlog": "Backlog",
+      "done": "Done"
+    }
   },
   "agents": {
     "title": "Agents",
@@ -109,13 +134,17 @@
     "all": "All",
     "active": "Active",
     "paused": "Paused",
-    "error": "Error"
+    "error": "Error",
+    "waitingTranscript": "Waiting for transcript parsing...",
+    "waitingOutput": "Waiting for output...",
+    "noTranscript": "No transcript captured."
   },
   "projects": {
     "title": "Projects",
     "selectCompany": "Select a company to view projects.",
     "noProjectsYet": "No projects yet.",
-    "addProject": "Add Project"
+    "addProject": "Add Project",
+    "newProject": "New project"
   },
   "goals": {
     "title": "Goals",
@@ -123,6 +152,12 @@
     "noGoalsYet": "No goals yet.",
     "addGoal": "Add Goal",
     "newGoal": "New Goal",
+    "newSubGoal": "New sub-goal",
+    "createGoal": "Create goal",
+    "createSubGoal": "Create sub-goal",
+    "goalTitle": "Goal title",
+    "addDescription": "Add description...",
+    "parentGoal": "Parent goal",
     "levels": {
       "company": "Company",
       "team": "Team",
@@ -176,7 +211,25 @@
     "getStartedFirst": "Get started by creating a company and your first agent.",
     "addAgent": "Add Agent",
     "startOnboarding": "Start Onboarding",
-    "newCompany": "New Company"
+    "newCompany": "New Company",
+    "steps": {
+      "company": "Company",
+      "agent": "Agent",
+      "task": "Task",
+      "launch": "Launch"
+    },
+    "adapterDescriptions": {
+      "claude_local": "Local Claude agent",
+      "codex_local": "Local Codex agent",
+      "gemini_local": "Local Gemini agent",
+      "opencode_local": "Local multi-provider agent",
+      "pi_local": "Local Pi agent",
+      "cursor": "Local Cursor agent",
+      "hermes_local": "Local multi-provider agent",
+      "openclaw_gateway": "Invoke OpenClaw via gateway protocol"
+    },
+    "moreAdapterTypes": "More Agent Adapter Types",
+    "configureOpenClaw": "Configure OpenClaw within the App"
   },
   "status": {
     "active": "Active",
@@ -219,8 +272,21 @@
     "codex_local": "Codex",
     "gemini_local": "Gemini",
     "opencode_local": "OpenCode",
+    "pi_local": "Pi",
     "cursor": "Cursor",
     "hermes_local": "Hermes",
+    "openclaw_gateway": "OpenClaw Gateway",
+    "process": "Process",
+    "http": "HTTP"
+  },
+  "adaptersFull": {
+    "claude_local": "Claude (local)",
+    "codex_local": "Codex (local)",
+    "gemini_local": "Gemini CLI (local)",
+    "opencode_local": "OpenCode (local)",
+    "pi_local": "Pi (local)",
+    "cursor": "Cursor (local)",
+    "hermes_local": "Hermes Agent",
     "openclaw_gateway": "OpenClaw Gateway",
     "process": "Process",
     "http": "HTTP"
@@ -238,6 +304,14 @@
     "ytd": "Year to Date",
     "all": "All Time",
     "custom": "Custom"
+  },
+  "pathChooser": {
+    "specifyManually": "Specify path manually",
+    "browserSecurity": "Browser security blocks apps from reading full local paths via a file picker.",
+    "copyPaste": "Copy the absolute path and paste it into the input.",
+    "macos": "macOS (Finder)",
+    "windows": "Windows (File Explorer)",
+    "terminal": "Terminal fallback (macOS/Linux)"
   },
   "languages": {
     "en": "English",

@@ -27,7 +27,18 @@
     "paused": "일시 중지",
     "errors": "오류",
     "blocked": "차단됨",
-    "beta": "베타"
+    "beta": "베타",
+    "creating": "생성 중…",
+    "ok": "확인",
+    "choose": "선택",
+    "recommended": "추천",
+    "live": "라이브",
+    "finished": "완료",
+    "started": "시작됨",
+    "liveNow": "실시간",
+    "noAssignee": "담당자 없음",
+    "noProject": "프로젝트 없음",
+    "noLabels": "라벨 없음"
   },
   "nav": {
     "dashboard": "대시보드",
@@ -88,13 +99,27 @@
     "issuesByStatus": "상태별 이슈",
     "successRate": "성공률",
     "last14Days": "최근 14일",
-    "noRunsYet": "아직 실행 기록이 없습니다"
+    "noRunsYet": "아직 실행 기록이 없습니다",
+    "noIssues": "이슈 없음",
+    "noRecentRuns": "최근 에이전트 실행이 없습니다."
   },
   "issues": {
     "title": "이슈",
     "selectCompany": "이슈를 보려면 회사를 선택하세요.",
     "noIssuesYet": "아직 이슈가 없습니다.",
-    "addIssue": "이슈 추가"
+    "addIssue": "이슈 추가",
+    "searchLabels": "라벨 검색...",
+    "createLabel": "라벨 생성",
+    "searchAssignees": "담당자 검색...",
+    "assignToMe": "나에게 할당",
+    "assignToRequester": "요청자에게 할당",
+    "searchProjects": "프로젝트 검색...",
+    "quickFilters": {
+      "all": "전체",
+      "active": "활성",
+      "backlog": "백로그",
+      "done": "완료"
+    }
   },
   "agents": {
     "title": "에이전트",
@@ -109,13 +134,17 @@
     "all": "전체",
     "active": "활성",
     "paused": "일시 중지",
-    "error": "오류"
+    "error": "오류",
+    "waitingTranscript": "트랜스크립트 파싱 대기 중...",
+    "waitingOutput": "출력 대기 중...",
+    "noTranscript": "캡처된 트랜스크립트가 없습니다."
   },
   "projects": {
     "title": "프로젝트",
     "selectCompany": "프로젝트를 보려면 회사를 선택하세요.",
     "noProjectsYet": "아직 프로젝트가 없습니다.",
-    "addProject": "프로젝트 추가"
+    "addProject": "프로젝트 추가",
+    "newProject": "새 프로젝트"
   },
   "goals": {
     "title": "목표",
@@ -123,6 +152,12 @@
     "noGoalsYet": "아직 목표가 없습니다.",
     "addGoal": "목표 추가",
     "newGoal": "새 목표",
+    "newSubGoal": "새 하위 목표",
+    "createGoal": "목표 생성",
+    "createSubGoal": "하위 목표 생성",
+    "goalTitle": "목표 제목",
+    "addDescription": "설명 추가...",
+    "parentGoal": "상위 목표",
     "levels": {
       "company": "회사",
       "team": "팀",
@@ -176,7 +211,25 @@
     "getStartedFirst": "회사와 첫 번째 에이전트를 생성하여 시작하세요.",
     "addAgent": "에이전트 추가",
     "startOnboarding": "온보딩 시작",
-    "newCompany": "새 회사"
+    "newCompany": "새 회사",
+    "steps": {
+      "company": "회사",
+      "agent": "에이전트",
+      "task": "작업",
+      "launch": "실행"
+    },
+    "adapterDescriptions": {
+      "claude_local": "로컬 Claude 에이전트",
+      "codex_local": "로컬 Codex 에이전트",
+      "gemini_local": "로컬 Gemini 에이전트",
+      "opencode_local": "로컬 멀티 프로바이더 에이전트",
+      "pi_local": "로컬 Pi 에이전트",
+      "cursor": "로컬 Cursor 에이전트",
+      "hermes_local": "로컬 멀티 프로바이더 에이전트",
+      "openclaw_gateway": "게이트웨이 프로토콜을 통한 OpenClaw 호출"
+    },
+    "moreAdapterTypes": "추가 에이전트 어댑터 유형",
+    "configureOpenClaw": "앱 내에서 OpenClaw 설정"
   },
   "status": {
     "active": "활성",
@@ -219,8 +272,21 @@
     "codex_local": "Codex",
     "gemini_local": "Gemini",
     "opencode_local": "OpenCode",
+    "pi_local": "Pi",
     "cursor": "Cursor",
     "hermes_local": "Hermes",
+    "openclaw_gateway": "OpenClaw Gateway",
+    "process": "프로세스",
+    "http": "HTTP"
+  },
+  "adaptersFull": {
+    "claude_local": "Claude (로컬)",
+    "codex_local": "Codex (로컬)",
+    "gemini_local": "Gemini CLI (로컬)",
+    "opencode_local": "OpenCode (로컬)",
+    "pi_local": "Pi (로컬)",
+    "cursor": "Cursor (로컬)",
+    "hermes_local": "Hermes 에이전트",
     "openclaw_gateway": "OpenClaw Gateway",
     "process": "프로세스",
     "http": "HTTP"
@@ -238,6 +304,14 @@
     "ytd": "올해",
     "all": "전체 기간",
     "custom": "사용자 지정"
+  },
+  "pathChooser": {
+    "specifyManually": "경로 직접 입력",
+    "browserSecurity": "브라우저 보안으로 인해 파일 선택기에서 전체 로컬 경로를 읽을 수 없습니다.",
+    "copyPaste": "절대 경로를 복사하여 입력란에 붙여넣으세요.",
+    "macos": "macOS (Finder)",
+    "windows": "Windows (파일 탐색기)",
+    "terminal": "터미널 (macOS/Linux)"
   },
   "languages": {
     "en": "English",

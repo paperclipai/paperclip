@@ -250,6 +250,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // Handle instructions file and build system prompt extension
+  const responseLanguage = asString(config.responseLanguage, "").trim();
+  const languageDirective = responseLanguage
+    ? `\nIMPORTANT: You MUST write ALL responses, reports, comments, and output in ${responseLanguage}. This includes issue comments, status updates, code review comments, and any other human-readable text you produce.\n`
+    : "";
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const resolvedInstructionsFilePath = instructionsFilePath
     ? path.resolve(cwd, instructionsFilePath)
@@ -265,7 +269,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-        `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.`;
+        `You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.` +
+        languageDirective;
     } catch (err) {
       instructionsReadFailed = true;
       const reason = err instanceof Error ? err.message : String(err);
@@ -277,7 +282,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       systemPromptExtension = promptTemplate;
     }
   } else {
-    systemPromptExtension = promptTemplate;
+    systemPromptExtension = promptTemplate + languageDirective;
   }
 
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
