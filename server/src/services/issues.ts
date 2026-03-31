@@ -26,6 +26,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -111,6 +112,7 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  executionWorkspaceId?: string;
   parentId?: string;
   labelId?: string;
   originKind?: string;
@@ -145,6 +147,11 @@ type IssueUserContextInput = {
   updatedAt: Date | string;
 };
 type ProjectGoalReader = Pick<Db, "select">;
+type DbReader = Pick<Db, "select">;
+type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
+  labelIds?: string[];
+  inheritExecutionWorkspaceFromIssueId?: string | null;
+};
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -169,6 +176,28 @@ async function getProjectDefaultGoalId(
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   return row?.goalId ?? null;
+}
+
+async function getWorkspaceInheritanceIssue(
+  db: DbReader,
+  companyId: string,
+  issueId: string,
+) {
+  const issue = await db
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+      projectWorkspaceId: issues.projectWorkspaceId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspaceSettings: issues.executionWorkspaceSettings,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) {
+    throw notFound("Workspace inheritance issue not found");
+  }
+  return issue;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -527,8 +556,13 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertValidProjectWorkspace(companyId: string, projectId: string | null | undefined, projectWorkspaceId: string) {
-    const workspace = await db
+  async function assertValidProjectWorkspace(
+    companyId: string,
+    projectId: string | null | undefined,
+    projectWorkspaceId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const workspace = await dbOrTx
       .select({
         id: projectWorkspaces.id,
         companyId: projectWorkspaces.companyId,
@@ -544,8 +578,13 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertValidExecutionWorkspace(companyId: string, projectId: string | null | undefined, executionWorkspaceId: string) {
-    const workspace = await db
+  async function assertValidExecutionWorkspace(
+    companyId: string,
+    projectId: string | null | undefined,
+    executionWorkspaceId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const workspace = await dbOrTx
       .select({
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
@@ -688,6 +727,9 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.executionWorkspaceId) {
+        conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+      }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
@@ -832,6 +874,20 @@ export function issueService(db: Db) {
       return row;
     },
 
+    markUnread: async (companyId: string, issueId: string, userId: string) => {
+      const deleted = await db
+        .delete(issueReadStates)
+        .where(
+          and(
+            eq(issueReadStates.companyId, companyId),
+            eq(issueReadStates.issueId, issueId),
+            eq(issueReadStates.userId, userId),
+          ),
+        )
+        .returning();
+      return deleted.length > 0;
+    },
+
     archiveInbox: async (companyId: string, issueId: string, userId: string, archivedAt: Date = new Date()) => {
       const now = new Date();
       const [row] = await db
@@ -892,9 +948,9 @@ export function issueService(db: Db) {
 
     create: async (
       companyId: string,
-      data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
+      data: IssueCreateInput,
     ) => {
-      const { labelIds: inputLabelIds, ...issueData } = data;
+      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -909,12 +965,6 @@ export function issueService(db: Db) {
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
-      }
-      if (data.projectWorkspaceId) {
-        await assertValidProjectWorkspace(companyId, data.projectId, data.projectWorkspaceId);
-      }
-      if (data.executionWorkspaceId) {
-        await assertValidExecutionWorkspace(companyId, data.projectId, data.executionWorkspaceId);
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -956,9 +1006,49 @@ export function issueService(db: Db) {
       return withSerializableTransaction(db, async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
+        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
+        let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
+        let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        if (executionWorkspaceSettings == null && issueData.projectId) {
+        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const hasExplicitExecutionWorkspaceOverride =
+          issueData.executionWorkspaceId !== undefined ||
+          issueData.executionWorkspacePreference !== undefined ||
+          issueData.executionWorkspaceSettings !== undefined;
+        if (workspaceInheritanceIssueId) {
+          const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
+          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+            projectWorkspaceId = workspaceSource.projectWorkspaceId;
+          }
+          if (
+            isolatedWorkspacesEnabled &&
+            !hasExplicitExecutionWorkspaceOverride &&
+            workspaceSource.executionWorkspaceId
+          ) {
+            const sourceWorkspace = await tx
+              .select({
+                id: executionWorkspaces.id,
+                mode: executionWorkspaces.mode,
+              })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
+              .then((rows) => rows[0] ?? null);
+            if (sourceWorkspace) {
+              executionWorkspaceId = sourceWorkspace.id;
+              executionWorkspacePreference = "reuse_existing";
+              executionWorkspaceSettings = {
+                ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+                mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
+              };
+            }
+          }
+        }
+        if (
+          executionWorkspaceSettings == null &&
+          executionWorkspaceId == null &&
+          issueData.projectId
+        ) {
           const project = await tx
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
@@ -972,7 +1062,6 @@ export function issueService(db: Db) {
               ),
             ) as Record<string, unknown> | null;
         }
-        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
             .select({
@@ -992,6 +1081,20 @@ export function issueService(db: Db) {
               .then((rows) => rows[0]?.id ?? null);
           }
         }
+        if (projectWorkspaceId) {
+          await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
+        }
+        if (executionWorkspaceId) {
+          await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+        }
+        const [company] = await tx
+          .update(companies)
+          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+          .where(eq(companies.id, companyId))
+          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+
+        const issueNumber = company.issueCounter;
+        const identifier = `${company.issuePrefix}-${issueNumber}`;
 
         const values = {
           ...issueData,
@@ -1003,6 +1106,8 @@ export function issueService(db: Db) {
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
+          ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
           companyId,
           issueNumber,
