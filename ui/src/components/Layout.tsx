@@ -272,6 +272,11 @@ export function Layout() {
       >
         Skip to Main Content
       </a>
+      <div className="flex items-center justify-center gap-2 bg-primary px-4 py-1.5 text-xs text-primary-foreground">
+        <span className="font-medium">Beta</span>
+        <span className="opacity-75">-</span>
+        <span>Questions or feedback? Reach out to <a href="mailto:contact@paperclip.inc" className="underline underline-offset-2 hover:opacity-80">contact@paperclip.inc</a></span>
+      </div>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <SubscriptionBanner />
