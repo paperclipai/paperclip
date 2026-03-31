@@ -1,6 +1,6 @@
 # Plugin System — Próxima Iteração
 
-**Last Updated:** 2026-03-31 21:30 UTC
+**Last Updated:** 2026-03-31 23:58 UTC
 
 ---
 
@@ -23,6 +23,29 @@ pnpm test -- plugin-unit
 # → 112 testes passando
 # → Duration: ~2s
 ```
+
+### Testes de Integração Ruflo Bridge — COMPLETO
+
+**Status:** 39 testes de integração validando execução real com contexto mockado.
+
+**Arquivo:** `packages/plugins/ruflo-bridge/src/__tests__/integration.test.ts` (615 linhas)
+
+**Cobertura:**
+- Registro das 9 tools no boot
+- Execução de `agent_spawn` com params válidos (obrigatórios + opcionais)
+- Execução de `swarm_init` com todos os tipos de topologia (7) e estratégias (3)
+- Error handling: tool inexistente, params inválidos, enum values inválidos
+- Entity operations mockadas: `ruflo_agent`, `ruflo_swarm`, `ruflo_memory`, `ruflo_workflow`, `ruflo_coordination`, `ruflo_routing`
+- Geração de IDs únicos para entidades
+
+**Validação:**
+```bash
+pnpm test --filter @paperclipai/plugin-ruflo-bridge
+# → 86 testes passando (47 schema + 39 integração)
+# → Duration: ~2s
+```
+
+**Total geral de testes de plugins:** 151 testes (112 schema + 39 integração)
 
 ---
 
