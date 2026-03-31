@@ -1,148 +1,125 @@
 # AGENTS.md
 
-Guidance for human and AI contributors working in this repository.
+## Purpose
 
-## 1. Purpose
+Paperclip: control plane for AI-agent companies. V1 target in `doc/SPEC-implementation.md`.
 
-Paperclip is a control plane for AI-agent companies.
-The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
+## Read This First
 
-## 2. Read This First
+1. `doc/GOAL.md` → `doc/PRODUCT.md` → `doc/SPEC-implementation.md` → `doc/DEVELOPING.md` → `doc/DATABASE.md`
 
-Before making changes, read in this order:
+## Repo Map
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
-
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
-
-## 3. Repo Map
-
-- `server/`: Express REST API and orchestration services
-- `ui/`: React + Vite board UI
-- `packages/db/`: Drizzle schema, migrations, DB clients
-- `packages/shared/`: shared types, constants, validators, API path constants
-- `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
-- `packages/adapter-utils/`: shared adapter utilities
-- `packages/plugins/`: plugin system packages
-- `doc/`: operational and product docs
-
-## 4. Dev Setup (Auto DB)
-
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
-
-```sh
-pnpm install
-pnpm dev
+```
+server/          # Express REST API
+ui/              # React + Vite board UI
+packages/db/     # Drizzle schema, migrations
+packages/shared/ # types, constants, validators
+packages/adapters/ # agent adapters (Claude, Codex, Cursor)
+packages/adapter-utils/ # shared adapter utilities
+packages/plugins/ # plugin system
+  sdk/           # Plugin SDK (definePlugin, testing, bundlers)
+  playwright-mcp/ # Browser automation plugin (10 tools)
+  ruflo-bridge/  # Ruflo MCP bridge plugin (9 tools)
+  skills-hub/    # Agent skills plugin (12 tools)
+doc/             # operational/product docs
 ```
 
-This starts:
+## Dev Setup
 
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
-
-Quick checks:
+PGlite embedded (no `DATABASE_URL` needed):
 
 ```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
+pnpm install && pnpm dev
 ```
 
-Reset local dev DB:
+- API/UI: `http://localhost:3100`
+- Health: `curl http://localhost:3100/api/health`
+- Reset DB: `rm -rf data/pglite && pnpm dev`
 
-```sh
-rm -rf data/pglite
-pnpm dev
-```
+## Core Engineering Rules
 
-## 5. Core Engineering Rules
+1. **Company-scoped**: Every domain entity scoped to company; enforce in routes/services.
+2. **Sync contracts**: Schema change → update db, shared, server, ui layers.
+3. **Control-plane invariants**: single-assignee tasks, atomic checkout, approval gates, budget hard-stop, activity logging.
 
-1. Keep changes company-scoped.
-Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
-
-2. Keep contracts synchronized.
-If you change schema/API behavior, update all impacted layers:
-- `packages/db` schema and exports
-- `packages/shared` types/constants/validators
-- `server` routes/services
-- `ui` API clients and pages
-
-3. Preserve control-plane invariants.
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause behavior
-- Activity logging for mutating actions
-
-4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
-
-5. Keep plan docs dated and centralized.
-New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
-
-## 6. Database Change Workflow
-
-When changing data model:
+## Database Change Workflow
 
 1. Edit `packages/db/src/schema/*.ts`
-2. Ensure new tables are exported from `packages/db/src/schema/index.ts`
-3. Generate migration:
+2. Export new tables from `packages/db/src/schema/index.ts`
+3. `pnpm db:generate` (compiles first, reads from `dist/schema/*.js`)
+4. `pnpm -r typecheck`
+
+## Verification
 
 ```sh
-pnpm db:generate
+pnpm -r typecheck && pnpm test:run && pnpm build
 ```
 
-4. Validate compile:
+## Plugin Development
+
+### Plugin SDK Commands
 
 ```sh
-pnpm -r typecheck
+# SDK typecheck and tests
+pnpm --filter @paperclipai/plugin-sdk typecheck
+pnpm --filter @paperclipai/plugin-sdk test
+
+# Plugin E2E lifecycle tests (no Postgres required)
+pnpm test -- plugin-e2e-lifecycle
 ```
 
-Notes:
-- `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
-- `pnpm db:generate` compiles `packages/db` first
+### Autonomous Validation
 
-## 7. Verification Before Hand-off
-
-Run this full check before claiming done:
+Plugin system has automated hourly validation via cron:
 
 ```sh
-pnpm -r typecheck
-pnpm test:run
-pnpm build
+# Manual validation
+./scripts/validate-plugins.sh
+
+# Install cron job (hourly validation)
+sudo ./scripts/install-cron.sh
+
+# View logs
+tail -f /var/log/paperclip-plugin-validation.log
+
+# JSON reports
+ls /tmp/paperclip-plugin-validation-*.json
 ```
 
-If anything cannot be run, explicitly report what was not run and why.
+**Validation steps (7 total, ~30s):**
+1. Script self-tests
+2. SDK typecheck
+3. SDK unit tests (131 tests)
+4. E2E lifecycle tests (30 tests, no Postgres)
+5. Plugin typecheck (playwright-mcp, ruflo-bridge, skills-hub)
+6. Plugin build
+7. Documentation validation
 
-## 8. API and Auth Expectations
+### Plugin Validation Checklist
 
-- Base path: `/api`
-- Board access is treated as full-control operator context
-- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
+1. **Discovery:** Plugin in `packages/plugins/<name>` with valid `package.json`
+2. **Build:** `dist/worker.js` compiled and < 1MB
+3. **Tools:** Manifest declares tools, worker implements each
+4. **Docs:** README.md with usage examples
+5. **Tests:** SDK unit tests + E2E lifecycle tests
 
-When adding endpoints:
+See `doc/plugins/PLUGIN_SPEC.md` and `doc/plugins/PLUGIN_AUTHORING_GUIDE.md` for full spec.
 
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
+## API/Auth
 
-## 9. UI Expectations
+- Base: `/api`
+- Board = full-control operator context
+- Agents use bearer API keys (`agent_api_keys`), hashed at rest, company-isolated
+- Endpoints: company checks, actor permissions, activity logs, consistent HTTP errors
 
-- Keep routes and nav aligned with available API surface
-- Use company selection context for company-scoped pages
-- Surface failures clearly; do not silently ignore API errors
+## UI
 
-## 10. Definition of Done
+Routes/nav aligned with API. Company context for scoped pages. Surface failures clearly.
 
-A change is done when all are true:
+## Definition of Done
 
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
-3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+- Matches `doc/SPEC-implementation.md`
+- Typecheck/tests/build pass
+- Contracts synced (db/shared/server/ui)
+- Docs updated if behavior/commands changed

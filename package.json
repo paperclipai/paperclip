@@ -52,5 +52,8 @@
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     }
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
   }
 }

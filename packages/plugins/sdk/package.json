@@ -104,7 +104,8 @@
     "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
     "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
-    "dev:server": "tsx src/dev-cli.ts"
+    "dev:server": "tsx src/dev-cli.ts",
+    "test": "vitest"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",

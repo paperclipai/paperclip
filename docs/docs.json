@@ -136,6 +136,27 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "Plugins",
+        "groups": [
+          {
+            "group": "Plugin System",
+            "pages": [
+              "plugins/overview",
+              "plugins/creating-a-plugin"
+            ]
+          },
+          {
+            "group": "Available Plugins",
+            "pages": [
+              "plugins/hermes-integration",
+              "plugins/playwright-mcp",
+              "plugins/ruflo-bridge",
+              "plugins/skills-hub"
+            ]
+          }
+        ]
       }
     ]
   },

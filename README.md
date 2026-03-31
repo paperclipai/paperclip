@@ -253,9 +253,17 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
 <br/>
 
-## Community & Plugins
+## Plugins
 
-Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+Extend Paperclip with specialized capabilities:
+
+- **🔌 [Playwright MCP](docs/plugins/playwright-mcp.md)** — Browser automation (navigate, click, fill, screenshot, extract)
+- **🤖 [Ruflo Bridge](docs/plugins/ruflo-bridge.md)** — Multi-agent orchestration (spawn agents, swarms, semantic memory, workflows)
+- **📚 [Skills Hub](docs/plugins/skills-hub.md)** — Hermes Agent skills marketplace (browse, install, enable skills)
+
+See [Plugin Documentation](docs/plugins/overview.md) for installation and usage guides.
+
+Find more plugins at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
 
 ## Contributing
 

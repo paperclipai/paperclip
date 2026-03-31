@@ -1,0 +1,9 @@
+# Paperclip Plugin System Validation
+# Executa validação autônoma do sistema de plugins a cada hora
+# Logs em /var/log/paperclip-plugin-validation.log
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin:/root/.local/bin:/root/.bun/bin
+
+# Validação horária do sistema de plugins
+0 * * * * root /root/paperclip-repo/scripts/validate-plugins.sh >> /var/log/paperclip-plugin-validation.log 2>&1
