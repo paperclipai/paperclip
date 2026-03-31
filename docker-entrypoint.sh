@@ -15,13 +15,13 @@ if [ ! -f "$CONFIG_FILE" ]; then
   "$meta": {
     "version": 1,
     "updatedAt": "2026-03-31T00:00:00.000Z",
-    "source": "docker-entrypoint"
+    "source": "configure"
   },
   "database": {
-    "mode": "external-postgres"
+    "mode": "postgres"
   },
   "logging": {
-    "mode": "stdout"
+    "mode": "file"
   },
   "server": {
     "deploymentMode": "authenticated",
