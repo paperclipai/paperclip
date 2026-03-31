@@ -399,6 +399,8 @@ export function pluginRegistryService(db: Db) {
     listEntities: (pluginId: string, query?: PluginEntityQuery) => {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
+      if (query?.scopeKind) conditions.push(eq(pluginEntities.scopeKind, query.scopeKind));
+      if (query?.scopeId) conditions.push(eq(pluginEntities.scopeId, query.scopeId));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
 
       return db
