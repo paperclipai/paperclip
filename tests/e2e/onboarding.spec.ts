@@ -27,9 +27,11 @@ test.describe("Onboarding wizard", () => {
     const wizardHeading = page.locator("h3", { hasText: "Name your company" });
     const newCompanyBtn = page.getByRole("button", { name: "New Company" });
 
-    await expect(
-      wizardHeading.or(newCompanyBtn)
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(async () => {
+      const wizardVisible = await wizardHeading.isVisible();
+      const launcherVisible = await newCompanyBtn.isVisible();
+      expect(wizardVisible || launcherVisible).toBe(true);
+    }).toPass({ timeout: 15_000 });
 
     if (await newCompanyBtn.isVisible()) {
       await newCompanyBtn.click();
