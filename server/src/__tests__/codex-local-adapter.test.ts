@@ -31,6 +31,18 @@ describe("codex_local stale session detection", () => {
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
   });
+
+  it("treats model-mismatch resume errors as an unknown session error", () => {
+    const stdout = JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "error",
+        message: "This session was recorded with model `claude-sonnet-4` but is resuming with `gpt-5-nano`.",
+      },
+    });
+
+    expect(isCodexUnknownSessionError(stdout, "")).toBe(true);
+  });
 });
 
 describe("codex_local ui stdout parser", () => {
