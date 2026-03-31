@@ -12,6 +12,7 @@ import { formatCents, cn, agentUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertTriangle, BarChart3, CheckCircle2, Lightbulb, TrendingDown } from "lucide-react";
 import type { Issue } from "@ironworksai/shared";
 
@@ -175,6 +176,7 @@ export function AgentPerformance() {
   const [range, setRange] = useState<TimeRange>("30d");
   const [sortField, setSortField] = useState<SortField>("rating");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agent Performance" }]);
@@ -437,64 +439,139 @@ export function AgentPerformance() {
       )}
 
       {/* Performance by Project */}
-      {/* Performance by Project — projects as rows, agents as columns */}
-      {rows.length > 0 && projects && projects.length > 0 && (
-        <div className="rounded-xl border border-border p-4 space-y-3">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Performance by Project</h4>
-          <p className="text-xs text-muted-foreground">Issue distribution across projects and agents.</p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="px-3 py-2 text-left font-medium text-muted-foreground">Project</th>
-                  {rows.map((r) => (
-                    <th key={r.agentId} className="px-3 py-2 text-center font-medium text-muted-foreground">
-                      <span className="truncate max-w-[80px] inline-block">{r.name}</span>
-                    </th>
+      {/* Performance by Project */}
+      {rows.length > 0 && projects && projects.length > 0 && (() => {
+        const activeProjects = projects.filter((p) => !p.archivedAt);
+        const effectiveProjectId = selectedProjectId || activeProjects[0]?.id || "";
+        const selectedProject = activeProjects.find((p) => p.id === effectiveProjectId);
+        const projectIssues = (issues ?? []).filter((i) => i.projectId === effectiveProjectId);
+
+        const projectRows = rows.map((r) => {
+          const agentIssues = projectIssues.filter((i) => i.assigneeAgentId === r.agentId);
+          const done = agentIssues.filter((i) => i.status === "done").length;
+          const active = agentIssues.filter((i) => i.status === "in_progress").length;
+          const inReview = agentIssues.filter((i) => i.status === "in_review").length;
+          const todo = agentIssues.filter((i) => i.status === "todo").length;
+          const backlog = agentIssues.filter((i) => i.status === "backlog").length;
+          const blocked = agentIssues.filter((i) => i.status === "blocked").length;
+          const total = agentIssues.length;
+          let closeMs = 0; let closeCount = 0;
+          for (const i of agentIssues.filter((i) => i.status === "done")) {
+            if (i.startedAt && i.completedAt) { closeMs += new Date(i.completedAt).getTime() - new Date(i.startedAt).getTime(); closeCount++; }
+          }
+          const avgCloseH = closeCount > 0 ? closeMs / closeCount / (1000 * 60 * 60) : null;
+          const completionRate = (done + agentIssues.filter((i) => i.status === "cancelled").length) > 0
+            ? Math.round((done / (done + agentIssues.filter((i) => i.status === "cancelled").length)) * 100)
+            : total > 0 ? 0 : null;
+          return { ...r, done, active, inReview, todo, backlog, blocked, total, avgCloseH: avgCloseH, completionRate };
+        });
+
+        return (
+          <div className="rounded-xl border border-border p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Performance by Project</h4>
+              <Select value={effectiveProjectId} onValueChange={setSelectedProjectId}>
+                <SelectTrigger className="w-[200px] h-8 text-xs">
+                  <SelectValue placeholder="Select project" />
+                </SelectTrigger>
+                <SelectContent>
+                  {activeProjects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: p.color ?? "#6366f1" }} />
+                        {p.name}
+                      </div>
+                    </SelectItem>
                   ))}
-                  <th className="px-3 py-2 text-center font-medium text-muted-foreground">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/50">
-                {projects.filter((p) => !p.archivedAt).map((p) => {
-                  const projectIssues = (issues ?? []).filter((i) => i.projectId === p.id);
-                  if (projectIssues.length === 0) return null;
-                  return (
-                    <tr key={p.id} className="hover:bg-accent/20">
-                      <td className="px-3 py-2 font-medium">
-                        <div className="flex items-center gap-1.5">
-                          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: p.color ?? "#6366f1" }} />
-                          <span>{p.name}</span>
-                        </div>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {selectedProject && (
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: selectedProject.color ?? "#6366f1" }} />
+                <span>{projectIssues.length} total issues</span>
+                <span>·</span>
+                <span>{projectIssues.filter((i) => i.status === "done").length} done</span>
+                <span>·</span>
+                <span>{projectIssues.filter((i) => i.status === "in_progress").length} active</span>
+                {projectIssues.filter((i) => i.status === "blocked").length > 0 && (
+                  <>
+                    <span>·</span>
+                    <span className="text-red-400">{projectIssues.filter((i) => i.status === "blocked").length} blocked</span>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30">
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Agent</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Done</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Active</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Review</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Todo</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Blocked</th>
+                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Total</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Avg Time</th>
+                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Completion</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {projectRows.map((r) => (
+                    <tr key={r.agentId} className="hover:bg-accent/30 transition-colors">
+                      <td className="px-4 py-2.5">
+                        <Identity name={r.name} size="sm" />
                       </td>
-                      {rows.map((r) => {
-                        const agentProjectIssues = projectIssues.filter((i) => i.assigneeAgentId === r.agentId);
-                        const done = agentProjectIssues.filter((i) => i.status === "done").length;
-                        const active = agentProjectIssues.filter((i) => i.status === "in_progress" || i.status === "todo" || i.status === "in_review").length;
-                        const total = agentProjectIssues.length;
-                        if (total === 0) return <td key={r.agentId} className="px-3 py-2 text-center text-muted-foreground/30">—</td>;
-                        return (
-                          <td key={r.agentId} className="px-3 py-2 text-center">
-                            <span className="text-emerald-400">{done}</span>
-                            {active > 0 && <span className="text-blue-400 ml-1">+{active}</span>}
-                            <span className="text-muted-foreground ml-1">/ {total}</span>
-                          </td>
-                        );
-                      })}
-                      <td className="px-3 py-2 text-center font-medium">{projectIssues.length}</td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">
+                        {r.done > 0 ? <span className="text-emerald-400">{r.done}</span> : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">
+                        {r.active > 0 ? <span className="text-blue-400">{r.active}</span> : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">
+                        {r.inReview > 0 ? <span className="text-violet-400">{r.inReview}</span> : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">
+                        {r.todo > 0 ? <span className="text-amber-400">{r.todo}</span> : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">
+                        {r.blocked > 0 ? <span className="text-red-400">{r.blocked}</span> : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums font-medium">
+                        {r.total > 0 ? r.total : <span className="text-muted-foreground/40">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">
+                        {r.avgCloseH !== null ? `${r.avgCloseH.toFixed(1)}h` : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        {r.completionRate !== null ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div
+                                className={cn(
+                                  "h-full rounded-full",
+                                  r.completionRate >= 80 ? "bg-emerald-500" : r.completionRate >= 50 ? "bg-amber-500" : "bg-red-500",
+                                )}
+                                style={{ width: `${r.completionRate}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-muted-foreground tabular-nums w-7 text-right">{r.completionRate}%</span>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground/40">—</span>
+                        )}
+                      </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div className="flex items-center gap-4 text-[10px] text-muted-foreground pt-1">
-            <span className="flex items-center gap-1"><span className="text-emerald-400 font-medium">N</span> done</span>
-            <span className="flex items-center gap-1"><span className="text-blue-400 font-medium">+N</span> active</span>
-            <span className="flex items-center gap-1"><span className="text-muted-foreground">/ N</span> total</span>
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
