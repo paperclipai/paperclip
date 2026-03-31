@@ -23,6 +23,8 @@ export interface LiveRunForIssue {
   agentId: string;
   agentName: string;
   adapterType: string;
+  errorCode?: string | null;
+  lastOutputAt?: string | null;
   issueId?: string | null;
 }
 

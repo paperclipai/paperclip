@@ -33,6 +33,7 @@ export const heartbeatRuns = pgTable(
     externalRunId: text("external_run_id"),
     processPid: integer("process_pid"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),

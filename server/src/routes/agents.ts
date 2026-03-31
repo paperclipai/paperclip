@@ -2110,6 +2110,8 @@ export function agentRoutes(db: Db) {
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
       adapterType: agentsTable.adapterType,
+      errorCode: heartbeatRuns.errorCode,
+      lastOutputAt: heartbeatRuns.lastOutputAt,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
     };
 
@@ -2277,6 +2279,8 @@ export function agentRoutes(db: Db) {
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
         adapterType: agentsTable.adapterType,
+        errorCode: heartbeatRuns.errorCode,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
       })
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))

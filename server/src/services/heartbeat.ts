@@ -65,6 +65,10 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const IDLE_WARNING_ERROR_CODE = "idle_warning";
+const IDLE_WARNING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const IDLE_KILL_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
+const IDLE_KILL_GRACE_SEC = 10; // seconds between SIGTERM and SIGKILL
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1567,14 +1571,20 @@ export function heartbeatService(db: Db) {
   }
 
   async function clearDetachedRunWarning(runId: string) {
+    // Clear both detached process warnings and idle warnings when activity is reported
     const updated = await db
       .update(heartbeatRuns)
       .set({
         error: null,
         errorCode: null,
+        lastOutputAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE)))
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.status, "running"),
+        inArray(heartbeatRuns.errorCode, [DETACHED_PROCESS_ERROR_CODE, IDLE_WARNING_ERROR_CODE]),
+      ))
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!updated) return null;
@@ -1583,7 +1593,7 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Detached child process reported activity; cleared detached warning",
+      message: "Activity reported; cleared run warning",
     });
     return updated;
   }
@@ -1909,7 +1919,100 @@ export function heartbeatService(db: Db) {
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+
+    // ── Idle-timeout pass: reuse activeRuns query result (no duplicate DB call) ──
+    const idleWarned: string[] = [];
+    const idleKilled: string[] = [];
+
+    for (const { run, adapterType } of activeRuns) {
+      // Idle check applies to all running runs, including tracked ones
+      if (reaped.includes(run.id)) continue;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (!tracksLocalChild) continue;
+
+      // Determine the most recent activity timestamp
+      const lastActivity = run.lastOutputAt
+        ? new Date(run.lastOutputAt).getTime()
+        : run.startedAt
+          ? new Date(run.startedAt).getTime()
+          : new Date(run.createdAt).getTime();
+      const idleMs = now.getTime() - lastActivity;
+
+      if (idleMs >= IDLE_KILL_THRESHOLD_MS) {
+        // Kill: SIGTERM then SIGKILL
+        const tracked = runningProcesses.get(run.id);
+        const pid = tracked?.child?.pid ?? run.processPid;
+        const killMessage = `Idle timeout: no output for ${Math.round(idleMs / 60_000)} minutes — killing process (pid ${pid ?? "unknown"})`;
+        logger.warn({ runId: run.id, pid, idleMs }, killMessage);
+
+        if (tracked?.child) {
+          tracked.child.kill("SIGTERM");
+          setTimeout(() => {
+            try { if (!tracked.child.killed) tracked.child.kill("SIGKILL"); } catch {}
+          }, IDLE_KILL_GRACE_SEC * 1000);
+        } else if (pid && isProcessAlive(pid)) {
+          try { process.kill(pid, "SIGTERM"); } catch {}
+          setTimeout(() => {
+            try { if (isProcessAlive(pid)) process.kill(pid, "SIGKILL"); } catch {}
+          }, IDLE_KILL_GRACE_SEC * 1000);
+        }
+
+        // Mark the run as failed
+        let killedRun = await setRunStatus(run.id, "failed", {
+          error: killMessage,
+          errorCode: "idle_timeout",
+          finishedAt: now,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: killMessage,
+        });
+        if (!killedRun) killedRun = await getRun(run.id);
+        if (killedRun) {
+          await appendRunEvent(killedRun, await nextRunEventSeq(killedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: killMessage,
+            payload: { pid, idleMs },
+          });
+          await releaseIssueExecutionAndPromote(killedRun);
+        }
+
+        await finalizeAgentStatus(run.agentId, "failed");
+        await startNextQueuedRunForAgent(run.agentId);
+        runningProcesses.delete(run.id);
+        idleKilled.push(run.id);
+      } else if (idleMs >= IDLE_WARNING_THRESHOLD_MS && run.errorCode !== IDLE_WARNING_ERROR_CODE) {
+        // Warning: approaching idle timeout
+        const warnMessage = `Idle warning: no output for ${Math.round(idleMs / 60_000)} minutes — will be killed at ${IDLE_KILL_THRESHOLD_MS / 60_000} min`;
+        logger.warn({ runId: run.id, idleMs }, warnMessage);
+
+        const warnedRun = await setRunStatus(run.id, "running", {
+          error: warnMessage,
+          errorCode: IDLE_WARNING_ERROR_CODE,
+        });
+        if (warnedRun) {
+          await appendRunEvent(warnedRun, await nextRunEventSeq(warnedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: warnMessage,
+            payload: { idleMs },
+          });
+        }
+        idleWarned.push(run.id);
+      }
+    }
+
+    if (idleWarned.length > 0) {
+      logger.info({ count: idleWarned.length, runIds: idleWarned }, "idle-warned runs");
+    }
+    if (idleKilled.length > 0) {
+      logger.warn({ count: idleKilled.length, runIds: idleKilled }, "idle-killed runs");
+    }
+
+    return { reaped: reaped.length, runIds: reaped, idleWarned: idleWarned.length, idleKilled: idleKilled.length };
   }
 
   async function resumeQueuedRuns() {
@@ -2509,11 +2612,38 @@ export function heartbeatService(db: Db) {
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      let lastOutputAtFlushPending = false;
+      let lastOutputAtLatest: Date | null = null;
+      let lastOutputAtTimer: ReturnType<typeof setTimeout> | null = null;
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = redactCurrentUserText(chunk, currentUserRedactionOptions);
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
+        lastOutputAtLatest = new Date(ts);
+
+        // Batch lastOutputAt writes — flush at most once per 30 seconds to avoid DB churn
+        if (!lastOutputAtFlushPending) {
+          lastOutputAtFlushPending = true;
+          // Flush immediately on first output
+          await db.update(heartbeatRuns)
+            .set({ lastOutputAt: lastOutputAtLatest, updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, runId));
+          // Clear idle_warning if set — output resumed
+          await db.update(heartbeatRuns)
+            .set({ errorCode: null, error: null })
+            .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.errorCode, IDLE_WARNING_ERROR_CODE)));
+          lastOutputAtTimer = setTimeout(() => {
+            lastOutputAtFlushPending = false;
+            lastOutputAtTimer = null;
+            if (!lastOutputAtLatest) return;
+            db.update(heartbeatRuns)
+              .set({ lastOutputAt: lastOutputAtLatest, updatedAt: new Date() })
+              .where(eq(heartbeatRuns.id, runId))
+              .then(() => {})
+              .catch((err) => logger.warn({ err, runId }, "failed to flush lastOutputAt"));
+          }, 30_000);
+        }
 
         if (handle) {
           await runLogStore.append(handle, {
@@ -2637,6 +2767,8 @@ export function heartbeatService(db: Db) {
         },
         authToken: authToken ?? undefined,
       });
+      // Clear the debounce timer now that the run is complete
+      if (lastOutputAtTimer) { clearTimeout(lastOutputAtTimer); lastOutputAtTimer = null; }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,

@@ -3,8 +3,8 @@ import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
-import { formatDateTime } from "../lib/utils";
-import { ExternalLink, Square } from "lucide-react";
+import { formatDateTime, relativeTime } from "../lib/utils";
+import { AlertTriangle, ExternalLink, Square } from "lucide-react";
 import { Identity } from "./Identity";
 import { StatusBadge } from "./StatusBadge";
 import { RunTranscriptView } from "./transcript/RunTranscriptView";
@@ -23,6 +23,7 @@ function toIsoString(value: string | Date | null | undefined): string | null {
 function isRunActive(status: string): boolean {
   return status === "queued" || status === "running";
 }
+
 
 export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
@@ -59,6 +60,8 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        errorCode: activeRun.errorCode,
+        lastOutputAt: toIsoString(activeRun.lastOutputAt),
         issueId,
       });
     }
@@ -116,7 +119,21 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                       {run.id.slice(0, 8)}
                     </Link>
                     <StatusBadge status={run.status} />
-                    <span>{formatDateTime(run.startedAt ?? run.createdAt)}</span>
+                    {run.errorCode === "idle_warning" && (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-orange-500/20 bg-orange-500/[0.06] px-2 py-0.5 text-[11px] font-medium text-orange-700 dark:text-orange-300">
+                        <AlertTriangle className="h-3 w-3" />
+                        Idle
+                      </span>
+                    )}
+                    {isRunActive(run.status) && run.lastOutputAt ? (
+                      <span title={`Last output: ${formatDateTime(run.lastOutputAt)}`}>
+                        Last output {relativeTime(run.lastOutputAt)}
+                      </span>
+                    ) : run.finishedAt ? (
+                      <span>{formatDateTime(run.finishedAt)}</span>
+                    ) : (
+                      <span>{formatDateTime(run.startedAt ?? run.createdAt)}</span>
+                    )}
                   </div>
                 </div>
 
