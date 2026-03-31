@@ -7,9 +7,10 @@ import type { Db } from "@paperclipai/db";
 import { instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { forbidden, badRequest, unauthorized } from "../errors.js";
-import { accessService } from "../services/index.js";
+import { accessService, logActivity } from "../services/index.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { logger } from "../middleware/logger.js";
+import { getActorInfo } from "./authz.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +37,32 @@ export function vpsSetupRoutes(
   const access = accessService(db);
   const settings = instanceSettingsService(db);
 
+  async function logInstanceMutation(
+    req: Parameters<import("express").RequestHandler>[0],
+    action: string,
+    details: Record<string, unknown>,
+  ) {
+    const companyIds = await settings.listCompanyIds();
+    if (companyIds.length === 0) return;
+
+    const actor = getActorInfo(req);
+    await Promise.all(
+      companyIds.map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action,
+          entityType: "instance_settings",
+          entityId: "default",
+          details,
+        }),
+      ),
+    );
+  }
+
   // POST /vps/bootstrap-admin
   // Promotes the currently authenticated user to instance_admin.
   // Only works when no admin exists yet and deployment is public.
@@ -57,6 +84,9 @@ export function vpsSetupRoutes(
 
     const userId = req.actor.userId;
     await access.promoteInstanceAdmin(userId);
+    await logInstanceMutation(req, "instance.vps.bootstrap_admin_claimed", {
+      promotedUserId: userId,
+    });
     logger.info({ userId }, "VPS bootstrap: promoted user to instance_admin");
 
     res.json({ ok: true, userId, role: "instance_admin" });
@@ -193,29 +223,16 @@ ${domain} {
         || `${process.env.PAPERCLIP_HOME || process.env.HOME + "/.paperclip"}/instances/default/config.json`;
       const raw = await fsPromises.readFile(configPath, "utf-8");
       const config = JSON.parse(raw);
-      if (config.auth) {
-        config.auth.publicBaseUrl = httpsUrl;
+      if (!config.auth || typeof config.auth !== "object") {
+        config.auth = {};
       }
+      config.auth.baseUrlMode = "explicit";
+      config.auth.publicBaseUrl = httpsUrl;
       await fsPromises.writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
       logger.info({ domain }, "Updated config publicBaseUrl");
     } catch (err) {
-      logger.warn({ err, domain }, "Could not update config file publicBaseUrl");
-    }
-
-    // Update the systemd service PAPERCLIP_PUBLIC_URL so it matches after restart
-    try {
-      const serviceFile = "/etc/systemd/system/paperclip.service";
-      const fsPromises = await import("node:fs/promises");
-      const serviceContent = await fsPromises.readFile(serviceFile, "utf-8");
-      const updated = serviceContent.replace(
-        /Environment=PAPERCLIP_PUBLIC_URL=.*/,
-        `Environment=PAPERCLIP_PUBLIC_URL=${httpsUrl}`,
-      );
-      await fsPromises.writeFile(serviceFile, updated, "utf-8");
-      await execFileAsync("/usr/bin/sudo", ["/usr/bin/systemctl", "daemon-reload"]);
-      logger.info({ domain }, "Updated systemd PAPERCLIP_PUBLIC_URL");
-    } catch (err) {
-      logger.warn({ err, domain }, "Could not update systemd service file. You may need to update PAPERCLIP_PUBLIC_URL manually.");
+      logger.error({ err, domain }, "Failed to update Paperclip config publicBaseUrl");
+      throw badRequest("Failed to update Paperclip config with the new domain.");
     }
 
     // Save domain to instance settings
@@ -223,11 +240,24 @@ ${domain} {
       domain,
       domainConfiguredAt: new Date().toISOString(),
     });
+    await logInstanceMutation(req, "instance.vps.domain_configured", {
+      domain,
+      url: httpsUrl,
+    });
+    res.on("finish", () => {
+      setTimeout(() => {
+        void execFileAsync("/usr/bin/sudo", ["/usr/bin/systemctl", "restart", "paperclip"]).catch((err) => {
+          logger.error({ err, domain }, "Failed to restart Paperclip after domain configuration");
+        });
+      }, 250);
+    });
 
     res.json({
       ok: true,
       domain,
-      url: `https://${domain}`,
+      url: httpsUrl,
+      nextUrl: `${httpsUrl}/auth?next=${encodeURIComponent("/setup/providers")}`,
+      restartScheduled: true,
     });
   });
 
@@ -242,6 +272,9 @@ ${domain} {
     await settings.updateGeneral({
       domain: "skipped",
       domainConfiguredAt: new Date().toISOString(),
+    });
+    await logInstanceMutation(req, "instance.vps.domain_skipped", {
+      domain: "skipped",
     });
 
     res.json({ ok: true });

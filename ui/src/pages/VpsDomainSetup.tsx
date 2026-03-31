@@ -33,8 +33,10 @@ export function VpsDomainSetupPage() {
     onSuccess: async (data) => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-      // Redirect to provider setup on the new HTTPS domain
-      window.location.href = `${data.url}/setup/providers`;
+      const delayMs = data.restartScheduled ? 4000 : 0;
+      window.setTimeout(() => {
+        window.location.href = data.nextUrl;
+      }, delayMs);
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Domain configuration failed");
@@ -140,6 +142,11 @@ export function VpsDomainSetupPage() {
             )}
 
             {error && <p className="text-xs text-destructive">{error}</p>}
+            {configureMutation.isPending && (
+              <p className="text-xs text-muted-foreground">
+                Applying HTTPS settings and preparing a restart...
+              </p>
+            )}
 
             <div className="flex gap-3">
               <Button

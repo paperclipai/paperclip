@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Paperclip VPS Bootstrap Script
 # Run as root on a fresh Ubuntu/Debian VPS:
-#   curl -fsSL https://raw.githubusercontent.com/paperclipai/paperclip/main/scripts/vps-bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/paperclipai/paperclip/master/scripts/vps-bootstrap.sh | bash
 #
 # Environment variables (optional, for automated/non-interactive installs):
-#   PAPERCLIP_BRANCH   - Git branch to clone (default: main)
+#   PAPERCLIP_BRANCH   - Git branch to clone (default: master)
 #   PAPERCLIP_PORT     - Port for the dashboard (default: 3100)
 #
 set -euo pipefail
@@ -79,7 +79,7 @@ install_system_deps() {
   info "Installing system dependencies..."
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null 2>&1
-  apt-get install -y -qq git curl jq build-essential >/dev/null 2>&1
+  apt-get install -y -qq ca-certificates git curl jq tar build-essential >/dev/null 2>&1
   success "System dependencies installed"
 }
 
@@ -145,18 +145,82 @@ install_caddy() {
 # ── Phase 7: Clone & Build ──────────────────────────────────────────────────
 
 clone_and_build() {
+  clone_repo_with_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+      if git -c http.version=HTTP/1.1 clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"; then
+        return 0
+      fi
+      warn "git clone attempt ${attempt}/3 failed"
+      rm -rf "${INSTALL_DIR}"
+      sleep $((attempt * 2))
+    done
+    return 1
+  }
+
+  refresh_repo_with_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+      if sudo -u "${PAPERCLIP_USER}" bash -lc "cd '${INSTALL_DIR}' && git -c http.version=HTTP/1.1 fetch --depth 1 origin '${REPO_BRANCH}' && git checkout --quiet '${REPO_BRANCH}' && git reset --hard 'origin/${REPO_BRANCH}'"; then
+        return 0
+      fi
+      warn "git fetch/reset attempt ${attempt}/3 failed"
+      sleep $((attempt * 2))
+    done
+    return 1
+  }
+
+  repo_archive_url() {
+    local normalized="${REPO_URL%.git}"
+    if [[ "${normalized}" =~ ^https://github\.com/([^/]+)/([^/]+)$ ]]; then
+      echo "https://codeload.github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/tar.gz/refs/heads/${REPO_BRANCH}"
+      return 0
+    fi
+    return 1
+  }
+
+  download_repo_archive() {
+    local archive_url
+    archive_url="$(repo_archive_url)" || return 1
+
+    local tmp_dir archive_file extracted_dir
+    tmp_dir="$(mktemp -d)"
+    archive_file="${tmp_dir}/paperclip.tar.gz"
+
+    info "Falling back to GitHub archive download..."
+    curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 "${archive_url}" -o "${archive_file}"
+    tar -xzf "${archive_file}" -C "${tmp_dir}"
+    extracted_dir="$(find "${tmp_dir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [[ -z "${extracted_dir}" ]]; then
+      rm -rf "${tmp_dir}"
+      return 1
+    fi
+
+    rm -rf "${INSTALL_DIR}"
+    mkdir -p "${INSTALL_DIR}"
+    shopt -s dotglob
+    mv "${extracted_dir}"/* "${INSTALL_DIR}/"
+    shopt -u dotglob
+    chown -R "${PAPERCLIP_USER}":"${PAPERCLIP_USER}" "${INSTALL_DIR}"
+    rm -rf "${tmp_dir}"
+  }
+
   # Stop service if running (for re-runs)
   systemctl stop paperclip 2>/dev/null || true
 
   if [[ -d "${INSTALL_DIR}/.git" ]]; then
     info "Repository exists at ${INSTALL_DIR}, pulling latest..."
-    cd "${INSTALL_DIR}"
-    sudo -u "${PAPERCLIP_USER}" git pull --quiet 2>/dev/null || {
-      warn "git pull failed, continuing with existing code"
-    }
+    if ! refresh_repo_with_retry; then
+      warn "git fetch/reset failed, continuing with existing code"
+    fi
   else
     info "Cloning Paperclip to ${INSTALL_DIR}..."
-    git clone --quiet --branch "${REPO_BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"
+    if ! clone_repo_with_retry; then
+      if ! download_repo_archive; then
+        error "Failed to download Paperclip from ${REPO_URL} (${REPO_BRANCH})"
+        exit 1
+      fi
+    fi
     chown -R "${PAPERCLIP_USER}":"${PAPERCLIP_USER}" "${INSTALL_DIR}"
   fi
 
@@ -360,7 +424,6 @@ Environment=PAPERCLIP_INSTANCE_ID=default
 Environment=PAPERCLIP_CONFIG=${config_dir}/config.json
 Environment=PAPERCLIP_DEPLOYMENT_MODE=authenticated
 Environment=PAPERCLIP_DEPLOYMENT_EXPOSURE=public
-Environment=PAPERCLIP_PUBLIC_URL=http://${VPS_IP}:${PAPERCLIP_PORT}
 Environment=PAPERCLIP_MIGRATION_AUTO_APPLY=true
 
 # Secrets
@@ -375,7 +438,7 @@ SyslogIdentifier=paperclip
 
 # Security
 ProtectSystem=strict
-ReadWritePaths=${PAPERCLIP_HOME}/.paperclip ${INSTALL_DIR} /tmp /etc/caddy
+ReadWritePaths=${PAPERCLIP_HOME}/.paperclip ${PAPERCLIP_HOME}/.claude ${PAPERCLIP_HOME}/.claude.json ${PAPERCLIP_HOME}/.codex ${INSTALL_DIR} /tmp /etc/caddy
 PrivateTmp=false
 
 [Install]

@@ -43,7 +43,7 @@ export const vpsApi = {
     }>("/verify-dns", { domain }),
 
   configureDomain: (domain: string) =>
-    vpsPost<{ ok: boolean; domain: string; url: string }>("/configure-domain", { domain }),
+    vpsPost<{ ok: boolean; domain: string; url: string; nextUrl: string; restartScheduled: boolean }>("/configure-domain", { domain }),
 
   skipDomain: () =>
     vpsPost<{ ok: boolean }>("/skip-domain"),

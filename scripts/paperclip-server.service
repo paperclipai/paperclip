@@ -44,7 +44,7 @@ SyslogIdentifier=paperclip
 
 # Security hardening
 ProtectSystem=strict
-ReadWritePaths=/home/paperclip/.paperclip /opt/paperclip /tmp /etc/caddy
+ReadWritePaths=/home/paperclip/.paperclip /home/paperclip/.claude /home/paperclip/.claude.json /home/paperclip/.codex /opt/paperclip /tmp /etc/caddy
 PrivateTmp=false
 
 [Install]

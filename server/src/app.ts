@@ -228,7 +228,7 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
-  api.use(providerAuthRoutes());
+  api.use(providerAuthRoutes(db));
   api.use(
     vpsSetupRoutes(db, {
       deploymentMode: opts.deploymentMode,
