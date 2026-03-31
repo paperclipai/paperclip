@@ -220,6 +220,18 @@ export function isClaudeImageProcessingError(parsed: Record<string, unknown>): b
   );
 }
 
+export function isClaudeContextWindowError(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  return allMessages.some((msg) =>
+    /reached\s+its\s+context\s+window\s+limit|context.window.limit|context.limit.reached|context.length.exceeded|token.limit|maximum.context/i.test(msg),
+  );
+}
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;

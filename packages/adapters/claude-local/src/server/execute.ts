@@ -56,6 +56,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+  isClaudeContextWindowError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -876,6 +877,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedStream.sessionId ??
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const clearSessionForContextWindow = isClaudeContextWindowError(parsed);
     const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
     const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
@@ -965,6 +967,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
         clearSessionForMaxTurns ||
+        // Clear-on-error: a context window limit means the persisted session has
+        // grown past what the (possibly proxied) provider can handle. Drop it so
+        // the next continuation starts fresh.
+        clearSessionForContextWindow ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
         // state error. Force the server to drop persisted session state for
         // this issue so the next continuation starts from a clean slate.
@@ -986,6 +992,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "poisoned"
           : isClaudeImageProcessingError(initial.parsed)
           ? "image"
+          : isClaudeContextWindowError(initial.parsed)
+          ? "context"
           : null
         : null;
 
@@ -995,6 +1003,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "returned a poisoned message-id"
           : sessionErrorKind === "image"
           ? "contains an unprocessable image"
+          : sessionErrorKind === "context"
+          ? "hit context window limit"
           : "is unavailable";
       await onLog(
         "stdout",

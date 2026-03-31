@@ -5,6 +5,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudeContextWindowError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -253,5 +254,21 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("isClaudeContextWindowError", () => {
+  it("detects context window limit messages", () => {
+    expect(
+      isClaudeContextWindowError({ result: "This conversation reached its context window limit." }),
+    ).toBe(true);
+    expect(isClaudeContextWindowError({ result: "prompt is too long: context length exceeded" })).toBe(true);
+    expect(isClaudeContextWindowError({ result: "input token limit reached" })).toBe(true);
+  });
+
+  it("ignores unrelated errors and missing input", () => {
+    expect(isClaudeContextWindowError({ result: "No conversation found with session id s_1" })).toBe(false);
+    expect(isClaudeContextWindowError(null)).toBe(false);
+    expect(isClaudeContextWindowError(undefined)).toBe(false);
   });
 });
