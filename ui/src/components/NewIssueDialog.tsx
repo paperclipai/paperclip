@@ -564,6 +564,15 @@ export function NewIssueDialog() {
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects]);
 
+  // Auto-select project when there is exactly one
+  useEffect(() => {
+    if (!newIssueOpen) return;
+    if (projectId) return; // already selected (from defaults or draft)
+    if (orderedProjects.length === 1) {
+      setProjectId(orderedProjects[0]!.id);
+    }
+  }, [newIssueOpen, orderedProjects, projectId]);
+
   useEffect(() => {
     if (!supportsAssigneeOverrides) {
       setAssigneeOptionsOpen(false);
