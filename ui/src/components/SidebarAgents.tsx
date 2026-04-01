@@ -26,6 +26,27 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { Agent } from "@paperclipai/shared";
+
+function sortByHierarchy(agents: Agent[]): Agent[] {
+  const byId = new Map(agents.map((a) => [a.id, a]));
+  const childrenOf = new Map<string | null, Agent[]>();
+  for (const a of agents) {
+    const parent = a.reportsTo && byId.has(a.reportsTo) ? a.reportsTo : null;
+    const list = childrenOf.get(parent) ?? [];
+    list.push(a);
+    childrenOf.set(parent, list);
+  }
+  const sorted: Agent[] = [];
+  const queue = childrenOf.get(null) ?? [];
+  while (queue.length > 0) {
+    const agent = queue.shift()!;
+    sorted.push(agent);
+    const children = childrenOf.get(agent.id);
+    if (children) queue.push(...children);
+  }
+  return sorted;
+}
+
 export function SidebarAgents() {
   const [open, setOpen] = useState(() => {
     try {
