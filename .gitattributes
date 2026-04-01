@@ -1,0 +1,3 @@
+*.sh text eol=lf
+*.service text eol=lf
+docker-entrypoint.sh text eol=lf
