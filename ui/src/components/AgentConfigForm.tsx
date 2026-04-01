@@ -688,11 +688,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
               <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                {locale === "ko"
-                  ? <>Prompt template은 heartbeat마다 다시 재생됩니다. 여기에는 작은 작업 프레이밍과 <code>{"{{ context.* }}"}</code>, <code>{"{{ run.* }}"}</code> 같은 변수만 두고, 안정적인 지시는 반복하지 마세요.</>
-                  : locale === "ja"
-                    ? <>Prompt template は heartbeat ごとに再実行されます。ここには小さなタスク文脈と <code>{"{{ context.* }}"}</code>, <code>{"{{ run.* }}"}</code> のような変数だけを置き、固定指示を繰り返さないでください。</>
-                    : <>Prompt template is replayed on every heartbeat. Prefer small task framing and variables like <code>{"{{ context.* }}"}</code> or <code>{"{{ run.* }}"}</code>; avoid repeating stable instructions here.</>}
+                {t("agentConfig.fields.promptReplayWarning")}
               </div>
             </>
           )}
@@ -1039,7 +1035,7 @@ function AdapterTypeDropdown({
   value: string;
   onChange: (type: string) => void;
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const labels = useAdapterLabels();
   const displayList: { value: string; label: string; comingSoon: boolean }[] = [
     ...AGENT_ADAPTER_TYPES.map((t) => ({
@@ -1080,7 +1076,7 @@ function AdapterTypeDropdown({
               <span>{item.label}</span>
             </span>
             {item.comingSoon && (
-              <span className="text-[10px] text-muted-foreground">{locale === "ko" ? "곧 제공" : locale === "ja" ? "近日公開" : "Coming soon"}</span>
+              <span className="text-[10px] text-muted-foreground">{t("agentConfig.actions.comingSoon")}</span>
             )}
           </button>
         ))}
@@ -1257,7 +1253,7 @@ function EnvVarEditor({
           <div key={i} className="flex items-center gap-1.5">
             <input
               className={cn(inputClass, "flex-[2]")}
-              placeholder={locale === "ko" ? "키" : locale === "ja" ? "キー" : "KEY"}
+              placeholder={t("agentConfig.fields.envKeyPlaceholder")}
               value={row.key}
               onChange={(e) => updateRow(i, { key: e.target.value })}
             />
@@ -1271,8 +1267,8 @@ function EnvVarEditor({
                 })
               }
             >
-              <option value="plain">{locale === "ko" ? "일반" : locale === "ja" ? "平文" : "Plain"}</option>
-              <option value="secret">{locale === "ko" ? "시크릿" : locale === "ja" ? "シークレット" : "Secret"}</option>
+              <option value="plain">{t("agentConfig.fields.plain")}</option>
+              <option value="secret">{t("agentConfig.fields.secret")}</option>
             </select>
             {row.source === "secret" ? (
               <>
@@ -1302,7 +1298,7 @@ function EnvVarEditor({
               <>
                 <input
                   className={cn(inputClass, "flex-[3]")}
-                  placeholder="value"
+                  placeholder={t("agentConfig.fields.envValuePlaceholder")}
                   value={row.plainValue}
                   onChange={(e) => updateRow(i, { plainValue: e.target.value })}
                 />

@@ -69,6 +69,7 @@ Covered in the sweep:
 - issue/project/goal creation and detail flows
 - seat-management dialogs and workspace management dialogs
 - instance settings, restart banners, toasts, shared primitives, and several low-frequency admin surfaces
+- internal/demo transcript and design reference pages used by the team while iterating on UI behavior
 
 Remaining follow-up is intentionally narrower:
 - internal/demo/example screens such as `DesignGuide` and transcript UX lab pages

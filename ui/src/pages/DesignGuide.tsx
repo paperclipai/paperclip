@@ -330,6 +330,7 @@ export function DesignGuide() {
           commonIcons: "Common Icons (Lucide)",
           keyboardShortcuts: "Keyboard Shortcuts",
         };
+  const tr = (en: string, ko: string, ja: string) => locale === "ko" ? ko : locale === "ja" ? ja : en;
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -341,8 +342,8 @@ export function DesignGuide() {
     "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift."
   );
   const [filters, setFilters] = useState<FilterValue[]>([
-    { key: "status", label: "Status", value: "Active" },
-    { key: "priority", label: "Priority", value: "High" },
+    { key: "status", label: tr("Status", "상태", "状態"), value: tr("Active", "활성", "アクティブ") },
+    { key: "priority", label: tr("Priority", "우선순위", "優先度"), value: tr("High", "높음", "高") },
   ]);
 
   return (
@@ -398,35 +399,35 @@ export function DesignGuide() {
       <Section title={copy.colors}>
         <SubSection title={copy.core}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Background" cssVar="--background" />
-            <Swatch name="Foreground" cssVar="--foreground" />
-            <Swatch name="Card" cssVar="--card" />
-            <Swatch name="Primary" cssVar="--primary" />
-            <Swatch name="Primary foreground" cssVar="--primary-foreground" />
-            <Swatch name="Secondary" cssVar="--secondary" />
-            <Swatch name="Muted" cssVar="--muted" />
-            <Swatch name="Muted foreground" cssVar="--muted-foreground" />
-            <Swatch name="Accent" cssVar="--accent" />
-            <Swatch name="Destructive" cssVar="--destructive" />
-            <Swatch name="Border" cssVar="--border" />
-            <Swatch name="Ring" cssVar="--ring" />
+            <Swatch name={tr("Background", "배경", "背景")} cssVar="--background" />
+            <Swatch name={tr("Foreground", "전경", "前景")} cssVar="--foreground" />
+            <Swatch name={tr("Card", "카드", "カード")} cssVar="--card" />
+            <Swatch name={tr("Primary", "기본", "プライマリ")} cssVar="--primary" />
+            <Swatch name={tr("Primary foreground", "기본 전경", "プライマリ前景")} cssVar="--primary-foreground" />
+            <Swatch name={tr("Secondary", "보조", "セカンダリ")} cssVar="--secondary" />
+            <Swatch name={tr("Muted", "약한 강조", "ミュート")} cssVar="--muted" />
+            <Swatch name={tr("Muted foreground", "약한 전경", "ミュート前景")} cssVar="--muted-foreground" />
+            <Swatch name={tr("Accent", "강조", "アクセント")} cssVar="--accent" />
+            <Swatch name={tr("Destructive", "파괴", "破壊")} cssVar="--destructive" />
+            <Swatch name={tr("Border", "테두리", "境界線")} cssVar="--border" />
+            <Swatch name={tr("Ring", "링", "リング")} cssVar="--ring" />
           </div>
         </SubSection>
 
         <SubSection title={copy.sidebar}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Sidebar" cssVar="--sidebar" />
-            <Swatch name="Sidebar border" cssVar="--sidebar-border" />
+            <Swatch name={tr("Sidebar", "사이드바", "サイドバー")} cssVar="--sidebar" />
+            <Swatch name={tr("Sidebar border", "사이드바 테두리", "サイドバー境界線")} cssVar="--sidebar-border" />
           </div>
         </SubSection>
 
         <SubSection title={copy.chart}>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <Swatch name="Chart 1" cssVar="--chart-1" />
-            <Swatch name="Chart 2" cssVar="--chart-2" />
-            <Swatch name="Chart 3" cssVar="--chart-3" />
-            <Swatch name="Chart 4" cssVar="--chart-4" />
-            <Swatch name="Chart 5" cssVar="--chart-5" />
+            <Swatch name={tr("Chart 1", "차트 1", "チャート 1")} cssVar="--chart-1" />
+            <Swatch name={tr("Chart 2", "차트 2", "チャート 2")} cssVar="--chart-2" />
+            <Swatch name={tr("Chart 3", "차트 3", "チャート 3")} cssVar="--chart-3" />
+            <Swatch name={tr("Chart 4", "차트 4", "チャート 4")} cssVar="--chart-4" />
+            <Swatch name={tr("Chart 5", "차트 5", "チャート 5")} cssVar="--chart-5" />
           </div>
         </SubSection>
       </Section>
@@ -436,25 +437,25 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title={copy.typography}>
         <div className="space-y-3">
-          <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
-          <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
+          <h2 className="text-xl font-bold">{tr("Page Title", "페이지 제목", "ページタイトル")} - text-xl font-bold</h2>
+          <h2 className="text-lg font-semibold">{tr("Section Title", "섹션 제목", "セクションタイトル")} - text-lg font-semibold</h2>
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Section Heading — text-sm font-semibold uppercase tracking-wide
+            {tr("Section Heading", "섹션 헤딩", "セクション見出し")} - text-sm font-semibold uppercase tracking-wide
           </h3>
-          <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
-          <p className="text-sm font-semibold">Card Title Alt — text-sm font-semibold</p>
-          <p className="text-sm">Body text — text-sm</p>
+          <p className="text-sm font-medium">{tr("Card Title", "카드 제목", "カードタイトル")} - text-sm font-medium</p>
+          <p className="text-sm font-semibold">{tr("Card Title Alt", "카드 제목 대안", "カードタイトル代替")} - text-sm font-semibold</p>
+          <p className="text-sm">{tr("Body text", "본문 텍스트", "本文テキスト")} - text-sm</p>
           <p className="text-sm text-muted-foreground">
-            Muted description — text-sm text-muted-foreground
+            {tr("Muted description", "보조 설명", "補足説明")} - text-sm text-muted-foreground
           </p>
           <p className="text-xs text-muted-foreground">
-            Tiny label — text-xs text-muted-foreground
+            {tr("Tiny label", "작은 라벨", "小さいラベル")} - text-xs text-muted-foreground
           </p>
           <p className="text-sm font-mono text-muted-foreground">
-            Mono identifier — text-sm font-mono text-muted-foreground
+            {tr("Mono identifier", "모노 식별자", "モノ識別子")} - text-sm font-mono text-muted-foreground
           </p>
-          <p className="text-2xl font-bold">Large stat — text-2xl font-bold</p>
-          <p className="font-mono text-xs">Log/code text — font-mono text-xs</p>
+          <p className="text-2xl font-bold">{tr("Large stat", "큰 수치", "大きな統計")} - text-2xl font-bold</p>
+          <p className="font-mono text-xs">{tr("Log/code text", "로그/코드 텍스트", "ログ/コードテキスト")} - font-mono text-xs</p>
         </div>
       </Section>
 
@@ -475,7 +476,7 @@ export function DesignGuide() {
                 className="h-12 w-12 bg-primary"
                 style={{ borderRadius: radius }}
               />
-              <span className="text-xs text-muted-foreground">{label}</span>
+              <span className="text-xs text-muted-foreground">{label === "full" ? tr("full", "전체", "full") : label}</span>
             </div>
           ))}
         </div>
@@ -487,21 +488,21 @@ export function DesignGuide() {
       <Section title={copy.buttons}>
         <SubSection title={copy.variants}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="default">Default</Button>
-            <Button variant="secondary">Secondary</Button>
-            <Button variant="outline">Outline</Button>
-            <Button variant="ghost">Ghost</Button>
-            <Button variant="destructive">Destructive</Button>
-            <Button variant="link">Link</Button>
+            <Button variant="default">{tr("Default", "기본", "デフォルト")}</Button>
+            <Button variant="secondary">{tr("Secondary", "보조", "セカンダリ")}</Button>
+            <Button variant="outline">{tr("Outline", "외곽선", "アウトライン")}</Button>
+            <Button variant="ghost">{tr("Ghost", "고스트", "ゴースト")}</Button>
+            <Button variant="destructive">{tr("Destructive", "삭제", "破壊")}</Button>
+            <Button variant="link">{tr("Link", "링크", "リンク")}</Button>
           </div>
         </SubSection>
 
         <SubSection title={copy.sizes}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="xs">Extra Small</Button>
-            <Button size="sm">Small</Button>
-            <Button size="default">Default</Button>
-            <Button size="lg">Large</Button>
+            <Button size="xs">{tr("Extra Small", "매우 작게", "極小")}</Button>
+            <Button size="sm">{tr("Small", "작게", "小")}</Button>
+            <Button size="default">{tr("Default", "기본", "デフォルト")}</Button>
+            <Button size="lg">{tr("Large", "크게", "大")}</Button>
           </div>
         </SubSection>
 
@@ -516,17 +517,17 @@ export function DesignGuide() {
 
         <SubSection title={copy.withIcons}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
-            <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button><Plus /> {tr("New Issue", "새 이슈", "新しい issue")}</Button>
+            <Button variant="outline"><Upload /> {tr("Upload", "업로드", "アップロード")}</Button>
+            <Button variant="destructive"><Trash2 /> {tr("Delete", "삭제", "削除")}</Button>
+            <Button size="sm"><Plus /> {tr("Add", "추가", "追加")}</Button>
           </div>
         </SubSection>
 
         <SubSection title={copy.states}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button disabled>Disabled</Button>
-            <Button variant="outline" disabled>Disabled Outline</Button>
+            <Button disabled>{tr("Disabled", "비활성화", "無効")}</Button>
+            <Button variant="outline" disabled>{tr("Disabled Outline", "비활성 외곽선", "無効アウトライン")}</Button>
           </div>
         </SubSection>
       </Section>
@@ -537,11 +538,11 @@ export function DesignGuide() {
       <Section title={copy.badges}>
         <SubSection title={copy.variants}>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="default">Default</Badge>
-            <Badge variant="secondary">Secondary</Badge>
-            <Badge variant="outline">Outline</Badge>
-            <Badge variant="destructive">Destructive</Badge>
-            <Badge variant="ghost">Ghost</Badge>
+            <Badge variant="default">{tr("Default", "기본", "デフォルト")}</Badge>
+            <Badge variant="secondary">{tr("Secondary", "보조", "セカンダリ")}</Badge>
+            <Badge variant="outline">{tr("Outline", "외곽선", "アウトライン")}</Badge>
+            <Badge variant="destructive">{tr("Destructive", "삭제", "破壊")}</Badge>
+            <Badge variant="ghost">{tr("Ghost", "고스트", "ゴースト")}</Badge>
           </div>
         </SubSection>
       </Section>
@@ -550,7 +551,7 @@ export function DesignGuide() {
       {/*  STATUS BADGES & ICONS                                        */}
       {/* ============================================================ */}
       <Section title={copy.statusSystem}>
-        <SubSection title="StatusBadge (all statuses)">
+        <SubSection title={tr("StatusBadge (all statuses)", "StatusBadge (전체 상태)", "StatusBadge (全状態)")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               "active", "running", "paused", "idle", "archived", "planned",
@@ -564,7 +565,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="StatusIcon (interactive)">
+        <SubSection title={tr("StatusIcon (interactive)", "StatusIcon (상호작용)", "StatusIcon (操作)")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
               (s) => (
@@ -577,11 +578,11 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <StatusIcon status={status} onChange={setStatus} />
-            <span className="text-sm">Click the icon to change status (current: {status})</span>
+            <span className="text-sm">{tr("Click the icon to change status", "아이콘을 눌러 상태 변경", "アイコンを押して状態を変更")} ({tr("current", "현재", "現在")}: {status})</span>
           </div>
         </SubSection>
 
-        <SubSection title="PriorityIcon (interactive)">
+        <SubSection title={tr("PriorityIcon (interactive)", "PriorityIcon (상호작용)", "PriorityIcon (操作)")}>
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
@@ -592,11 +593,11 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center gap-2 mt-2">
             <PriorityIcon priority={priority} onChange={setPriority} />
-            <span className="text-sm">Click the icon to change (current: {priority})</span>
+            <span className="text-sm">{tr("Click the icon to change", "아이콘을 눌러 변경", "アイコンを押して変更")} ({tr("current", "현재", "現在")}: {priority})</span>
           </div>
         </SubSection>
 
-        <SubSection title="Agent status dots">
+        <SubSection title={tr("Agent status dots", "에이전트 상태 점", "エージェント状態ドット")}>
           <div className="flex items-center gap-4 flex-wrap">
             {(["running", "active", "paused", "error", "archived"] as const).map((label) => (
               <div key={label} className="flex items-center gap-2">
@@ -609,7 +610,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Run invocation badges">
+        <SubSection title={tr("Run invocation badges", "실행 호출 배지", "実行呼び出しバッジ")}>
           <div className="flex items-center gap-2 flex-wrap">
             {[
               ["timer", "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"],
@@ -629,37 +630,37 @@ export function DesignGuide() {
       {/*  FORM ELEMENTS                                                */}
       {/* ============================================================ */}
       <Section title={copy.formElements}>
-        <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Input">
-            <Input placeholder="Default input" />
-            <Input placeholder="Disabled input" disabled className="mt-2" />
+          <div className="grid gap-6 md:grid-cols-2">
+          <SubSection title={tr("Input", "입력", "入力")}>
+            <Input placeholder={tr("Default input", "기본 입력", "標準入力")} />
+            <Input placeholder={tr("Disabled input", "비활성 입력", "無効入力")} disabled className="mt-2" />
           </SubSection>
 
-          <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+          <SubSection title={tr("Textarea", "텍스트영역", "テキストエリア")}>
+            <Textarea placeholder={tr("Write something...", "내용을 입력하세요...", "何か書いてください...")} />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title={tr("Checkbox & Label", "체크박스 & 라벨", "チェックボックス & ラベル")}>
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Checkbox id="check1" defaultChecked />
-                <Label htmlFor="check1">Checked item</Label>
+                <Label htmlFor="check1">{tr("Checked item", "선택된 항목", "選択済み項目")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check2" />
-                <Label htmlFor="check2">Unchecked item</Label>
+                <Label htmlFor="check2">{tr("Unchecked item", "선택 안 된 항목", "未選択項目")}</Label>
               </div>
               <div className="flex items-center gap-2">
                 <Checkbox id="check3" disabled />
-                <Label htmlFor="check3">Disabled item</Label>
+                <Label htmlFor="check3">{tr("Disabled item", "비활성 항목", "無効項目")}</Label>
               </div>
             </div>
           </SubSection>
 
-          <SubSection title="Inline Editor">
+          <SubSection title={tr("Inline Editor", "인라인 편집기", "インラインエディタ")}>
             <div className="space-y-4">
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Title (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{tr("Title (single-line)", "제목 (한 줄)", "タイトル (1 行)")}</p>
                 <InlineEditor
                   value={inlineTitle}
                   onSave={setInlineTitle}
@@ -668,7 +669,7 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Body text (single-line)</p>
+                <p className="text-xs text-muted-foreground mb-1">{tr("Body text (single-line)", "본문 텍스트 (한 줄)", "本文テキスト (1 行)")}</p>
                 <InlineEditor
                   value={inlineText}
                   onSave={setInlineText}
@@ -677,13 +678,13 @@ export function DesignGuide() {
                 />
               </div>
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Description (multiline, auto-sizing)</p>
+                <p className="text-xs text-muted-foreground mb-1">{tr("Description (multiline, auto-sizing)", "설명 (여러 줄, 자동 크기)", "説明 (複数行・自動サイズ)")}</p>
                 <InlineEditor
                   value={inlineDesc}
                   onSave={setInlineDesc}
                   as="p"
                   className="text-sm text-muted-foreground"
-                  placeholder="Add a description..."
+                  placeholder={tr("Add a description...", "설명 추가...", "説明を追加...")}
                   multiline
                 />
               </div>
@@ -697,31 +698,31 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title={copy.select}>
         <div className="grid gap-6 md:grid-cols-2">
-          <SubSection title="Default size">
+          <SubSection title={tr("Default size", "기본 크기", "標準サイズ")}>
             <Select value={selectValue} onValueChange={setSelectValue}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={tr("Select status", "상태 선택", "状態を選択")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="backlog">Backlog</SelectItem>
-                <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
+                <SelectItem value="backlog">{tr("Backlog", "백로그", "バックログ")}</SelectItem>
+                <SelectItem value="todo">{tr("Todo", "할 일", "Todo")}</SelectItem>
+                <SelectItem value="in_progress">{tr("In Progress", "진행 중", "進行中")}</SelectItem>
+                <SelectItem value="in_review">{tr("In Review", "검토 중", "レビュー中")}</SelectItem>
+                <SelectItem value="done">{tr("Done", "완료", "完了")}</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
+            <p className="text-xs text-muted-foreground">{tr("Current value", "현재 값", "現在の値")}: {selectValue}</p>
           </SubSection>
-          <SubSection title="Small trigger">
+          <SubSection title={tr("Small trigger", "작은 트리거", "小さいトリガー")}>
             <Select defaultValue="high">
               <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="critical">{tr("Critical", "치명", "重大")}</SelectItem>
+                <SelectItem value="high">{tr("High", "높음", "高")}</SelectItem>
+                <SelectItem value="medium">{tr("Medium", "보통", "中")}</SelectItem>
+                <SelectItem value="low">{tr("Low", "낮음", "低")}</SelectItem>
               </SelectContent>
             </Select>
           </SubSection>
@@ -735,30 +736,30 @@ export function DesignGuide() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm">
-              Quick Actions
+              {tr("Quick Actions", "빠른 작업", "クイック操作")}
               <ChevronDown className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem>
               <Check className="h-4 w-4" />
-              Mark as done
+              {tr("Mark as done", "완료로 표시", "完了にする")}
               <DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem>
               <BookOpen className="h-4 w-4" />
-              Open docs
+              {tr("Open docs", "문서 열기", "ドキュメントを開く")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
               checked={menuChecked}
               onCheckedChange={(value) => setMenuChecked(value === true)}
             >
-              Watch issue
+              {tr("Watch issue", "이슈 주시", "issue を監視")}
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem variant="destructive">
               <Trash2 className="h-4 w-4" />
-              Delete issue
+              {tr("Delete issue", "이슈 삭제", "issue を削除")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -770,14 +771,14 @@ export function DesignGuide() {
       <Section title={copy.popover}>
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="outline" size="sm">Open Popover</Button>
+            <Button variant="outline" size="sm">{tr("Open Popover", "팝오버 열기", "ポップオーバーを開く")}</Button>
           </PopoverTrigger>
           <PopoverContent className="space-y-2">
-            <p className="text-sm font-medium">Agent heartbeat</p>
+            <p className="text-sm font-medium">{tr("Agent heartbeat", "에이전트 하트비트", "エージェント heartbeat")}</p>
             <p className="text-xs text-muted-foreground">
-              Last run succeeded 24s ago. Next timer run in 9m.
+              {tr("Last run succeeded 24s ago. Next timer run in 9m.", "마지막 실행은 24초 전에 성공했습니다. 다음 타이머 실행은 9분 뒤입니다.", "前回の実行は 24 秒前に成功しました。次の timer 実行は 9 分後です。")}
             </p>
-            <Button size="xs">Wake now</Button>
+            <Button size="xs">{tr("Wake now", "지금 깨우기", "今すぐ起動")}</Button>
           </PopoverContent>
         </Popover>
       </Section>
@@ -789,13 +790,13 @@ export function DesignGuide() {
         <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
           <CollapsibleTrigger asChild>
             <Button variant="outline" size="sm">
-              {collapsibleOpen ? "Hide" : "Show"} advanced filters
+              {collapsibleOpen ? tr("Hide", "숨기기", "隠す") : tr("Show", "표시", "表示")} {tr("advanced filters", "고급 필터", "高度フィルター")}
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="rounded-md border border-border p-3">
             <div className="space-y-2">
-              <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+              <Label htmlFor="owner-filter">{tr("Owner", "소유자", "所有者")}</Label>
+              <Input id="owner-filter" placeholder={tr("Filter by agent name", "에이전트 이름으로 필터", "エージェント名で絞り込み")} />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -807,26 +808,26 @@ export function DesignGuide() {
       <Section title={copy.sheet}>
         <Sheet>
           <SheetTrigger asChild>
-            <Button variant="outline" size="sm">Open Side Panel</Button>
+            <Button variant="outline" size="sm">{tr("Open Side Panel", "사이드 패널 열기", "サイドパネルを開く")}</Button>
           </SheetTrigger>
           <SheetContent side="right">
             <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
-              <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
+              <SheetTitle>{tr("Issue Properties", "이슈 속성", "Issue プロパティ")}</SheetTitle>
+              <SheetDescription>{tr("Edit metadata without leaving the current page.", "현재 페이지를 떠나지 않고 메타데이터를 수정합니다.", "現在のページを離れずにメタデータを編集します。")}</SheetDescription>
             </SheetHeader>
             <div className="space-y-4 px-4">
               <div className="space-y-1">
-                <Label htmlFor="sheet-title">Title</Label>
-                <Input id="sheet-title" defaultValue="Improve onboarding docs" />
+                <Label htmlFor="sheet-title">{tr("Title", "제목", "タイトル")}</Label>
+                <Input id="sheet-title" defaultValue={tr("Improve onboarding docs", "온보딩 문서 개선", "オンボーディング文書を改善")} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="sheet-description">Description</Label>
-                <Textarea id="sheet-description" defaultValue="Capture setup pitfalls and screenshots." />
+                <Label htmlFor="sheet-description">{tr("Description", "설명", "説明")}</Label>
+                <Textarea id="sheet-description" defaultValue={tr("Capture setup pitfalls and screenshots.", "설정 함정과 스크린샷을 정리합니다.", "セットアップ時の落とし穴とスクリーンショットをまとめます。")} />
               </div>
             </div>
             <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{tr("Cancel", "취소", "キャンセル")}</Button>
+              <Button>{tr("Save", "저장", "保存")}</Button>
             </SheetFooter>
           </SheetContent>
         </Sheet>
@@ -840,7 +841,7 @@ export function DesignGuide() {
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="rounded-md border border-border p-2 text-sm">
-                Heartbeat run #{i + 1}: completed successfully
+                {tr("Heartbeat run", "하트비트 실행", "Heartbeat 実行")} #{i + 1}: {tr("completed successfully", "성공적으로 완료됨", "正常に完了")}
               </div>
             ))}
           </div>
@@ -853,28 +854,28 @@ export function DesignGuide() {
       <Section title={copy.command}>
         <div className="rounded-md border border-border">
           <Command>
-            <CommandInput placeholder="Type a command or search..." />
+            <CommandInput placeholder={tr("Type a command or search...", "명령을 입력하거나 검색...", "コマンドを入力または検索...")} />
             <CommandList>
-              <CommandEmpty>No results found.</CommandEmpty>
-              <CommandGroup heading="Pages">
+              <CommandEmpty>{tr("No results found.", "결과가 없습니다.", "結果が見つかりません。")}</CommandEmpty>
+              <CommandGroup heading={tr("Pages", "페이지", "ページ")}>
                 <CommandItem>
                   <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
+                  {tr("Dashboard", "대시보드", "ダッシュボード")}
                 </CommandItem>
                 <CommandItem>
                   <CircleDot className="h-4 w-4" />
-                  Issues
+                  {tr("Issues", "이슈", "Issue")}
                 </CommandItem>
               </CommandGroup>
               <CommandSeparator />
-              <CommandGroup heading="Actions">
+              <CommandGroup heading={tr("Actions", "작업", "操作")}>
                 <CommandItem>
                   <CommandIcon className="h-4 w-4" />
-                  Open command palette
+                  {tr("Open command palette", "명령 팔레트 열기", "コマンドパレットを開く")}
                 </CommandItem>
                 <CommandItem>
                   <Plus className="h-4 w-4" />
-                  Create new issue
+                  {tr("Create new issue", "새 이슈 만들기", "新しい issue を作成")}
                 </CommandItem>
               </CommandGroup>
             </CommandList>
@@ -889,7 +890,7 @@ export function DesignGuide() {
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Projects</BreadcrumbLink>
+              <BreadcrumbLink href="#">{tr("Projects", "프로젝트", "プロジェクト")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
@@ -897,7 +898,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
+              <BreadcrumbPage>{tr("Issue List", "이슈 목록", "Issue 一覧")}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -907,28 +908,28 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title={copy.cards}>
-        <SubSection title="Standard Card">
+        <SubSection title={tr("Standard Card", "표준 카드", "標準カード")}>
           <Card>
             <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
+              <CardTitle>{tr("Card Title", "카드 제목", "カードタイトル")}</CardTitle>
+              <CardDescription>{tr("Card description with supporting text.", "설명을 돕는 보조 텍스트가 있는 카드 설명입니다.", "補足テキスト付きのカード説明です。")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">Card content goes here. This is the main body area.</p>
+              <p className="text-sm">{tr("Card content goes here. This is the main body area.", "카드 내용이 여기에 들어갑니다. 메인 본문 영역입니다.", "カード内容がここに入ります。メイン本文エリアです。")}</p>
             </CardContent>
             <CardFooter className="gap-2">
-              <Button size="sm">Action</Button>
-              <Button variant="outline" size="sm">Cancel</Button>
+              <Button size="sm">{tr("Action", "작업", "操作")}</Button>
+              <Button variant="outline" size="sm">{tr("Cancel", "취소", "キャンセル")}</Button>
             </CardFooter>
           </Card>
         </SubSection>
 
-        <SubSection title="Metric Cards">
+        <SubSection title={tr("Metric Cards", "지표 카드", "メトリクスカード")}>
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <MetricCard icon={Bot} value={12} label="Active Agents" description="+3 this week" />
-            <MetricCard icon={CircleDot} value={48} label="Open Issues" />
-            <MetricCard icon={DollarSign} value="$1,234" label="Monthly Cost" description="Under budget" />
-            <MetricCard icon={Zap} value="99.9%" label="Uptime" />
+            <MetricCard icon={Bot} value={12} label={tr("Active Agents", "활성 에이전트", "アクティブエージェント")} description={tr("+3 this week", "이번 주 +3", "今週 +3")} />
+            <MetricCard icon={CircleDot} value={48} label={tr("Open Issues", "열린 이슈", "オープン issue")} />
+            <MetricCard icon={DollarSign} value="$1,234" label={tr("Monthly Cost", "월간 비용", "月間コスト")} description={tr("Under budget", "예산 이하", "予算内")} />
+            <MetricCard icon={Zap} value="99.9%" label={tr("Uptime", "가동 시간", "稼働率")} />
           </div>
         </SubSection>
       </Section>
@@ -937,44 +938,44 @@ export function DesignGuide() {
       {/*  TABS                                                         */}
       {/* ============================================================ */}
       <Section title={copy.tabs}>
-        <SubSection title="Default (pill) variant">
+        <SubSection title={tr("Default (pill) variant", "기본 (pill) 변형", "標準 (pill) バリアント")}>
           <Tabs defaultValue="overview">
             <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="runs">Runs</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="costs">Costs</TabsTrigger>
+              <TabsTrigger value="overview">{tr("Overview", "개요", "概要")}</TabsTrigger>
+              <TabsTrigger value="runs">{tr("Runs", "실행", "実行")}</TabsTrigger>
+              <TabsTrigger value="config">{tr("Config", "설정", "設定")}</TabsTrigger>
+              <TabsTrigger value="costs">{tr("Costs", "비용", "コスト")}</TabsTrigger>
             </TabsList>
             <TabsContent value="overview">
-              <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Overview tab content.", "개요 탭 내용입니다.", "概要タブの内容です。")}</p>
             </TabsContent>
             <TabsContent value="runs">
-              <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Runs tab content.", "실행 탭 내용입니다.", "実行タブの内容です。")}</p>
             </TabsContent>
             <TabsContent value="config">
-              <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Config tab content.", "설정 탭 내용입니다.", "設定タブの内容です。")}</p>
             </TabsContent>
             <TabsContent value="costs">
-              <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Costs tab content.", "비용 탭 내용입니다.", "コストタブの内容です。")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
 
-        <SubSection title="Line variant">
+        <SubSection title={tr("Line variant", "라인 변형", "ラインバリアント")}>
           <Tabs defaultValue="summary">
             <TabsList variant="line">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="comments">Comments</TabsTrigger>
+              <TabsTrigger value="summary">{tr("Summary", "요약", "要約")}</TabsTrigger>
+              <TabsTrigger value="details">{tr("Details", "상세", "詳細")}</TabsTrigger>
+              <TabsTrigger value="comments">{tr("Comments", "댓글", "コメント")}</TabsTrigger>
             </TabsList>
             <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Summary content with underline tabs.", "밑줄 탭이 적용된 요약 내용입니다.", "下線タブ付きの要約内容です。")}</p>
             </TabsContent>
             <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Details content.", "상세 내용입니다.", "詳細内容です。")}</p>
             </TabsContent>
             <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
+              <p className="text-sm text-muted-foreground py-4">{tr("Comments content.", "댓글 내용입니다.", "コメント内容です。")}</p>
             </TabsContent>
           </Tabs>
         </SubSection>
@@ -993,8 +994,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-001"
-            title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            title={tr("Implement authentication flow", "인증 흐름 구현", "認証フローを実装")}
+            subtitle={tr("Assigned to Agent Alpha", "Agent Alpha에게 할당됨", "Agent Alpha に割り当て")}
             trailing={<StatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1006,8 +1007,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-002"
-            title="Set up CI/CD pipeline"
-            subtitle="Completed 2 days ago"
+            title={tr("Set up CI/CD pipeline", "CI/CD 파이프라인 구성", "CI/CD パイプラインを構成")}
+            subtitle={tr("Completed 2 days ago", "2일 전에 완료됨", "2 日前に完了")}
             trailing={<StatusBadge status="done" />}
             onClick={() => {}}
           />
@@ -1019,7 +1020,7 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-003"
-            title="Write API documentation"
+            title={tr("Write API documentation", "API 문서 작성", "API ドキュメント作成")}
             trailing={<StatusBadge status="todo" />}
             onClick={() => {}}
           />
@@ -1031,8 +1032,8 @@ export function DesignGuide() {
               </>
             }
             identifier="PAP-004"
-            title="Deploy to production"
-            subtitle="Blocked by PAP-001"
+            title={tr("Deploy to production", "프로덕션 배포", "本番へデプロイ")}
+            subtitle={tr("Blocked by PAP-001", "PAP-001에 의해 차단됨", "PAP-001 によりブロック")}
             trailing={<StatusBadge status="blocked" />}
             selected
           />
@@ -1054,12 +1055,12 @@ export function DesignGuide() {
             size="sm"
             onClick={() =>
               setFilters([
-                { key: "status", label: "Status", value: "Active" },
-                { key: "priority", label: "Priority", value: "High" },
+                { key: "status", label: tr("Status", "상태", "状態"), value: tr("Active", "활성", "アクティブ") },
+                { key: "priority", label: tr("Priority", "우선순위", "優先度"), value: tr("High", "높음", "高") },
               ])
             }
           >
-            Reset filters
+            {tr("Reset filters", "필터 초기화", "フィルターをリセット")}
           </Button>
         )}
       </Section>
@@ -1068,7 +1069,7 @@ export function DesignGuide() {
       {/*  AVATARS                                                      */}
       {/* ============================================================ */}
       <Section title={copy.avatars}>
-        <SubSection title="Sizes">
+        <SubSection title={tr("Sizes", "크기", "サイズ")}>
           <div className="flex items-center gap-3">
             <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>DF</AvatarFallback></Avatar>
@@ -1076,7 +1077,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Group">
+        <SubSection title={tr("Group", "그룹", "グループ")}>
           <AvatarGroup>
             <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
             <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>
@@ -1090,7 +1091,7 @@ export function DesignGuide() {
       {/*  IDENTITY                                                     */}
       {/* ============================================================ */}
       <Section title={copy.identity}>
-        <SubSection title="Sizes">
+        <SubSection title={tr("Sizes", "크기", "サイズ")}>
           <div className="flex items-center gap-6">
             <Identity name="Agent Alpha" size="sm" />
             <Identity name="Agent Alpha" />
@@ -1098,7 +1099,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Initials derivation">
+        <SubSection title={tr("Initials derivation", "이니셜 생성", "イニシャル生成")}>
           <div className="flex flex-col gap-2">
             <Identity name="CEO Agent" size="sm" />
             <Identity name="Alpha" size="sm" />
@@ -1106,7 +1107,7 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Custom initials">
+        <SubSection title={tr("Custom initials", "사용자 지정 이니셜", "カスタムイニシャル")}>
           <Identity name="Backend Service" initials="BS" size="sm" />
         </SubSection>
       </Section>
@@ -1118,15 +1119,15 @@ export function DesignGuide() {
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="sm">Hover me</Button>
+              <Button variant="outline" size="sm">{tr("Hover me", "여기에 올리기", "ここにホバー")}</Button>
             </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            <TooltipContent>{tr("This is a tooltip", "이것은 툴팁입니다", "これはツールチップです")}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon-sm"><Settings /></Button>
             </TooltipTrigger>
-            <TooltipContent>Settings</TooltipContent>
+            <TooltipContent>{tr("Settings", "설정", "設定")}</TooltipContent>
           </Tooltip>
         </div>
       </Section>
@@ -1137,28 +1138,28 @@ export function DesignGuide() {
       <Section title={copy.dialog}>
         <Dialog>
           <DialogTrigger asChild>
-            <Button variant="outline">Open Dialog</Button>
+            <Button variant="outline">{tr("Open Dialog", "다이얼로그 열기", "ダイアログを開く")}</Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
+              <DialogTitle>{tr("Dialog Title", "다이얼로그 제목", "ダイアログタイトル")}</DialogTitle>
               <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
+                {tr("This is a sample dialog showing the standard layout with header, content, and footer.", "헤더, 내용, 푸터가 있는 표준 레이아웃을 보여주는 샘플 다이얼로그입니다.", "ヘッダー・本文・フッターを持つ標準レイアウトを示すサンプルダイアログです。")}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
-                <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+                <Label>{tr("Name", "이름", "名前")}</Label>
+                <Input placeholder={tr("Enter a name", "이름 입력", "名前を入力")} className="mt-1.5" />
               </div>
               <div>
-                <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
+                <Label>{tr("Description", "설명", "説明")}</Label>
+                <Textarea placeholder={tr("Describe...", "설명 입력...", "説明を入力...")} className="mt-1.5" />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
+              <Button variant="outline">{tr("Cancel", "취소", "キャンセル")}</Button>
+              <Button>{tr("Save", "저장", "保存")}</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -1171,8 +1172,8 @@ export function DesignGuide() {
         <div className="border border-border rounded-md">
           <EmptyState
             icon={Inbox}
-            message="No items to show. Create your first one to get started."
-            action="Create Item"
+            message={tr("No items to show. Create your first one to get started.", "표시할 항목이 없습니다. 첫 항목을 만들어 시작하세요.", "表示する項目がありません。最初の項目を作成して始めましょう。")}
+            action={tr("Create Item", "항목 만들기", "項目を作成")}
             onAction={() => {}}
           />
         </div>
@@ -1184,9 +1185,9 @@ export function DesignGuide() {
       <Section title={copy.progressBars}>
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: tr("Under budget (40%)", "예산 이하 (40%)", "予算内 (40%)"), pct: 40, color: "bg-green-400" },
+            { label: tr("Warning (75%)", "경고 (75%)", "警告 (75%)"), pct: 75, color: "bg-yellow-400" },
+            { label: tr("Over budget (95%)", "예산 초과 (95%)", "予算超過 (95%)"), pct: 95, color: "bg-red-400" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -1209,19 +1210,19 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title={copy.logViewer}>
         <div className="bg-neutral-950 rounded-lg p-3 font-mono text-xs max-h-80 overflow-y-auto">
-          <div className="text-foreground">[12:00:01] INFO  Agent started successfully</div>
-          <div className="text-foreground">[12:00:02] INFO  Processing task PAP-001</div>
-          <div className="text-yellow-400">[12:00:05] WARN  Rate limit approaching (80%)</div>
-          <div className="text-foreground">[12:00:08] INFO  Task PAP-001 completed</div>
-          <div className="text-red-400">[12:00:12] ERROR Connection timeout to upstream service</div>
-          <div className="text-blue-300">[12:00:12] SYS   Retrying connection in 5s...</div>
-          <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
+          <div className="text-foreground">[12:00:01] INFO  {tr("Agent started successfully", "에이전트가 성공적으로 시작됨", "エージェントが正常に起動")}</div>
+          <div className="text-foreground">[12:00:02] INFO  {tr("Processing task PAP-001", "작업 PAP-001 처리 중", "タスク PAP-001 を処理中")}</div>
+          <div className="text-yellow-400">[12:00:05] WARN  {tr("Rate limit approaching (80%)", "요청 한도 임박 (80%)", "レート制限が近づいています (80%)")}</div>
+          <div className="text-foreground">[12:00:08] INFO  {tr("Task PAP-001 completed", "작업 PAP-001 완료", "タスク PAP-001 完了")}</div>
+          <div className="text-red-400">[12:00:12] ERROR {tr("Connection timeout to upstream service", "업스트림 서비스 연결 시간 초과", "アップストリームサービスへの接続タイムアウト")}</div>
+          <div className="text-blue-300">[12:00:12] SYS   {tr("Retrying connection in 5s...", "5초 후 연결 재시도...", "5 秒後に再接続します...")}</div>
+          <div className="text-foreground">[12:00:17] INFO  {tr("Reconnected successfully", "재연결 성공", "再接続に成功")}</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 animate-pulse" />
               <span className="inline-flex h-full w-full rounded-full bg-cyan-400" />
             </span>
-            <span className="text-cyan-400">Live</span>
+            <span className="text-cyan-400">{tr("Live", "라이브", "ライブ")}</span>
           </div>
         </div>
       </Section>
@@ -1232,22 +1233,22 @@ export function DesignGuide() {
       <Section title={copy.propertyRowPattern}>
         <div className="border border-border rounded-md p-4 space-y-1 max-w-sm">
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Status</span>
+            <span className="text-xs text-muted-foreground">{tr("Status", "상태", "状態")}</span>
             <StatusBadge status="active" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Priority</span>
+            <span className="text-xs text-muted-foreground">{tr("Priority", "우선순위", "優先度")}</span>
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">{tr("Assignee", "담당자", "担当者")}</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>
             </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Created</span>
+            <span className="text-xs text-muted-foreground">{tr("Created", "생성됨", "作成日")}</span>
             <span className="text-xs">Jan 15, 2025</span>
           </div>
         </div>
@@ -1257,39 +1258,39 @@ export function DesignGuide() {
       {/*  NAVIGATION PATTERNS                                          */}
       {/* ============================================================ */}
       <Section title={copy.navigationPatterns}>
-        <SubSection title="Sidebar nav items">
+        <SubSection title={tr("Sidebar nav items", "사이드바 탐색 항목", "サイドバー項目")}>
           <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
-              Dashboard
+              {tr("Dashboard", "대시보드", "ダッシュボード")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
-              Issues
+              {tr("Issues", "이슈", "Issue")}
               <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
                 12
               </span>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
-              Agents
+              {tr("Agents", "에이전트", "エージェント")}
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Hexagon className="h-4 w-4" />
-              Projects
+              {tr("Projects", "프로젝트", "プロジェクト")}
             </div>
           </div>
         </SubSection>
 
-        <SubSection title="View toggle">
+        <SubSection title={tr("View toggle", "보기 전환", "表示切替")}>
           <div className="flex items-center border border-border rounded-md w-fit">
             <button className="px-3 py-1.5 text-xs font-medium bg-accent text-foreground rounded-l-md">
               <ListTodo className="h-3.5 w-3.5 inline mr-1" />
-              List
+              {tr("List", "목록", "一覧")}
             </button>
             <button className="px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/50 rounded-r-md">
               <Target className="h-3.5 w-3.5 inline mr-1" />
-              Org
+              {tr("Org", "조직", "組織")}
             </button>
           </div>
         </SubSection>
@@ -1302,20 +1303,20 @@ export function DesignGuide() {
         <div>
           <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 rounded-t-md">
             <StatusIcon status="in_progress" />
-            <span className="text-sm font-medium">In Progress</span>
+            <span className="text-sm font-medium">{tr("In Progress", "진행 중", "進行中")}</span>
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
             <EntityRow
               leading={<PriorityIcon priority="high" />}
               identifier="PAP-101"
-              title="Build agent heartbeat system"
+              title={tr("Build agent heartbeat system", "에이전트 하트비트 시스템 구축", "エージェント heartbeat システム構築")}
               onClick={() => {}}
             />
             <EntityRow
               leading={<PriorityIcon priority="medium" />}
               identifier="PAP-102"
-              title="Add cost tracking dashboard"
+              title={tr("Add cost tracking dashboard", "비용 추적 대시보드 추가", "コスト追跡ダッシュボード追加")}
               onClick={() => {}}
             />
           </div>
@@ -1327,26 +1328,26 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title={copy.commentThreadPattern}>
         <div className="space-y-3 max-w-2xl">
-          <h3 className="text-sm font-semibold">Comments (2)</h3>
+          <h3 className="text-sm font-semibold">{tr("Comments", "댓글", "コメント")} (2)</h3>
           <div className="space-y-3">
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Agent</span>
+                <span className="text-xs font-medium text-muted-foreground">{tr("Agent", "에이전트", "エージェント")}</span>
                 <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
               </div>
-              <p className="text-sm">Started working on the authentication module. Will need API keys configured.</p>
+              <p className="text-sm">{tr("Started working on the authentication module. Will need API keys configured.", "인증 모듈 작업을 시작했습니다. API 키 설정이 필요합니다.", "認証モジュールの作業を開始しました。API キー設定が必要です。")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-muted-foreground">Human</span>
+                <span className="text-xs font-medium text-muted-foreground">{tr("Human", "사람", "人間")}</span>
                 <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
               </div>
-              <p className="text-sm">API keys have been added to the vault. Please proceed.</p>
+              <p className="text-sm">{tr("API keys have been added to the vault. Please proceed.", "API 키를 vault에 추가했습니다. 계속 진행하세요.", "API キーを vault に追加しました。続行してください。")}</p>
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
-            <Button size="sm">Comment</Button>
+            <Textarea placeholder={tr("Leave a comment...", "댓글 남기기...", "コメントを残す...")} rows={3} />
+            <Button size="sm">{tr("Comment", "댓글", "コメント")}</Button>
           </div>
         </div>
       </Section>
@@ -1359,9 +1360,9 @@ export function DesignGuide() {
           <table className="w-full text-xs">
             <thead className="border-b border-border bg-accent/20">
               <tr>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Model</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Tokens</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Cost</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{tr("Model", "모델", "モデル")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{tr("Tokens", "토큰", "トークン")}</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground">{tr("Cost", "비용", "コスト")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1376,7 +1377,7 @@ export function DesignGuide() {
                 <td className="px-3 py-2 font-mono">$1.25</td>
               </tr>
               <tr>
-                <td className="px-3 py-2 font-medium">Total</td>
+                <td className="px-3 py-2 font-medium">{tr("Total", "합계", "合計")}</td>
                 <td className="px-3 py-2 font-mono">1.7M</td>
                 <td className="px-3 py-2 font-mono font-medium">$19.25</td>
               </tr>
@@ -1389,7 +1390,7 @@ export function DesignGuide() {
       {/*  SKELETONS                                                    */}
       {/* ============================================================ */}
       <Section title={copy.skeletons}>
-        <SubSection title="Individual">
+        <SubSection title={tr("Individual", "개별", "個別")}>
           <div className="space-y-2">
             <Skeleton className="h-4 w-48" />
             <Skeleton className="h-8 w-full max-w-sm" />
@@ -1397,13 +1398,13 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (list)">
+        <SubSection title={tr("Page Skeleton (list)", "페이지 스켈레톤 (목록)", "ページスケルトン (一覧)")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="list" />
           </div>
         </SubSection>
 
-        <SubSection title="Page Skeleton (detail)">
+        <SubSection title={tr("Page Skeleton (detail)", "페이지 스켈레톤 (상세)", "ページスケルトン (詳細)")}>
           <div className="border border-border rounded-md p-4">
             <PageSkeleton variant="detail" />
           </div>
@@ -1415,12 +1416,12 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title={copy.separator}>
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">Horizontal</p>
+          <p className="text-sm text-muted-foreground">{tr("Horizontal", "가로", "水平")}</p>
           <Separator />
           <div className="flex items-center gap-4 h-8">
-            <span className="text-sm">Left</span>
+            <span className="text-sm">{tr("Left", "왼쪽", "左")}</span>
             <Separator orientation="vertical" />
-            <span className="text-sm">Right</span>
+            <span className="text-sm">{tr("Right", "오른쪽", "右")}</span>
           </div>
         </div>
       </Section>
@@ -1474,7 +1475,17 @@ export function DesignGuide() {
             ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
-              <span className="text-muted-foreground">{desc}</span>
+              <span className="text-muted-foreground">
+                {desc === "Open Command Palette"
+                  ? tr("Open Command Palette", "명령 팔레트 열기", "コマンドパレットを開く")
+                  : desc === "New Issue (outside inputs)"
+                    ? tr("New Issue (outside inputs)", "새 이슈 (입력창 밖)", "新しい issue (入力外)")
+                    : desc === "Toggle Sidebar"
+                      ? tr("Toggle Sidebar", "사이드바 전환", "サイドバー切替")
+                      : desc === "Toggle Properties Panel"
+                        ? tr("Toggle Properties Panel", "속성 패널 전환", "プロパティパネル切替")
+                        : tr("Submit markdown comment", "마크다운 댓글 제출", "Markdown コメント送信")}
+              </span>
               <kbd className="px-2 py-0.5 text-xs font-mono bg-muted rounded border border-border">
                 {key}
               </kbd>

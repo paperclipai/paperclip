@@ -88,6 +88,7 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         newSecret: "New",
         seal: "Seal",
         createSecretFromCurrent: "Create secret from current plain value",
+        comingSoon: "Coming soon",
       },
       fields: {
         name: "Name",
@@ -158,6 +159,11 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         detected: "detected",
         storeValueAsSecret: "Store value as secret and replace with reference",
         paperclipVarsInjected: "PAPERCLIP_* variables are injected automatically at runtime.",
+        promptReplayWarning: "Prompt template is replayed on every heartbeat. Prefer small task framing and variables like {{ context.* }} or {{ run.* }}; avoid repeating stable instructions here.",
+        envKeyPlaceholder: "KEY",
+        envValuePlaceholder: "value",
+        plain: "Plain",
+        secret: "Secret",
       },
       status: {
         passed: "Passed",
@@ -271,6 +277,7 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         newSecret: "새로 만들기",
         seal: "봉인",
         createSecretFromCurrent: "현재 일반 값을 secret로 만들기",
+        comingSoon: "곧 제공",
       },
       fields: {
         name: "이름",
@@ -341,6 +348,11 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         detected: "감지됨",
         storeValueAsSecret: "값을 secret로 저장하고 참조로 교체",
         paperclipVarsInjected: "PAPERCLIP_* 변수는 런타임에 자동 주입됩니다.",
+        promptReplayWarning: "Prompt template은 heartbeat마다 다시 재생됩니다. 여기에는 작은 작업 프레이밍과 {{ context.* }}, {{ run.* }} 같은 변수만 두고, 안정적인 지시는 반복하지 마세요.",
+        envKeyPlaceholder: "키",
+        envValuePlaceholder: "값",
+        plain: "일반",
+        secret: "시크릿",
       },
       status: {
         passed: "통과",
@@ -454,6 +466,7 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         newSecret: "新規",
         seal: "シール",
         createSecretFromCurrent: "現在の平文値から secret を作成",
+        comingSoon: "近日公開",
       },
       fields: {
         name: "名前",
@@ -524,6 +537,11 @@ export const agentConfigMessages: Record<ActiveLocale, MessageTree> = {
         detected: "検出済み",
         storeValueAsSecret: "値を secret として保存し、参照に置き換える",
         paperclipVarsInjected: "PAPERCLIP_* 変数は実行時に自動注入されます。",
+        promptReplayWarning: "Prompt template は heartbeat ごとに再実行されます。ここには小さなタスク文脈と {{ context.* }}, {{ run.* }} のような変数だけを置き、固定指示を繰り返さないでください。",
+        envKeyPlaceholder: "キー",
+        envValuePlaceholder: "値",
+        plain: "平文",
+        secret: "シークレット",
       },
       status: {
         passed: "成功",

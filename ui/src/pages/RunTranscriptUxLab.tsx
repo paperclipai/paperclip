@@ -7,38 +7,84 @@ import { StatusBadge } from "../components/StatusBadge";
 import { RunTranscriptView, type TranscriptDensity, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { runTranscriptFixtureEntries, runTranscriptFixtureMeta } from "../fixtures/runTranscriptFixtures";
 import { ExternalLink, FlaskConical, LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
+import { useI18n } from "../i18n";
 
 type SurfaceId = "detail" | "live" | "dashboard";
 
-const surfaceOptions: Array<{
+type SurfaceOption = {
   id: SurfaceId;
   label: string;
   eyebrow: string;
   description: string;
   icon: typeof LayoutPanelLeft;
-}> = [
-  {
-    id: "detail",
-    label: "Run Detail",
-    eyebrow: "Full transcript",
-    description: "The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view.",
-    icon: MonitorCog,
-  },
-  {
-    id: "live",
-    label: "Issue Widget",
-    eyebrow: "Live stream",
-    description: "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
-    icon: RadioTower,
-  },
-  {
-    id: "dashboard",
-    label: "Dashboard Card",
-    eyebrow: "Dense card",
-    description: "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
-    icon: PanelsTopLeft,
-  },
-];
+};
+
+function useLabCopy() {
+  const { locale } = useI18n();
+  const tr = (en: string, ko: string, ja: string) => locale === "ko" ? ko : locale === "ja" ? ja : en;
+  const surfaceOptions: SurfaceOption[] = [
+    {
+      id: "detail",
+      label: tr("Run Detail", "실행 상세", "実行詳細"),
+      eyebrow: tr("Full transcript", "전체 트랜스크립트", "完全トランスクリプト"),
+      description: tr(
+        "The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view.",
+        "`Nice | Raw` 토글과 가장 자세히 살필 수 있는 transcript view가 있는 장문 실행 페이지입니다.",
+        "`Nice | Raw` トグルと最も詳しく確認できる transcript view を備えた長文の実行ページです。",
+      ),
+      icon: MonitorCog,
+    },
+    {
+      id: "live",
+      label: tr("Issue Widget", "이슈 위젯", "Issue ウィジェット"),
+      eyebrow: tr("Live stream", "라이브 스트림", "ライブストリーム"),
+      description: tr(
+        "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
+        "작업 페이지를 벗어나지 않고 활성 실행을 따라갈 수 있도록 최적화된 이슈 상세 live run 위젯입니다.",
+        "タスクページを離れずにアクティブな実行を追えるよう最適化された issue 詳細 live run ウィジェットです。",
+      ),
+      icon: RadioTower,
+    },
+    {
+      id: "dashboard",
+      label: tr("Dashboard Card", "대시보드 카드", "ダッシュボードカード"),
+      eyebrow: tr("Dense card", "밀도 높은 카드", "高密度カード"),
+      description: tr(
+        "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
+        "같은 transcript 표현을 유지하면서도 빠르게 훑어볼 수 있게 조정된 활성 에이전트 대시보드 카드입니다.",
+        "同じ transcript 表現を維持しつつ、素早く一覧確認できるよう調整したアクティブエージェント用ダッシュボードカードです。",
+      ),
+      icon: PanelsTopLeft,
+    },
+  ];
+
+  return {
+    locale,
+    tr,
+    surfaceOptions,
+    uxLab: tr("UX Lab", "UX 연구실", "UX ラボ"),
+    pageTitle: tr("Run Transcript Fixtures", "실행 트랜스크립트 픽스처", "実行トランスクリプト fixture"),
+    pageBody: tr(
+      "Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.",
+      "실제 Paperclip 개발 실행을 바탕으로 만들고, secret·로컬 경로·환경 정보가 fixture에 남지 않도록 정리했습니다.",
+      "実際の Paperclip 開発実行から作成し、secret・ローカルパス・環境情報が fixture に残らないようサニタイズしています。",
+    ),
+    runDetail: tr("Run Detail", "실행 상세", "実行詳細"),
+    transcript: tr("Transcript", "트랜스크립트", "トランスクリプト"),
+    liveRuns: tr("Live Runs", "라이브 실행", "ライブ実行"),
+    liveRunsBody: tr("Compact live transcript stream for the issue detail page.", "이슈 상세 페이지용 compact live transcript 스트림입니다.", "issue 詳細ページ向けの compact live transcript ストリームです。"),
+    openRun: tr("Open run", "실행 열기", "実行を開く"),
+    liveNow: tr("Live now", "지금 라이브", "ただいまライブ"),
+    finishedAgo: tr("Finished 2m ago", "2분 전에 종료됨", "2分前に完了"),
+    controls: tr("Controls", "제어", "コントロール"),
+    showSettled: tr("Show settled state", "정착된 상태 보기", "完了状態を表示"),
+    showStreaming: tr("Show streaming state", "스트리밍 상태 보기", "ストリーミング状態を表示"),
+    nice: tr("Nice", "정리된 보기", "整形表示"),
+    raw: tr("Raw", "원본", "生データ"),
+    comfortable: tr("Comfortable", "여유형", "ゆったり"),
+    compact: tr("Compact", "압축형", "コンパクト"),
+  };
+}
 
 function previewEntries(surface: SurfaceId) {
   if (surface === "dashboard") {
@@ -59,12 +105,13 @@ function RunDetailPreview({
   streaming: boolean;
   density: TranscriptDensity;
 }) {
+  const copy = useLabCopy();
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
       <div className="border-b border-border/60 bg-background/90 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="uppercase tracking-[0.18em] text-[10px]">
-            Run Detail
+            {copy.runDetail}
           </Badge>
           <StatusBadge status={streaming ? "running" : "succeeded"} />
           <span className="text-xs text-muted-foreground">
@@ -72,7 +119,7 @@ function RunDetailPreview({
           </span>
         </div>
         <div className="mt-2 text-sm font-medium">
-          Transcript ({runTranscriptFixtureEntries.length})
+          {copy.transcript} ({runTranscriptFixtureEntries.length})
         </div>
       </div>
       <div className="max-h-[720px] overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(8,145,178,0.08),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.10),transparent_28%)] p-5">
@@ -96,14 +143,15 @@ function LiveWidgetPreview({
   mode: TranscriptMode;
   density: TranscriptDensity;
 }) {
+  const copy = useLabCopy();
   return (
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-[0_20px_50px_rgba(6,182,212,0.10)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.05] px-5 py-4">
         <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700 dark:text-cyan-300">
-          Live Runs
+          {copy.liveRuns}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Compact live transcript stream for the issue detail page.
+          {copy.liveRunsBody}
         </div>
       </div>
       <div className="px-5 py-4">
@@ -119,7 +167,7 @@ function LiveWidgetPreview({
             </div>
           </div>
           <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-[11px] text-muted-foreground">
-            Open run
+            {copy.openRun}
             <ExternalLink className="h-3 w-3" />
           </span>
         </div>
@@ -146,6 +194,7 @@ function DashboardPreview({
   mode: TranscriptMode;
   density: TranscriptDensity;
 }) {
+  const copy = useLabCopy();
   return (
     <div className="max-w-md">
       <div className={cn(
@@ -165,7 +214,7 @@ function DashboardPreview({
                 <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground">
-                {streaming ? "Live now" : "Finished 2m ago"}
+                {streaming ? copy.liveNow : copy.finishedAgo}
               </div>
             </div>
             <span className="rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">
@@ -191,12 +240,13 @@ function DashboardPreview({
 }
 
 export function RunTranscriptUxLab() {
+  const copy = useLabCopy();
   const [selectedSurface, setSelectedSurface] = useState<SurfaceId>("detail");
   const [detailMode, setDetailMode] = useState<TranscriptMode>("nice");
   const [streaming, setStreaming] = useState(true);
   const [density, setDensity] = useState<TranscriptDensity>("comfortable");
 
-  const selected = surfaceOptions.find((option) => option.id === selectedSurface) ?? surfaceOptions[0];
+  const selected = copy.surfaceOptions.find((option) => option.id === selectedSurface) ?? copy.surfaceOptions[0];
 
   return (
     <div className="space-y-6">
@@ -206,16 +256,16 @@ export function RunTranscriptUxLab() {
             <div className="mb-5">
               <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700 dark:text-cyan-300">
                 <FlaskConical className="h-3.5 w-3.5" />
-                UX Lab
+                {copy.uxLab}
               </div>
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight">Run Transcript Fixtures</h1>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight">{copy.pageTitle}</h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
+                {copy.pageBody}
               </p>
             </div>
 
             <div className="space-y-2">
-              {surfaceOptions.map((option) => {
+              {copy.surfaceOptions.map((option) => {
                 const Icon = option.icon;
                 return (
                   <button
@@ -273,7 +323,7 @@ export function RunTranscriptUxLab() {
 
             <div className="mb-5 flex flex-wrap items-center gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Controls
+                {copy.controls}
               </span>
               <div className="inline-flex rounded-full border border-border/70 bg-background/80 p-1">
                 {(["nice", "raw"] as const).map((mode) => (
@@ -286,7 +336,7 @@ export function RunTranscriptUxLab() {
                     )}
                     onClick={() => setDetailMode(mode)}
                   >
-                    {mode}
+                    {mode === "nice" ? copy.nice : copy.raw}
                   </button>
                 ))}
               </div>
@@ -301,7 +351,7 @@ export function RunTranscriptUxLab() {
                     )}
                     onClick={() => setDensity(nextDensity)}
                   >
-                    {nextDensity}
+                    {nextDensity === "comfortable" ? copy.comfortable : copy.compact}
                   </button>
                 ))}
               </div>
@@ -311,7 +361,7 @@ export function RunTranscriptUxLab() {
                 className="rounded-full"
                 onClick={() => setStreaming((value) => !value)}
               >
-                {streaming ? "Show settled state" : "Show streaming state"}
+                {streaming ? copy.showSettled : copy.showStreaming}
               </Button>
             </div>
 
