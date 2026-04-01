@@ -3,6 +3,10 @@ import type { ActiveLocale } from "./types";
 type DemoTable = Record<string, Record<ActiveLocale, string>>;
 
 const designGuideTable: DemoTable = {
+  "Paperclip App": { en: "Paperclip App", ko: "Paperclip 앱", ja: "Paperclip アプリ" },
+  "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.": { en: "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.", ko: "편집 가능한 설명입니다. 클릭하면 편집할 수 있고, textarea는 레이아웃이 흔들리지 않도록 자동으로 높이를 맞춥니다.", ja: "編集可能な説明です。クリックして編集でき、textarea はレイアウトが崩れないよう自動で高さを調整します。" },
+  "Editable Title": { en: "Editable Title", ko: "편집 가능한 제목", ja: "編集可能なタイトル" },
+  "Click to edit this text": { en: "Click to edit this text", ko: "이 텍스트를 클릭해 편집하세요", ja: "このテキストをクリックして編集してください" },
   "+3 this week": { en: "+3 this week", ko: "이번 주 +3", ja: "今週 +3" },
   "Accent": { en: "Accent", ko: "강조", ja: "アクセント" },
   "Action": { en: "Action", ko: "작업", ja: "操作" },

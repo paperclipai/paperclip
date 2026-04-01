@@ -78,6 +78,7 @@ Remaining follow-up is intentionally narrower:
 - residual demo/sample literals, placeholder-only fixture text, and locale-sensitive sample data in internal reference screens
 - deciding whether dedicated demo/internal i18n data should merge into the standard message tree
 - adding guardrails so newly introduced user-facing strings do not bypass the i18n layer
+- a lightweight guardrail now exists via `pnpm check:i18n`, and `@paperclipai/ui` runs it in `pretypecheck` to block the old transitional locale-branch patterns from coming back
 
 ## Follow-up
 

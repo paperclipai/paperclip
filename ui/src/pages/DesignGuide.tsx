@@ -124,6 +124,7 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { useI18n } from "../i18n";
+import { formatDate } from "../lib/utils";
 import { designGuideText } from "../i18n/demoText";
 
 /* ------------------------------------------------------------------ */
@@ -233,11 +234,14 @@ export function DesignGuide() {
   const [selectValue, setSelectValue] = useState("in_progress");
   const [menuChecked, setMenuChecked] = useState(true);
   const [collapsibleOpen, setCollapsibleOpen] = useState(false);
-  const [inlineText, setInlineText] = useState("Click to edit this text");
-  const [inlineTitle, setInlineTitle] = useState("Editable Title");
+  const [inlineText, setInlineText] = useState(tr("Click to edit this text"));
+  const [inlineTitle, setInlineTitle] = useState(tr("Editable Title"));
   const [inlineDesc, setInlineDesc] = useState(
-    "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift."
+    tr("This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.")
   );
+  const samplePropertyDate = formatDate("2025-01-15T00:00:00Z");
+  const sampleCommentDate = formatDate("2025-01-15T00:00:00Z");
+  const sampleReplyDate = formatDate("2025-01-16T00:00:00Z");
   const [filters, setFilters] = useState<FilterValue[]>([
     { key: "status", label: tr("Status"), value: tr("Active") },
     { key: "priority", label: tr("Priority"), value: tr("High") },
@@ -791,7 +795,7 @@ export function DesignGuide() {
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
+              <BreadcrumbLink href="#">{tr("Paperclip App")}</BreadcrumbLink>
             </BreadcrumbItem>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
@@ -1146,7 +1150,7 @@ export function DesignGuide() {
           </div>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">{tr("Created")}</span>
-            <span className="text-xs">Jan 15, 2025</span>
+            <span className="text-xs">{samplePropertyDate}</span>
           </div>
         </div>
       </Section>
@@ -1230,14 +1234,14 @@ export function DesignGuide() {
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">{tr("Agent")}</span>
-                <span className="text-xs text-muted-foreground">Jan 15, 2025</span>
+                <span className="text-xs text-muted-foreground">{sampleCommentDate}</span>
               </div>
               <p className="text-sm">{tr("Started working on the authentication module. Will need API keys configured.")}</p>
             </div>
             <div className="rounded-md border border-border p-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-medium text-muted-foreground">{tr("Human")}</span>
-                <span className="text-xs text-muted-foreground">Jan 16, 2025</span>
+                <span className="text-xs text-muted-foreground">{sampleReplyDate}</span>
               </div>
               <p className="text-sm">{tr("API keys have been added to the vault. Please proceed.")}</p>
             </div>

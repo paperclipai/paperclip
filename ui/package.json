@@ -20,7 +20,8 @@
     "typecheck": "tsc -b",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
-    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
+    "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi",
+    "pretypecheck": "node ../scripts/check-ui-localization.mjs"
   },
   "publishConfig": {
     "access": "public"
