@@ -43,3 +43,17 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Dokploy deploy
+        run: |
+          curl -sf -X POST \
+            -H "X-API-Key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"composeId":"Gh67c1zKV7MsnPo_lZiPZ"}' \
+            "https://dokploy.zenova.id/api/compose.deploy"
