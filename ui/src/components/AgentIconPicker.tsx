@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   type LucideIcon,
 } from "lucide-react";
@@ -21,13 +21,16 @@ interface AgentIconProps {
 }
 
 export function AgentIcon({ icon, avatarUrl, className }: AgentIconProps) {
-  if (avatarUrl) {
+  const [imgError, setImgError] = useState(false);
+  const handleError = useCallback(() => setImgError(true), []);
+
+  if (avatarUrl && !imgError) {
     return (
       <img
         src={avatarUrl}
         alt=""
-        className={className}
-        style={{ borderRadius: "50%", objectFit: "cover" }}
+        className={cn(className, "rounded-full object-cover")}
+        onError={handleError}
       />
     );
   }
