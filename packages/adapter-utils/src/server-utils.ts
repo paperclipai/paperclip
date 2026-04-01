@@ -51,6 +51,14 @@ export interface PaperclipSkillEntry {
   requiredReason?: string | null;
 }
 
+export interface PreparedWorkspaceInstructionsBundle {
+  sourceInstructionsFilePath: string;
+  sourceInstructionsDir: string;
+  effectiveInstructionsFilePath: string;
+  effectiveInstructionsDir: string;
+  stagedBundleRoot: string | null;
+}
+
 export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
@@ -246,6 +254,75 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+function pathIsInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export async function prepareWorkspaceInstructionsBundle(options: {
+  cwd: string;
+  instructionsFilePath: string;
+  agentId: string;
+  onLog?: (stream: "stdout" | "stderr", text: string) => Promise<void> | void;
+}): Promise<PreparedWorkspaceInstructionsBundle> {
+  const resolvedWorkspaceCwd = path.resolve(options.cwd);
+  const resolvedInstructionsFilePath = path.resolve(
+    resolvedWorkspaceCwd,
+    options.instructionsFilePath,
+  );
+  const sourceInstructionsDir = path.dirname(resolvedInstructionsFilePath);
+  const bundle: PreparedWorkspaceInstructionsBundle = {
+    sourceInstructionsFilePath: resolvedInstructionsFilePath,
+    sourceInstructionsDir,
+    effectiveInstructionsFilePath: resolvedInstructionsFilePath,
+    effectiveInstructionsDir: `${sourceInstructionsDir}/`,
+    stagedBundleRoot: null,
+  };
+
+  if (pathIsInside(resolvedWorkspaceCwd, resolvedInstructionsFilePath)) {
+    return bundle;
+  }
+
+  const stagedBundleRoot = path.join(
+    resolvedWorkspaceCwd,
+    ".agents",
+    "instructions",
+    options.agentId,
+  );
+
+  try {
+    await fs.mkdir(path.dirname(stagedBundleRoot), { recursive: true });
+    await fs.rm(stagedBundleRoot, { recursive: true, force: true });
+    await fs.cp(sourceInstructionsDir, stagedBundleRoot, {
+      recursive: true,
+      force: true,
+      dereference: true,
+    });
+    if (options.onLog) {
+      await options.onLog(
+        "stdout",
+        `[paperclip] Staged agent instructions bundle from "${sourceInstructionsDir}" to "${stagedBundleRoot}"\n`,
+      );
+    }
+    bundle.effectiveInstructionsFilePath = path.join(
+      stagedBundleRoot,
+      path.basename(resolvedInstructionsFilePath),
+    );
+    bundle.effectiveInstructionsDir = `${stagedBundleRoot}/`;
+    bundle.stagedBundleRoot = stagedBundleRoot;
+    return bundle;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (options.onLog) {
+      await options.onLog(
+        "stdout",
+        `[paperclip] Warning: failed to stage agent instructions bundle "${sourceInstructionsDir}" into "${stagedBundleRoot}": ${reason}\n`,
+      );
+    }
+    return bundle;
+  }
 }
 
 export function defaultPathForPlatform() {

@@ -15,6 +15,7 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  prepareWorkspaceInstructionsBundle,
   resolveCommandForLogs,
   renderTemplate,
   runChildProcess,
@@ -224,39 +225,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const resolvedInstructionsFilePath = instructionsFilePath
-      ? path.resolve(cwd, instructionsFilePath)
-      : "";
-    const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
+    const preparedInstructions = instructionsFilePath
+      ? await prepareWorkspaceInstructionsBundle({
+          cwd,
+          instructionsFilePath,
+          agentId: agent.id,
+          onLog,
+        })
+      : null;
+    const effectiveInstructionsFilePath = preparedInstructions?.effectiveInstructionsFilePath ?? "";
+    const instructionsDir = preparedInstructions?.effectiveInstructionsDir ?? "";
     let instructionsPrefix = "";
-    if (resolvedInstructionsFilePath) {
+    if (effectiveInstructionsFilePath) {
       try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+        const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
         instructionsPrefix =
           `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
+          `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
+          `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
         );
       }
     }
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
-      if (!resolvedInstructionsFilePath) return notes;
+      if (!effectiveInstructionsFilePath) return notes;
+      if (preparedInstructions?.stagedBundleRoot) {
+        notes.push(
+          `Staged agent instructions bundle into ${preparedInstructions.stagedBundleRoot} from ${preparedInstructions.sourceInstructionsDir}.`,
+        );
+      }
       if (instructionsPrefix.length > 0) {
-        notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
+        notes.push(`Loaded agent instructions from ${effectiveInstructionsFilePath}`);
         notes.push(
           `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         );
         return notes;
       }
       notes.push(
-        `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+        `Configured instructionsFilePath ${effectiveInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       );
       return notes;
     })();

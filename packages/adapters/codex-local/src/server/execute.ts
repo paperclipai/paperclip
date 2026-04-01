@@ -14,6 +14,7 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  prepareWorkspaceInstructionsBundle,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
@@ -413,40 +414,56 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const preparedInstructions = instructionsFilePath
+    ? await prepareWorkspaceInstructionsBundle({
+        cwd,
+        instructionsFilePath,
+        agentId: agent.id,
+        onLog,
+      })
+    : null;
+  const effectiveInstructionsFilePath = preparedInstructions?.effectiveInstructionsFilePath ?? "";
+  const instructionsDir = preparedInstructions?.effectiveInstructionsDir ?? "";
   let instructionsPrefix = "";
   let instructionsChars = 0;
-  if (instructionsFilePath) {
+  if (effectiveInstructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const instructionsContents = await fs.readFile(effectiveInstructionsFilePath, "utf8");
       instructionsPrefix =
         `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `The above agent instructions were loaded from ${effectiveInstructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${effectiveInstructionsFilePath}": ${reason}\n`,
       );
     }
   }
   const repoAgentsNote =
     "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
   const commandNotes = (() => {
-    if (!instructionsFilePath) {
+    if (!effectiveInstructionsFilePath) {
       return [repoAgentsNote];
     }
+    const stagedNotes = preparedInstructions?.stagedBundleRoot
+      ? [
+          `Staged agent instructions bundle into ${preparedInstructions.stagedBundleRoot} from ${preparedInstructions.sourceInstructionsDir}.`,
+        ]
+      : [];
     if (instructionsPrefix.length > 0) {
       return [
-        `Loaded agent instructions from ${instructionsFilePath}`,
+        ...stagedNotes,
+        `Loaded agent instructions from ${effectiveInstructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
       ];
     }
     return [
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      ...stagedNotes,
+      `Configured instructionsFilePath ${effectiveInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
     ];
   })();
