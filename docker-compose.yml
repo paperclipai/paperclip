@@ -1,11 +1,7 @@
 services:
   db:
     image: postgres:17-alpine
-    command: >
-      bash -c "
-        sed -i 's/scram-sha-256/trust/g' /var/lib/postgresql/data/pg_hba.conf 2>/dev/null || true;
-        exec docker-entrypoint.sh postgres
-      "
+    command: ["sh", "-c", "sed -i 's/scram-sha-256/trust/g' /var/lib/postgresql/data/pg_hba.conf 2>/dev/null; exec docker-entrypoint.sh postgres"]
     environment:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip
