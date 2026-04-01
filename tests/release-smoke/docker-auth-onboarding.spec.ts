@@ -27,11 +27,20 @@ async function signIn(page: Page) {
 async function openOnboarding(page: Page) {
   const wizardHeading = page.locator("h3", { hasText: "Name your company" });
   const startButton = page.getByRole("button", { name: "Start Onboarding" });
+  const newCompanyButton = page.getByRole("button", { name: "New Company" });
 
-  await expect(wizardHeading.or(startButton)).toBeVisible({ timeout: 20_000 });
+  await Promise.any([
+    wizardHeading.waitFor({ state: "visible", timeout: 20_000 }),
+    startButton.waitFor({ state: "visible", timeout: 20_000 }),
+    newCompanyButton.waitFor({ state: "visible", timeout: 20_000 }),
+  ]);
 
-  if (await startButton.isVisible()) {
-    await startButton.click();
+  if (!(await wizardHeading.isVisible())) {
+    if (await startButton.isVisible()) {
+      await startButton.click();
+    } else if (await newCompanyButton.isVisible()) {
+      await newCompanyButton.click();
+    }
   }
 
   await expect(wizardHeading).toBeVisible({ timeout: 10_000 });
