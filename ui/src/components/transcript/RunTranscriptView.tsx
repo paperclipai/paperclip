@@ -898,9 +898,6 @@ function TranscriptToolGroup({
   const subtitle = runningItem
     ? summarizeToolInput(runningItem.name, runningItem.input, density)
     : null;
-  const statusTone = isRunning
-    ? "text-cyan-700 dark:text-cyan-300"
-    : "text-foreground/70";
 
   return (
     <div className="rounded-xl border border-border/40 bg-muted/[0.25]">
@@ -1121,6 +1118,8 @@ function TranscriptStderrGroup({
   );
 }
 
+const STDOUT_PREVIEW_LINES = 8;
+
 function TranscriptStdoutRow({
   block,
   density,
@@ -1131,29 +1130,68 @@ function TranscriptStdoutRow({
   collapseByDefault: boolean;
 }) {
   const [open, setOpen] = useState(!collapseByDefault);
+  const [showAll, setShowAll] = useState(false);
+
+  const lines = useMemo(() => block.text.split(/\r?\n/), [block.text]);
+  const totalLines = lines.length;
+  const hasOverflow = totalLines > STDOUT_PREVIEW_LINES;
+  const visibleLines = showAll ? lines : lines.slice(0, STDOUT_PREVIEW_LINES);
 
   return (
-    <div>
-      <div className="flex items-center gap-2">
+    <div className="rounded-lg border border-border/50 bg-muted/20 overflow-hidden">
+      <div
+        role="button"
+        tabIndex={0}
+        className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-accent/30 transition-colors"
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
+      >
+        <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           stdout
         </span>
-        <button
-          type="button"
-          className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-          onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse stdout" : "Expand stdout"}
-        >
-          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </button>
+        <span className="text-[10px] text-muted-foreground/50 tabular-nums">
+          {totalLines} {totalLines === 1 ? "line" : "lines"}
+        </span>
+        <div className="flex-1" />
+        {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/50" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />}
       </div>
       {open && (
-        <pre className={cn(
-          "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-foreground/80",
-          density === "compact" ? "text-[11px]" : "text-xs",
-        )}>
-          {block.text}
-        </pre>
+        <div className="border-t border-border/30">
+          <div className={cn(
+            "overflow-x-auto font-mono",
+            density === "compact" ? "text-[11px]" : "text-xs",
+          )}>
+            {visibleLines.map((line, i) => (
+              <div key={i} className="flex hover:bg-accent/20">
+                <span className="select-none w-8 shrink-0 text-right pr-2 text-muted-foreground/30 tabular-nums leading-5">
+                  {i + 1}
+                </span>
+                <span className="flex-1 whitespace-pre-wrap break-words text-foreground/75 leading-5 pr-3">
+                  {line || "\u00A0"}
+                </span>
+              </div>
+            ))}
+          </div>
+          {hasOverflow && !showAll && (
+            <button
+              type="button"
+              className="w-full border-t border-border/30 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+              onClick={() => setShowAll(true)}
+            >
+              Show all {totalLines} lines ({totalLines - STDOUT_PREVIEW_LINES} more)
+            </button>
+          )}
+          {hasOverflow && showAll && (
+            <button
+              type="button"
+              className="w-full border-t border-border/30 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent/30 transition-colors"
+              onClick={() => setShowAll(false)}
+            >
+              Show less
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

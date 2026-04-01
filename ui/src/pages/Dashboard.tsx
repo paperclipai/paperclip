@@ -12,14 +12,15 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { MetricCard } from "../components/MetricCard";
+import { OrgChartCard } from "../components/OrgChartCard";
+import { SpendingChartCard } from "../components/SpendingChartCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -168,7 +169,7 @@ export function Dashboard() {
       return (
         <EmptyState
           icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
+          message="Welcome to Shangrila. Set up your first company and agent to get started."
           action="Get Started"
           onAction={openOnboarding}
         />
@@ -186,11 +187,23 @@ export function Dashboard() {
   const hasNoAgents = agents !== undefined && agents.length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2.5">
+          <img src="/shangrila-logo.png" alt="Shangrila" className="h-6 w-6 object-contain" />
+          <span className="text-sm font-semibold tracking-tight text-foreground">Shangrila</span>
+        </div>
+        <span className="text-[10px] font-mono font-medium tracking-[0.15em] uppercase text-muted-foreground/50">
+          {selectedCompanyId && companies.find(c => c.id === selectedCompanyId)?.name}
+        </span>
+        <div className="flex-1" />
+        <span className="text-[9px] font-mono font-semibold tracking-[0.2em] uppercase text-muted-foreground/30">ValCtrl</span>
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
             <p className="text-sm text-amber-900 dark:text-amber-100">
@@ -205,8 +218,6 @@ export function Dashboard() {
           </button>
         </div>
       )}
-
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
       {data && (
         <>
@@ -229,20 +240,8 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
-            <MetricCard
-              icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
-                </span>
-              }
-            />
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+            <OrgChartCard agents={agents ?? []} />
             <MetricCard
               icon={CircleDot}
               value={data.tasks.inProgress}
@@ -255,20 +254,12 @@ export function Dashboard() {
                 </span>
               }
             />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthEffectiveSpendCents ?? data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthEffectiveSpendCents > data.costs.monthSpendCents
-                    ? `${formatCents(data.costs.monthSpendCents)} metered + ${formatCents(data.costs.monthEffectiveSpendCents - data.costs.monthSpendCents)} subscriptions`
-                    : data.costs.monthBudgetCents > 0
-                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                      : "Unlimited budget"}
-                </span>
-              }
+            <SpendingChartCard
+              companyId={selectedCompanyId!}
+              monthSpendCents={data.costs.monthSpendCents}
+              monthEffectiveSpendCents={data.costs.monthEffectiveSpendCents}
+              monthBudgetCents={data.costs.monthBudgetCents}
+              monthUtilizationPercent={data.costs.monthUtilizationPercent}
             />
             <MetricCard
               icon={ShieldCheck}
@@ -284,7 +275,13 @@ export function Dashboard() {
               }
             />
           </div>
+        </>
+      )}
 
+      <ActiveAgentsPanel companyId={selectedCompanyId!} />
+
+      {data && (
+        <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart runs={runs ?? []} />
@@ -304,17 +301,16 @@ export function Dashboard() {
             slotTypes={["dashboardWidget"]}
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="rounded-xl border bg-card p-4 shadow-sm"
           />
 
           <div className="grid md:grid-cols-2 gap-4">
-            {/* Recent Activity */}
             {recentActivity.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                <h3 className="text-[10px] font-mono font-semibold uppercase tracking-[0.15em] text-muted-foreground/50 mb-3">
                   Recent Activity
                 </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="rounded-xl border border-border bg-card divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -329,17 +325,16 @@ export function Dashboard() {
               </div>
             )}
 
-            {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              <h3 className="text-[10px] font-mono font-semibold uppercase tracking-[0.15em] text-muted-foreground/50 mb-3">
                 Recent Tasks
               </h3>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <p className="text-xs font-mono text-muted-foreground/40">No tasks yet.</p>
                 </div>
               ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
+                <div className="rounded-xl border border-border bg-card divide-y divide-border overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
@@ -347,12 +342,10 @@ export function Dashboard() {
                       className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
                     >
                       <div className="flex items-start gap-2 sm:items-center sm:gap-3">
-                        {/* Status icon - left column on mobile */}
                         <span className="shrink-0 sm:hidden">
                           <StatusIcon status={issue.status} />
                         </span>
 
-                        {/* Right column on mobile: title + metadata stacked */}
                         <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
                           <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
                             {issue.title}
