@@ -108,6 +108,46 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
       }
     }
   }
+
+  // Auto-configure Linear plugin from env vars if credentials are set
+  const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
+  const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
+  if (linearClientId && linearClientSecret) {
+    try {
+      const listRes = await fetch(`${baseUrl}/api/plugins`);
+      if (listRes.ok) {
+        const allPlugins = (await listRes.json()) as Array<{ id: string; pluginKey: string; status: string }>;
+        const linearPlugin = allPlugins.find((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
+        if (linearPlugin) {
+          // Check if config already has credentials
+          const configRes = await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
+          if (configRes.ok) {
+            const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
+            const existing = config?.configJson ?? {};
+            if (!existing.linearClientId || !existing.linearClientSecret) {
+              // Auto-populate from env
+              await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  configJson: {
+                    ...existing,
+                    linearClientId,
+                    linearClientSecret,
+                    syncComments: existing.syncComments ?? true,
+                    syncDirection: existing.syncDirection ?? "bidirectional",
+                  },
+                }),
+              });
+              logger.info("Auto-configured Linear plugin from env vars");
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "failed to auto-configure Linear plugin from env");
+    }
+  }
 }
 
 type BetterAuthSessionUser = {
