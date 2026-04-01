@@ -344,6 +344,11 @@ export function CommentThread({
           imageUploadHandler={imageUploadHandler}
           contentClassName="min-h-[60px] text-sm"
         />
+        {enableReassign && !body.trim() && (
+          <p className="text-[11px] text-muted-foreground/70 px-1">
+            Use <span className="font-medium text-muted-foreground">@agent-name</span> in your comment to activate an agent without changing the assignee.
+          </p>
+        )}
         <div className="flex items-center justify-end gap-3">
           {onAttachImage && (
             <div className="mr-auto flex items-center gap-3">

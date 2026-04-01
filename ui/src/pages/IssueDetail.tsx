@@ -33,6 +33,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity as ActivityIcon,
+  ArrowDown,
   ChevronDown,
   ChevronRight,
   EyeOff,
@@ -536,6 +537,18 @@ export function IssueDetail() {
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Scroll to bottom FAB
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  useEffect(() => {
+    const handleScroll = () => {
+      const distanceFromBottom = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      setShowScrollBtn(distanceFromBottom > 300);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!issue) return null;
@@ -967,6 +980,16 @@ export function IssueDetail() {
           </ScrollArea>
         </SheetContent>
       </Sheet>
+
+      {showScrollBtn && (
+        <button
+          onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}
+          className="fixed bottom-6 right-6 z-50 h-10 w-10 rounded-full bg-background/80 border border-border shadow-lg backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-background transition-all"
+          aria-label="Scroll to bottom"
+        >
+          <ArrowDown className="h-5 w-5" />
+        </button>
+      )}
     </div>
   );
 }
