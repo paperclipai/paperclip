@@ -1,14 +1,42 @@
 # Plugin System — Próxima Iteração
 
-**Last Updated:** 2026-04-01 00:38 UTC
+**Last Updated:** 2026-04-01 01:32 UTC
 
 ---
 
 ## ✅ Concluído (2026-04-01)
 
+### Testes de Integração Skills Hub — COMPLETO
+
+**Status:** 62 testes de integração adicionados ao Skills Hub.
+
+**Arquivo:** `packages/plugins/skills-hub/src/__tests__/integration.test.ts` (520 linhas)
+
+**Cobertura:**
+- Tool registration: 12 tools registradas e executáveis
+- search_skills: query, category filter, limit param
+- get_skill: by ID, API error handling
+- get_trending: default + limit param
+- get_top_rated, get_rising, get_categories, get_masters, get_stats
+- submit_skill: required + optional metadata
+- scan_security: content scan + PII detection
+- get_workflows, get_landing
+- Error handling: invalid tool, missing params, API errors, network errors
+
+**Padrão:** Mock do `global.fetch` para simular API responses com formatos corretos por endpoint.
+
+**Validação:**
+```bash
+pnpm test --filter @paperclipai/plugin-skills-hub
+# → 62 testes passando (37 schema + 25 integração)
+# → Duration: ~2s
+```
+
+**Total geral de testes de plugins:** 213 testes (112 schema + 39 Ruflo integration + 62 Skills Hub integration)
+
 ### Validação Completa de Plugins — COMPLETO
 
-**Status:** Validação horária via cron passando (60s total).
+**Status:** Validação horária via cron passando (65s total).
 
 **Script:** `./scripts/validate-plugins.sh`
 
