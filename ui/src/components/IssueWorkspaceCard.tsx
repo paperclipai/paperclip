@@ -9,6 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
+import { useI18n } from "../i18n";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -59,6 +60,7 @@ function BreakablePath({ text }: { text: string }) {
 }
 
 function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
+  const { locale } = useI18n();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleCopy = useCallback(async () => {
@@ -80,7 +82,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Copy"}
+        title={copied ? (locale === "ko" ? "복사됨!" : locale === "ja" ? "コピー済み!" : "Copied!") : (locale === "ko" ? "복사" : locale === "ja" ? "コピー" : "Copy")}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -162,9 +164,66 @@ interface IssueWorkspaceCardProps {
 }
 
 export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceCardProps) {
+  const { locale } = useI18n();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(false);
+  const copy = locale === "ko"
+    ? {
+        projectDefault: "프로젝트 기본값",
+        newIsolatedWorkspace: "새 격리 워크스페이스",
+        reuseExistingWorkspace: "기존 워크스페이스 재사용",
+        existingIsolatedWorkspace: "기존 격리 워크스페이스",
+        isolatedWorkspaceWillBeCreated: "이 이슈가 실행되면 새 격리 워크스페이스가 생성됩니다.",
+        reuseExistingOnRun: "이 이슈는 실행 시 기존 워크스페이스를 재사용합니다.",
+        useProjectDefaultOnRun: "이 이슈는 실행 시 프로젝트 기본 워크스페이스 설정을 사용합니다.",
+        reusing: "재사용 중",
+        viewWorkspaceDetails: "워크스페이스 상세 보기 →",
+        cancel: "취소",
+        save: "저장",
+        edit: "편집",
+        chooseExistingWorkspace: "기존 워크스페이스 선택",
+        current: "현재",
+        copied: "복사됨!",
+        copy: "복사",
+      }
+    : locale === "ja"
+      ? {
+          projectDefault: "プロジェクト既定",
+          newIsolatedWorkspace: "新しい隔離ワークスペース",
+          reuseExistingWorkspace: "既存ワークスペースを再利用",
+          existingIsolatedWorkspace: "既存の隔離ワークスペース",
+          isolatedWorkspaceWillBeCreated: "この issue 実行時に新しい隔離ワークスペースが作成されます。",
+          reuseExistingOnRun: "この issue は実行時に既存ワークスペースを再利用します。",
+          useProjectDefaultOnRun: "この issue は実行時にプロジェクト既定のワークスペース設定を使います。",
+          reusing: "再利用中",
+          viewWorkspaceDetails: "ワークスペース詳細を見る →",
+          cancel: "キャンセル",
+          save: "保存",
+          edit: "編集",
+          chooseExistingWorkspace: "既存ワークスペースを選択",
+          current: "現在",
+          copied: "コピー済み!",
+          copy: "コピー",
+        }
+      : {
+          projectDefault: "Project default",
+          newIsolatedWorkspace: "New isolated workspace",
+          reuseExistingWorkspace: "Reuse existing workspace",
+          existingIsolatedWorkspace: "Existing isolated workspace",
+          isolatedWorkspaceWillBeCreated: "A fresh isolated workspace will be created when this issue runs.",
+          reuseExistingOnRun: "This issue will reuse an existing workspace when it runs.",
+          useProjectDefaultOnRun: "This issue will use the project default workspace configuration when it runs.",
+          reusing: "Reusing",
+          viewWorkspaceDetails: "View workspace details →",
+          cancel: "Cancel",
+          save: "Save",
+          edit: "Edit",
+          chooseExistingWorkspace: "Choose an existing workspace",
+          current: "Current",
+          copied: "Copied!",
+          copy: "Copy",
+        };
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -294,7 +353,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                 className="h-6 px-2 text-xs text-muted-foreground"
                 onClick={handleCancel}
               >
-                <X className="h-3 w-3 mr-1" />Cancel
+                <X className="h-3 w-3 mr-1" />{copy.cancel}
               </Button>
               <Button
                 size="sm"
@@ -302,17 +361,17 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                 onClick={handleSave}
                 disabled={!canSaveWorkspaceConfig}
               >
-                Save
+                {copy.save}
               </Button>
             </>
           ) : (
             <Button
               variant="ghost"
               size="sm"
-              className="h-6 px-2 text-xs text-muted-foreground"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil className="h-3 w-3 mr-1" />Edit
+                className="h-6 px-2 text-xs text-muted-foreground"
+                onClick={() => setEditing(true)}
+              >
+              <Pencil className="h-3 w-3 mr-1" />{copy.edit}
             </Button>
           )}
         </div>
@@ -335,22 +394,22 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
+              <span className="text-[11px]">{locale === "ko" ? "Repo:" : locale === "ja" ? "Repo:" : "Repo:"}</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}
           {!workspace && (
             <div className="text-muted-foreground">
               {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this issue runs."
+                ? copy.isolatedWorkspaceWillBeCreated
                 : currentSelection === "reuse_existing"
-                  ? "This issue will reuse an existing workspace when it runs."
-                  : "This issue will use the project default workspace configuration when it runs."}
+                  ? copy.reuseExistingOnRun
+                  : copy.useProjectDefaultOnRun}
             </div>
           )}
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
             <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Reusing:{" "}
+              {copy.reusing}:{" "}
               {selectedReusableWorkspaceLink ? (
                 <Link
                   to={selectedReusableWorkspaceLink}
@@ -369,7 +428,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                 to={currentWorkspaceLink}
                 className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
               >
-                View workspace details →
+                {copy.viewWorkspaceDetails}
               </Link>
             </div>
           )}
@@ -393,13 +452,17 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
             }}
           >
             {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
-                  : option.label}
-              </option>
-            ))}
-          </select>
+                <option key={option.value} value={option.value}>
+                  {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
+                  ? copy.existingIsolatedWorkspace
+                  : option.value === "shared_workspace"
+                    ? copy.projectDefault
+                    : option.value === "isolated_workspace"
+                      ? copy.newIsolatedWorkspace
+                      : copy.reuseExistingWorkspace}
+                </option>
+              ))}
+            </select>
 
           {draftSelection === "reuse_existing" && (
             <select
@@ -409,7 +472,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                 setDraftExecutionWorkspaceId(e.target.value);
               }}
             >
-              <option value="">Choose an existing workspace</option>
+              <option value="">{copy.chooseExistingWorkspace}</option>
               {deduplicatedReusableWorkspaces.map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name} · {w.status} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
@@ -422,7 +485,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
           {workspace && (
             <div className="text-[11px] text-muted-foreground space-y-0.5 pt-1 border-t border-border/50">
               <div style={{ overflowWrap: "anywhere" }}>
-                Current:{" "}
+                {copy.current}:{" "}
                 {currentWorkspaceLink ? (
                   <Link
                     to={currentWorkspaceLink}

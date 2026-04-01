@@ -36,6 +36,7 @@ import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { useI18n } from "../i18n";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -46,6 +47,7 @@ const projectStatuses = [
 ];
 
 export function NewProjectDialog() {
+  const { locale } = useI18n();
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -62,6 +64,71 @@ export function NewProjectDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
+  const copy = locale === "ko"
+    ? {
+        newProject: "새 프로젝트",
+        projectName: "프로젝트 이름",
+        addDescription: "설명 추가...",
+        repoUrl: "Repo URL",
+        localFolder: "로컬 폴더",
+        optional: "선택",
+        repoHelp: "이 프로젝트에 GitHub 저장소를 연결하면 에이전트가 코드를 clone, 조회, push 할 수 있습니다.",
+        folderHelp: "이 머신에서 로컬 에이전트가 이 프로젝트 파일을 읽고 쓸 절대 경로를 설정합니다.",
+        pathError: "로컬 폴더는 전체 절대 경로여야 합니다.",
+        repoError: "Repo는 유효한 GitHub repo URL이어야 합니다.",
+        goal: "목표",
+        addGoal: "+ 목표",
+        noGoal: "목표 없음",
+        allGoalsSelected: "모든 목표가 이미 선택되었습니다.",
+        targetDate: "목표 날짜",
+        failedCreate: "프로젝트를 생성하지 못했습니다.",
+        creating: "생성 중…",
+        createProject: "프로젝트 생성",
+        removeGoal: "{{name}} 목표 제거",
+      }
+    : locale === "ja"
+      ? {
+          newProject: "新しいプロジェクト",
+          projectName: "プロジェクト名",
+          addDescription: "説明を追加...",
+          repoUrl: "Repo URL",
+          localFolder: "ローカルフォルダー",
+          optional: "任意",
+          repoHelp: "このプロジェクトに GitHub リポジトリを紐付けると、エージェントがコードを clone・参照・push できます。",
+          folderHelp: "このマシン上でローカルエージェントがこのプロジェクトのファイルを読み書きする絶対パスを設定します。",
+          pathError: "ローカルフォルダーは完全な絶対パスである必要があります。",
+          repoError: "Repo は有効な GitHub repo URL である必要があります。",
+          goal: "目標",
+          addGoal: "+ 目標",
+          noGoal: "目標なし",
+          allGoalsSelected: "すべての目標はすでに選択されています。",
+          targetDate: "目標日",
+          failedCreate: "プロジェクトを作成できませんでした。",
+          creating: "作成中…",
+          createProject: "プロジェクトを作成",
+          removeGoal: "{{name}} 目標を削除",
+        }
+      : {
+          newProject: "New project",
+          projectName: "Project name",
+          addDescription: "Add description...",
+          repoUrl: "Repo URL",
+          localFolder: "Local folder",
+          optional: "optional",
+          repoHelp: "Link a GitHub repository so agents can clone, read, and push code for this project.",
+          folderHelp: "Set an absolute path on this machine where local agents will read and write files for this project.",
+          pathError: "Local folder must be a full absolute path.",
+          repoError: "Repo must use a valid GitHub repo URL.",
+          goal: "Goal",
+          addGoal: "+ Goal",
+          noGoal: "No goal",
+          allGoalsSelected: "All goals already selected.",
+          targetDate: "Target date",
+          failedCreate: "Failed to create project.",
+          creating: "Creating…",
+          createProject: "Create project",
+          removeGoal: "Remove goal {{name}}",
+        };
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -153,11 +220,11 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError(copy.pathError);
       return;
     }
     if (repoUrl && !isGitHubRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub repo URL.");
+      setWorkspaceError(copy.repoError);
       return;
     }
 
@@ -227,7 +294,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{copy.newProject}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -253,7 +320,7 @@ export function NewProjectDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Project name"
+            placeholder={copy.projectName}
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
@@ -272,7 +339,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={copy.addDescription}
             bordered={false}
             mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
@@ -286,14 +353,14 @@ export function NewProjectDialog() {
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <label className="block text-xs text-muted-foreground">{copy.repoUrl}</label>
+              <span className="text-xs text-muted-foreground/50">{copy.optional}</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
+                  {copy.repoHelp}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -307,14 +374,14 @@ export function NewProjectDialog() {
 
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <label className="block text-xs text-muted-foreground">{copy.localFolder}</label>
+              <span className="text-xs text-muted-foreground/50">{copy.optional}</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[240px] text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
+                  {copy.folderHelp}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -369,7 +436,7 @@ export function NewProjectDialog() {
               <button
                 className="text-muted-foreground hover:text-foreground"
                 onClick={() => setGoalIds((prev) => prev.filter((id) => id !== goal.id))}
-                aria-label={`Remove goal ${goal.title}`}
+                aria-label={copy.removeGoal.replace("{{name}}", goal.title)}
                 type="button"
               >
                 <X className="h-3 w-3" />
@@ -384,7 +451,7 @@ export function NewProjectDialog() {
                 disabled={selectedGoals.length > 0 && availableGoals.length === 0}
               >
                 {selectedGoals.length > 0 ? <Plus className="h-3 w-3 text-muted-foreground" /> : <Target className="h-3 w-3 text-muted-foreground" />}
-                {selectedGoals.length > 0 ? "+ Goal" : "Goal"}
+                {selectedGoals.length > 0 ? copy.addGoal : copy.goal}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -393,7 +460,7 @@ export function NewProjectDialog() {
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
                   onClick={() => setGoalOpen(false)}
                 >
-                  No goal
+                  {copy.noGoal}
                 </button>
               )}
               {availableGoals.map((g) => (
@@ -410,7 +477,7 @@ export function NewProjectDialog() {
               ))}
               {selectedGoals.length > 0 && availableGoals.length === 0 && (
                 <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  All goals already selected.
+                  {copy.allGoalsSelected}
                 </div>
               )}
             </PopoverContent>
@@ -424,7 +491,7 @@ export function NewProjectDialog() {
               className="bg-transparent outline-none text-xs w-24"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}
-              placeholder="Target date"
+              placeholder={copy.targetDate}
             />
           </div>
         </div>
@@ -432,7 +499,7 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">{copy.failedCreate}</p>
           ) : (
             <span />
           )}
@@ -441,7 +508,7 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending ? copy.creating : copy.createProject}
           </Button>
         </div>
       </DialogContent>

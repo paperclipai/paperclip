@@ -154,7 +154,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -604,7 +604,7 @@ export function Costs() {
                 onChange={(event) => setCustomFrom(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               />
-              <span className="text-sm text-muted-foreground">to</span>
+              <span className="text-sm text-muted-foreground">{locale === "ko" ? "부터" : locale === "ja" ? "から" : "to"}</span>
               <input
                 type="date"
                 value={customTo}

@@ -104,9 +104,11 @@ function OverviewContent({
 function ColorPicker({
   currentColor,
   onSelect,
+  ariaLabel,
 }: {
   currentColor: string;
   onSelect: (color: string) => void;
+  ariaLabel: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -128,7 +130,7 @@ function ColorPicker({
         onClick={() => setOpen(!open)}
         className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
+        aria-label={ariaLabel}
       />
       {open && (
         <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -222,7 +224,7 @@ function ProjectWorkspacesContent({
   projectRef: string;
   summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
   const [closingWorkspace, setClosingWorkspace] = useState<{
@@ -254,6 +256,23 @@ function ProjectWorkspacesContent({
   if (summaries.length === 0) {
     return <p className="text-sm text-muted-foreground">{t("executionWorkspace.noWorkspaceActivity")}</p>;
   }
+  const copy = locale === "ko"
+    ? {
+        issues: "이슈",
+        more: "{{count}}개 더",
+        pathCopied: "경로가 복사되었습니다",
+      }
+    : locale === "ja"
+      ? {
+          issues: "Issue",
+          more: "さらに {{count}} 件",
+          pathCopied: "パスをコピーしました",
+        }
+      : {
+          issues: "Issues",
+          more: "... and {{count}} more",
+          pathCopied: "Path copied",
+        };
 
   const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
   const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
@@ -310,7 +329,7 @@ function ProjectWorkspacesContent({
                 <span className="min-w-0 truncate font-mono leading-tight" title={summary.cwd}>
                   {summary.cwd}
                 </span>
-                <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
+                <CopyText text={summary.cwd} className="shrink-0" copiedLabel={copy.pathCopied}>
                   <Copy className="h-3.5 w-3.5" />
                 </CopyText>
               </div>
@@ -319,7 +338,7 @@ function ProjectWorkspacesContent({
 
           <div className="min-w-0">
             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Issues ({summary.issues.length})
+              {copy.issues} ({summary.issues.length})
             </div>
             <div className="flex flex-wrap gap-2">
               {visibleIssues.map((issue) => (
@@ -336,7 +355,7 @@ function ProjectWorkspacesContent({
               ))}
               {hiddenIssueCount > 0 ? (
                 <span className="inline-flex items-center rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
-                  ... and {hiddenIssueCount} more
+                  {copy.more.replace("{{count}}", String(hiddenIssueCount))}
                 </span>
               ) : null}
             </div>
@@ -450,6 +469,7 @@ function ProjectWorkspacesContent({
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { locale } = useI18n();
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -539,6 +559,53 @@ export function ProjectDetail() {
     });
   }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
   const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const copy = locale === "ko"
+    ? {
+        projects: "프로젝트",
+        project: "프로젝트",
+        issues: "이슈",
+        overview: "개요",
+        workspaces: "워크스페이스",
+        configuration: "설정",
+        budget: "예산",
+        pausedByBudget: "예산 하드 스톱으로 일시중지됨",
+        failedArchive: "프로젝트를 보관하지 못했습니다",
+        failedUnarchive: "프로젝트 보관 해제를 실패했습니다",
+        archived: "\"{{name}}\" 프로젝트가 보관되었습니다",
+        unarchived: "\"{{name}}\" 프로젝트 보관이 해제되었습니다",
+        loadingWorkspaces: "워크스페이스를 불러오는 중...",
+      }
+    : locale === "ja"
+      ? {
+          projects: "プロジェクト",
+          project: "プロジェクト",
+          issues: "Issue",
+          overview: "概要",
+          workspaces: "ワークスペース",
+          configuration: "設定",
+          budget: "予算",
+          pausedByBudget: "予算のハードストップで停止中",
+          failedArchive: "プロジェクトをアーカイブできませんでした",
+          failedUnarchive: "プロジェクトのアーカイブ解除に失敗しました",
+          archived: "プロジェクト「{{name}}」をアーカイブしました",
+          unarchived: "プロジェクト「{{name}}」のアーカイブを解除しました",
+          loadingWorkspaces: "ワークスペースを読み込み中...",
+        }
+      : {
+          projects: "Projects",
+          project: "Project",
+          issues: "Issues",
+          overview: "Overview",
+          workspaces: "Workspaces",
+          configuration: "Configuration",
+          budget: "Budget",
+          pausedByBudget: "Paused by budget hard stop",
+          failedArchive: "Failed to archive project",
+          failedUnarchive: "Failed to unarchive project",
+          archived: "\"{{name}}\" has been archived",
+          unarchived: "\"{{name}}\" has been unarchived",
+          loadingWorkspaces: "Loading workspaces...",
+        };
   const workspaceTabDecisionLoaded =
     experimentalSettingsQuery.isFetched &&
     (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
@@ -572,17 +639,17 @@ export function ProjectDetail() {
       ),
     onSuccess: (updatedProject, archived) => {
       invalidateProject();
-      const name = updatedProject?.name ?? project?.name ?? "Project";
+      const name = updatedProject?.name ?? project?.name ?? copy.project;
       if (archived) {
-        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        pushToast({ title: copy.archived.replace("{{name}}", name), tone: "success" });
         navigate("/dashboard");
       } else {
-        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+        pushToast({ title: copy.unarchived.replace("{{name}}", name), tone: "success" });
       }
     },
     onError: (_, archived) => {
       pushToast({
-        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        title: archived ? copy.failedArchive : copy.failedUnarchive,
         tone: "error",
       });
     },
@@ -605,10 +672,10 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
-      { label: project?.name ?? routeProjectRef ?? "Project" },
+      { label: copy.projects, href: "/projects" },
+      { label: project?.name ?? routeProjectRef ?? copy.project },
     ]);
-  }, [setBreadcrumbs, project, routeProjectRef]);
+  }, [copy.project, copy.projects, project, routeProjectRef, setBreadcrumbs]);
 
   useEffect(() => {
     if (!project) return;
@@ -807,6 +874,7 @@ export function ProjectDetail() {
           <ColorPicker
             currentColor={project.color ?? "#6366f1"}
             onSelect={(color) => updateProject.mutate({ color })}
+            ariaLabel={locale === "ko" ? "프로젝트 색상 변경" : locale === "ja" ? "プロジェクト色を変更" : "Change project color"}
           />
         </div>
         <div className="min-w-0 space-y-2">
@@ -819,7 +887,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {copy.pausedByBudget}
             </div>
           ) : null}
         </div>
@@ -859,11 +927,11 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: copy.issues },
+            { value: "overview", label: copy.overview },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: copy.workspaces }] : []),
+            { value: "configuration", label: copy.configuration },
+            { value: "budget", label: copy.budget },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -903,7 +971,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{copy.loadingWorkspaces}</p>
         )
       ) : null}
 

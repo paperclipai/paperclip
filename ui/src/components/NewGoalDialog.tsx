@@ -25,6 +25,7 @@ import {
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { useI18n } from "../i18n";
 
 const levelLabels: Record<string, string> = {
   company: "Company",
@@ -34,6 +35,7 @@ const levelLabels: Record<string, string> = {
 };
 
 export function NewGoalDialog() {
+  const { locale } = useI18n();
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -48,6 +50,46 @@ export function NewGoalDialog() {
   const [levelOpen, setLevelOpen] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
+  const levelLabels = locale === "ko"
+    ? { company: "회사", team: "팀", agent: "에이전트", task: "작업" }
+    : locale === "ja"
+      ? { company: "会社", team: "チーム", agent: "エージェント", task: "タスク" }
+      : { company: "Company", team: "Team", agent: "Agent", task: "Task" };
+  const copy = locale === "ko"
+    ? {
+        newGoal: "새 목표",
+        newSubGoal: "새 하위 목표",
+        goalTitle: "목표 제목",
+        addDescription: "설명 추가...",
+        parentGoal: "상위 목표",
+        noParent: "상위 목표 없음",
+        creating: "생성 중…",
+        createGoal: "목표 생성",
+        createSubGoal: "하위 목표 생성",
+      }
+    : locale === "ja"
+      ? {
+          newGoal: "新しい目標",
+          newSubGoal: "新しいサブ目標",
+          goalTitle: "目標タイトル",
+          addDescription: "説明を追加...",
+          parentGoal: "親目標",
+          noParent: "親目標なし",
+          creating: "作成中…",
+          createGoal: "目標を作成",
+          createSubGoal: "サブ目標を作成",
+        }
+      : {
+          newGoal: "New goal",
+          newSubGoal: "New sub-goal",
+          goalTitle: "Goal title",
+          addDescription: "Add description...",
+          parentGoal: "Parent goal",
+          noParent: "No parent",
+          creating: "Creating…",
+          createGoal: "Create goal",
+          createSubGoal: "Create sub-goal",
+        };
 
   // Apply defaults when dialog opens
   const appliedParentId = parentId || newGoalDefaults.parentId || "";
@@ -128,7 +170,7 @@ export function NewGoalDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+            <span>{newGoalDefaults.parentId ? copy.newSubGoal : copy.newGoal}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -154,7 +196,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={copy.goalTitle}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
@@ -173,7 +215,7 @@ export function NewGoalDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={copy.addDescription}
             bordered={false}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
@@ -213,7 +255,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Layers className="h-3 w-3 text-muted-foreground" />
-                {levelLabels[level] ?? level}
+                {levelLabels[level as keyof typeof levelLabels] ?? level}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-40 p-1" align="start">
@@ -226,7 +268,7 @@ export function NewGoalDialog() {
                   )}
                   onClick={() => { setLevel(l); setLevelOpen(false); }}
                 >
-                  {levelLabels[l] ?? l}
+                  {levelLabels[l as keyof typeof levelLabels] ?? l}
                 </button>
               ))}
             </PopoverContent>
@@ -237,7 +279,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Target className="h-3 w-3 text-muted-foreground" />
-                {currentParent ? currentParent.title : "Parent goal"}
+                {currentParent ? currentParent.title : copy.parentGoal}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-48 p-1" align="start">
@@ -248,7 +290,7 @@ export function NewGoalDialog() {
                 )}
                 onClick={() => { setParentId(""); setParentOpen(false); }}
               >
-                No parent
+                {copy.noParent}
               </button>
               {(goals ?? []).map((g) => (
                 <button
@@ -273,7 +315,7 @@ export function NewGoalDialog() {
             disabled={!title.trim() || createGoal.isPending}
             onClick={handleSubmit}
           >
-            {createGoal.isPending ? "Creating…" : newGoalDefaults.parentId ? "Create sub-goal" : "Create goal"}
+            {createGoal.isPending ? copy.creating : newGoalDefaults.parentId ? copy.createSubGoal : copy.createGoal}
           </Button>
         </div>
       </DialogContent>

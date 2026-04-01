@@ -138,6 +138,9 @@ export function IssueDocumentsSection({
           couldNotSave: "저장할 수 없음",
           deleteConfirm: "이 문서를 삭제할까요? 되돌릴 수 없습니다.",
           deleting: "삭제 중...",
+          expandDocument: "{{key}} 문서 펼치기",
+          collapseDocument: "{{key}} 문서 접기",
+          revisionUpdated: "rev {{rev}} • 업데이트 {{time}}",
         }
     : locale === "ja"
         ? {
@@ -176,6 +179,9 @@ export function IssueDocumentsSection({
           couldNotSave: "保存できません",
           deleteConfirm: "このドキュメントを削除しますか？ 元に戻せません。",
           deleting: "削除中...",
+          expandDocument: "{{key}} ドキュメントを展開",
+          collapseDocument: "{{key}} ドキュメントを折りたたむ",
+          revisionUpdated: "rev {{rev}} • 更新 {{time}}",
         }
       : {
           deleteFailed: "Failed to delete document",
@@ -213,6 +219,9 @@ export function IssueDocumentsSection({
           couldNotSave: "Could not save",
           deleteConfirm: "Delete this document? This cannot be undone.",
           deleting: "Deleting...",
+          expandDocument: "Expand {{key}} document",
+          collapseDocument: "Collapse {{key}} document",
+          revisionUpdated: "rev {{rev}} • updated {{time}}",
         };
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -756,7 +765,7 @@ export function IssueDocumentsSection({
                       type="button"
                       className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
-                      aria-label={isFolded ? `Expand ${doc.key} document` : `Collapse ${doc.key} document`}
+                      aria-label={(isFolded ? copy.expandDocument : copy.collapseDocument).replace("{{key}}", doc.key)}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -768,7 +777,9 @@ export function IssueDocumentsSection({
                       href={`#document-${encodeURIComponent(doc.key)}`}
                       className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
-                      rev {doc.latestRevisionNumber} • updated {relativeTime(doc.updatedAt)}
+                      {copy.revisionUpdated
+                        .replace("{{rev}}", String(doc.latestRevisionNumber))
+                        .replace("{{time}}", relativeTime(doc.updatedAt))}
                     </a>
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
@@ -956,7 +967,7 @@ export function IssueDocumentsSection({
                     >
                       {activeDraft
                         ? activeConflict
-                          ? "Out of date"
+                          ? copy.outOfDate
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
                               ? copy.autosaving

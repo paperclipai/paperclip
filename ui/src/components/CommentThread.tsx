@@ -105,12 +105,14 @@ function parseReassignment(target: string): CommentReassignment | null {
 }
 
 function CopyMarkdownButton({ text }: { text: string }) {
+  const { locale } = useI18n();
   const [copied, setCopied] = useState(false);
+  const title = locale === "ko" ? "마크다운으로 복사" : locale === "ja" ? "Markdown としてコピー" : "Copy as markdown";
   return (
     <button
       type="button"
       className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      title={title}
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);

@@ -3,6 +3,7 @@ import { Link } from "@/lib/router";
 import { X } from "lucide-react";
 import { useToast, type ToastItem, type ToastTone } from "../context/ToastContext";
 import { cn } from "../lib/utils";
+import { useI18n } from "../i18n";
 
 const toneClasses: Record<ToastTone, string> = {
   info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
@@ -25,7 +26,9 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
+  const { locale } = useI18n();
   const [visible, setVisible] = useState(false);
+  const dismissLabel = locale === "ko" ? "알림 닫기" : locale === "ja" ? "通知を閉じる" : "Dismiss notification";
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setVisible(true));
@@ -63,7 +66,7 @@ function AnimatedToast({
         </div>
         <button
           type="button"
-          aria-label="Dismiss notification"
+          aria-label={dismissLabel}
           onClick={() => onDismiss(toast.id)}
           className="mt-0.5 shrink-0 rounded p-1 opacity-50 hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
         >

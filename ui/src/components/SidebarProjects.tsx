@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/collapsible";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import type { Project } from "@paperclipai/shared";
+import { useI18n } from "../i18n";
 
 type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
@@ -36,6 +37,7 @@ function SortableProjectItem({
   companyId,
   companyPrefix,
   isMobile,
+  pausedByBudgetTitle,
   project,
   projectSidebarSlots,
   setSidebarOpen,
@@ -44,6 +46,7 @@ function SortableProjectItem({
   companyId: string | null;
   companyPrefix: string | null;
   isMobile: boolean;
+  pausedByBudgetTitle: string;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
   setSidebarOpen: (open: boolean) => void;
@@ -89,7 +92,7 @@ function SortableProjectItem({
             style={{ backgroundColor: project.color ?? "#6366f1" }}
           />
           <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+          {project.pauseReason === "budget" ? <BudgetSidebarMarker title={pausedByBudgetTitle} /> : null}
         </NavLink>
         {projectSidebarSlots.length > 0 && (
           <div className="ml-5 flex flex-col gap-0.5">
@@ -116,6 +119,7 @@ function SortableProjectItem({
 }
 
 export function SidebarProjects() {
+  const { locale } = useI18n();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
@@ -158,6 +162,11 @@ export function SidebarProjects() {
       activationConstraint: { distance: 8 },
     }),
   );
+  const copy = locale === "ko"
+    ? { projects: "프로젝트", newProject: "새 프로젝트", pausedByBudget: "예산으로 일시중지된 프로젝트" }
+    : locale === "ja"
+      ? { projects: "プロジェクト", newProject: "新しいプロジェクト", pausedByBudget: "予算で停止中のプロジェクト" }
+      : { projects: "Projects", newProject: "New project", pausedByBudget: "Project paused by budget" };
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -186,7 +195,7 @@ export function SidebarProjects() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Projects
+              {copy.projects}
             </span>
           </CollapsibleTrigger>
           <button
@@ -195,7 +204,7 @@ export function SidebarProjects() {
               openNewProject();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New project"
+            aria-label={copy.newProject}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -220,6 +229,7 @@ export function SidebarProjects() {
                   companyId={selectedCompanyId}
                   companyPrefix={selectedCompany?.issuePrefix ?? null}
                   isMobile={isMobile}
+                  pausedByBudgetTitle={copy.pausedByBudget}
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}
                   setSidebarOpen={setSidebarOpen}

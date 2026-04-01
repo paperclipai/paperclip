@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { HermesIcon } from "./HermesIcon";
+import { useI18n } from "../i18n";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -93,6 +94,7 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
 ];
 
 export function NewAgentDialog() {
+  const { locale } = useI18n();
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
@@ -125,6 +127,36 @@ export function NewAgentDialog() {
     navigate(`/agents/new?adapterType=${encodeURIComponent(adapterType)}`);
   }
 
+  const copy = locale === "ko"
+    ? {
+        header: "새 에이전트 추가",
+        recommendation: "CEO가 에이전트 생성을 처리하게 두는 것을 권장합니다. 조직 구조와 보고 체계, 권한, 어댑터 설정까지 함께 맞출 수 있습니다.",
+        askCeo: "CEO에게 새 에이전트 생성을 요청",
+        advancedConfig: "직접 고급 설정하기",
+        back: "뒤로",
+        chooseAdapter: "고급 설정에 사용할 어댑터 유형을 선택하세요.",
+        recommended: "추천",
+      }
+    : locale === "ja"
+      ? {
+          header: "新しいエージェントを追加",
+          recommendation: "エージェント設定は CEO に任せることをおすすめします。組織構造、レポートライン、権限、アダプター設定まで把握しています。",
+          askCeo: "CEO に新しいエージェント作成を依頼",
+          advancedConfig: "自分で高度な設定を行う",
+          back: "戻る",
+          chooseAdapter: "高度な設定に使うアダプタータイプを選択してください。",
+          recommended: "推奨",
+        }
+      : {
+          header: "Add a new agent",
+          recommendation: "We recommend letting your CEO handle agent setup. They know the org structure and can configure reporting, permissions, and adapters.",
+          askCeo: "Ask the CEO to create a new agent",
+          advancedConfig: "I want advanced configuration myself",
+          back: "Back",
+          chooseAdapter: "Choose your adapter type for advanced setup.",
+          recommended: "Recommended",
+        };
+
   return (
     <Dialog
       open={newAgentOpen}
@@ -141,7 +173,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{copy.header}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -164,15 +196,13 @@ export function NewAgentDialog() {
                   <Sparkles className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We recommend letting your CEO handle agent setup — they know the
-                  org structure and can configure reporting, permissions, and
-                  adapters.
+                  {copy.recommendation}
                 </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {copy.askCeo}
               </Button>
 
               {/* Advanced link */}
@@ -181,7 +211,7 @@ export function NewAgentDialog() {
                   className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
                   onClick={handleAdvancedConfig}
                 >
-                  I want advanced configuration myself
+                  {copy.advancedConfig}
                 </button>
               </div>
             </>
@@ -193,10 +223,10 @@ export function NewAgentDialog() {
                   onClick={() => setShowAdvancedCards(false)}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {copy.back}
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose your adapter type for advanced setup.
+                  {copy.chooseAdapter}
                 </p>
               </div>
 
@@ -211,7 +241,7 @@ export function NewAgentDialog() {
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                        Recommended
+                        {copy.recommended}
                       </span>
                     )}
                     <opt.icon className="h-4 w-4" />

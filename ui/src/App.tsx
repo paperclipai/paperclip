@@ -288,17 +288,18 @@ function UnprefixedBoardRedirect() {
 }
 
 function NoCompaniesStartPage() {
+  const { t } = useI18n();
   const { openOnboarding } = useDialog();
 
   return (
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Create your first company</h1>
+        <h1 className="text-xl font-semibold">{t("bootstrap.createFirstCompany")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
+          {t("bootstrap.createFirstCompanyDescription")}
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+          <Button onClick={() => openOnboarding()}>{t("bootstrap.newCompany")}</Button>
         </div>
       </div>
     </div>

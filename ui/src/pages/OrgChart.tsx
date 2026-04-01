@@ -358,7 +358,7 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom in"
+          aria-label={t("orgChart.zoomIn")}
           title={t("orgChart.zoomIn")}
         >
           +
@@ -376,7 +376,7 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom out"
+          aria-label={t("orgChart.zoomOut")}
           title={t("orgChart.zoomOut")}
         >
           &minus;

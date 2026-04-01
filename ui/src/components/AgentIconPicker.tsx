@@ -11,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AGENT_ICONS, getAgentIcon } from "../lib/agent-icons";
+import { useI18n } from "../i18n";
 
 const DEFAULT_ICON: AgentIconName = "bot";
 
@@ -31,8 +32,14 @@ interface AgentIconPickerProps {
 }
 
 export function AgentIconPicker({ value, onChange, children }: AgentIconPickerProps) {
+  const { locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const copy = locale === "ko"
+    ? { search: "아이콘 검색...", noMatch: "일치하는 아이콘이 없습니다" }
+    : locale === "ja"
+      ? { search: "アイコンを検索...", noMatch: "一致するアイコンがありません" }
+      : { search: "Search icons...", noMatch: "No icons match" };
 
   const filtered = useMemo(() => {
     const entries = AGENT_ICON_NAMES.map((name) => [name, AGENT_ICONS[name]] as const);
@@ -46,7 +53,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         <Input
-          placeholder="Search icons..."
+          placeholder={copy.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"
@@ -71,7 +78,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
             </button>
           ))}
           {filtered.length === 0 && (
-            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">{copy.noMatch}</p>
           )}
         </div>
       </PopoverContent>

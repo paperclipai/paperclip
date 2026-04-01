@@ -22,6 +22,7 @@ import { useSeatManagement } from "../hooks/useSeatManagement";
 import { SeatAttachDialog } from "../components/SeatAttachDialog";
 import { SeatPauseDialog } from "../components/SeatPauseDialog";
 import { SeatPermissionsDialog } from "../components/SeatPermissionsDialog";
+import { useI18n } from "../i18n";
 
 function OrgTree({
   nodes,
@@ -199,6 +200,7 @@ function OrgTreeNode({
 }
 
 export function Org() {
+  const { locale, t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -237,8 +239,64 @@ export function Org() {
   } = useSeatManagement(selectedCompanyId);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: locale === "ko" ? "조직도" : locale === "ja" ? "組織図" : "Org Chart" }]);
+  }, [locale, setBreadcrumbs]);
+  const copy = locale === "ko"
+    ? {
+        backfillComplete: "Seat backfill 완료",
+        backfillFailed: "Seat backfill 실패",
+        reconciled: "Seat 모드 정리 완료",
+        reconcileFailed: "Seat 모드 정리 실패",
+        unknownError: "알 수 없는 오류",
+        selectCompany: "조직도를 보려면 회사를 선택하세요.",
+        backfilling: "Backfill 중…",
+        backfillSeats: "Seat backfill",
+        reconciling: "정리 중…",
+        reconcileModes: "Seat 모드 정리",
+        noAgents: "조직에 에이전트가 없습니다. 에이전트를 만들어 조직도를 구성하세요.",
+        seatDetail: "Seat 상세",
+        seatDetailDescription: "{{name}} seat 상태와 위임 권한",
+        selectSeat: "현재 상태를 보려면 seat를 선택하세요.",
+        selectDetails: "조직도에서 `Details`를 선택해 seat를 확인하세요.",
+        noTitle: "제목 없음",
+      }
+    : locale === "ja"
+      ? {
+          backfillComplete: "Seat backfill 完了",
+          backfillFailed: "Seat backfill 失敗",
+          reconciled: "Seat モードを整理しました",
+          reconcileFailed: "Seat モード整理に失敗しました",
+          unknownError: "不明なエラー",
+          selectCompany: "組織図を見るには会社を選択してください。",
+          backfilling: "Backfill 中…",
+          backfillSeats: "Seat を backfill",
+          reconciling: "整理中…",
+          reconcileModes: "Seat モードを整理",
+          noAgents: "組織にエージェントがいません。組織図を作るにはエージェントを作成してください。",
+          seatDetail: "Seat 詳細",
+          seatDetailDescription: "{{name}} seat の状態と委譲権限",
+          selectSeat: "状態を確認するには seat を選択してください。",
+          selectDetails: "組織ツリーで `Details` を選ぶと seat を確認できます。",
+          noTitle: "タイトルなし",
+        }
+      : {
+          backfillComplete: "Seat backfill complete",
+          backfillFailed: "Seat backfill failed",
+          reconciled: "Seat modes reconciled",
+          reconcileFailed: "Seat mode reconciliation failed",
+          unknownError: "Unknown error",
+          selectCompany: "Select a company to view org chart.",
+          backfilling: "Backfilling…",
+          backfillSeats: "Backfill Seats",
+          reconciling: "Reconciling…",
+          reconcileModes: "Reconcile Modes",
+          noAgents: "No agents in the organization. Create agents to build your org chart.",
+          seatDetail: "Seat Detail",
+          seatDetailDescription: "{{name}} seat status and delegated permissions",
+          selectSeat: "Select a seat to inspect its current state.",
+          selectDetails: "Select `Details` in the org tree to inspect a seat.",
+          noTitle: "No title",
+        };
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -252,15 +310,15 @@ export function Org() {
       await invalidateSeatViews();
       pushToast({
         tone: "success",
-        title: "Seat backfill complete",
+        title: copy.backfillComplete,
         body: `${result.seatsCreated} seats created, ${result.ownershipBackfills.issues} issue owners backfilled.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Seat backfill failed",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: copy.backfillFailed,
+        body: error instanceof Error ? error.message : copy.unknownError,
       });
     },
   });
@@ -271,21 +329,21 @@ export function Org() {
       await invalidateSeatViews();
       pushToast({
         tone: "success",
-        title: "Seat modes reconciled",
+        title: copy.reconciled,
         body: `${result.updatedSeatCount} of ${result.scannedSeatCount} seats updated.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Seat mode reconciliation failed",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: copy.reconcileFailed,
+        body: error instanceof Error ? error.message : copy.unknownError,
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
+    return <EmptyState icon={GitBranch} message={copy.selectCompany} />;
   }
 
   if (isLoading) {
@@ -302,7 +360,7 @@ export function Org() {
           disabled={backfillSeats.isPending}
         >
           <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-          {backfillSeats.isPending ? "Backfilling…" : "Backfill Seats"}
+          {backfillSeats.isPending ? copy.backfilling : copy.backfillSeats}
         </Button>
         <Button
           size="sm"
@@ -311,7 +369,7 @@ export function Org() {
           disabled={reconcileModes.isPending}
         >
           <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
-          {reconcileModes.isPending ? "Reconciling…" : "Reconcile Modes"}
+          {reconcileModes.isPending ? copy.reconciling : copy.reconcileModes}
         </Button>
       </div>
 
@@ -320,7 +378,7 @@ export function Org() {
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message="No agents in the organization. Create agents to build your org chart."
+          message={copy.noAgents}
         />
       )}
 
@@ -343,41 +401,41 @@ export function Org() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Seat Detail</CardTitle>
+              <CardTitle className="text-base">{copy.seatDetail}</CardTitle>
               <CardDescription>
                 {selectedSeatDetail?.name
-                  ? `${selectedSeatDetail.name} seat status and delegated permissions`
-                  : "Select a seat to inspect its current state."}
+                  ? copy.seatDetailDescription.replace("{{name}}", selectedSeatDetail.name)
+                  : copy.selectSeat}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
               {!selectedSeatDetail ? (
-                <p className="text-muted-foreground">Select `Details` in the org tree to inspect a seat.</p>
+                <p className="text-muted-foreground">{copy.selectDetails}</p>
               ) : (
                 <>
                   <div className="space-y-1">
                     <div className="font-medium">{selectedSeatDetail.name}</div>
-                    <div className="text-muted-foreground">{selectedSeatDetail.title || "No title"}</div>
+                    <div className="text-muted-foreground">{selectedSeatDetail.title || copy.noTitle}</div>
                   </div>
                   <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2 text-sm">
-                    <dt className="text-muted-foreground">Slug</dt>
+                    <dt className="text-muted-foreground">{t("common.slug")}</dt>
                     <dd className="truncate">{selectedSeatDetail.slug}</dd>
-                    <dt className="text-muted-foreground">Seat Type</dt>
+                    <dt className="text-muted-foreground">{t("common.seatType")}</dt>
                     <dd>{selectedSeatDetail.seatType}</dd>
-                    <dt className="text-muted-foreground">Mode</dt>
+                    <dt className="text-muted-foreground">{t("common.mode")}</dt>
                     <dd>{selectedSeatDetail.operatingMode}</dd>
-                    <dt className="text-muted-foreground">Status</dt>
+                    <dt className="text-muted-foreground">{t("common.status")}</dt>
                     <dd>{selectedSeatDetail.status}</dd>
-                    <dt className="text-muted-foreground">Pause Reason</dt>
-                    <dd>{formatSeatPauseReason(selectedSeatDetail.pauseReason) || "None"}</dd>
-                    <dt className="text-muted-foreground">Pause Stack</dt>
+                    <dt className="text-muted-foreground">{t("common.pauseReason")}</dt>
+                    <dd>{formatSeatPauseReason(selectedSeatDetail.pauseReason) || t("common.none")}</dd>
+                    <dt className="text-muted-foreground">{t("common.pauseStack")}</dt>
                     <dd>{formatSeatPauseReasons(selectedSeatDetail.pauseReasons)}</dd>
-                    <dt className="text-muted-foreground">Human</dt>
-                    <dd>{selectedSeatDetail.currentHumanUserId || "None"}</dd>
-                    <dt className="text-muted-foreground">Default Agent</dt>
-                    <dd className="truncate">{selectedSeatDetail.defaultAgentId || "None"}</dd>
-                    <dt className="text-muted-foreground">Delegated</dt>
-                    <dd>{formatDelegatedPermissions(selectedSeatDetail.delegatedPermissions) || "none"}</dd>
+                    <dt className="text-muted-foreground">{t("common.human")}</dt>
+                    <dd>{selectedSeatDetail.currentHumanUserId || t("common.none")}</dd>
+                    <dt className="text-muted-foreground">{t("common.defaultAgent")}</dt>
+                    <dd className="truncate">{selectedSeatDetail.defaultAgentId || t("common.none")}</dd>
+                    <dt className="text-muted-foreground">{t("common.delegated")}</dt>
+                    <dd>{formatDelegatedPermissions(selectedSeatDetail.delegatedPermissions) || t("common.none")}</dd>
                   </dl>
                   <div className="flex flex-wrap gap-2 pt-1">
                     {selectedSeatNode?.seatId ? (

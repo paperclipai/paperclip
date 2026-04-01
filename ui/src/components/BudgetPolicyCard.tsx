@@ -224,7 +224,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
+          <p className="text-xs text-destructive">{t("budgetPolicy.invalidAmount")}</p>
         ) : null}
       </CardContent>
     </Card>

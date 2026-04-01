@@ -206,6 +206,8 @@ export function ScheduleEditor({
           weekdaysAt: "Weekdays at {{time}}",
           everyDayNameAt: "Every {{day}} at {{time}}",
           monthlyOnAt: "Monthly on the {{day}} at {{time}}",
+          at: "at",
+          on: "on",
         };
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
@@ -291,7 +293,7 @@ export function ScheduleEditor({
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{copy.at}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -358,7 +360,7 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{copy.on}</span>
               <div className="flex gap-1">
                 {DAYS_OF_WEEK.map((d) => (
                   <Button

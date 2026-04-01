@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useI18n } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -437,32 +438,36 @@ const EnumField = React.memo(({
   description?: string;
   error?: string;
   options: unknown[];
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Select
-      value={String(value ?? "")}
-      onValueChange={onChange}
+}) => {
+  const { locale } = useI18n();
+  const selectPlaceholder = locale === "ko" ? "옵션 선택" : locale === "ja" ? "オプションを選択" : "Select an option";
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={String(option)} value={String(option)}>
-            {String(option)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  </FieldWrapper>
-));
+      <Select
+        value={String(value ?? "")}
+        onValueChange={onChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={selectPlaceholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={String(option)} value={String(option)}>
+              {String(option)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
 
 EnumField.displayName = "EnumField";
 
@@ -664,6 +669,12 @@ const ArrayField = React.memo(({
   errors: Record<string, string>;
   path: string;
 }) => {
+  const { locale } = useI18n();
+  const copy = locale === "ko"
+    ? { addItem: "항목 추가", add: "추가", item: "항목", removeItem: "항목 제거", noItems: "아직 추가된 항목이 없습니다." }
+    : locale === "ja"
+      ? { addItem: "項目を追加", add: "追加", item: "項目", removeItem: "項目を削除", noItems: "まだ項目は追加されていません。" }
+      : { addItem: "Add item", add: "Add", item: "Item", removeItem: "Remove item", noItems: "No items added yet." };
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
@@ -694,7 +705,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? "Add item" : "Add"}
+          {isComplex ? copy.addItem : copy.add}
         </Button>
       </div>
 
@@ -706,7 +717,7 @@ const ArrayField = React.memo(({
           >
             <div className="flex-1">
               <div className="mb-2 text-xs font-medium text-muted-foreground">
-                Item {index + 1}
+                {copy.item} {index + 1}
               </div>
               <FormField
                 propSchema={itemSchema}
@@ -739,13 +750,13 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{copy.removeItem}</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            No items added yet.
+            {copy.noItems}
           </div>
         )}
       </div>

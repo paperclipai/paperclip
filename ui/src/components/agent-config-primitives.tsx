@@ -419,7 +419,11 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
+  const osxLabel = "macOS (Finder)";
+  const windowsLabel = locale === "ko" ? "Windows (파일 탐색기)" : locale === "ja" ? "Windows (エクスプローラー)" : "Windows (File Explorer)";
+  const terminalLabel = locale === "ko" ? "터미널 대안 (macOS/Linux)" : locale === "ja" ? "ターミナル手順 (macOS/Linux)" : "Terminal fallback (macOS/Linux)";
   return (
     <>
       <button
@@ -427,54 +431,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("pathModal.choose")}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("pathModal.title")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("pathModal.descriptionPrefix")} <code>/Users/yourname/Documents/project</code> {t("pathModal.descriptionSuffix")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
+              <p className="font-medium">{osxLabel}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("pathModal.steps.mac1")}</li>
+                <li>{t("pathModal.steps.mac2")}</li>
+                <li>{t("pathModal.steps.mac3")}</li>
+                <li>{t("pathModal.steps.mac4")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{windowsLabel}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("pathModal.steps.windows1")}</li>
+                <li>{t("pathModal.steps.windows2")}</li>
+                <li>{t("pathModal.steps.windows3")}</li>
+                <li>{t("pathModal.tips.windows")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{terminalLabel}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li>{t("pathModal.steps.linux1")}</li>
+                <li>{t("pathModal.steps.linux2")}</li>
+                <li>{t("pathModal.steps.linux3")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("common.close")}
             </Button>
           </DialogFooter>
         </DialogContent>

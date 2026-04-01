@@ -438,7 +438,7 @@ function WorkspaceOperationsSection({
   operations: WorkspaceOperation[];
   censorUsernameInLogs: boolean;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (operations.length === 0) return null;
 
   return (
@@ -530,7 +530,7 @@ function WorkspaceOperationsSection({
 }
 
 export function AgentDetail() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
     agentId: string;
@@ -1630,7 +1630,7 @@ function PromptsTab({
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
 }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -2109,7 +2109,7 @@ function PromptsTab({
           isMobile && !showFilePanel && "hidden",
         )} style={isMobile ? undefined : { width: filePanelWidth }}>
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">Files</h4>
+            <h4 className="text-sm font-medium">{locale === "ko" ? "파일" : locale === "ja" ? "ファイル" : "Files"}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
@@ -2846,9 +2846,10 @@ function RunsTab({
   adapterType: string;
 }) {
   const { isMobile } = useSidebar();
+  const { locale } = useI18n();
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">{locale === "ko" ? "아직 실행 기록이 없습니다." : locale === "ja" ? "まだ実行はありません。" : "No runs yet."}</p>;
   }
 
   // Sort by created descending

@@ -3,9 +3,11 @@ import { ChevronRight, MoreHorizontal } from "lucide-react"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { useI18n } from "@/i18n"
 
 function Breadcrumb({ ...props }: React.ComponentProps<"nav">) {
-  return <nav aria-label="breadcrumb" data-slot="breadcrumb" {...props} />
+  const { locale } = useI18n()
+  return <nav aria-label={locale === "ko" ? "브레드크럼" : locale === "ja" ? "パンくず" : "breadcrumb"} data-slot="breadcrumb" {...props} />
 }
 
 function BreadcrumbList({ className, ...props }: React.ComponentProps<"ol">) {
@@ -84,6 +86,7 @@ function BreadcrumbEllipsis({
   className,
   ...props
 }: React.ComponentProps<"span">) {
+  const { locale } = useI18n()
   return (
     <span
       data-slot="breadcrumb-ellipsis"
@@ -93,7 +96,7 @@ function BreadcrumbEllipsis({
       {...props}
     >
       <MoreHorizontal className="size-4" />
-      <span className="sr-only">More</span>
+      <span className="sr-only">{locale === "ko" ? "더 보기" : locale === "ja" ? "もっと見る" : "More"}</span>
     </span>
   )
 }

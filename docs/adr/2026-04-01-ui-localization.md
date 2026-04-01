@@ -52,11 +52,28 @@ At the same time, the UI already contains a large amount of product-facing copy 
 - Product-facing strings can be localized incrementally without changing the runtime contract.
 - Adding a new locale becomes primarily a catalog/data task.
 - Locale sync with the messenger avoids conflicting user preferences between surfaces.
+- After the 2026-04-01 sweep, the main product routes, shared dialogs, workspace controls, issue/project/goal flows, and most shared primitives are localized for `en/ko/ja`.
 
 ### Negative
 
 - During the migration period, the repo may temporarily contain both catalog-driven strings and inline locale branching.
-- Residual untranslated strings can remain in low-frequency or internal/demo pages until the follow-up sweep is complete.
+- Residual untranslated strings may still remain in internal/demo/example pages until the follow-up sweep is complete.
+
+## 2026-04-01 Update
+
+The first broad localization pass is now complete for product-facing Paperclip UI.
+
+Covered in the sweep:
+- app shell, navigation, onboarding entry, and locale switcher
+- dashboard, agents, org chart, costs, approvals, routines, inbox, companies, auth, invite, company import/export
+- issue/project/goal creation and detail flows
+- seat-management dialogs and workspace management dialogs
+- instance settings, restart banners, toasts, shared primitives, and several low-frequency admin surfaces
+
+Remaining follow-up is intentionally narrower:
+- internal/demo/example screens such as `DesignGuide` and transcript UX lab pages
+- externalizing the last transitional inline locale branches from TSX into catalogs
+- adding guardrails so newly introduced user-facing strings do not bypass the i18n layer
 
 ## Follow-up
 

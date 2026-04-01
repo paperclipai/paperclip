@@ -19,7 +19,7 @@ export function FinanceTimelineCard({
   rows,
   emptyMessage = "No financial events in this period.",
 }: FinanceTimelineCardProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
@@ -61,7 +61,7 @@ export function FinanceTimelineCard({
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">estimated</div> : null}
+                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">{locale === "ko" ? "추정" : locale === "ja" ? "見積り" : "estimated"}</div> : null}
                 </div>
               </div>
             </div>
