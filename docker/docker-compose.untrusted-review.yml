@@ -1,7 +1,7 @@
 services:
   review:
     build:
-      context: .
+      context: ..
       dockerfile: docker/untrusted-review/Dockerfile
     init: true
     tty: true
