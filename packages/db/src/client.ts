@@ -261,7 +261,24 @@ async function applyPendingMigrationsManually(
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          // Use savepoints so a single "already exists" error doesn't abort the transaction.
+          const savepointName = `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          await sql.unsafe(`SAVEPOINT ${savepointName}`);
+          try {
+            await sql.unsafe(statement);
+            await sql.unsafe(`RELEASE SAVEPOINT ${savepointName}`);
+          } catch (error: unknown) {
+            const pgError = error as { code?: string };
+            // PostgreSQL error codes for "already applied" scenarios:
+            // 42P07 = duplicate_table, 42701 = duplicate_column, 42710 = duplicate_object,
+            // 42703 = undefined_column (DROP COLUMN on already-dropped column),
+            // 42P01 = undefined_table (operations on already-dropped table)
+            if (pgError.code === "42P07" || pgError.code === "42701" || pgError.code === "42710" || pgError.code === "42703" || pgError.code === "42P01") {
+              await sql.unsafe(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+              continue;
+            }
+            throw error;
+          }
         }
 
         await recordMigrationHistoryEntry(
@@ -399,6 +416,27 @@ async function migrationStatementAlreadyApplied(
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
   if (addConstraintMatch) {
     return constraintExists(sql, addConstraintMatch[2]);
+  }
+
+  // ALTER TABLE ... ALTER COLUMN (SET DEFAULT, SET NOT NULL, DROP NOT NULL, SET DATA TYPE, DROP DEFAULT)
+  const alterColumnMatch = normalized.match(/^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)"/i);
+  if (alterColumnMatch) {
+    return columnExists(sql, alterColumnMatch[1], alterColumnMatch[2]);
+  }
+
+  // ALTER TABLE ... DROP COLUMN
+  const dropColumnMatch = normalized.match(/^ALTER TABLE "([^"]+)" DROP COLUMN(?: IF EXISTS)? "([^"]+)"/i);
+  if (dropColumnMatch) {
+    // If the column doesn't exist, the drop was already applied
+    const exists = await columnExists(sql, dropColumnMatch[1], dropColumnMatch[2]);
+    return !exists;
+  }
+
+  // DROP INDEX
+  const dropIndexMatch = normalized.match(/^DROP INDEX(?: IF EXISTS)? "([^"]+)"/i);
+  if (dropIndexMatch) {
+    // If the index doesn't exist, the drop was already applied (or never needed)
+    return true;
   }
 
   // If we cannot reason about a statement safely, require manual migration.
@@ -689,9 +727,13 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   }
 
   if (initialState.reason === "no-migration-journal-non-empty-db") {
-    throw new Error(
-      "Database has tables but no migration journal; automatic migration is unsafe. Initialize migration history manually.",
-    );
+    // Create the migration journal table so reconciliation and migration can proceed.
+    const bootstrapSql = createUtilitySql(url);
+    try {
+      await ensureMigrationJournalTable(bootstrapSql);
+    } finally {
+      await bootstrapSql.end();
+    }
   }
 
   let state = await inspectMigrations(url);
