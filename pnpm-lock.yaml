@@ -506,6 +506,9 @@ importers:
       hermes-paperclip-adapter:
         specifier: ^0.2.0
         version: 0.2.0
+      iconv-lite:
+        specifier: ^0.6.3
+        version: 0.6.3
       jsdom:
         specifier: ^28.1.0
         version: 28.1.0(@noble/hashes@2.0.1)
