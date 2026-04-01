@@ -28,5 +28,4 @@ export const TOOL_NAMES = {
 export const DEFAULT_CONFIG = {
   linearApiKeyRef: "",
   teamFilter: [] as string[],
-  syncIntervalMinutes: 10,
 } as const;

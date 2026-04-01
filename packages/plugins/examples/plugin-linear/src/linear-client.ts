@@ -11,13 +11,11 @@ export interface LinearIssue {
   state: { id: string; name: string; type: string };
   assignee: { id: string; name: string; displayName: string } | null;
   team: { id: string; name: string; key: string };
-  labels: Array<{ id: string; name: string; color: string }>;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
   cancelledAt: string | null;
   dueDate: string | null;
-  estimate: number | null;
   url: string;
 }
 
@@ -26,7 +24,6 @@ export interface LinearProject {
   name: string;
   state: string;
   progress: number;
-  startDate: string | null;
   targetDate: string | null;
   lead: { id: string; name: string; displayName: string } | null;
   url: string;
@@ -105,17 +102,13 @@ export class LinearClient {
         state { id name type }
         assignee { id name displayName }
         team { id name key }
-        labels { nodes { id name color } }
-        createdAt updatedAt completedAt cancelledAt dueDate estimate url
+        createdAt updatedAt completedAt cancelledAt dueDate url
       }
       pageInfo { hasNextPage endCursor }
     }}`);
 
     return {
-      issues: d.issues.nodes.map((i) => ({
-        ...i,
-        labels: (i.labels as unknown as { nodes: LinearIssue["labels"] }).nodes ?? [],
-      })),
+      issues: d.issues.nodes,
       hasMore: d.issues.pageInfo.hasNextPage,
       endCursor: d.issues.pageInfo.endCursor,
     };
@@ -124,7 +117,7 @@ export class LinearClient {
   async projects(): Promise<LinearProject[]> {
     const d = await this.gql<{ projects: { nodes: LinearProject[] } }>(
       `query { projects(first:50, orderBy:updatedAt) { nodes {
-        id name state progress startDate targetDate url
+        id name state progress targetDate url
         lead { id name displayName }
       }}}`,
     );
