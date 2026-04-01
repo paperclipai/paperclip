@@ -387,6 +387,8 @@ export function OnboardingWizard() {
   const [linearTeamKey, setLinearTeamKey] = useState<string | null>(null);
   const [linearHighestNumber, setLinearHighestNumber] = useState<number | null>(null);
   const [importingIssues, setImportingIssues] = useState(false);
+  const [importPhase, setImportPhase] = useState<"config" | "projects" | "issues" | "labels" | "sync" | "done">("config");
+  const [importResult, setImportResult] = useState<{ imported: number; projects: number; labels: number } | null>(null);
   const [importDone, setImportDone] = useState(false);
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
   const [customPrefix, setCustomPrefix] = useState("");
@@ -431,11 +433,34 @@ export function OnboardingWizard() {
   async function handleImportLinearIssues() {
     if (!createdCompanyId) return;
     setImportingIssues(true);
+    setImportPhase("config");
     try {
       await handleSaveConfig();
-      await fetch(`/api/auth/linear/import?companyId=${createdCompanyId}`, {
+      setImportPhase("projects");
+
+      // Phase progression: the backend syncs projects → issues → labels in one call.
+      // Advance the UI phases on a timer so the user sees progress.
+      const phaseTimer = setTimeout(() => setImportPhase("issues"), 2000);
+      const labelTimer = setTimeout(() => setImportPhase("labels"), 5000);
+
+      const res = await fetch(`/api/auth/linear/import?companyId=${createdCompanyId}`, {
         method: "POST",
       });
+      clearTimeout(phaseTimer);
+      clearTimeout(labelTimer);
+
+      if (res.ok) {
+        const data = await res.json();
+        setImportResult({ imported: data.imported ?? 0, projects: data.projects ?? 0, labels: data.labels ?? 0 });
+      }
+
+      // Auto-trigger full sync to catch anything import missed (completed/cancelled issues, extra labels)
+      setImportPhase("sync");
+      await fetch(`/api/auth/linear/sync?companyId=${createdCompanyId}`, {
+        method: "POST",
+      });
+
+      setImportPhase("done");
       setImportDone(true);
     } catch {
       // Best effort
@@ -673,7 +698,7 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && showLinearConnect) handleStep1Continue();
+      if (step === 1 && showLinearConnect && !importingIssues) handleStep1Continue();
       else if (step === 1 && companyName.trim()) handleStep1Next();
       else if (step === 2 && agentName.trim()) handleStep2Next();
       else if (step === 3 && taskTitle.trim()) handleStep3Next();
@@ -889,26 +914,65 @@ export function OnboardingWizard() {
                             </div>
                           )}
 
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={importingIssues}
-                            onClick={handleImportLinearIssues}
-                          >
-                            {importingIssues ? (
-                              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                            ) : (
+                          {!importingIssues && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={handleImportLinearIssues}
+                            >
                               <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                            )}
-                            {importingIssues ? "Importing..." : "Import issues"}
-                          </Button>
+                              Import issues
+                            </Button>
+                          )}
+
+                          {importingIssues && (
+                            <div className="space-y-2 pt-1">
+                              {[
+                                { key: "config", label: "Saving configuration" },
+                                { key: "projects", label: "Syncing projects" },
+                                { key: "issues", label: "Importing issues" },
+                                { key: "labels", label: "Linking labels" },
+                                { key: "sync", label: "Full sync from Linear" },
+                              ].map((step) => {
+                                const phases = ["config", "projects", "issues", "labels", "sync", "done"];
+                                const stepIdx = phases.indexOf(step.key);
+                                const currentIdx = phases.indexOf(importPhase);
+                                const isDone = currentIdx > stepIdx;
+                                const isActive = currentIdx === stepIdx;
+                                return (
+                                  <div key={step.key} className="flex items-center gap-2">
+                                    {isDone ? (
+                                      <Check className="h-3 w-3 text-green-500 shrink-0" />
+                                    ) : isActive ? (
+                                      <Loader2 className="h-3 w-3 animate-spin text-foreground shrink-0" />
+                                    ) : (
+                                      <div className="h-3 w-3 rounded-full border border-border shrink-0" />
+                                    )}
+                                    <span className={cn(
+                                      "text-xs transition-colors",
+                                      isDone ? "text-muted-foreground" : isActive ? "text-foreground" : "text-muted-foreground/50"
+                                    )}>
+                                      {step.label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {importDone && (
-                        <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-2">
-                          <Check className="h-3.5 w-3.5 text-green-500" />
-                          <span className="text-xs text-green-400">Issues imported</span>
+                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Check className="h-3.5 w-3.5 text-green-500" />
+                            <span className="text-xs text-green-400 font-medium">Import complete</span>
+                          </div>
+                          {importResult && (
+                            <p className="text-xs text-muted-foreground pl-5.5">
+                              {importResult.imported} issues{importResult.projects > 0 ? `, ${importResult.projects} projects` : ""}{importResult.labels > 0 ? `, ${importResult.labels} labels` : ""}
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -930,6 +994,7 @@ export function OnboardingWizard() {
                       variant="ghost"
                       size="sm"
                       className="text-xs text-muted-foreground"
+                      disabled={importingIssues}
                       onClick={handleStep1Continue}
                     >
                       {linearConnected ? "Skip import" : "Skip for now"}
@@ -938,6 +1003,7 @@ export function OnboardingWizard() {
                       <Button
                         size="sm"
                         className="ml-auto"
+                        disabled={importingIssues}
                         onClick={handleStep1Continue}
                       >
                         Continue

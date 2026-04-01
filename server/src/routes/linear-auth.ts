@@ -10,7 +10,7 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { plugins, pluginConfig, companies, labels, issueLabels, projects } from "@paperclipai/db";
+import { plugins, pluginConfig, companies, labels, issueLabels, projects, cycles, issueCycles } from "@paperclipai/db";
 import { eq, and } from "drizzle-orm";
 import type { SecretProvider } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -507,6 +507,68 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         return;
       }
 
+      // ── Sync projects from Linear ──
+      const projectMap = new Map<string, string>(); // Linear project ID → Paperclip project ID
+      const linearProjectsRes = await fetch("https://api.linear.app/graphql", {
+        method: "POST",
+        headers: { Authorization: token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: `query { projects { nodes { id name description status { name } startDate targetDate } } }`,
+        }),
+      });
+      if (linearProjectsRes.ok) {
+        const projData = (await linearProjectsRes.json()) as {
+          data?: { projects?: { nodes?: Array<{
+            id: string; name: string; description: string | null;
+            status: { name: string }; startDate: string | null; targetDate: string | null;
+          }> } };
+        };
+        const linearStatusMap: Record<string, string> = {
+          "Planned": "backlog", "Backlog": "backlog",
+          "In Progress": "active", "Started": "active",
+          "Completed": "completed", "Done": "completed",
+          "Canceled": "cancelled", "Cancelled": "cancelled",
+          "Paused": "paused",
+        };
+        for (const lp of projData.data?.projects?.nodes ?? []) {
+          const [existing] = await db
+            .select()
+            .from(projects)
+            .where(and(eq(projects.companyId, companyId), eq(projects.name, lp.name)))
+            .limit(1);
+          const status = linearStatusMap[lp.status.name] ?? "backlog";
+          if (existing) {
+            projectMap.set(lp.id, existing.id);
+            await db.update(projects)
+              .set({ description: lp.description, status, targetDate: lp.targetDate, updatedAt: new Date() })
+              .where(eq(projects.id, existing.id));
+          } else {
+            const [created] = await db.insert(projects).values({
+              companyId,
+              name: lp.name,
+              description: lp.description,
+              status,
+              targetDate: lp.targetDate,
+            }).returning();
+            projectMap.set(lp.id, created.id);
+            console.log(`[linear-import] created project: ${lp.name}`);
+          }
+        }
+        console.log(`[linear-import] synced ${projectMap.size} projects from Linear`);
+      }
+
+      // ── Label cache ──
+      const labelCache = new Map<string, string>(); // label name → Paperclip label ID
+      const existingLabels = await db
+        .select()
+        .from(labels)
+        .where(eq(labels.companyId, companyId));
+      for (const l of existingLabels) {
+        labelCache.set(l.name, l.id);
+      }
+      const defaultColors = ["#6366f1", "#ec4899", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ef4444", "#14b8a6"];
+      let colorIdx = 0;
+
       // Fetch all open issues from Linear with pagination
       let imported = 0;
       let cursor: string | undefined;
@@ -535,11 +597,13 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               ) {
                 pageInfo { hasNextPage endCursor }
                 nodes {
-                  id number identifier title description url priority
+                  id number identifier title description url priority estimate
                   createdAt updatedAt
                   state { name type }
                   assignee { name email }
-                  labels { nodes { name } }
+                  labels { nodes { name color } }
+                  project { id name }
+                  cycle { id name number startsAt endsAt description }
                 }
               }
             }`,
@@ -560,10 +624,13 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               nodes: Array<{
                 id: string; number: number; identifier: string;
                 title: string; description: string | null; url: string;
-                priority: number; createdAt: string; updatedAt: string;
+                priority: number; estimate: number | null;
+                createdAt: string; updatedAt: string;
                 state: { name: string; type: string };
                 assignee: { name: string; email: string } | null;
-                labels: { nodes: Array<{ name: string }> };
+                labels: { nodes: Array<{ name: string; color: string }> };
+                project: { id: string; name: string } | null;
+                cycle: { id: string; name: string; number: number; startsAt: string; endsAt: string; description: string | null } | null;
               }>;
             };
           };
@@ -588,16 +655,19 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
           const priority = priorityMap[li.priority] ?? "medium";
           const status = statusMap[li.state.type] ?? "backlog";
-          const labels = li.labels.nodes.map((l) => l.name);
+          const labelNames = li.labels.nodes.map((l) => l.name);
 
           // Build description with Linear metadata
           const metaLines = [
             `> **Linear**: [${li.identifier}](${li.url})`,
             `> **Status**: ${li.state.name}`,
             ...(li.assignee ? [`> **Assignee**: ${li.assignee.name}`] : []),
-            ...(labels.length > 0 ? [`> **Labels**: ${labels.join(", ")}`] : []),
+            ...(labelNames.length > 0 ? [`> **Labels**: ${labelNames.join(", ")}`] : []),
           ];
           const description = [metaLines.join("\n"), "", li.description ?? ""].join("\n").trim() || null;
+
+          // Map project if available
+          const projectId = li.project?.id ? projectMap.get(li.project.id) : undefined;
 
           try {
             // Insert directly with exact issue number from Linear
@@ -609,8 +679,10 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               description,
               status,
               priority,
+              estimate: li.estimate ?? null,
               originKind: "linear",
               originId: li.id,
+              ...(projectId ? { projectId } : {}),
               ...(status === "in_progress" ? { startedAt: new Date() } : {}),
             });
 
@@ -619,10 +691,89 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               highestImportedNumber = li.number;
             }
 
+            // Get the created issue ID
+            const [created] = await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(eq(issues.identifier, li.identifier))
+              .limit(1);
+
+            // Sync labels: create missing labels and link to issue
+            if (created && li.labels.nodes.length > 0) {
+              for (const ll of li.labels.nodes) {
+                let labelId = labelCache.get(ll.name);
+                if (!labelId) {
+                  const color = ll.color || defaultColors[colorIdx % defaultColors.length];
+                  colorIdx++;
+                  const [createdLabel] = await db.insert(labels).values({
+                    companyId,
+                    name: ll.name,
+                    color,
+                  }).onConflictDoNothing().returning();
+                  if (createdLabel) {
+                    labelId = createdLabel.id;
+                    labelCache.set(ll.name, createdLabel.id);
+                  } else {
+                    // Already exists (race condition), fetch it
+                    const [existing] = await db.select().from(labels)
+                      .where(and(eq(labels.companyId, companyId), eq(labels.name, ll.name)))
+                      .limit(1);
+                    if (existing) {
+                      labelId = existing.id;
+                      labelCache.set(ll.name, existing.id);
+                    }
+                  }
+                }
+                if (labelId) {
+                  await db.insert(issueLabels).values({
+                    issueId: created.id,
+                    labelId,
+                    companyId,
+                  }).onConflictDoNothing();
+                }
+              }
+            }
+
+            // Sync cycle: find or create, then link to issue
+            if (created && li.cycle) {
+              const [existingCycle] = await db.select().from(cycles)
+                .where(and(eq(cycles.companyId, companyId), eq(cycles.originId, li.cycle.id)))
+                .limit(1);
+              let cycleId: string;
+              if (existingCycle) {
+                cycleId = existingCycle.id;
+              } else {
+                const [createdCycle] = await db.insert(cycles).values({
+                  companyId,
+                  name: li.cycle.name,
+                  description: li.cycle.description,
+                  number: li.cycle.number,
+                  startsAt: li.cycle.startsAt,
+                  endsAt: li.cycle.endsAt,
+                  originId: li.cycle.id,
+                }).onConflictDoNothing().returning();
+                if (createdCycle) {
+                  cycleId = createdCycle.id;
+                } else {
+                  const [fallback] = await db.select().from(cycles)
+                    .where(and(eq(cycles.companyId, companyId), eq(cycles.originId, li.cycle.id)))
+                    .limit(1);
+                  cycleId = fallback?.id ?? "";
+                }
+              }
+              if (cycleId) {
+                await db.insert(issueCycles).values({
+                  issueId: created.id,
+                  cycleId,
+                  companyId,
+                }).onConflictDoNothing();
+              }
+            }
+
             // Store link in plugin state if plugin exists
-            if (plugin) {
+            if (plugin && created) {
               const linkData = {
-                paperclipIssueId: "", // filled below
+                paperclipIssueId: created.id,
                 paperclipCompanyId: companyId,
                 linearIssueId: li.id,
                 linearIdentifier: li.identifier,
@@ -633,34 +784,23 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
                 lastCommentSyncAt: null,
               };
 
-              // Get the created issue to fill the ID
-              const [created] = await db
-                .select({ id: issues.id })
-                .from(issues)
-                .where(eq(issues.identifier, li.identifier))
-                .limit(1);
+              await db.insert(pluginState).values({
+                pluginId: plugin.id,
+                scopeKind: "instance",
+                scopeId: null,
+                namespace: "default",
+                stateKey: `link:${created.id}`,
+                valueJson: JSON.stringify(linkData),
+              }).onConflictDoNothing();
 
-              if (created) {
-                linkData.paperclipIssueId = created.id;
-
-                await db.insert(pluginState).values({
-                  pluginId: plugin.id,
-                  scopeKind: "instance",
-                  scopeId: null,
-                  namespace: "default",
-                  stateKey: `link:${created.id}`,
-                  valueJson: JSON.stringify(linkData),
-                }).onConflictDoNothing();
-
-                await db.insert(pluginState).values({
-                  pluginId: plugin.id,
-                  scopeKind: "instance",
-                  scopeId: null,
-                  namespace: "default",
-                  stateKey: `linear:${li.id}`,
-                  valueJson: JSON.stringify(created.id),
-                }).onConflictDoNothing();
-              }
+              await db.insert(pluginState).values({
+                pluginId: plugin.id,
+                scopeKind: "instance",
+                scopeId: null,
+                namespace: "default",
+                stateKey: `linear:${li.id}`,
+                valueJson: JSON.stringify(created.id),
+              }).onConflictDoNothing();
             }
 
             imported++;
@@ -673,8 +813,10 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         cursor = issuesData.data?.issues?.pageInfo.endCursor ?? undefined;
       }
 
-      // Update company counter to highest imported number
-      if (highestImportedNumber > company.issueCounter) {
+      // Update company counter to highest imported number (unless user chose "start fresh")
+      // Re-read company to pick up any configure call that ran before import
+      const [freshCompany] = await db.select().from(companies).where(eq(companies.id, companyId));
+      if (freshCompany && freshCompany.issueCounter !== 0 && highestImportedNumber > freshCompany.issueCounter) {
         await db.update(companies)
           .set({ issueCounter: highestImportedNumber, updatedAt: new Date() })
           .where(eq(companies.id, companyId));
@@ -687,11 +829,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         action: "linear.import_completed",
         entityType: "company",
         entityId: companyId,
-        details: { imported, highestNumber: highestImportedNumber },
+        details: { imported, highestNumber: highestImportedNumber, projects: projectMap.size, labels: labelCache.size },
       });
 
-      console.log(`[linear-import] imported ${imported} issues, highest number: ${highestImportedNumber}`);
-      res.json({ ok: true, imported, highestNumber: highestImportedNumber });
+      console.log(`[linear-import] imported ${imported} issues, ${projectMap.size} projects, ${labelCache.size} labels, highest number: ${highestImportedNumber}`);
+      res.json({ ok: true, imported, highestNumber: highestImportedNumber, projects: projectMap.size, labels: labelCache.size });
     } catch (err) {
       console.error("[linear-import] error:", err);
       res.status(500).json({ error: err instanceof Error ? err.message : "Import failed" });
@@ -824,11 +966,12 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               query: `query($teamKey: String!, $number: Float!) {
                 issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $number } }, first: 1) {
                   nodes {
-                    id identifier title description url priority number
+                    id identifier title description url priority estimate number
                     state { name type }
                     assignee { name email }
                     labels { nodes { name color } }
                     project { id name }
+                    cycle { id name number startsAt endsAt description }
                   }
                 }
               }`,
@@ -843,11 +986,12 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               issues?: {
                 nodes?: Array<{
                   id: string; identifier: string; title: string;
-                  description: string | null; url: string; priority: number; number: number;
+                  description: string | null; url: string; priority: number; estimate: number | null; number: number;
                   state: { name: string; type: string };
                   assignee: { name: string; email: string } | null;
                   labels: { nodes: Array<{ name: string; color: string }> };
                   project: { id: string; name: string } | null;
+                  cycle: { id: string; name: string; number: number; startsAt: string; endsAt: string; description: string | null } | null;
                 }>;
               };
             };
@@ -864,6 +1008,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             title: li.title,
             status: newStatus,
             priority: newPriority,
+            estimate: li.estimate ?? null,
             description: li.description,
             updatedAt: new Date(),
           };
@@ -924,6 +1069,54 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
                   companyId,
                 }).onConflictDoNothing();
               }
+            }
+          }
+
+          // Sync cycle
+          if (li.cycle) {
+            // Remove existing cycle links for this issue
+            await db.delete(issueCycles).where(eq(issueCycles.issueId, pIssue.id));
+
+            const [existingCycle] = await db.select().from(cycles)
+              .where(and(eq(cycles.companyId, companyId), eq(cycles.originId, li.cycle.id)))
+              .limit(1);
+            let cycleId: string;
+            if (existingCycle) {
+              cycleId = existingCycle.id;
+              // Update cycle details
+              await db.update(cycles).set({
+                name: li.cycle.name,
+                number: li.cycle.number,
+                startsAt: li.cycle.startsAt,
+                endsAt: li.cycle.endsAt,
+                description: li.cycle.description,
+                updatedAt: new Date(),
+              }).where(eq(cycles.id, existingCycle.id));
+            } else {
+              const [createdCycle] = await db.insert(cycles).values({
+                companyId,
+                name: li.cycle.name,
+                description: li.cycle.description,
+                number: li.cycle.number,
+                startsAt: li.cycle.startsAt,
+                endsAt: li.cycle.endsAt,
+                originId: li.cycle.id,
+              }).onConflictDoNothing().returning();
+              if (createdCycle) {
+                cycleId = createdCycle.id;
+              } else {
+                const [fallback] = await db.select().from(cycles)
+                  .where(and(eq(cycles.companyId, companyId), eq(cycles.originId, li.cycle.id)))
+                  .limit(1);
+                cycleId = fallback?.id ?? "";
+              }
+            }
+            if (cycleId) {
+              await db.insert(issueCycles).values({
+                issueId: pIssue.id,
+                cycleId,
+                companyId,
+              }).onConflictDoNothing();
             }
           }
 
@@ -1106,6 +1299,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         // Title
         if (data.title) {
           patch.title = data.title;
+        }
+
+        // Estimate
+        if (data.estimate !== undefined) {
+          patch.estimate = (data.estimate as number) ?? null;
         }
 
         if (Object.keys(patch).length > 0) {
