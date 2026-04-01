@@ -716,18 +716,36 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+  {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
-      try {
-        await embeddedPostgres?.stop();
-      } catch (err) {
-        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
+      // Kill all tracked child processes (adapter runs) before exiting
+      // to prevent orphaned "Lost in-memory process handle" errors on restart.
+      const { runningProcesses } = await import("./adapters/index.js");
+      if (runningProcesses.size > 0) {
+        logger.info({ signal, count: runningProcesses.size }, "Killing tracked child processes before shutdown");
+        for (const [runId, entry] of runningProcesses) {
+          try {
+            entry.child.kill("SIGTERM");
+          } catch {
+            // already dead
+          }
+          runningProcesses.delete(runId);
+        }
+        // Brief grace for SIGTERM before we exit
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
+
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        logger.info({ signal }, "Stopping embedded PostgreSQL");
+        try {
+          await embeddedPostgres?.stop();
+        } catch (err) {
+          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
+      }
+      process.exit(0);
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });

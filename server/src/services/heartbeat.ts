@@ -1869,25 +1869,31 @@ export function heartbeatService(db: Db) {
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
-            });
+        // Kill the orphaned process and let it fall through to the process_lost
+        // retry path below, instead of leaving it in limbo indefinitely.
+        const detachedMessage = `Lost in-memory process handle; killing orphaned child pid ${run.processPid}`;
+        try {
+          process.kill(run.processPid, "SIGTERM");
+        } catch {
+          // already dead or no permission
+        }
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: detachedMessage,
+          payload: { processPid: run.processPid },
+        });
+        // Brief wait for the process to exit before falling through to process_lost handling
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // If still alive after SIGTERM, force kill
+        if (isProcessAlive(run.processPid)) {
+          try {
+            process.kill(run.processPid, "SIGKILL");
+          } catch {
+            // ignore
           }
         }
-        continue;
       }
 
       const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
