@@ -138,6 +138,17 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
+    if (type === "message") {
+      const role = asString(event.role, "").trim();
+      if (role === "assistant") {
+        const textStr = asString(event.content, "").trim();
+        if (textStr) messages.push(textStr);
+        // Also fallback to collectMessageText just in case it has nested content blocks in the future
+        messages.push(...collectMessageText(event.message ?? event));
+      }
+      continue;
+    }
+
     if (type === "error") {
       const text = asErrorText(event.error ?? event.message ?? event.detail).trim();
       if (text) errorMessage = text;

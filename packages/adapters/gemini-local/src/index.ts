@@ -4,9 +4,16 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  // Gemini 3.x
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3.1-flash-live", label: "Gemini 3.1 Flash Live" },
+  // Gemini 2.5
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+  // Gemini 2.0
   { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
   { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
 ];
