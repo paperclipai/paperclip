@@ -19,7 +19,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import { extractProjectMentionIds, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -1481,14 +1481,36 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
+      // Match markdown-link mentions: @[Display Name](/TIZA/agents/url-key)
+      const linkRe = /@\[([^\]]+)\]\(\/[^)]*\/agents\/([^)]+)\)/g;
+      // Match plain @token mentions (legacy)
+      const plainRe = /\B@([^\s@,!?.[\]]+)/g;
+
+      const urlKeys = new Set<string>();
+      const plainTokens = new Set<string>();
       let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+
+      while ((m = linkRe.exec(body)) !== null) {
+        const key = normalizeAgentUrlKey(m[2]);
+        if (key) urlKeys.add(key);
+      }
+      while ((m = plainRe.exec(body)) !== null) {
+        // Skip tokens that are part of markdown link syntax (already handled above)
+        if (m[1].startsWith("[")) continue;
+        plainTokens.add(m[1].toLowerCase());
+      }
+
+      if (urlKeys.size === 0 && plainTokens.size === 0) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+
+      return rows.filter(a => {
+        const agentUrlKey = normalizeAgentUrlKey(a.name);
+        if (agentUrlKey && urlKeys.has(agentUrlKey)) return true;
+        if (plainTokens.has(a.name.toLowerCase())) return true;
+        return false;
+      }).map(a => a.id);
     },
 
     findMentionedProjectIds: async (issueId: string) => {

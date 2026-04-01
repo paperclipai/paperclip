@@ -323,7 +323,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ``,
     `Common endpoints:`,
     `  GET  /api/agents/me                                          — your identity`,
-    `  GET  /api/agents/me/inbox-lite                               — @mentions directed at you`,
+    `  GET  /api/agents/me/inbox-lite                               — assigned tasks feed (todo, in_progress, blocked)`,
     `  GET  /api/companies/{companyId}/dashboard                    — company health overview`,
     `  GET  /api/companies/{companyId}/issues?status=<s>&limit=50   — list issues`,
     `  GET  /api/issues/{id}                                        — issue detail`,
