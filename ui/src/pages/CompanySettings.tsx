@@ -376,8 +376,9 @@ export function CompanySettings() {
         </div>
       )}
 
-      {/* Linear Integration */}
+      {/* Linear Integration — only shown when server has Linear OAuth configured */}
       {selectedCompanyId && <LinearConnectionSection companyId={selectedCompanyId} />}
+
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">

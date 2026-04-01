@@ -163,6 +163,14 @@ export function OnboardingWizard() {
     setRouteDismissed(false);
   }, [location.pathname]);
 
+  // Check which integrations are available on the server
+  useEffect(() => {
+    fetch("/api/integrations")
+      .then((r) => r.ok ? r.json() : {})
+      .then((data: Record<string, unknown>) => setLinearAvailable(!!data.linear))
+      .catch(() => setLinearAvailable(false));
+  }, []);
+
   // Sync step and company when onboarding opens with options.
   // Keep this independent from company-list refreshes so Step 1 completion
   // doesn't get reset after creating a company.
@@ -381,6 +389,7 @@ export function OnboardingWizard() {
     }
   }
 
+  const [linearAvailable, setLinearAvailable] = useState(false);
   const [showLinearConnect, setShowLinearConnect] = useState(false);
   const [linearConnected, setLinearConnected] = useState(false);
   const [linearIssueCount, setLinearIssueCount] = useState<number | null>(null);
@@ -497,8 +506,12 @@ export function OnboardingWizard() {
         setCreatedCompanyGoalId(null);
       }
 
-      // Show Linear connect prompt instead of immediately advancing
-      setShowLinearConnect(true);
+      // Show Linear connect prompt only if the server has Linear OAuth configured
+      if (linearAvailable) {
+        setShowLinearConnect(true);
+      } else {
+        setStep(2);
+      }
       setLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");

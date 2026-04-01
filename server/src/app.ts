@@ -124,8 +124,15 @@ export async function createApp(
       },
     });
   });
-  // Linear OAuth routes — must be mounted BEFORE Better-Auth's catch-all
+  // Integrations discovery — tells the UI which optional features are available
   const appConfig = loadConfig();
+  app.get("/api/integrations", (_req, res) => {
+    res.json({
+      linear: !!appConfig.linearOAuthClientId,
+    });
+  });
+
+  // Linear OAuth routes — must be mounted BEFORE Better-Auth's catch-all
   if (appConfig.linearOAuthClientId) {
     app.use("/api/auth/linear", linearAuthRoutes(db, {
       clientId: appConfig.linearOAuthClientId,
