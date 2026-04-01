@@ -3,7 +3,7 @@
 # validate-plugins.sh — Teste unitário do script de validação
 #
 # Testa a estrutura e comportamento do validate-plugins.sh sem executar
-# a validação completa (que levaria ~30s).
+# a validação completa (que leva ~55s).
 
 set -euo pipefail
 
