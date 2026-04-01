@@ -38,6 +38,9 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       inspectInput: "Inspect {{name}} input",
       noInput: "No {{name}} input",
       noTranscriptYet: "No transcript yet.",
+      collapse: "Collapse",
+      expand: "Expand",
+      tools: "{{count}} tools",
     },
     liveWidget: {
       title: "Live Runs",
@@ -86,6 +89,9 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       inspectInput: "{{name}} 입력 확인",
       noInput: "{{name}} 입력 없음",
       noTranscriptYet: "아직 트랜스크립트가 없습니다.",
+      collapse: "접기",
+      expand: "펼치기",
+      tools: "{{count}}개 도구",
     },
     liveWidget: {
       title: "라이브 실행",
@@ -134,6 +140,9 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       inspectInput: "{{name}} 入力を確認",
       noInput: "{{name}} 入力なし",
       noTranscriptYet: "まだトランスクリプトはありません。",
+      collapse: "折りたたむ",
+      expand: "展開する",
+      tools: "{{count}} 個のツール",
     },
     liveWidget: {
       title: "ライブ実行",

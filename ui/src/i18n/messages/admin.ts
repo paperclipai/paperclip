@@ -535,6 +535,7 @@ export const adminMessages: Record<ActiveLocale, MessageTree> = {
       defaults: {
         ceo: "CEO",
         firstTask: "Hire your first engineer and create a hiring plan",
+        firstTaskDescription: "You are the CEO. You set the direction for the company.\n\n- hire a founding engineer\n- write a hiring plan\n- break the roadmap into concrete tasks and start delegating work",
       },
       errors: {
         createOrSelectCompany: "Create or select a company before testing adapter environment.",
@@ -1123,6 +1124,7 @@ export const adminMessages: Record<ActiveLocale, MessageTree> = {
       defaults: {
         ceo: "CEO",
         firstTask: "첫 번째 엔지니어를 채용하고 채용 계획을 만드세요",
+        firstTaskDescription: "당신은 CEO입니다. 회사의 방향을 정합니다.\n\n- 창립 엔지니어를 채용하세요\n- 채용 계획을 작성하세요\n- 로드맵을 구체적인 작업으로 쪼개고 위임을 시작하세요",
       },
       errors: {
         createOrSelectCompany: "어댑터 환경을 테스트하기 전에 회사를 만들거나 선택하세요.",
@@ -1711,6 +1713,7 @@ export const adminMessages: Record<ActiveLocale, MessageTree> = {
       defaults: {
         ceo: "CEO",
         firstTask: "最初のエンジニアを採用し、採用計画を作成する",
+        firstTaskDescription: "あなたは CEO です。会社の方向性を定めます。\n\n- 創業エンジニアを採用する\n- 採用計画を作成する\n- ロードマップを具体的なタスクに分解して委譲を始める",
       },
       errors: {
         createOrSelectCompany: "アダプター環境をテストする前に会社を作成または選択してください。",

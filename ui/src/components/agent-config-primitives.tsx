@@ -419,11 +419,8 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const osxLabel = "macOS (Finder)";
-  const windowsLabel = locale === "ko" ? "Windows (파일 탐색기)" : locale === "ja" ? "Windows (エクスプローラー)" : "Windows (File Explorer)";
-  const terminalLabel = locale === "ko" ? "터미널 대안 (macOS/Linux)" : locale === "ja" ? "ターミナル手順 (macOS/Linux)" : "Terminal fallback (macOS/Linux)";
   return (
     <>
       <button
@@ -443,7 +440,7 @@ export function ChoosePathButton() {
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
-              <p className="font-medium">{osxLabel}</p>
+              <p className="font-medium">{t("pathModal.macLabel")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>{t("pathModal.steps.mac1")}</li>
                 <li>{t("pathModal.steps.mac2")}</li>
@@ -455,7 +452,7 @@ export function ChoosePathButton() {
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">{windowsLabel}</p>
+              <p className="font-medium">{t("pathModal.windowsLabel")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>{t("pathModal.steps.windows1")}</li>
                 <li>{t("pathModal.steps.windows2")}</li>
@@ -467,7 +464,7 @@ export function ChoosePathButton() {
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">{terminalLabel}</p>
+              <p className="font-medium">{t("pathModal.terminalLabel")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>{t("pathModal.steps.linux1")}</li>
                 <li>{t("pathModal.steps.linux2")}</li>

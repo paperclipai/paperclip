@@ -72,10 +72,11 @@ Covered in the sweep:
 - internal/demo transcript and design reference pages used by the team while iterating on UI behavior
 - follow-up externalization passes moved more goal/project/org/workspace/property strings out of TSX and into message catalogs
 - later passes also moved workspace-close, live-run, budget-incident, issue-document, and more shared UI labels into catalogs
+- the latest cleanup pass moved transcript UX lab and design-guide locale tables out of TSX into dedicated i18n data, removing the remaining direct per-locale branching from current UI sources
 
 Remaining follow-up is intentionally narrower:
-- internal/demo/example screens such as `DesignGuide` and transcript UX lab pages
-- externalizing the last transitional inline locale branches from TSX into catalogs
+- residual demo/sample literals, placeholder-only fixture text, and locale-sensitive sample data in internal reference screens
+- deciding whether dedicated demo/internal i18n data should merge into the standard message tree
 - adding guardrails so newly introduced user-facing strings do not bypass the i18n layer
 
 ## Follow-up

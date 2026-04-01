@@ -231,7 +231,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { data: session } = useQuery({
@@ -239,104 +239,7 @@ export function IssuesList({
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const copy = locale === "ko"
-    ? {
-        all: "전체",
-        active: "활성",
-        backlog: "백로그",
-        done: "완료",
-        unassigned: "미할당",
-        user: "사용자",
-        newIssue: "새 이슈",
-        listView: "리스트 보기",
-        boardView: "보드 보기",
-        filters: "필터",
-        clear: "지우기",
-        quickFilters: "빠른 필터",
-        filter: "필터",
-        sort: "정렬",
-        group: "그룹",
-        labels: "라벨",
-        project: "프로젝트",
-        status: "상태",
-        priority: "우선순위",
-        title: "제목",
-        created: "생성일",
-        updated: "수정일",
-        assignee: "담당자",
-        none: "없음",
-        noIssuesMatch: "현재 필터 또는 검색과 일치하는 이슈가 없습니다.",
-        createIssue: "이슈 생성",
-        live: "실시간",
-        me: "나",
-        noAssignee: "담당자 없음",
-        searchAssignees: "담당자 검색...",
-      }
-    : locale === "ja"
-      ? {
-          all: "すべて",
-          active: "進行中",
-          backlog: "バックログ",
-          done: "完了",
-          unassigned: "未割り当て",
-          user: "ユーザー",
-          newIssue: "新しいイシュー",
-          listView: "リスト表示",
-          boardView: "ボード表示",
-          filters: "フィルター",
-          clear: "クリア",
-          quickFilters: "クイックフィルター",
-          filter: "フィルター",
-          sort: "並び替え",
-          group: "グループ",
-          labels: "ラベル",
-          project: "プロジェクト",
-          status: "状態",
-          priority: "優先度",
-          title: "タイトル",
-          created: "作成日",
-          updated: "更新日",
-          assignee: "担当者",
-          none: "なし",
-          noIssuesMatch: "現在のフィルターまたは検索に一致するイシューはありません。",
-          createIssue: "イシューを作成",
-          live: "ライブ",
-          me: "自分",
-          noAssignee: "担当者なし",
-          searchAssignees: "担当者を検索...",
-        }
-      : {
-          all: "All",
-          active: "Active",
-          backlog: "Backlog",
-          done: "Done",
-          unassigned: "Unassigned",
-          user: "User",
-          newIssue: "New Issue",
-          listView: "List view",
-          boardView: "Board view",
-          filters: "Filters",
-          clear: "Clear",
-          quickFilters: "Quick filters",
-          filter: "Filter",
-          sort: "Sort",
-          group: "Group",
-          labels: "Labels",
-          project: "Project",
-          status: "Status",
-          priority: "Priority",
-          title: "Title",
-          created: "Created",
-          updated: "Updated",
-          assignee: "Assignee",
-          none: "None",
-          noIssuesMatch: "No issues match the current filters or search.",
-          createIssue: "Create Issue",
-          live: "Live",
-          me: "Me",
-          noAssignee: "No assignee",
-          searchAssignees: "Search assignees...",
-        };
+  const tt = (key: string, vars?: Record<string, string | number>) => t(`issues.list.${key}`, vars);
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -436,9 +339,9 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? copy.unassigned
+          ? tt("unassigned")
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? copy.user)
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId) ?? tt("user"))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
@@ -471,7 +374,7 @@ export function IssuesList({
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
               <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">{copy.newIssue}</span>
+            <span className="hidden sm:inline">{tt("newIssue")}</span>
           </Button>
           <IssuesSearchInput
             initialValue={initialSearch ?? ""}
@@ -485,14 +388,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title={copy.listView}
+              title={tt("listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title={copy.boardView}
+              title={tt("boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -503,7 +406,7 @@ export function IssuesList({
             <PopoverTrigger asChild>
               <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
                 <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">{activeFilterCount > 0 ? `${copy.filters}: ${activeFilterCount}` : copy.filter}</span>
+                  <span className="hidden sm:inline">{activeFilterCount > 0 ? `${tt("filters")}: ${activeFilterCount}` : tt("filter")}</span>
                 {activeFilterCount > 0 && (
                   <span className="sm:hidden text-[10px] font-medium ml-0.5">{activeFilterCount}</span>
                 )}
@@ -521,20 +424,20 @@ export function IssuesList({
             <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
               <div className="p-3 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">{copy.filters}</span>
+                  <span className="text-sm font-medium">{tt("filters")}</span>
                   {activeFilterCount > 0 && (
                     <button
                       className="text-xs text-muted-foreground hover:text-foreground"
                       onClick={() => updateView({ statuses: [], priorities: [], assignees: [], labels: [] })}
                     >
-                      {copy.clear}
+                      {tt("clear")}
                     </button>
                   )}
                 </div>
 
                 {/* Quick filters */}
                 <div className="space-y-1.5">
-                  <span className="text-xs text-muted-foreground">{copy.quickFilters}</span>
+                  <span className="text-xs text-muted-foreground">{tt("quickFilters")}</span>
                   <div className="flex flex-wrap gap-1.5">
                     {quickFilterPresets.map((preset) => {
                       const isActive = arraysEqual(viewState.statuses, preset.statuses);
@@ -548,7 +451,7 @@ export function IssuesList({
                           }`}
                           onClick={() => updateView({ statuses: isActive ? [] : [...preset.statuses] })}
                         >
-                          {preset.label === "All" ? copy.all : preset.label === "Active" ? copy.active : preset.label === "Backlog" ? copy.backlog : copy.done}
+                          {preset.label === "All" ? tt("all") : preset.label === "Active" ? tt("active") : preset.label === "Backlog" ? tt("backlog") : tt("done")}
                         </button>
                       );
                     })}
@@ -561,7 +464,7 @@ export function IssuesList({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
                   {/* Status */}
                   <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">{copy.status}</span>
+                      <span className="text-xs text-muted-foreground">{tt("status")}</span>
                     <div className="space-y-0.5">
                       {statusOrder.map((s) => (
                         <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -580,7 +483,7 @@ export function IssuesList({
                   <div className="space-y-3">
                     {/* Priority */}
                     <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">{copy.priority}</span>
+                      <span className="text-xs text-muted-foreground">{tt("priority")}</span>
                       <div className="space-y-0.5">
                         {priorityOrder.map((p) => (
                           <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -597,14 +500,14 @@ export function IssuesList({
 
                     {/* Assignee */}
                     <div className="space-y-1">
-                      <span className="text-xs text-muted-foreground">{copy.assignee}</span>
+                      <span className="text-xs text-muted-foreground">{tt("assignee")}</span>
                       <div className="space-y-0.5 max-h-32 overflow-y-auto">
                         <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                           <Checkbox
                             checked={viewState.assignees.includes("__unassigned")}
                             onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
                           />
-                          <span className="text-sm">{copy.noAssignee}</span>
+                          <span className="text-sm">{tt("noAssignee")}</span>
                         </label>
                         {currentUserId && (
                           <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -613,7 +516,7 @@ export function IssuesList({
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
                             />
                             <User className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-sm">{copy.me}</span>
+                            <span className="text-sm">{tt("me")}</span>
                           </label>
                         )}
                         {(agents ?? []).map((agent) => (
@@ -630,7 +533,7 @@ export function IssuesList({
 
                     {labels && labels.length > 0 && (
                       <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">{copy.labels}</span>
+                        <span className="text-xs text-muted-foreground">{tt("labels")}</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {labels.map((label) => (
                             <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -648,7 +551,7 @@ export function IssuesList({
 
                     {projects && projects.length > 0 && (
                       <div className="space-y-1">
-                        <span className="text-xs text-muted-foreground">{copy.project}</span>
+                        <span className="text-xs text-muted-foreground">{tt("project")}</span>
                         <div className="space-y-0.5 max-h-32 overflow-y-auto">
                           {projects.map((project) => (
                             <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
@@ -674,17 +577,17 @@ export function IssuesList({
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">{copy.sort}</span>
+                  <span className="hidden sm:inline">{tt("sort")}</span>
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", copy.status],
-                    ["priority", copy.priority],
-                    ["title", copy.title],
-                    ["created", copy.created],
-                    ["updated", copy.updated],
+                    ["status", tt("status")],
+                    ["priority", tt("priority")],
+                    ["title", tt("title")],
+                    ["created", tt("created")],
+                    ["updated", tt("updated")],
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
@@ -718,16 +621,16 @@ export function IssuesList({
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                  <span className="hidden sm:inline">{copy.group}</span>
+                  <span className="hidden sm:inline">{tt("group")}</span>
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
-                    ["status", copy.status],
-                    ["priority", copy.priority],
-                    ["assignee", copy.assignee],
-                    ["none", copy.none],
+                    ["status", tt("status")],
+                    ["priority", tt("priority")],
+                    ["assignee", tt("assignee")],
+                    ["none", tt("none")],
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
@@ -753,8 +656,8 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message={copy.noIssuesMatch}
-          action={copy.createIssue}
+          message={tt("noIssuesMatch")}
+          action={tt("createIssue")}
           onAction={() => openNewIssue(newIssueDefaults())}
         />
       )}
@@ -841,7 +744,7 @@ export function IssuesList({
                             <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
                           </span>
                           <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
-                            {copy.live}
+                            {tt("live")}
                           </span>
                         </span>
                       )}
@@ -894,14 +797,14 @@ export function IssuesList({
                                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                   <User className="h-3 w-3" />
                                 </span>
-                                {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? copy.user}
+                                {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? tt("user")}
                               </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                   <User className="h-3 w-3" />
                                 </span>
-                                {copy.assignee}
+                                {tt("assignee")}
                               </span>
                             )}
                           </button>
@@ -914,7 +817,7 @@ export function IssuesList({
                         >
                           <input
                             className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                            placeholder={copy.searchAssignees}
+                            placeholder={tt("searchAssignees")}
                             value={assigneeSearch}
                             onChange={(e) => setAssigneeSearch(e.target.value)}
                             autoFocus
@@ -931,7 +834,7 @@ export function IssuesList({
                                 assignIssue(issue.id, null, null);
                               }}
                             >
-                              {copy.noAssignee}
+                              {tt("noAssignee")}
                             </button>
                             {currentUserId && (
                               <button
@@ -946,7 +849,7 @@ export function IssuesList({
                                 }}
                               >
                                 <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                <span>{copy.me}</span>
+                            <span>{tt("me")}</span>
                               </button>
                             )}
                             {(agents ?? [])

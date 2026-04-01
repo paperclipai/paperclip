@@ -73,7 +73,6 @@ export function SidebarAgents() {
     agents: t("common.agents"),
     newAgent: t("common.newAgent"),
     pausedByBudget: t("sidebar.agentPausedByBudget"),
-    live: "live",
   };
 
 
@@ -138,7 +137,7 @@ export function SidebarAgents() {
                     ) : null}
                     {runCount > 0 ? (
                       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                        {runCount} {copy.live}
+                        {t("sidebar.live", { count: runCount })}
                       </span>
                     ) : null}
                   </span>

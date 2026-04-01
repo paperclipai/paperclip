@@ -119,6 +119,9 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       descriptionPrefix: "Paste the absolute path (e.g.",
       descriptionSuffix: ") into the input field.",
       choose: "Choose",
+      macLabel: "macOS (Finder)",
+      windowsLabel: "Windows (File Explorer)",
+      terminalLabel: "Terminal fallback (macOS/Linux)",
       steps: {
         mac1: "Open Finder and navigate to the folder.",
         mac2: "Right-click (or Control-click) the folder.",
@@ -317,6 +320,9 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       descriptionPrefix: "절대 경로(예:",
       descriptionSuffix: ")를 입력란에 붙여 넣으세요.",
       choose: "선택",
+      macLabel: "macOS (Finder)",
+      windowsLabel: "Windows (파일 탐색기)",
+      terminalLabel: "터미널 대안 (macOS/Linux)",
       steps: {
         mac1: "Finder를 열고 폴더로 이동하세요.",
         mac2: "폴더를 우클릭(또는 Control-클릭)하세요.",
@@ -515,6 +521,9 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       descriptionPrefix: "絶対パス（例:",
       descriptionSuffix: "）を入力欄に貼り付けてください。",
       choose: "選択",
+      macLabel: "macOS (Finder)",
+      windowsLabel: "Windows (エクスプローラー)",
+      terminalLabel: "ターミナル手順 (macOS/Linux)",
       steps: {
         mac1: "Finder を開いてフォルダへ移動します。",
         mac2: "フォルダを右クリック（または Control-クリック）します。",

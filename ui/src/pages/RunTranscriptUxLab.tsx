@@ -8,6 +8,7 @@ import { RunTranscriptView, type TranscriptDensity, type TranscriptMode } from "
 import { runTranscriptFixtureEntries, runTranscriptFixtureMeta } from "../fixtures/runTranscriptFixtures";
 import { ExternalLink, FlaskConical, LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
 import { useI18n } from "../i18n";
+import { runTranscriptUxLabText } from "../i18n/demoText";
 
 type SurfaceId = "detail" | "live" | "dashboard";
 
@@ -21,39 +22,27 @@ type SurfaceOption = {
 
 function useLabCopy() {
   const { locale } = useI18n();
-  const tr = (en: string, ko: string, ja: string) => locale === "ko" ? ko : locale === "ja" ? ja : en;
+  const tr = (key: string) => runTranscriptUxLabText(locale, key);
   const surfaceOptions: SurfaceOption[] = [
     {
       id: "detail",
-      label: tr("Run Detail", "실행 상세", "実行詳細"),
-      eyebrow: tr("Full transcript", "전체 트랜스크립트", "完全トランスクリプト"),
-      description: tr(
-        "The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view.",
-        "`Nice | Raw` 토글과 가장 자세히 살필 수 있는 transcript view가 있는 장문 실행 페이지입니다.",
-        "`Nice | Raw` トグルと最も詳しく確認できる transcript view を備えた長文の実行ページです。",
-      ),
+      label: tr("Run Detail"),
+      eyebrow: tr("Full transcript"),
+      description: tr("The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view."),
       icon: MonitorCog,
     },
     {
       id: "live",
-      label: tr("Issue Widget", "이슈 위젯", "Issue ウィジェット"),
-      eyebrow: tr("Live stream", "라이브 스트림", "ライブストリーム"),
-      description: tr(
-        "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
-        "작업 페이지를 벗어나지 않고 활성 실행을 따라갈 수 있도록 최적화된 이슈 상세 live run 위젯입니다.",
-        "タスクページを離れずにアクティブな実行を追えるよう最適化された issue 詳細 live run ウィジェットです。",
-      ),
+      label: tr("Issue Widget"),
+      eyebrow: tr("Live stream"),
+      description: tr("The issue-detail live run widget, optimized for following an active run without leaving the task page."),
       icon: RadioTower,
     },
     {
       id: "dashboard",
-      label: tr("Dashboard Card", "대시보드 카드", "ダッシュボードカード"),
-      eyebrow: tr("Dense card", "밀도 높은 카드", "高密度カード"),
-      description: tr(
-        "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
-        "같은 transcript 표현을 유지하면서도 빠르게 훑어볼 수 있게 조정된 활성 에이전트 대시보드 카드입니다.",
-        "同じ transcript 表現を維持しつつ、素早く一覧確認できるよう調整したアクティブエージェント用ダッシュボードカードです。",
-      ),
+      label: tr("Dashboard Card"),
+      eyebrow: tr("Dense card"),
+      description: tr("The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language."),
       icon: PanelsTopLeft,
     },
   ];
@@ -62,27 +51,23 @@ function useLabCopy() {
     locale,
     tr,
     surfaceOptions,
-    uxLab: tr("UX Lab", "UX 연구실", "UX ラボ"),
-    pageTitle: tr("Run Transcript Fixtures", "실행 트랜스크립트 픽스처", "実行トランスクリプト fixture"),
-    pageBody: tr(
-      "Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.",
-      "실제 Paperclip 개발 실행을 바탕으로 만들고, secret·로컬 경로·환경 정보가 fixture에 남지 않도록 정리했습니다.",
-      "実際の Paperclip 開発実行から作成し、secret・ローカルパス・環境情報が fixture に残らないようサニタイズしています。",
-    ),
-    runDetail: tr("Run Detail", "실행 상세", "実行詳細"),
-    transcript: tr("Transcript", "트랜스크립트", "トランスクリプト"),
-    liveRuns: tr("Live Runs", "라이브 실행", "ライブ実行"),
-    liveRunsBody: tr("Compact live transcript stream for the issue detail page.", "이슈 상세 페이지용 compact live transcript 스트림입니다.", "issue 詳細ページ向けの compact live transcript ストリームです。"),
-    openRun: tr("Open run", "실행 열기", "実行を開く"),
-    liveNow: tr("Live now", "지금 라이브", "ただいまライブ"),
-    finishedAgo: tr("Finished 2m ago", "2분 전에 종료됨", "2分前に完了"),
-    controls: tr("Controls", "제어", "コントロール"),
-    showSettled: tr("Show settled state", "정착된 상태 보기", "完了状態を表示"),
-    showStreaming: tr("Show streaming state", "스트리밍 상태 보기", "ストリーミング状態を表示"),
-    nice: tr("Nice", "정리된 보기", "整形表示"),
-    raw: tr("Raw", "원본", "生データ"),
-    comfortable: tr("Comfortable", "여유형", "ゆったり"),
-    compact: tr("Compact", "압축형", "コンパクト"),
+    uxLab: tr("UX Lab"),
+    pageTitle: tr("Run Transcript Fixtures"),
+    pageBody: tr("Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture."),
+    runDetail: tr("Run Detail"),
+    transcript: tr("Transcript"),
+    liveRuns: tr("Live Runs"),
+    liveRunsBody: tr("Compact live transcript stream for the issue detail page."),
+    openRun: tr("Open run"),
+    liveNow: tr("Live now"),
+    finishedAgo: tr("Finished 2m ago"),
+    controls: tr("Controls"),
+    showSettled: tr("Show settled state"),
+    showStreaming: tr("Show streaming state"),
+    nice: tr("Nice"),
+    raw: tr("Raw"),
+    comfortable: tr("Comfortable"),
+    compact: tr("Compact"),
   };
 }
 

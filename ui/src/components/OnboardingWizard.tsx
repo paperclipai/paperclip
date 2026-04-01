@@ -71,12 +71,6 @@ type AdapterType =
   | "http"
   | "openclaw_gateway";
 
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
-
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
-
 export function OnboardingWizard() {
   const { t, locale } = useI18n();
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -103,24 +97,7 @@ export function OnboardingWizard() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
-  const defaultTaskDescription =
-    locale === "ko"
-      ? `당신은 CEO입니다. 회사의 방향을 정합니다.
-
-- 창립 엔지니어를 채용하세요
-- 채용 계획을 작성하세요
-- 로드맵을 구체적인 작업으로 쪼개고 위임을 시작하세요`
-      : locale === "ja"
-        ? `あなたは CEO です。会社の方向性を定めます。
-
-- 創業エンジニアを採用する
-- 採用計画を作成する
-- ロードマップを具体的なタスクに分解して委譲を始める`
-        : `You are the CEO. You set the direction for the company.
-
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
+  const defaultTaskDescription = t("onboarding.defaults.firstTaskDescription");
 
   const [step, setStep] = useState<Step>(initialStep);
   const [loading, setLoading] = useState(false);
