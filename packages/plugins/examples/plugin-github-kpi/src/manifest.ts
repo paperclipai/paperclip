@@ -51,9 +51,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       githubTokenRef: {
         type: "string",
-        title: "GitHub Token (Secret Reference)",
+        format: "secret-ref",
+        title: "GitHub Token",
         description:
-          "Paperclip secret reference for a GitHub Personal Access Token with org + repo read scope",
+          "GitHub Personal Access Token with org + repo read scope",
         default: DEFAULT_CONFIG.githubTokenRef,
       },
       repoFilter: {
