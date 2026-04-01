@@ -2109,7 +2109,7 @@ function PromptsTab({
           isMobile && !showFilePanel && "hidden",
         )} style={isMobile ? undefined : { width: filePanelWidth }}>
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium">{locale === "ko" ? "파일" : locale === "ja" ? "ファイル" : "Files"}</h4>
+            <h4 className="text-sm font-medium">{t("common.files")}</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
                 <Button
@@ -2846,10 +2846,10 @@ function RunsTab({
   adapterType: string;
 }) {
   const { isMobile } = useSidebar();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
 
   if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">{locale === "ko" ? "아직 실행 기록이 없습니다." : locale === "ja" ? "まだ実行はありません。" : "No runs yet."}</p>;
+    return <p className="text-sm text-muted-foreground">{t("common.noRunsYet")}</p>;
   }
 
   // Sort by created descending

@@ -60,7 +60,7 @@ function BreakablePath({ text }: { text: string }) {
 }
 
 function CopyableInline({ value, label, mono }: { value: string; label?: string; mono?: boolean }) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const handleCopy = useCallback(async () => {
@@ -82,7 +82,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         type="button"
         className="shrink-0 p-0.5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground opacity-0 group-hover/copy:opacity-100 focus:opacity-100"
         onClick={handleCopy}
-        title={copied ? (locale === "ko" ? "복사됨!" : locale === "ja" ? "コピー済み!" : "Copied!") : (locale === "ko" ? "복사" : locale === "ja" ? "コピー" : "Copy")}
+        title={copied ? t("common.copied") : t("common.copy")}
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
@@ -164,7 +164,7 @@ interface IssueWorkspaceCardProps {
 }
 
 export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceCardProps) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(false);
@@ -394,7 +394,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">{locale === "ko" ? "Repo:" : locale === "ja" ? "Repo:" : "Repo:"}</span>
+              <span className="text-[11px]">{t("common.repo")}:</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}

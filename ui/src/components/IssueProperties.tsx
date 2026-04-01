@@ -119,7 +119,7 @@ function PropertyPicker({
 }
 
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -131,80 +131,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
-  const copy = locale === "ko"
-    ? {
-        none: "없음",
-        noLabels: "라벨 없음",
-        searchLabels: "라벨 검색...",
-        newLabel: "새 라벨",
-        creating: "생성 중…",
-        createLabel: "라벨 생성",
-        deleteLabel: "{{name}} 삭제",
-        unassigned: "미할당",
-        searchAssignees: "담당자 검색...",
-        noAssignee: "담당자 없음",
-        assignToMe: "나에게 할당",
-        assignTo: "{{name}}에게 할당",
-        assignToRequester: "요청자에게 할당",
-        noProject: "프로젝트 없음",
-        searchProjects: "프로젝트 검색...",
-        status: "상태",
-        priority: "우선순위",
-        labels: "라벨",
-        assignee: "담당자",
-        project: "프로젝트",
-        created: "생성됨",
-        updated: "업데이트됨",
-      }
-    : locale === "ja"
-      ? {
-          none: "なし",
-          noLabels: "ラベルなし",
-          searchLabels: "ラベルを検索...",
-          newLabel: "新しいラベル",
-          creating: "作成中…",
-          createLabel: "ラベルを作成",
-          deleteLabel: "{{name}} を削除",
-          unassigned: "未割り当て",
-          searchAssignees: "担当者を検索...",
-          noAssignee: "担当者なし",
-          assignToMe: "自分に割り当て",
-          assignTo: "{{name}} に割り当て",
-          assignToRequester: "依頼者に割り当て",
-          noProject: "プロジェクトなし",
-          searchProjects: "プロジェクトを検索...",
-          status: "状態",
-          priority: "優先度",
-          labels: "ラベル",
-          assignee: "担当者",
-          project: "プロジェクト",
-          created: "作成日",
-          updated: "更新日",
-        }
-      : {
-          none: "None",
-          noLabels: "No labels",
-          searchLabels: "Search labels...",
-          newLabel: "New label",
-          creating: "Creating…",
-          createLabel: "Create label",
-          deleteLabel: "Delete {{name}}",
-          unassigned: "Unassigned",
-          searchAssignees: "Search assignees...",
-          noAssignee: "No assignee",
-          assignToMe: "Assign to me",
-          assignTo: "Assign to {{name}}",
-          assignToRequester: "Assign to requester",
-          noProject: "No project",
-          searchProjects: "Search projects...",
-          status: "Status",
-          priority: "Priority",
-          labels: "Labels",
-          assignee: "Assignee",
-          project: "Project",
-          created: "Created",
-          updated: "Updated",
-        };
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -272,7 +198,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   };
 
   const projectName = (id: string | null) => {
-    if (!id) return id?.slice(0, 8) ?? copy.none;
+    if (!id) return id?.slice(0, 8) ?? t("issues.properties.none");
     const project = orderedProjects.find((p) => p.id === id);
     return project?.name ?? id.slice(0, 8);
   };
@@ -320,7 +246,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">{copy.noLabels}</span>
+      <span className="text-sm text-muted-foreground">{t("issues.properties.noLabels")}</span>
     </>
   );
 
@@ -328,7 +254,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={copy.searchLabels}
+        placeholder={t("issues.properties.searchLabels")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -357,7 +283,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
                   type="button"
                   className="p-1 text-muted-foreground hover:text-destructive rounded"
                   onClick={() => deleteLabel.mutate(label.id)}
-                  title={copy.deleteLabel.replace("{{name}}", label.name)}
+                  title={t("issues.properties.deleteLabel", { name: label.name })}
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -375,7 +301,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder={copy.newLabel}
+            placeholder={t("issues.properties.newLabel")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -391,7 +317,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? copy.creating : copy.createLabel}
+          {createLabel.isPending ? t("issues.properties.creating") : t("issues.properties.createLabel")}
         </button>
       </div>
     </>
@@ -407,7 +333,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">{copy.unassigned}</span>
+      <span className="text-sm text-muted-foreground">{t("issues.properties.unassigned")}</span>
     </>
   );
 
@@ -415,7 +341,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={copy.searchAssignees}
+        placeholder={t("issues.properties.searchAssignees")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
@@ -428,7 +354,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           )}
           onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
         >
-          {copy.noAssignee}
+          {t("issues.properties.noAssignee")}
         </button>
         {currentUserId && (
           <button
@@ -442,7 +368,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {copy.assignToMe}
+            {t("issues.properties.assignToMe")}
           </button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
@@ -457,7 +383,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? copy.assignTo.replace("{{name}}", creatorUserLabel) : copy.assignToRequester}
+            {creatorUserLabel ? t("issues.properties.assignTo", { name: creatorUserLabel }) : t("issues.properties.assignToRequester")}
           </button>
         )}
         {sortedAgents
@@ -494,7 +420,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">{copy.noProject}</span>
+      <span className="text-sm text-muted-foreground">{t("issues.properties.noProject")}</span>
     </>
   );
 
@@ -502,7 +428,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder={copy.searchProjects}
+        placeholder={t("issues.properties.searchProjects")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -524,7 +450,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             setProjectOpen(false);
           }}
         >
-          {copy.noProject}
+          {t("issues.properties.noProject")}
         </button>
         {orderedProjects
           .filter((p) => {
@@ -567,7 +493,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label={copy.status}>
+        <PropertyRow label={t("issues.properties.status")}>
           <StatusIcon
             status={issue.status}
             onChange={(status) => onUpdate({ status })}
@@ -575,7 +501,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           />
         </PropertyRow>
 
-        <PropertyRow label={copy.priority}>
+        <PropertyRow label={t("issues.properties.priority")}>
           <PriorityIcon
             priority={issue.priority}
             onChange={(priority) => onUpdate({ priority })}
@@ -585,7 +511,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label={copy.labels}
+          label={t("issues.properties.labels")}
           open={labelsOpen}
           onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
           triggerContent={labelsTrigger}
@@ -597,7 +523,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label={copy.assignee}
+          label={t("issues.properties.assignee")}
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
           triggerContent={assigneeTrigger}
@@ -617,7 +543,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label={copy.project}
+          label={t("issues.properties.project")}
           open={projectOpen}
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}

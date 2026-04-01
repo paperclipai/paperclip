@@ -99,7 +99,7 @@ export function IssueDocumentsSection({
   extraActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const location = useLocation();
   const copy = locale === "ko"
       ? {
@@ -223,6 +223,7 @@ export function IssueDocumentsSection({
           collapseDocument: "Collapse {{key}} document",
           revisionUpdated: "rev {{rev}} • updated {{time}}",
         };
+  const tt = (key: string, vars?: Record<string, string | number>) => t(`issues.documents.${key}`, vars);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState | null>(null);
@@ -269,7 +270,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : copy.deleteFailed);
+      setError(err instanceof Error ? err.message : tt("deleteFailed"));
     },
   });
 
@@ -285,7 +286,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? copy.invalidKey
+      ? tt("invalidKey")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -357,9 +358,9 @@ export function IssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError(copy.keyAndBodyRequired);
+        setError(tt("keyAndBodyRequired"));
       } else if (!normalizedBody) {
-        setError(copy.bodyRequired);
+        setError(tt("bodyRequired"));
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -368,7 +369,7 @@ export function IssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError(copy.invalidPattern);
+      setError(tt("invalidPattern"));
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -446,11 +447,11 @@ export function IssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError(copy.remoteChanged);
+          setError(tt("remoteChanged"));
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : copy.saveFailed);
+      setError(err instanceof Error ? err.message : tt("saveFailed"));
       return false;
     }
   }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
@@ -511,7 +512,7 @@ export function IssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError(copy.copyFailed);
+      setError(tt("copyFailed"));
     }
   }, []);
 
@@ -647,19 +648,19 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{copy.newDocument}</span>
-            <span className="sm:hidden">{copy.newDocument}</span>
+            <span className="hidden sm:inline">{tt("newDocument")}</span>
+            <span className="sm:hidden">{tt("newDocument")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2 min-w-0">
-          <h3 className="text-sm font-medium text-muted-foreground shrink-0">{copy.documents}</h3>
+          <h3 className="text-sm font-medium text-muted-foreground shrink-0">{tt("documents")}</h3>
           <div className="flex items-center gap-2 min-w-0">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{copy.newDocument}</span>
-              <span className="sm:hidden">{copy.newDocument}</span>
+              <span className="hidden sm:inline">{tt("newDocument")}</span>
+              <span className="sm:hidden">{tt("newDocument")}</span>
             </Button>
           </div>
         </div>
@@ -679,7 +680,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder={copy.documentKey}
+            placeholder={tt("documentKey")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -690,7 +691,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder={copy.optionalTitle}
+              placeholder={tt("optionalTitle")}
             />
           )}
           <MarkdownEditor
@@ -698,7 +699,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder={copy.markdownBody}
+            placeholder={tt("markdownBody")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-[220px] text-[15px] leading-7"
@@ -709,14 +710,14 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              {copy.cancel}
+              {tt("cancel")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? copy.saving : copy.createDocument}
+              {upsertDocument.isPending ? tt("saving") : tt("createDocument")}
             </Button>
           </div>
         </div>
@@ -765,7 +766,7 @@ export function IssueDocumentsSection({
                       type="button"
                       className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
                       onClick={() => toggleFoldedDocument(doc.key)}
-                      aria-label={(isFolded ? copy.expandDocument : copy.collapseDocument).replace("{{key}}", doc.key)}
+                      aria-label={tt(isFolded ? "expandDocument" : "collapseDocument", { key: doc.key })}
                       aria-expanded={!isFolded}
                     >
                       {isFolded ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -777,9 +778,7 @@ export function IssueDocumentsSection({
                       href={`#document-${encodeURIComponent(doc.key)}`}
                       className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
-                      {copy.revisionUpdated
-                        .replace("{{rev}}", String(doc.latestRevisionNumber))
-                        .replace("{{time}}", relativeTime(doc.updatedAt))}
+                      {tt("revisionUpdated", { rev: doc.latestRevisionNumber, time: relativeTime(doc.updatedAt) })}
                     </a>
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
@@ -792,7 +791,7 @@ export function IssueDocumentsSection({
                       "text-muted-foreground transition-colors",
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
-                    title={copiedDocumentKey === doc.key ? copy.copied : copy.copyDocument}
+                    title={copiedDocumentKey === doc.key ? tt("copied") : tt("copyDocument")}
                     onClick={() => void copyDocumentBody(doc.key, activeDraft?.body ?? doc.body)}
                   >
                     {copiedDocumentKey === doc.key ? (
@@ -807,7 +806,7 @@ export function IssueDocumentsSection({
                         variant="ghost"
                         size="icon-xs"
                         className="text-muted-foreground"
-                        title={copy.documentActions}
+                        title={tt("documentActions")}
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
@@ -817,7 +816,7 @@ export function IssueDocumentsSection({
                         onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}
                       >
                         <Download className="h-3.5 w-3.5" />
-                        {copy.downloadDocument}
+                        {tt("downloadDocument")}
                       </DropdownMenuItem>
                       {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
                       {canDeleteDocuments ? (
@@ -826,7 +825,7 @@ export function IssueDocumentsSection({
                           onClick={() => setConfirmDeleteKey(doc.key)}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                          {copy.deleteDocument}
+                          {tt("deleteDocument")}
                         </DropdownMenuItem>
                       ) : null}
                     </DropdownMenuContent>
@@ -857,9 +856,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">{copy.outOfDate}</p>
+                          <p className="text-sm font-medium text-amber-200">{tt("outOfDate")}</p>
                           <p className="text-xs text-muted-foreground">
-                            {copy.outOfDateBody}
+                            {tt("outOfDateBody")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -874,37 +873,37 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? copy.hideRemote : copy.reviewRemote}
+                            {activeConflict.showRemote ? tt("hideRemote") : tt("reviewRemote")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            {copy.keepMyDraft}
+                            {tt("keepMyDraft")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            {copy.reloadRemote}
+                            {tt("reloadRemote")}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? copy.saving : copy.overwriteRemote}
+                            {upsertDocument.isPending ? tt("saving") : tt("overwriteRemote")}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-                            <span>{copy.remoteRevision.replace("{{rev}}", String(activeConflict.serverDocument.latestRevisionNumber))}</span>
+                            <span>{tt("remoteRevision", { rev: activeConflict.serverDocument.latestRevisionNumber })}</span>
                             <span>•</span>
-                            <span>{copy.updated.replace("{{time}}", relativeTime(activeConflict.serverDocument.updatedAt))}</span>
+                            <span>{tt("updated", { time: relativeTime(activeConflict.serverDocument.updatedAt) })}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -921,7 +920,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder={copy.optionalTitle}
+                      placeholder={tt("optionalTitle")}
                     />
                   )}
                   <div
@@ -946,7 +945,7 @@ export function IssueDocumentsSection({
                           };
                         });
                       }}
-                      placeholder={copy.markdownBody}
+                      placeholder={tt("markdownBody")}
                       bordered={false}
                       className="bg-transparent"
                       contentClassName={documentBodyContentClassName}
@@ -967,14 +966,14 @@ export function IssueDocumentsSection({
                     >
                       {activeDraft
                         ? activeConflict
-                          ? copy.outOfDate
+                          ? tt("outOfDate")
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? copy.autosaving
+                              ? tt("autosaving")
                               : autosaveState === "saved"
-                                ? copy.saved
+                                ? tt("saved")
                                 : autosaveState === "error"
-                                  ? copy.couldNotSave
+                                  ? tt("couldNotSave")
                                   : ""
                             : ""
                         : ""}
@@ -986,7 +985,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    {copy.deleteConfirm}
+                    {tt("deleteConfirm")}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -995,7 +994,7 @@ export function IssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      {copy.cancel}
+                      {tt("cancel")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -1003,7 +1002,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? copy.deleting : copy.deleteDocument}
+                      {deleteDocument.isPending ? tt("deleting") : tt("deleteDocument")}
                     </Button>
                   </div>
                 </div>

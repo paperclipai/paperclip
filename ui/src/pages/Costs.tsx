@@ -604,7 +604,7 @@ export function Costs() {
                 onChange={(event) => setCustomFrom(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
               />
-              <span className="text-sm text-muted-foreground">{locale === "ko" ? "부터" : locale === "ja" ? "から" : "to"}</span>
+              <span className="text-sm text-muted-foreground">{t("common.rangeTo")}</span>
               <input
                 type="date"
                 value={customTo}

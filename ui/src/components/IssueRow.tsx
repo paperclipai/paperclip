@@ -42,14 +42,14 @@ export function IssueRow({
   archiveDisabled,
   className,
 }: IssueRowProps) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
-  const markReadLabel = locale === "ko" ? "읽음으로 표시" : locale === "ja" ? "既読にする" : "Mark as read";
-  const dismissLabel = locale === "ko" ? "받은함에서 숨기기" : locale === "ja" ? "受信箱から非表示" : "Dismiss from inbox";
+  const markReadLabel = t("common.markAsRead");
+  const dismissLabel = t("common.dismissFromInbox");
 
   return (
     <Link

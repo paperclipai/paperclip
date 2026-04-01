@@ -119,7 +119,7 @@ function SortableProjectItem({
 }
 
 export function SidebarProjects() {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
@@ -162,11 +162,11 @@ export function SidebarProjects() {
       activationConstraint: { distance: 8 },
     }),
   );
-  const copy = locale === "ko"
-    ? { projects: "프로젝트", newProject: "새 프로젝트", pausedByBudget: "예산으로 일시중지된 프로젝트" }
-    : locale === "ja"
-      ? { projects: "プロジェクト", newProject: "新しいプロジェクト", pausedByBudget: "予算で停止中のプロジェクト" }
-      : { projects: "Projects", newProject: "New project", pausedByBudget: "Project paused by budget" };
+  const copy = {
+    projects: t("common.projects"),
+    newProject: t("common.newProject"),
+    pausedByBudget: t("sidebar.projectPausedByBudget"),
+  };
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {

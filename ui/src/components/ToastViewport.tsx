@@ -26,9 +26,8 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const [visible, setVisible] = useState(false);
-  const dismissLabel = locale === "ko" ? "알림 닫기" : locale === "ja" ? "通知を閉じる" : "Dismiss notification";
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setVisible(true));
@@ -66,7 +65,7 @@ function AnimatedToast({
         </div>
         <button
           type="button"
-          aria-label={dismissLabel}
+          aria-label={t("common.dismissNotification")}
           onClick={() => onDismiss(toast.id)}
           className="mt-0.5 shrink-0 rounded p-1 opacity-50 hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
         >

@@ -61,7 +61,7 @@ export function FinanceTimelineCard({
                 <div className="text-right tabular-nums">
                   <div className="text-sm font-semibold">{formatCents(row.amountCents)}</div>
                   <div className="text-xs text-muted-foreground">{row.currency}</div>
-                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">{locale === "ko" ? "추정" : locale === "ja" ? "見積り" : "estimated"}</div> : null}
+                  {row.estimated ? <div className="text-[11px] uppercase tracking-[0.12em] text-amber-600">{t("common.estimated")}</div> : null}
                 </div>
               </div>
             </div>

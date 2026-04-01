@@ -2,10 +2,9 @@ import { getWorktreeUiBranding } from "../lib/worktree-branding";
 import { useI18n } from "../i18n";
 
 export function WorktreeBanner() {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const branding = getWorktreeUiBranding();
   if (!branding) return null;
-  const label = locale === "ko" ? "워크트리" : locale === "ja" ? "ワークツリー" : "Worktree";
 
   return (
     <div
@@ -19,7 +18,7 @@ export function WorktreeBanner() {
       }}
     >
       <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
-        <span className="shrink-0 opacity-70">{label}</span>
+        <span className="shrink-0 opacity-70">{t("common.worktree")}</span>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden="true" />
         <span className="truncate font-semibold tracking-[0.12em]">{branding.name}</span>
       </div>

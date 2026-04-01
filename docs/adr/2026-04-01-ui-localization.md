@@ -70,6 +70,7 @@ Covered in the sweep:
 - seat-management dialogs and workspace management dialogs
 - instance settings, restart banners, toasts, shared primitives, and several low-frequency admin surfaces
 - internal/demo transcript and design reference pages used by the team while iterating on UI behavior
+- follow-up externalization passes moved more goal/project/org/workspace/property strings out of TSX and into message catalogs
 
 Remaining follow-up is intentionally narrower:
 - internal/demo/example screens such as `DesignGuide` and transcript UX lab pages

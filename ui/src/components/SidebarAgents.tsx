@@ -21,7 +21,7 @@ import {
 import type { Agent } from "@paperclipai/shared";
 import { useI18n } from "../i18n";
 export function SidebarAgents() {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
@@ -69,11 +69,12 @@ export function SidebarAgents() {
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
   const activeTab = agentMatch?.[2] ?? null;
-  const copy = locale === "ko"
-    ? { agents: "에이전트", newAgent: "새 에이전트", pausedByBudget: "예산으로 일시중지된 에이전트", live: "live" }
-    : locale === "ja"
-      ? { agents: "エージェント", newAgent: "新しいエージェント", pausedByBudget: "予算で停止中のエージェント", live: "live" }
-      : { agents: "Agents", newAgent: "New agent", pausedByBudget: "Agent paused by budget", live: "live" };
+  const copy = {
+    agents: t("common.agents"),
+    newAgent: t("common.newAgent"),
+    pausedByBudget: t("sidebar.agentPausedByBudget"),
+    live: "live",
+  };
 
 
   return (
