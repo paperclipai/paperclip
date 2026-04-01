@@ -35,6 +35,10 @@ This is [Lucitra's](https://lucitra.ai) fork of Paperclip. We use Paperclip as t
 
 All changes are additive — we don't modify Paperclip's core architecture. Upstream updates merge cleanly.
 
+**Plugins:**
+- [paperclip-plugin-linear](https://github.com/lucitra/paperclip-plugin-linear) — Bidirectional Linear issue sync (agent tools + server-side integration)
+- [paperclip-plugin-chat](https://github.com/lucitra/paperclip-plugin-chat) — Chat interface for Paperclip agents
+
 **Upstream:** [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
 
 ---
