@@ -73,6 +73,7 @@ Covered in the sweep:
 - follow-up externalization passes moved more goal/project/org/workspace/property strings out of TSX and into message catalogs
 - later passes also moved workspace-close, live-run, budget-incident, issue-document, and more shared UI labels into catalogs
 - the latest cleanup pass moved transcript UX lab and design-guide locale tables out of TSX into catalog data under `ui/src/i18n/messages/demo.ts`, removing the remaining direct per-locale branching from current UI sources
+- shared status and priority labels are now localized through central helper functions and catalog-backed message keys, rather than rendering raw status codes in common UI primitives
 
 Remaining follow-up is intentionally narrower:
 - residual demo/reference tokens such as model identifiers, icon names, and fixture-only placeholders in internal reference screens

@@ -10,6 +10,7 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import { formatDate, cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { localizedPriorityLabel, localizedStatusLabel } from "../lib/displayLabels";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
@@ -30,10 +31,6 @@ import { useI18n } from "../i18n";
 
 const statusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /* ── View state ── */
 
@@ -322,13 +319,13 @@ export function IssuesList({
       const groups = groupBy(filtered, (i) => i.status);
       return statusOrder
         .filter((s) => groups[s]?.length)
-        .map((s) => ({ key: s, label: statusLabel(s), items: groups[s]! }));
+        .map((s) => ({ key: s, label: localizedStatusLabel(s), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
       const groups = groupBy(filtered, (i) => i.priority);
       return priorityOrder
         .filter((p) => groups[p]?.length)
-        .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
+        .map((p) => ({ key: p, label: localizedPriorityLabel(p), items: groups[p]! }));
     }
     // assignee
     const groups = groupBy(
@@ -473,7 +470,7 @@ export function IssuesList({
                             onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
                           />
                           <StatusIcon status={s} />
-                          <span className="text-sm">{statusLabel(s)}</span>
+                          <span className="text-sm">{localizedStatusLabel(s)}</span>
                         </label>
                       ))}
                     </div>
@@ -492,7 +489,7 @@ export function IssuesList({
                               onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
                             />
                             <PriorityIcon priority={p} />
-                            <span className="text-sm">{statusLabel(p)}</span>
+                            <span className="text-sm">{localizedPriorityLabel(p)}</span>
                           </label>
                         ))}
                       </div>

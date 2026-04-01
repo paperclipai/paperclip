@@ -19,6 +19,7 @@ import {
 } from "@dnd-kit/sortable";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
+import { localizedStatusLabel } from "../lib/displayLabels";
 import { Identity } from "./Identity";
 import type { Issue } from "@paperclipai/shared";
 
@@ -31,10 +32,6 @@ const boardStatuses = [
   "done",
   "cancelled",
 ];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface Agent {
   id: string;
@@ -68,7 +65,7 @@ function KanbanColumn({
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {statusLabel(status)}
+          {localizedStatusLabel(status)}
         </span>
         <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
           {issues.length}

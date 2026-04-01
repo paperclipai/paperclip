@@ -14,6 +14,7 @@ import { accessMessages } from "./messages/access";
 import { bootstrapMessages } from "./messages/bootstrap";
 import { companiesMessages } from "./messages/companies";
 import { commonMessages } from "./messages/common";
+import { labelsMessages } from "./messages/labels";
 import { costsMessages } from "./messages/costs";
 import { dashboardMessages } from "./messages/dashboard";
 import { adminMessages } from "./messages/admin";
@@ -59,6 +60,7 @@ const MESSAGE_SOURCES = [
   agentConfigMessages,
   agentDetailMessages,
   commonMessages,
+  labelsMessages,
   navigationMessages,
   dashboardMessages,
   agentsMessages,
