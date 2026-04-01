@@ -2413,7 +2413,16 @@ export function heartbeatService(db: Db) {
       branchName: executionWorkspace.branchName,
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
-        const home = resolveDefaultAgentWorkspaceDir(agent.id);
+        const managedInstructionsRoot =
+          readNonEmptyString(config.instructionsBundleMode) === "managed"
+            ? readNonEmptyString(config.instructionsRootPath)
+            : null;
+        // For managed bundles, instructionsRootPath points to {agent-root}/instructions/;
+        // $AGENT_HOME should be the agent root (parent), not the instructions/ subdirectory,
+        // so that memory paths (life/, memory/) are siblings of instructions/.
+        const home = managedInstructionsRoot
+          ? path.dirname(managedInstructionsRoot)
+          : resolveDefaultAgentWorkspaceDir(agent.id);
         await fs.mkdir(home, { recursive: true });
         return home;
       })(),
