@@ -139,6 +139,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-github-kpi",
+    pluginKey: "valctrl.github-kpi",
+    displayName: "GitHub Org KPI Tracker",
+    description: "Tracks GitHub organisation-wide metrics — commit velocity, PR cycle times, CI/CD health, contributor activity — with an interactive org ecosystem graph and repo drill-down.",
+    localPath: "packages/plugins/examples/plugin-github-kpi",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
