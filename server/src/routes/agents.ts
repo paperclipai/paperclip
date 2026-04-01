@@ -519,11 +519,12 @@ export function agentRoutes(db: Db) {
   }
 
   function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timerId: ReturnType<typeof setTimeout>;
     return Promise.race([
-      promise,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
-      ),
+      promise.finally(() => clearTimeout(timerId)),
+      new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
     ]);
   }
 

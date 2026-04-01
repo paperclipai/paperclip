@@ -2063,7 +2063,7 @@ export function companySkillService(db: Db) {
     const markerPath = path.resolve(skillDir, ".materialized");
     const markerStat = await fs.stat(markerPath).catch(() => null);
     if (markerStat?.isFile()) {
-      const skillUpdatedAt = skill.updatedAt ? new Date(skill.updatedAt).getTime() : Number.POSITIVE_INFINITY;
+      const skillUpdatedAt = skill.updatedAt ? new Date(skill.updatedAt).getTime() : 0;
       if (markerStat.mtimeMs >= skillUpdatedAt) {
         return skillDir;
       }
@@ -2082,6 +2082,8 @@ export function companySkillService(db: Db) {
       }
     };
 
+    // TODO: pass AbortSignal for cooperative cancel so background fs.writeFile calls
+    // stop when the deadline fires rather than continuing as orphaned promises.
     await Promise.race([
       materializeFiles(),
       new Promise<void>((_, reject) =>
