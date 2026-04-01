@@ -61,6 +61,12 @@ describe("normalizeGithubImportSource", () => {
     );
   });
 
+  it("applies --ref to a bare github.com/owner/repo URL", () => {
+    expect(
+      normalizeGithubImportSource("https://github.com/owner/repo", "feature/x"),
+    ).toBe("https://github.com/owner/repo?ref=feature%2Fx");
+  });
+
   it("applies --ref to existing GitHub tree URLs without losing the package path", () => {
     expect(
       normalizeGithubImportSource(
