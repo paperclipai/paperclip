@@ -100,18 +100,36 @@ else
 fi
 echo ""
 
-# ── Step 4: Plugin Typecheck ───────────────────────────────────────────
-echo "[4/7] Plugin Typecheck (all plugins)..."
+# ── Step 4: Plugin Typecheck (PARALLEL) ─────────────────────────────────
+echo "[4/7] Plugin Typecheck (all plugins, parallel)..."
 STEP_START=$(date +%s)
 PLUGIN_STATUS=()
+TYPECHECK_PIDS=()
+
+# Start all typechecks in parallel
 for plugin in playwright-mcp ruflo-bridge skills-hub; do
-    echo "  Typechecking @paperclipai/plugin-$plugin..."
-    if pnpm --filter @paperclipai/plugin-$plugin typecheck; then
+    echo "  Typechecking @paperclipai/plugin-$plugin (background)..."
+    (
+        if pnpm --filter @paperclipai/plugin-$plugin typecheck > /tmp/typecheck-$plugin.log 2>&1; then
+            echo "PASS" > /tmp/typecheck-$plugin.status
+        else
+            echo "FAIL" > /tmp/typecheck-$plugin.status
+        fi
+    ) &
+    TYPECHECK_PIDS+=($!)
+done
+
+# Wait for all typechecks and check results
+for i in "${!TYPECHECK_PIDS[@]}"; do
+    plugin=$(echo "playwright-mcp ruflo-bridge skills-hub" | cut -d' ' -f$((i+1)))
+    wait ${TYPECHECK_PIDS[$i]}
+    if [ "$(cat /tmp/typecheck-$plugin.status)" = "PASS" ]; then
         PLUGIN_STATUS+=("\"$plugin\": \"pass\"")
         echo "  ✅ $plugin passed"
     else
         PLUGIN_STATUS+=("\"$plugin\": \"fail\"")
         echo "  ❌ $plugin failed"
+        cat /tmp/typecheck-$plugin.log
         STEP_DURATION[typecheck]=$(($(date +%s) - STEP_START))
         STEP_STATUS[typecheck]="fail"
         exit 1
@@ -122,15 +140,33 @@ STEP_STATUS[typecheck]="pass"
 echo "✅ All plugins typecheck passed (${STEP_DURATION[typecheck]}s)"
 echo ""
 
-# ── Step 5: Plugin Build ───────────────────────────────────────────────
-echo "[5/7] Plugin Build..."
+# ── Step 5: Plugin Build (PARALLEL) ─────────────────────────────────────
+echo "[5/7] Plugin Build (all plugins, parallel)..."
 STEP_START=$(date +%s)
+BUILD_PIDS=()
+
+# Start all builds in parallel
 for plugin in playwright-mcp ruflo-bridge skills-hub; do
-    echo "  Building @paperclipai/plugin-$plugin..."
-    if pnpm --filter @paperclipai/plugin-$plugin build; then
+    echo "  Building @paperclipai/plugin-$plugin (background)..."
+    (
+        if pnpm --filter @paperclipai/plugin-$plugin build > /tmp/build-$plugin.log 2>&1; then
+            echo "PASS" > /tmp/build-$plugin.status
+        else
+            echo "FAIL" > /tmp/build-$plugin.status
+        fi
+    ) &
+    BUILD_PIDS+=($!)
+done
+
+# Wait for all builds and check results
+for i in "${!BUILD_PIDS[@]}"; do
+    plugin=$(echo "playwright-mcp ruflo-bridge skills-hub" | cut -d' ' -f$((i+1)))
+    wait ${BUILD_PIDS[$i]}
+    if [ "$(cat /tmp/build-$plugin.status)" = "PASS" ]; then
         echo "  ✅ $plugin built"
     else
         echo "  ❌ $plugin build failed"
+        cat /tmp/build-$plugin.log
         STEP_DURATION[build]=$(($(date +%s) - STEP_START))
         STEP_STATUS[build]="fail"
         exit 1
