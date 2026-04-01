@@ -2,6 +2,7 @@ import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { MembersSection } from "../components/MembersSection";
 import { JoinRequestsSection } from "../components/JoinRequestsSection";
 import { useCompany } from "../context/CompanyContext";
@@ -38,9 +39,15 @@ export function CompanySettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
+    enabled: health?.deploymentMode === "authenticated",
   });
   // General settings local state
   const [companyName, setCompanyName] = useState("");

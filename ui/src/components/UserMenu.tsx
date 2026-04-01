@@ -4,6 +4,7 @@ import { authApi, type AuthSession } from "../api/auth";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { deriveInitials } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,12 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-
-function deriveInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
 
 export function UserMenu() {
   const queryClient = useQueryClient();
@@ -44,7 +39,11 @@ export function UserMenu() {
   const initials = deriveInitials(userName);
 
   const handleSignOut = async () => {
-    await authApi.signOut();
+    try {
+      await authApi.signOut();
+    } catch {
+      // Continue with local cleanup even if server sign-out fails
+    }
     queryClient.clear();
     window.location.href = "/auth";
   };

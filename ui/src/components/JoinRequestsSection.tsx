@@ -89,8 +89,15 @@ function JoinRequestRow({ request, companyId }: { request: JoinRequest; companyI
 
 export function JoinRequestsSection({ companyId }: { companyId: string }) {
   const { data: requests, isLoading, error } = useQuery({
-    queryKey: queryKeys.access.joinRequests(companyId),
-    queryFn: () => accessApi.listJoinRequests(companyId),
+    queryKey: queryKeys.access.joinRequests(companyId, "all"),
+    queryFn: async () => {
+      const [pending, approved, rejected] = await Promise.all([
+        accessApi.listJoinRequests(companyId, "pending_approval"),
+        accessApi.listJoinRequests(companyId, "approved"),
+        accessApi.listJoinRequests(companyId, "rejected"),
+      ]);
+      return [...pending, ...approved, ...rejected];
+    },
     enabled: !!companyId,
   });
 

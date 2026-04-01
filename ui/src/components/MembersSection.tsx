@@ -7,6 +7,7 @@ import { accessApi } from "../api/access";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { deriveInitials } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -28,12 +29,6 @@ const PERMISSION_LABELS: Record<string, { label: string; tip: string }> = {
   "joins:approve": { label: "Approve join requests", tip: "Can approve or reject join requests from invites" },
 };
 
-function deriveInitials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
-}
-
 function InviteDialog({ companyId }: { companyId: string }) {
   const [open, setOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
@@ -43,7 +38,7 @@ function InviteDialog({ companyId }: { companyId: string }) {
   const mutation = useMutation({
     mutationFn: () => accessApi.createCompanyInvite(companyId, { allowedJoinTypes: joinType }),
     onSuccess: (data) => {
-      const url = data.inviteUrl ?? `${window.location.origin}/invite/${(data as any).token}`;
+      const url = data.inviteUrl ?? `${window.location.origin}/invite/${data.token}`;
       setInviteUrl(url);
     },
     onError: (err) => pushToast({
@@ -145,7 +140,6 @@ function MemberRow({
       pushToast({ title: "Permissions updated", tone: "success" });
     },
     onError: (err) => {
-      setPendingGrants(null);
       pushToast({
         title: "Failed to update permissions",
         body: err instanceof Error ? err.message : "Unknown error",
