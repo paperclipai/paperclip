@@ -16,7 +16,8 @@ import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
-import { useI18n } from "../i18n";
+import { formatMessage, useI18n } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
 
 /* ---- Help text for (?) tooltips ---- */
 export function useAgentConfigHelp(): Record<string, string> {
@@ -62,16 +63,16 @@ export function useAgentConfigHelp(): Record<string, string> {
 }
 
 export const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  pi_local: "Pi (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
-  process: "Process",
-  http: "HTTP",
+  claude_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.claudeLocal"),
+  codex_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.codexLocal"),
+  gemini_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.geminiLocal"),
+  opencode_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.opencodeLocal"),
+  pi_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.piLocal"),
+  openclaw_gateway: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.openclawGateway"),
+  cursor: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.cursor"),
+  hermes_local: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.hermesLocal"),
+  process: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.process"),
+  http: formatMessage(getRuntimeLocale(), "agentConfig.adapterLabels.http"),
 };
 
 export function useAdapterLabels(): Record<string, string> {

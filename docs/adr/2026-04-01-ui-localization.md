@@ -77,6 +77,7 @@ Covered in the sweep:
 - later cleanup also covered live update toasts, workspace status chips, activity-chart status legends, localized change summaries, helper-layer copy such as seat pause labels, delegated permission labels, budget scope descriptions, and issue-detail breadcrumb defaults, plus locale-aware provider/billing/quota display names, onboarding adapter labels, and common component default copy like copy tooltips, command dialog text, Mermaid fallback text, and accounting-model cards
 - the latest follow-up localized the remaining adapter instruction-file labels/placeholders across local adapter config forms, added `pi_local` coverage to localized adapter label maps, moved the advanced new-agent adapter chooser onto shared onboarding catalogs, and localized transcript init/system/tool fallback labels plus model/session event summaries
 - the newest cleanup pass localized the OpenClaw invite prompt snippet, live-run transcript empty states, and the last user-facing adapter fallback consumers that previously fell through to raw adapter module labels
+- a final follow-up moved adapter module labels and fallback maps onto runtime locale helpers, leaving only demo/reference tokens and catalog data as expected remaining English literals
 
 Remaining follow-up is intentionally narrower:
 - residual demo/reference tokens such as model identifiers, icon names, and fixture-only placeholders in internal reference screens
