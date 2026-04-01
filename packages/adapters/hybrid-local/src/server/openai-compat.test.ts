@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { resolveBaseUrl, executeLocalModel, isDangerousCommand } from "./openai-compat.js";
+import { resolveBaseUrl, executeLocalModel, isDangerousCommand, terminateCommandProcess } from "./openai-compat.js";
 
 
 describe("resolveBaseUrl", () => {
@@ -138,6 +138,125 @@ describe("tool output truncation — constant validation", () => {
   });
 });
 
+describe("executeLocalModel — bash tool execution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns an ERROR tool result when bash exits non-zero", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: "qwen2.5-coder:7b",
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  type: "function" as const,
+                  function: { name: "bash", arguments: JSON.stringify({ command: "echo boom >&2; exit 7" }) },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 10 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: "qwen2.5-coder:7b",
+          choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+      });
+
+    await executeLocalModel({
+      baseUrl: "http://localhost:11434/v1",
+      model: "qwen2.5-coder:7b",
+      prompt: "Run a failing command",
+      cwd: "/tmp",
+      enableTools: true,
+      timeoutMs: 15_000,
+      onLog: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const secondRequestBody = JSON.parse(
+      (global.fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body as string,
+    ) as {
+      messages: Array<{ role: string; tool_call_id?: string; content?: string }>;
+    };
+
+    const toolMessage = secondRequestBody.messages.find((m) => m.role === "tool" && m.tool_call_id === "tool-1");
+    expect(String(toolMessage?.content ?? "")).toContain("ERROR:");
+    expect(String(toolMessage?.content ?? "")).toContain("boom");
+  });
+
+  it("caps captured bash output before tool-result truncation", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: "qwen2.5-coder:7b",
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  type: "function" as const,
+                  function: {
+                    name: "bash",
+                    arguments: JSON.stringify({
+                      command: "python3 - <<'PY'\nprint('x' * 1100000)\nPY",
+                    }),
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 10 },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          model: "qwen2.5-coder:7b",
+          choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+      });
+
+    await executeLocalModel({
+      baseUrl: "http://localhost:11434/v1",
+      model: "qwen2.5-coder:7b",
+      prompt: "Run a noisy command",
+      cwd: "/tmp",
+      enableTools: true,
+      timeoutMs: 15_000,
+      onLog: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const secondRequestBody = JSON.parse(
+      (global.fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body as string,
+    ) as {
+      messages: Array<{ role: string; tool_call_id?: string; content?: string }>;
+    };
+
+    const toolMessage = secondRequestBody.messages.find((m) => m.role === "tool" && m.tool_call_id === "tool-1");
+    expect(String(toolMessage?.content ?? "")).toContain("[output truncated:");
+    expect(String(toolMessage?.content ?? "").length).toBeLessThan(9000);
+  });
+});
+
 describe("dangerous command guards", () => {
   it("does not block common --format usage", () => {
     expect(isDangerousCommand("git log --format=\"%H %s\"")).toBe(false);
@@ -146,6 +265,35 @@ describe("dangerous command guards", () => {
 
   it("still blocks Windows drive format command", () => {
     expect(isDangerousCommand("format C:")).toBe(true);
+  });
+});
+
+describe("terminateCommandProcess", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("signals both the direct process and its process group on unix platforms", () => {
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    terminateCommandProcess(4321, "SIGTERM");
+
+    expect(killSpy).toHaveBeenCalledWith(4321, "SIGTERM");
+    if (process.platform === "win32") {
+      expect(killSpy).toHaveBeenCalledTimes(1);
+    } else {
+      expect(killSpy).toHaveBeenCalledWith(-4321, "SIGTERM");
+    }
+  });
+
+  it("ignores missing processes when tearing down descendants", () => {
+    const err = Object.assign(new Error("gone"), { code: "ESRCH" });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw err;
+    });
+
+    expect(() => terminateCommandProcess(4321, "SIGKILL")).not.toThrow();
+    expect(killSpy).toHaveBeenCalled();
   });
 });
 

@@ -1,16 +1,15 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import { asNumber } from "@paperclipai/adapter-utils/server-utils";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { spawn } from "node:child_process";
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
 const MAX_TOOL_TURNS = 30;
 const MAX_TOOLS_PER_TURN = 5;
 const MAX_MESSAGE_HISTORY = 1000;
 const DEFAULT_MAX_TOTAL_TOKENS = 300_000; // Cap across all 30 turns unless overridden in adapter config
 const BASH_TIMEOUT_MS = 120_000;
+const BASH_MAX_OUTPUT_CHARS = 1024 * 1024; // Mirror prior execFile maxBuffer to avoid runaway memory use
 const MAX_TOOL_OUTPUT_CHARS = 8_000; // ~2k tokens — prevents context overflow from large ls/cat outputs
+const BASH_KILL_GRACE_MS = 2_000;
 
 // Commands that are too dangerous to execute via local model
 const DANGEROUS_PATTERNS = [
@@ -145,28 +144,103 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Pro
   }
 }
 
+export function terminateCommandProcess(pid: number, signal: NodeJS.Signals): void {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== "ESRCH") throw error;
+  }
+
+  if (process.platform === "win32") return;
+
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== "ESRCH") throw error;
+  }
+}
+
+function appendWithCap(current: string, chunk: string, maxChars: number): string {
+  if (current.length >= maxChars) return current;
+  const remaining = maxChars - current.length;
+  if (chunk.length <= remaining) return current + chunk;
+  return current + chunk.slice(0, remaining);
+}
+
 async function runBash(
   command: string,
   cwd: string,
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
 ): Promise<string> {
   await onLog("stdout", `[hybrid] bash $ ${command}\n`);
-  try {
-    const { stdout, stderr } = await execFileAsync("bash", ["-c", command], {
+  return new Promise<string>((resolve) => {
+    const child = spawn("bash", ["-lc", command], {
       cwd,
-      timeout: BASH_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024, // 1MB
+      detached: process.platform !== "win32",
       env: { ...process.env, TERM: "dumb" },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    const output = [stdout, stderr].filter(Boolean).join("\n").trim();
-    if (output) await onLog("stdout", `${output}\n`);
-    return output || "(no output)";
-  } catch (err: unknown) {
-    const error = err as { stdout?: string; stderr?: string; message?: string };
-    const output = [error.stdout, error.stderr, error.message].filter(Boolean).join("\n").trim();
-    await onLog("stderr", `[hybrid] bash error: ${output}\n`);
-    return `ERROR: ${output}`;
-  }
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = async (result: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => {
+      if (typeof child.pid === "number") {
+        terminateCommandProcess(child.pid, "SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode == null && child.signalCode == null) {
+            terminateCommandProcess(child.pid!, "SIGKILL");
+          }
+        }, BASH_KILL_GRACE_MS);
+      }
+    }, BASH_TIMEOUT_MS);
+
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      stdout = appendWithCap(stdout, String(chunk), BASH_MAX_OUTPUT_CHARS);
+    });
+
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr = appendWithCap(stderr, String(chunk), BASH_MAX_OUTPUT_CHARS);
+    });
+
+    child.on("error", async (error) => {
+      const output = [stdout, stderr, error.message].filter(Boolean).join("\n").trim();
+      await onLog("stderr", `[hybrid] bash error: ${output}\n`);
+      await finish(`ERROR: ${output}`);
+    });
+
+    child.on("close", async (code, signal) => {
+      const output = [stdout, stderr].filter(Boolean).join("\n").trim();
+      if (signal === "SIGTERM" || signal === "SIGKILL") {
+        const message = output || `Command timed out after ${BASH_TIMEOUT_MS}ms`;
+        await onLog("stderr", `[hybrid] bash error: ${message}\n`);
+        await finish(`ERROR: ${message}`);
+        return;
+      }
+
+      if ((code ?? 0) !== 0) {
+        const message = output || `Command failed with exit code ${code}`;
+        await onLog("stderr", `[hybrid] bash error: ${message}\n`);
+        await finish(`ERROR: ${message}`);
+        return;
+      }
+
+      if (output) await onLog("stdout", `${output}\n`);
+      await finish(output || "(no output)");
+    });
+  });
 }
 
 function accumulateUsage(acc: UsageSummary, usage: ChatCompletionUsage | undefined): UsageSummary {
