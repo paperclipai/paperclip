@@ -38,8 +38,8 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-# SEC-INFRA-001: Pin AI CLI tools to specific versions for reproducible builds
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@1.0.16 @openai/codex@0.1.2 opencode-ai@0.3.0 \
+# AI CLI tools — use @latest until we verify pinnable versions
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && mkdir -p /ironworks \
   && chown node:node /ironworks
 
