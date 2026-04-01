@@ -12,7 +12,7 @@ import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { formatMessage } from "../i18n";
 import { getRuntimeLocale } from "../i18n/runtime";
-import { localizedStatusLabel } from "../lib/displayLabels";
+import { localizedPriorityLabel, localizedStatusLabel } from "../lib/displayLabels";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -264,12 +264,12 @@ const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
   if (!details) return null;
   const changes: string[] = [];
-  if (typeof details.status === "string") changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
-  if (typeof details.priority === "string") changes.push(`priority -> ${details.priority}`);
+  if (typeof details.status === "string") changes.push(formatMessage(getRuntimeLocale(), "liveUpdates.changeStatus", { value: localizedStatusLabel(details.status) }));
+  if (typeof details.priority === "string") changes.push(formatMessage(getRuntimeLocale(), "liveUpdates.changePriority", { value: localizedPriorityLabel(details.priority) }));
   if (typeof details.assigneeAgentId === "string" || typeof details.assigneeUserId === "string") {
-    changes.push("reassigned");
+    changes.push(formatMessage(getRuntimeLocale(), "liveUpdates.reassigned"));
   } else if (details.assigneeAgentId === null || details.assigneeUserId === null) {
-    changes.push("unassigned");
+    changes.push(formatMessage(getRuntimeLocale(), "liveUpdates.unassigned"));
   }
   if (details.reopened === true) {
     const from = readString(details.reopenedFrom);

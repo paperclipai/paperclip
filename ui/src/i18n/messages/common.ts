@@ -106,7 +106,11 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       joinRequesterAgent: "Agent",
       joinRequesterSomeone: "Someone",
       joinWantsToJoin: "{{label}} wants to join",
-      joinWaitingApproval: "A new join request is waiting for approval."
+      joinWaitingApproval: "A new join request is waiting for approval.",
+      changeStatus: "status -> {{value}}",
+      changePriority: "priority -> {{value}}",
+      reassigned: "reassigned",
+      unassigned: "unassigned"
     },
   },
   ko: {
@@ -214,7 +218,11 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       joinRequesterAgent: "에이전트",
       joinRequesterSomeone: "누군가",
       joinWantsToJoin: "{{label}}가 참여하려고 합니다",
-      joinWaitingApproval: "새 참여 요청이 승인을 기다리고 있습니다."
+      joinWaitingApproval: "새 참여 요청이 승인을 기다리고 있습니다.",
+      changeStatus: "상태 -> {{value}}",
+      changePriority: "우선순위 -> {{value}}",
+      reassigned: "재할당됨",
+      unassigned: "할당 해제됨"
     },
   },
   ja: {
@@ -322,7 +330,11 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       joinRequesterAgent: "エージェント",
       joinRequesterSomeone: "誰か",
       joinWantsToJoin: "{{label}} が参加しようとしています",
-      joinWaitingApproval: "新しい参加リクエストが承認待ちです。"
+      joinWaitingApproval: "新しい参加リクエストが承認待ちです。",
+      changeStatus: "状態 -> {{value}}",
+      changePriority: "優先度 -> {{value}}",
+      reassigned: "再割り当て",
+      unassigned: "割り当て解除"
     },
   },
 };
