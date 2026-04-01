@@ -53,7 +53,15 @@ function resolveWithin(basePath: string, relativePath: string) {
 function createLocalFileRunLogStore(basePath: string): RunLogStore {
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
-    await fs.mkdir(dir, { recursive: true });
+    try {
+      await fs.mkdir(dir, { recursive: true });
+    } catch (err: unknown) {
+      const code = err && typeof err === "object" && "code" in err ? (err as { code?: string }).code : undefined;
+      if (code === "EACCES") {
+        throw new Error(`Permission denied creating run-log directory: ${dir}. Check volume ownership.`);
+      }
+      throw err;
+    }
   }
 
   async function readFileRange(filePath: string, offset: number, limitBytes: number): Promise<RunLogReadResult> {

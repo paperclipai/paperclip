@@ -22,8 +22,9 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
-fi
+# Always ensure /paperclip is writable by the node user.
+# The volume may have been created by another container (e.g. claude-code-docker)
+# with different ownership, even when UID/GID already match defaults.
+chown -R node:node /paperclip
 
 exec gosu node "$@"
