@@ -87,7 +87,7 @@ tail -f /var/log/paperclip-plugin-validation.log
 ls /tmp/paperclip-plugin-validation-*.json
 ```
 
-**Validation steps (7 total, ~30s):**
+**Validation steps (8 total, ~55s):**
 1. Script self-tests
 2. SDK typecheck
 3. SDK unit tests (131 tests)
@@ -95,6 +95,7 @@ ls /tmp/paperclip-plugin-validation-*.json
 5. Plugin typecheck (playwright-mcp, ruflo-bridge, skills-hub)
 6. Plugin build
 7. Documentation validation
+8. Install script validation
 
 ### Plugin Validation Checklist
 
