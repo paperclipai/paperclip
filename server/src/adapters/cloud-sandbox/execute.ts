@@ -479,7 +479,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     command.join(" "),
   ].join(" && ");
 
-  await ctx.onLog("stdout", `[cloud-sandbox] Executing in pod ${name} (ns: ${namespace})\n`);
+  await ctx.onLog("system", `Executing in sandbox pod ${name}\n`);
 
   let exitCode = -1;
   let timedOut = false;

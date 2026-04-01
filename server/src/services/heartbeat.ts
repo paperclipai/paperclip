@@ -637,8 +637,8 @@ export function shouldResetTaskSessionForWake(
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
-    stream: "stdout" as const,
-    chunk: `[paperclip] ${warning}\n`,
+    stream: "system" as const,
+    chunk: `${warning}\n`,
   };
 }
 
