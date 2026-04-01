@@ -19,7 +19,12 @@ http
   .createServer((req, res) => {
     let url = req.url.split("?")[0];
     if (url === "/") url = "/index.html";
-    const filePath = path.join(DIR, url);
+    const filePath = path.resolve(DIR, path.join(".", url));
+    if (!filePath.startsWith(DIR)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
     const ext = path.extname(filePath);
     const mime = MIME[ext] || "application/octet-stream";
 
