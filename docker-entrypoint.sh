@@ -26,4 +26,12 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# Fix Claude CLI credentials permissions on every startup
+# When 'claude login' is run via Coolify terminal (as root), credentials
+# are created with root ownership. The server runs as 'node' and needs
+# read access to these files for Claude subscription auth.
+if [ -d /paperclip/.claude ]; then
+    chown -R node:node /paperclip/.claude
+fi
+
 exec gosu node "$@"
