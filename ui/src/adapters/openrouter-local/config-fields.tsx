@@ -61,13 +61,13 @@ export function OpenRouterLocalConfigFields({
 
       {/* Max turns — edit mode only */}
       {!isCreate && (
-        <Field label="Max turns" hint="Max conversation turns per run (default: 20)">
+        <Field label="Max turns" hint="Max conversation turns per run (default: 30)">
           <DraftInput
-            value={eff("adapterConfig", "maxTurns", String(config.maxTurns ?? "20"))}
+            value={eff("adapterConfig", "maxTurns", String(config.maxTurns ?? "30"))}
             onCommit={(v) => mark("adapterConfig", "maxTurns", v ? Number(v) : undefined)}
             immediate
             className={inputClass}
-            placeholder="20"
+            placeholder="30"
           />
         </Field>
       )}

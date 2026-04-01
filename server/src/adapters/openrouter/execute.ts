@@ -418,7 +418,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsFilePath = asString(config.instructionsFilePath, "");
   let agentInstructions = "";
   if (instructionsFilePath) {
-    try { agentInstructions = sanitize(await readFile(instructionsFilePath, "utf-8")); } catch {}
+    try { agentInstructions = sanitize(await readFile(instructionsFilePath, "utf-8")); } catch (err) {
+      await onLog("stderr", `[openrouter] Warning: could not read instructions file "${instructionsFilePath}": ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   }
 
   // ── Build prompt ───────────────────────────────────────────
@@ -433,34 +435,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const wakeReason = asString(context.wakeReason, "");
   let issueBlock = "";
   let jwtAuthHeader = "";
-  if (issueId || true) {  // Always generate JWT for issue creation tool
-    // Try to get issue details — use internal JWT if available
+  // ── Generate JWT for internal API access ────────────────────
+  try {
+    const port = process.env.PORT || "3100";
+    const jwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    if (jwtSecret) {
+      const { createHmac } = await import("node:crypto");
+      const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({
+        sub: agent.id,
+        company_id: agent.companyId,
+        adapter_type: "openrouter_local",
+        run_id: runId,
+        iss: "paperclip",
+        aud: "paperclip-api",
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + Math.max(600, timeoutSec + 60),
+      })).toString("base64url");
+      const sig = createHmac("sha256", jwtSecret).update(`${header}.${payload}`).digest("base64url");
+      jwtAuthHeader = `Bearer ${header}.${payload}.${sig}`;
+    }
+  } catch {}
+
+  // ── Fetch issue context ────────────────────────────────────
+  if (issueId) {
     try {
       const port = process.env.PORT || "3100";
       const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (jwtAuthHeader) headers["Authorization"] = jwtAuthHeader;
 
-      // Generate a minimal JWT for internal API access
-      const jwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
-      if (jwtSecret) {
-        const { createHmac } = await import("node:crypto");
-        const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-        const payload = Buffer.from(JSON.stringify({
-          sub: agent.id,
-          company_id: agent.companyId,
-          adapter_type: "openrouter_local",
-          run_id: runId,
-          iss: "paperclip",
-          aud: "paperclip-api",
-          iat: Math.floor(Date.now() / 1000),
-          exp: Math.floor(Date.now() / 1000) + 300,
-        })).toString("base64url");
-        const sig = createHmac("sha256", jwtSecret).update(`${header}.${payload}`).digest("base64url");
-        jwtAuthHeader = `Bearer ${header}.${payload}.${sig}`;
-        headers["Authorization"] = jwtAuthHeader;
-      }
-
-      if (!issueId) { /* skip fetch but keep jwtAuthHeader */ }
-      else {
+      {
       const res = await fetch(`http://localhost:${port}/api/issues/${issueId}`, { headers, signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const issue = await res.json() as { title?: string; description?: string; identifier?: string };
@@ -505,6 +509,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     } catch {}
   }
+
+
 
   if (onMeta) {
     await onMeta({ adapterType: "openrouter_local", command: "openrouter-api", cwd, commandNotes: [`Model: ${model}`], prompt: renderedPrompt });
@@ -604,11 +610,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // Estimate cost if OpenRouter didn't return it
-  if (totalCost === 0 && (totalIn + totalOut) > 0) {
-    // DeepSeek V3.2 Speciale: $0.40/$1.20 per 1M tokens
-    totalCost = (totalIn / 1_000_000) * 0.40 + (totalOut / 1_000_000) * 1.20;
-  }
+  // Note: totalCost comes from the x-openrouter-cost header. If OpenRouter didn't
+  // return it (which happens for some models), we leave it at 0 rather than guessing
+  // with hardcoded per-model pricing that would be wrong for most models.
 
   await onLog("stdout", `[openrouter] Done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s | ${totalIn}+${totalOut} tokens | $${totalCost.toFixed(4)}\n`);
 
