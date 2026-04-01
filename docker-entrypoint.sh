@@ -22,8 +22,8 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
-fi
+# Always ensure /paperclip is owned by node — Docker named volumes may
+# be initialised as root even when the UID/GID has not changed.
+chown -R node:node /paperclip
 
 exec gosu node "$@"
