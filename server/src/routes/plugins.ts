@@ -139,6 +139,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-decision-surface",
+    pluginKey: "paperclip.decision-surface",
+    displayName: "Decision Surface",
+    description: "Surfaces pending approvals and blocked issues in a single decision queue. Provides a `decisions` tool for agents, a dashboard widget, and a full /decisions page. Auto-unblocks issues after approvals resolve.",
+    localPath: "packages/plugins/examples/plugin-decision-surface",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
