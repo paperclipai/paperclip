@@ -605,6 +605,19 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Restore agents from rate-limit fallback (codex_local → claude_local)
+      // when their reset time has passed.
+      void heartbeat
+        .tickRateLimitRestore(new Date())
+        .then((restored) => {
+          if (restored > 0) {
+            logger.info({ restored }, "rate limit fallback: restored agents to original adapter");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "rate limit fallback restore tick failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
   }
   

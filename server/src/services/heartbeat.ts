@@ -6,6 +6,16 @@ import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
+  HEARTBEAT_POLICY_COOLDOWN_MAX_SEC,
+  HEARTBEAT_POLICY_COOLDOWN_MIN_SEC,
+  HEARTBEAT_POLICY_INTERVAL_MAX_SEC,
+  HEARTBEAT_POLICY_INTERVAL_MIN_SEC,
+  HEARTBEAT_POLICY_MAX_CONCURRENT_MAX,
+  HEARTBEAT_POLICY_MAX_CONCURRENT_MIN,
+  HEARTBEAT_PRESET_CONFIGS,
+  type HeartbeatPreset,
+} from "@paperclipai/shared/validators/agent";
+import {
   agents,
   agentRuntimeState,
   agentTaskSessions,
@@ -62,7 +72,6 @@ import {
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const startLocksByAgent = new Map<string, Promise<void>>();
@@ -77,6 +86,13 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+const RATE_LIMIT_FALLBACK_ADAPTER = "codex_local";
+const RATE_LIMIT_FALLBACK_DEFAULT_MODEL = "gpt-5.3-codex";  // Codex default model
+const RATE_LIMIT_FALLBACK_MODEL_OVERRIDES: Record<string, string> = {
+  ceo: "gpt-5.4",
+};
+const RATE_LIMIT_FALLBACK_SOURCE_ADAPTERS = new Set(["claude_local"]);
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
@@ -262,10 +278,64 @@ function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
-function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+function normalizeHeartbeatIntervalSec(value: unknown, fallback: number) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_INTERVAL_MIN_SEC, Math.min(HEARTBEAT_POLICY_INTERVAL_MAX_SEC, parsed));
+}
+
+function normalizeHeartbeatCooldownSec(value: unknown, fallback: number) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_COOLDOWN_MIN_SEC, Math.min(HEARTBEAT_POLICY_COOLDOWN_MAX_SEC, parsed));
+}
+
+function normalizeMaxConcurrentRuns(value: unknown, fallback: number = HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(HEARTBEAT_POLICY_MAX_CONCURRENT_MIN, Math.min(HEARTBEAT_POLICY_MAX_CONCURRENT_MAX, parsed));
+}
+
+type ParsedHeartbeatPolicy = {
+  preset: HeartbeatPreset | null;
+  enabled: boolean;
+  intervalSec: number;
+  wakeOnDemand: boolean;
+  cooldownSec: number;
+  maxConcurrentRuns: number;
+};
+
+export function resolveHeartbeatPolicyForRuntimeConfig(runtimeConfigValue: unknown): ParsedHeartbeatPolicy {
+  const runtimeConfig = parseObject(runtimeConfigValue);
+  const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const presetCandidate = readNonEmptyString(heartbeat.preset);
+  const preset =
+    presetCandidate && presetCandidate in HEARTBEAT_PRESET_CONFIGS
+      ? (presetCandidate as HeartbeatPreset)
+      : null;
+  const presetConfig = preset ? HEARTBEAT_PRESET_CONFIGS[preset] : null;
+
+  const enabled = asBoolean(heartbeat.enabled, presetConfig?.enabled ?? true);
+  const intervalSec = normalizeHeartbeatIntervalSec(heartbeat.intervalSec, presetConfig?.intervalSec ?? 3600);
+  const wakeOnDemand = asBoolean(
+    heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation,
+    presetConfig?.wakeOnDemand ?? true,
+  );
+  const maxConcurrentRuns = normalizeMaxConcurrentRuns(
+    heartbeat.maxConcurrentRuns,
+    presetConfig?.maxConcurrentRuns ?? HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  );
+  const desiredCooldownSec = normalizeHeartbeatCooldownSec(heartbeat.cooldownSec, presetConfig?.cooldownSec ?? 0);
+  const cooldownSec = enabled ? Math.min(desiredCooldownSec, intervalSec) : desiredCooldownSec;
+
+  return {
+    preset,
+    enabled,
+    intervalSec,
+    wakeOnDemand: enabled ? wakeOnDemand : wakeOnDemand || true,
+    cooldownSec,
+    maxConcurrentRuns,
+  };
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
@@ -1721,16 +1791,265 @@ export function heartbeatService(db: Db) {
     return queued;
   }
 
-  function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    const heartbeat = parseObject(runtimeConfig.heartbeat);
+  /** Detect whether an adapter failure is a rate-limit rejection. */
+  function parseRateLimitError(errorMessage: string | null | undefined, resultJson: unknown): { isRateLimit: boolean; resetsAt: number | null } {
+    if (!errorMessage) return { isRateLimit: false, resetsAt: null };
+    const lower = errorMessage.toLowerCase();
+    const isRateLimit =
+      (lower.includes("hit your limit") && lower.includes("resets")) ||
+      lower.includes("rate_limit") ||
+      lower.includes("rate limit") ||
+      lower.includes("rate limited");
+    if (!isRateLimit) return { isRateLimit: false, resetsAt: null };
 
-    return {
-      enabled: asBoolean(heartbeat.enabled, true),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+    // Try to extract resetsAt from resultJson (stream-json rate_limit_event)
+    let resetsAt: number | null = null;
+    const rj = resultJson as Record<string, unknown> | null | undefined;
+    if (rj && typeof rj === "object") {
+      // Check top-level or nested rate_limit_info
+      const info = (rj as Record<string, unknown>).rate_limit_info as Record<string, unknown> | undefined;
+      const candidate = info?.resetsAt ?? (rj as Record<string, unknown>).resetsAt;
+      if (typeof candidate === "number" && candidate > 0) {
+        resetsAt = candidate;
+      }
+    }
+    // Fallback: parse "resets <time>" from error message
+    if (!resetsAt) {
+      // Look for unix-epoch-like number in the message
+      const epochMatch = errorMessage.match(/(\d{10,13})/);  
+      if (epochMatch) {
+        const ts = Number(epochMatch[1]);
+        // If it's seconds (10 digits), convert to ms; if ms (13 digits), keep as-is
+        resetsAt = ts < 1e12 ? ts : Math.floor(ts / 1000);
+      }
+    }
+    return { isRateLimit: true, resetsAt };
+  }
+
+  /** Switch ALL claude_local agents in the company to codex_local and re-queue the failed run. */
+  async function enqueueRateLimitFallbackRetry(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    resetsAt: number | null,
+    now: Date,
+  ) {
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    const existingFallback = parseObject(runtimeConfig.rateLimitFallback);
+    // Don't double-fallback if already on codex_local
+    if (agent.adapterType === RATE_LIMIT_FALLBACK_ADAPTER || existingFallback.active === true) {
+      return null;
+    }
+
+    const effectiveResetsAt = resetsAt ?? Math.floor(now.getTime() / 1000) + 5 * 60 * 60;  // default: 5h from now
+
+    // Switch ALL claude_local agents in the same company — they share the same
+    // Claude Code subscription, so if one is rate-limited, all are.
+    const companyAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, agent.companyId));
+
+    let switchedCount = 0;
+    for (const companyAgent of companyAgents) {
+      if (!RATE_LIMIT_FALLBACK_SOURCE_ADAPTERS.has(companyAgent.adapterType)) continue;
+      const agentRuntimeConfig = parseObject(companyAgent.runtimeConfig);
+      const agentExistingFallback = parseObject(agentRuntimeConfig.rateLimitFallback);
+      if (agentExistingFallback.active === true) continue;
+
+      const agentOriginalAdapterType = companyAgent.adapterType;
+      const agentOriginalModel = typeof parseObject(companyAgent.adapterConfig).model === "string"
+        ? (parseObject(companyAgent.adapterConfig).model as string) : "";
+      const fallbackState = {
+        active: true,
+        originalAdapterType: agentOriginalAdapterType,
+        originalModel: agentOriginalModel,
+        resetsAt: effectiveResetsAt,
+        fallbackAdapterType: RATE_LIMIT_FALLBACK_ADAPTER,
+        activatedAt: now.toISOString(),
+      };
+
+      // Also update adapterConfig to use a Codex-compatible model
+      const agentAdapterConfig = parseObject(companyAgent.adapterConfig);
+      const agentNameKey = companyAgent.name.toLowerCase().trim();
+      const fallbackModel = RATE_LIMIT_FALLBACK_MODEL_OVERRIDES[agentNameKey] ?? RATE_LIMIT_FALLBACK_DEFAULT_MODEL;
+      const updatedAdapterConfig = { ...agentAdapterConfig, model: fallbackModel };
+
+      await db
+        .update(agents)
+        .set({
+          adapterType: RATE_LIMIT_FALLBACK_ADAPTER,
+          adapterConfig: updatedAdapterConfig,
+          runtimeConfig: { ...agentRuntimeConfig, rateLimitFallback: fallbackState },
+          updatedAt: now,
+        })
+        .where(eq(agents.id, companyAgent.id));
+
+      logger.info(
+        {
+          agentId: companyAgent.id,
+          agentName: companyAgent.name,
+          originalAdapterType: agentOriginalAdapterType,
+          fallbackAdapterType: RATE_LIMIT_FALLBACK_ADAPTER,
+          resetsAt: effectiveResetsAt,
+        },
+        "Rate limit detected: switching agent to fallback adapter",
+      );
+      switchedCount += 1;
+    }
+
+    if (switchedCount === 0) return null;
+
+    // Queue a retry for the specific failed run with the new adapter
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retryContextSnapshot = {
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "rate_limit_fallback",
+      retryReason: "rate_limit_fallback",
+      forceFreshSession: true,
     };
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "rate_limit_fallback",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+            fallbackAdapterType: RATE_LIMIT_FALLBACK_ADAPTER,
+            switchedAgentsCount: switchedCount,
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: null,
+          retryOfRunId: run.id,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: retryRun.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `Claude Code rate limit detected. Switched ${switchedCount} agent(s) to ${RATE_LIMIT_FALLBACK_ADAPTER}. Will restore after ${new Date(effectiveResetsAt * 1000).toLocaleString()}.`,
+      payload: {
+        retryOfRunId: run.id,
+        fallbackAdapterType: RATE_LIMIT_FALLBACK_ADAPTER,
+        resetsAt: effectiveResetsAt,
+        switchedAgentsCount: switchedCount,
+      },
+    });
+
+    return queued;
+  }
+
+  /** Restore agents from rate-limit fallback once the reset time has passed. */
+  async function restoreRateLimitFallbackAgents(now: Date) {
+    const allAgents = await db.select().from(agents);
+    let restored = 0;
+    for (const agent of allAgents) {
+      const runtimeConfig = parseObject(agent.runtimeConfig);
+      const fallback = parseObject(runtimeConfig.rateLimitFallback);
+      if (fallback.active !== true) continue;
+      const resetsAt = typeof fallback.resetsAt === "number" ? fallback.resetsAt : 0;
+      if (resetsAt > 0 && now.getTime() / 1000 < resetsAt) continue;
+
+      // Time to restore
+      const originalAdapterType = typeof fallback.originalAdapterType === "string" ? fallback.originalAdapterType : "claude_local";
+      const originalModel = typeof fallback.originalModel === "string" && fallback.originalModel.length > 0
+        ? fallback.originalModel : null;
+      const updatedRuntimeConfig = { ...runtimeConfig };
+      delete updatedRuntimeConfig.rateLimitFallback;
+
+      // Restore original model in adapterConfig
+      const agentAdapterConfig = parseObject(agent.adapterConfig);
+      const restoredAdapterConfig = { ...agentAdapterConfig };
+      if (originalModel) {
+        restoredAdapterConfig.model = originalModel;
+      } else {
+        delete restoredAdapterConfig.model;
+      }
+
+      await db
+        .update(agents)
+        .set({
+          adapterType: originalAdapterType,
+          adapterConfig: restoredAdapterConfig,
+          runtimeConfig: updatedRuntimeConfig,
+          updatedAt: now,
+        })
+        .where(eq(agents.id, agent.id));
+
+      logger.info(
+        {
+          agentId: agent.id,
+          restoredAdapterType: originalAdapterType,
+          previousFallback: RATE_LIMIT_FALLBACK_ADAPTER,
+        },
+        "Rate limit reset: restored agent to original adapter",
+      );
+      restored += 1;
+    }
+    return restored;
+  }
+
+  function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
+    return resolveHeartbeatPolicyForRuntimeConfig(agent.runtimeConfig);
   }
 
   async function countRunningRunsForAgent(agentId: string) {
@@ -2857,6 +3176,32 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // --- Rate limit fallback: if the run failed due to rate limiting, switch to codex ---
+      if (
+        outcome === "failed" &&
+        RATE_LIMIT_FALLBACK_SOURCE_ADAPTERS.has(agent.adapterType)
+      ) {
+        const rlParsed = parseRateLimitError(
+          adapterResult.errorMessage,
+          adapterResult.resultJson,
+        );
+        if (rlParsed.isRateLimit) {
+          const freshAgent = await getAgent(agent.id);
+          if (freshAgent) {
+            const finalizedRunForRetry = await getRun(run.id);
+            if (finalizedRunForRetry) {
+              await enqueueRateLimitFallbackRetry(
+                finalizedRunForRetry,
+                freshAgent,
+                rlParsed.resetsAt,
+                new Date(),
+              );
+              await startNextQueuedRunForAgent(agent.id);
+            }
+          }
+        }
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -3155,14 +3500,25 @@ export function heartbeatService(db: Db) {
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (skipReason: string, telemetryPayload?: Record<string, unknown>) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
         reason: skipReason,
-        payload,
+        payload: {
+          ...(payload ?? {}),
+          ...(telemetryPayload ?? {}),
+          heartbeatPolicy: {
+            preset: policy.preset,
+            enabled: policy.enabled,
+            intervalSec: policy.intervalSec,
+            wakeOnDemand: policy.wakeOnDemand,
+            cooldownSec: policy.cooldownSec,
+            maxConcurrentRuns: policy.maxConcurrentRuns,
+          },
+        },
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
@@ -3209,6 +3565,28 @@ export function heartbeatService(db: Db) {
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+    if (policy.cooldownSec > 0 && agent.lastHeartbeatAt) {
+      const elapsedMs = Date.now() - new Date(agent.lastHeartbeatAt).getTime();
+      const cooldownMs = policy.cooldownSec * 1000;
+      if (elapsedMs < cooldownMs) {
+        const remainingSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+        await writeSkippedRequest("heartbeat.cooldown.active", {
+          cooldownRemainingSec: remainingSec,
+          source,
+        });
+        logger.info(
+          {
+            agentId,
+            source,
+            cooldownSec: policy.cooldownSec,
+            cooldownRemainingSec: remainingSec,
+            preset: policy.preset,
+          },
+          "Wakeup skipped due to heartbeat cooldown",
+        );
+        return null;
+      }
     }
 
     const bypassIssueExecutionLock =
@@ -3978,6 +4356,10 @@ export function heartbeatService(db: Db) {
       }
 
       return { checked, enqueued, skipped };
+    },
+
+    tickRateLimitRestore: async (now = new Date()) => {
+      return restoreRateLimitFallbackAgents(now);
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),
