@@ -1,3 +1,6 @@
+import { formatMessage } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -66,7 +69,7 @@ export function currentUserAssigneeOption(currentUserId: string | null | undefin
   if (!currentUserId) return [];
   return [{
     id: assigneeValueFromSelection({ assigneeUserId: currentUserId }),
-    label: "Me",
+    label: formatMessage(getRuntimeLocale(), "common.me"),
     searchText: currentUserId === "local-board" ? "me board human local-board" : `me human ${currentUserId}`,
   }];
 }
@@ -76,7 +79,7 @@ export function formatAssigneeUserLabel(
   currentUserId: string | null | undefined,
 ): string | null {
   if (!userId) return null;
-  if (currentUserId && userId === currentUserId) return "Me";
-  if (userId === "local-board") return "Board";
+  if (currentUserId && userId === currentUserId) return formatMessage(getRuntimeLocale(), "common.me");
+  if (userId === "local-board") return formatMessage(getRuntimeLocale(), "common.board");
   return userId.slice(0, 5);
 }

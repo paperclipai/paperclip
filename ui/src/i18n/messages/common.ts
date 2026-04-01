@@ -64,6 +64,8 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       pauseReason: "Pause Reason",
       pauseStack: "Pause Stack",
       none: "None",
+      me: "Me",
+      board: "Board",
     },
     seatPause: {
       budgetEnforcement: "Budget enforcement",
@@ -257,6 +259,8 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       pauseReason: "일시중지 사유",
       pauseStack: "일시중지 스택",
       none: "없음",
+      me: "나",
+      board: "보드",
     },
     seatPause: {
       budgetEnforcement: "예산 집행",
@@ -450,6 +454,8 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       pauseReason: "停止理由",
       pauseStack: "停止スタック",
       none: "なし",
+      me: "自分",
+      board: "ボード",
     },
     seatPause: {
       budgetEnforcement: "予算制御",

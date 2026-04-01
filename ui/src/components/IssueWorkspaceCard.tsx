@@ -10,16 +10,17 @@ import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { localizedStatusLabel } from "../lib/displayLabels";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
-import { useI18n } from "../i18n";
+import { formatMessage, useI18n } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace" },
+  { value: "isolated_workspace" },
+  { value: "reuse_existing" },
 ] as const;
 
 function issueModeForExistingWorkspace(mode: string | null | undefined) {
@@ -92,12 +93,13 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
 }
 
 function workspaceModeLabel(mode: string | null | undefined) {
+  const locale = getRuntimeLocale();
   switch (mode) {
-    case "isolated_workspace": return "Isolated workspace";
-    case "operator_branch": return "Operator branch";
-    case "cloud_sandbox": return "Cloud sandbox";
-    case "adapter_managed": return "Adapter managed";
-    default: return "Workspace";
+    case "isolated_workspace": return formatMessage(locale, "issueWorkspace.isolatedWorkspace");
+    case "operator_branch": return formatMessage(locale, "issueWorkspace.operatorBranch");
+    case "cloud_sandbox": return formatMessage(locale, "issueWorkspace.cloudSandbox");
+    case "adapter_managed": return formatMessage(locale, "issueWorkspace.adapterManaged");
+    default: return formatMessage(locale, "issueWorkspace.genericWorkspace");
   }
 }
 
@@ -105,15 +107,16 @@ function configuredWorkspaceLabel(
   selection: string | null | undefined,
   reusableWorkspace: ExecutionWorkspace | null,
 ) {
+  const locale = getRuntimeLocale();
   switch (selection) {
     case "isolated_workspace":
-      return "New isolated workspace";
+      return formatMessage(locale, "issueWorkspace.newIsolatedWorkspace");
     case "reuse_existing":
       return reusableWorkspace?.mode === "isolated_workspace"
-        ? "Existing isolated workspace"
-        : "Reuse existing workspace";
+        ? formatMessage(locale, "issueWorkspace.existingIsolatedWorkspace")
+        : formatMessage(locale, "issueWorkspace.reuseExistingWorkspace");
     default:
-      return "Project default";
+      return formatMessage(locale, "issueWorkspace.projectDefault");
   }
 }
 
@@ -420,7 +423,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
               <option value="">{t("issueWorkspace.chooseExistingWorkspace")}</option>
               {deduplicatedReusableWorkspaces.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name} · {w.status} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
+                  {w.name} · {localizedStatusLabel(w.status)} · {w.branchName ?? w.cwd ?? w.id.slice(0, 8)}
                 </option>
               ))}
             </select>
@@ -442,7 +445,7 @@ export function IssueWorkspaceCard({ issue, project, onUpdate }: IssueWorkspaceC
                   <BreakablePath text={workspace.name} />
                 )}
                 {" · "}
-                {workspace.status}
+                {localizedStatusLabel(workspace.status)}
               </div>
             </div>
           )}
