@@ -45,4 +45,6 @@ jobs:
           ./scripts/check-deploy-drift.sh \
             --host "${{ secrets.VULTR_HOST }}" \
             --user "${{ secrets.VULTR_USER }}" \
-            --expected-sha "${{ steps.expected-sha.outputs.sha }}"
+            --expected-sha "${{ steps.expected-sha.outputs.sha }}" \
+            --retries 20 \
+            --retry-interval-seconds 30

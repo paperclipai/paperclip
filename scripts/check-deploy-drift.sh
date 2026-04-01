@@ -5,6 +5,8 @@ set -euo pipefail
 VPS_HOST=""
 VPS_USER=""
 EXPECTED_SHA=""
+RETRIES=0
+RETRY_INTERVAL_SECONDS=30
 
 while (($#)); do
   case "$1" in
@@ -20,6 +22,14 @@ while (($#)); do
       EXPECTED_SHA="${2:-}"
       shift 2
       ;;
+    --retries)
+      RETRIES="${2:-}"
+      shift 2
+      ;;
+    --retry-interval-seconds)
+      RETRY_INTERVAL_SECONDS="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -30,15 +40,20 @@ done
 [ -n "$VPS_HOST" ] || { echo "--host is required" >&2; exit 1; }
 [ -n "$VPS_USER" ] || { echo "--user is required" >&2; exit 1; }
 [ -n "$EXPECTED_SHA" ] || { echo "--expected-sha is required" >&2; exit 1; }
+[ -n "${RETRIES}" ] || { echo "--retries is required" >&2; exit 1; }
+[ -n "${RETRY_INTERVAL_SECONDS}" ] || { echo "--retry-interval-seconds is required" >&2; exit 1; }
+[[ "$RETRIES" =~ ^[0-9]+$ ]] || { echo "--retries must be a non-negative integer" >&2; exit 1; }
+[[ "$RETRY_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || { echo "--retry-interval-seconds must be a non-negative integer" >&2; exit 1; }
 
-
-ssh \
-  -i "$HOME/.ssh/id_ed25519" \
-  -o BatchMode=yes \
-  -o StrictHostKeyChecking=yes \
-  -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
-  "${VPS_USER}@${VPS_HOST}" \
-  "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'EOF'
+attempt=0
+while :; do
+  if ssh \
+    -i "$HOME/.ssh/id_ed25519" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+    "${VPS_USER}@${VPS_HOST}" \
+    "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'EOF'
 set -euo pipefail
 
 printf "EXPECTED_SHA=%s\n" "$EXPECTED_SHA"
@@ -78,3 +93,15 @@ curl -fsS --max-time 10 http://localhost:3100/api/health > /dev/null || {
 
 echo "DRIFT_CHECK=PASS"
 EOF
+  then
+    break
+  fi
+
+  if [ "$attempt" -ge "$RETRIES" ]; then
+    exit 1
+  fi
+
+  attempt=$((attempt + 1))
+  printf "RETRY: drift check failed, waiting %ss before retry %s/%s\n" "$RETRY_INTERVAL_SECONDS" "$attempt" "$RETRIES" >&2
+  sleep "$RETRY_INTERVAL_SECONDS"
+done
