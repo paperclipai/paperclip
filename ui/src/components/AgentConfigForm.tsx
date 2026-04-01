@@ -317,6 +317,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "gemini_local" ||
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "openrouter_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
   const isHermesLocal = adapterType === "hermes_local";
