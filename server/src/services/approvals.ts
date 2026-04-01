@@ -1,12 +1,13 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, budgetIncidents } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { compareKatyaApprovalStatus, type KatyaApprovalStatus } from "./katya-autonomy.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -79,10 +80,18 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    list: async (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
-      return db.select().from(approvals).where(and(...conditions));
+      const rows = await db.select().from(approvals).where(and(...conditions));
+      return rows.sort((a, b) => {
+        const statusDelta = compareKatyaApprovalStatus(
+          a.status as KatyaApprovalStatus,
+          b.status as KatyaApprovalStatus,
+        );
+        if (statusDelta !== 0) return statusDelta;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
     },
 
     getById: (id: string) =>
@@ -225,6 +234,95 @@ export function approvalService(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    pause: async (id: string) => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "approved" && existing.status !== "scheduled") {
+        throw unprocessable("Only approved or scheduled approvals can be paused");
+      }
+      const now = new Date();
+      return db
+        .update(approvals)
+        .set({ status: "paused", updatedAt: now })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    schedule: async (id: string, scheduledAt: string) => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "approved" && existing.status !== "paused") {
+        throw unprocessable("Only approved or paused approvals can be scheduled");
+      }
+      const now = new Date();
+      const updatedPayload = { ...(existing.payload as Record<string, unknown>), scheduledAt };
+      return db
+        .update(approvals)
+        .set({ status: "scheduled", payload: updatedPayload, updatedAt: now })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    publish: async (id: string) => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "approved" && existing.status !== "scheduled") {
+        throw unprocessable("Only approved or scheduled approvals can be published");
+      }
+      const now = new Date();
+      const updatedPayload = { ...(existing.payload as Record<string, unknown>), publishedAt: now.toISOString() };
+      return db
+        .update(approvals)
+        .set({ status: "published", payload: updatedPayload, updatedAt: now })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    recall: async (id: string, decisionNote?: string | null) => {
+      const existing = await getExistingApproval(id);
+      if (existing.status !== "published") {
+        throw unprocessable("Only published approvals can be recalled");
+      }
+      const now = new Date();
+      return db
+        .update(approvals)
+        .set({ status: "recalled", decisionNote: decisionNote ?? null, updatedAt: now })
+        .where(eq(approvals.id, id))
+        .returning()
+        .then((rows) => rows[0]);
+    },
+
+    deleteById: async (id: string) => {
+      const existing = await getExistingApproval(id);
+      await db.transaction(async (tx) => {
+        // approval_comments has FK without ON DELETE CASCADE
+        await tx.delete(approvalComments).where(eq(approvalComments.approvalId, id));
+        // budget_incidents may reference approval_id for policy events
+        await tx
+          .update(budgetIncidents)
+          .set({ approvalId: null, updatedAt: new Date() })
+          .where(eq(budgetIncidents.approvalId, id));
+        await tx.delete(approvals).where(eq(approvals.id, id));
+      });
+      return existing;
+    },
+
+    updateContent: async (id: string, payload: Record<string, unknown>) => {
+      const existing = await getExistingApproval(id);
+      const editableStatuses = new Set(["approved", "paused", "scheduled"]);
+      if (!editableStatuses.has(existing.status)) {
+        throw unprocessable("Only approved, paused, or scheduled approvals can have their content edited");
+      }
+      const now = new Date();
+      const mergedPayload = { ...(existing.payload as Record<string, unknown>), ...payload };
+      return db
+        .update(approvals)
+        .set({ payload: mergedPayload, updatedAt: now })
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
