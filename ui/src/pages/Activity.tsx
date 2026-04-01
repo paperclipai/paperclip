@@ -77,6 +77,12 @@ export function Activity() {
     return map;
   }, [issues, agents, projects, goals]);
 
+  const entityTypeLabel = (type: string) => {
+    const key = `activity.entityTypes.${type}`;
+    const value = t(key);
+    return value === key ? type.replace(/_/g, " ") : value;
+  };
+
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
@@ -111,7 +117,7 @@ export function Activity() {
             <SelectItem value="all">{t("activity.allTypes")}</SelectItem>
             {entityTypes.map((type) => (
               <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
+                {entityTypeLabel(type)}
               </SelectItem>
             ))}
           </SelectContent>

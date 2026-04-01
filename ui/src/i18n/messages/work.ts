@@ -13,6 +13,17 @@ export const workMessages: Record<ActiveLocale, MessageTree> = {
         board: "Board",
         unknown: "Unknown",
       },
+      entityTypes: {
+        issue: "Issue",
+        agent: "Agent",
+        heartbeat_run: "Heartbeat run",
+        approval: "Approval",
+        project: "Project",
+        goal: "Goal",
+        cost: "Cost",
+        company: "Company",
+        join_request: "Join request",
+      },
       actions: {
         issue: {
           created: "created",
@@ -654,6 +665,17 @@ export const workMessages: Record<ActiveLocale, MessageTree> = {
         board: "보드",
         unknown: "알 수 없음",
       },
+      entityTypes: {
+        issue: "이슈",
+        agent: "에이전트",
+        heartbeat_run: "하트비트 실행",
+        approval: "승인",
+        project: "프로젝트",
+        goal: "목표",
+        cost: "비용",
+        company: "회사",
+        join_request: "참여 요청",
+      },
       actions: {
         issue: {
           created: "생성",
@@ -1294,6 +1316,17 @@ export const workMessages: Record<ActiveLocale, MessageTree> = {
         system: "システム",
         board: "ボード",
         unknown: "不明",
+      },
+      entityTypes: {
+        issue: "Issue",
+        agent: "エージェント",
+        heartbeat_run: "Heartbeat 実行",
+        approval: "承認",
+        project: "プロジェクト",
+        goal: "目標",
+        cost: "コスト",
+        company: "会社",
+        join_request: "参加リクエスト",
       },
       actions: {
         issue: {
