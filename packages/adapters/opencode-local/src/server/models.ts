@@ -8,8 +8,18 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 60_000; // Increased from 20s to handle large model lists
-const VALIDATED_MODELS_CACHE_TTL_MS = 86_400_000; // 24 hours
+const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
+const VALIDATED_MODELS_CACHE_TTL_MS = 86_400_000;
+
+class OpenCodeModelsDiscoveryTimeoutError extends Error {
+  readonly partialModels: AdapterModel[];
+
+  constructor(message: string, partialModels: AdapterModel[]) {
+    super(message);
+    this.name = "OpenCodeModelsDiscoveryTimeoutError";
+    this.partialModels = partialModels;
+  }
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -111,8 +121,7 @@ function pruneExpiredValidatedModelsCache(now: number) {
 function isModelValidated(model: string): boolean {
   const now = Date.now();
   pruneExpiredValidatedModelsCache(now);
-  const cached = validatedModelsCache.get(model);
-  return cached !== undefined && cached.expiresAt > now;
+  return validatedModelsCache.has(model);
 }
 
 function markModelValidated(model: string): void {
@@ -157,17 +166,15 @@ export async function discoverOpenCodeModels(input: {
   );
 
   if (result.timedOut) {
-    // Graceful degradation: return partial results if timeout occurs
-    // This helps with large model lists from providers like OpenRouter
-    const parsed = parseModelsOutput(result.stdout);
-    if (parsed.length > 0) {
-      console.warn(
-        `[paperclip-opencode] \`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s, ` +
-        `returning ${parsed.length} partial results. Consider increasing timeout or using model validation cache.`
-      );
-      return sortModels(parsed);
-    }
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s with no results.`);
+    const partialModels = sortModels(parseModelsOutput(result.stdout));
+    const partialSuffix =
+      partialModels.length > 0
+        ? ` with ${partialModels.length} partial result${partialModels.length === 1 ? "" : "s"}`
+        : " with no results";
+    throw new OpenCodeModelsDiscoveryTimeoutError(
+      `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s${partialSuffix}.`,
+      partialModels,
+    );
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
@@ -217,11 +224,30 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     return [];
   }
 
-  const models = await discoverOpenCodeModelsCached({
-    command: input.command,
-    cwd: input.cwd,
-    env: input.env,
-  });
+  let models: AdapterModel[];
+  try {
+    models = await discoverOpenCodeModelsCached({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+  } catch (error) {
+    if (error instanceof OpenCodeModelsDiscoveryTimeoutError) {
+      if (error.partialModels.some((entry) => entry.id === model)) {
+        markModelValidated(model);
+        return error.partialModels;
+      }
+
+      if (error.partialModels.length > 0) {
+        throw new Error(
+          `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s before confirming availability of ${model}. ` +
+            `It returned ${error.partialModels.length} partial result${error.partialModels.length === 1 ? "" : "s"}, so the model list may be incomplete.`,
+        );
+      }
+    }
+
+    throw error;
+  }
 
   if (models.length === 0) {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
@@ -234,7 +260,6 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     );
   }
 
-  // Cache successful validation for 24 hours
   markModelValidated(model);
 
   return models;
@@ -243,7 +268,10 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   try {
     return await discoverOpenCodeModelsCached();
-  } catch {
+  } catch (error) {
+    if (error instanceof OpenCodeModelsDiscoveryTimeoutError) {
+      return error.partialModels;
+    }
     return [];
   }
 }
