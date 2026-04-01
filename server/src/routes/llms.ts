@@ -70,14 +70,14 @@ export function llmRoutes(db: Db) {
     const adapterType = req.params.adapterType as string;
     const adapter = listServerAdapters().find((entry) => entry.type === adapterType);
     if (!adapter) {
-      res.status(404).type("text/plain").send(`Unknown adapter type: ${adapterType}`);
+      res.status(404).json({ error: "Unknown adapter type", adapterType });
       return;
     }
     res
       .type("text/plain")
       .send(
         adapter.agentConfigurationDoc ??
-          `# ${adapterType} agent configuration\n\nNo adapter-specific documentation registered.`,
+          `# ${adapterType.replace(/[^a-zA-Z0-9_-]/g, "_")} agent configuration\n\nNo adapter-specific documentation registered.`,
       );
   });
 

@@ -89,6 +89,56 @@ const MIME_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
+/**
+ * Allowed Content-Type patterns for dev server proxy.
+ *
+ * This whitelist prevents proxying of potentially malicious content types
+ * from plugin dev servers. Only safe static asset types are allowed.
+ *
+ * Patterns use wildcard matching for flexibility with charset parameters.
+ */
+const DEV_PROXY_CONTENT_TYPE_WHITELIST = [
+  "text/html*", // HTML pages (required for UI)
+  "text/css*", // Stylesheets
+  "text/javascript*", // JavaScript (rare but valid)
+  "application/javascript*", // JavaScript (standard)
+  "application/json*", // JSON data
+  "application/wasm*", // WebAssembly modules
+  "image/*", // All image types
+  "font/*", // All font types
+  "application/font-*", // Font types (alternative MIME)
+  "application/vnd.ms-fontobject", // EOT fonts
+];
+
+/**
+ * Check if a Content-Type header is allowed by the whitelist.
+ *
+ * @param contentType - The Content-Type header value (may be null/undefined)
+ * @returns true if the Content-Type is allowed
+ */
+function isContentTypeAllowed(contentType: string | null): boolean {
+  if (!contentType) {
+    // Allow responses with no Content-Type (will be treated as text/plain)
+    return true;
+  }
+
+  const normalizedType = contentType.toLowerCase().trim();
+
+  // Check against whitelist patterns
+  for (const pattern of DEV_PROXY_CONTENT_TYPE_WHITELIST) {
+    if (pattern.endsWith("*")) {
+      const prefix = pattern.slice(0, -1);
+      if (normalizedType.startsWith(prefix)) {
+        return true;
+      }
+    } else if (normalizedType === pattern) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
@@ -364,6 +414,20 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
               }
 
               const contentType = upstream.headers.get("content-type");
+
+              // Content-Type whitelist enforcement for dev server proxy
+              if (contentType && !isContentTypeAllowed(contentType)) {
+                log.warn(
+                  { pluginId: plugin.id, devUiUrl, contentType },
+                  "plugin-ui-static: blocking dev server response with disallowed Content-Type",
+                );
+                res.status(403).json({
+                  error: "Dev server returned disallowed Content-Type",
+                  contentType,
+                });
+                return;
+              }
+
               if (contentType) res.set("Content-Type", contentType);
               res.set("Cache-Control", "no-cache, no-store, must-revalidate");
 
