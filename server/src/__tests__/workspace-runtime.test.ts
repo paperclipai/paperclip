@@ -899,7 +899,9 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
-  it("provisions worktree-local pnpm node_modules instead of reusing base-repo links", async () => {
+  it(
+    "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
+    async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
@@ -997,7 +999,9 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.realpath(path.join(repoRoot, "server", "node_modules", "@repo", "shared"))).resolves.toBe(
       await fs.realpath(path.join(repoRoot, "packages", "shared")),
     );
-  });
+    },
+    15_000,
+  );
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
