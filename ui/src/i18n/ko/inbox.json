@@ -1,0 +1,87 @@
+{
+  "breadcrumb": "받은함",
+  "selectCompany": "받은함을 보려면 회사를 선택하세요.",
+  "tabs": {
+    "mine": "내 항목",
+    "recent": "최근",
+    "unread": "읽지 않음",
+    "all": "전체"
+  },
+  "sections": {
+    "workItems": "작업 항목",
+    "alerts": "알림"
+  },
+  "categories": {
+    "everything": "전체",
+    "allCategories": "전체 카테고리",
+    "issuesTouched": "내가 다룬 이슈",
+    "myRecentIssues": "내 최근 이슈",
+    "joinRequests": "참여 요청",
+    "approvals": "승인",
+    "failedRuns": "실패한 실행",
+    "alerts": "알림"
+  },
+  "empty": {
+    "noItems": "받은함이 비어 있습니다.",
+    "allCaughtUp": "모두 확인했습니다!",
+    "inboxZero": "받은함 비움.",
+    "noNewItems": "새로운 항목이 없습니다.",
+    "noRecentItems": "최근 항목이 없습니다.",
+    "noMatchingFilters": "필터에 맞는 항목이 없습니다."
+  },
+  "runExitedWithError": "실행이 오류로 종료되었습니다.",
+  "approvalFilters": {
+    "all": "전체",
+    "allStatuses": "전체 승인 상태",
+    "pending": "대기중",
+    "actionable": "조치 필요",
+    "resolved": "해결됨"
+  },
+  "actions": {
+    "approve": "승인",
+    "reject": "거절",
+    "retry": "재시도",
+    "retrying": "재시도 중…",
+    "markAllAsRead": "모두 읽음 표시",
+    "marking": "표시 중…",
+    "dismiss": "닫기"
+  },
+  "labels": {
+    "live": "실시간",
+    "failedRun": "실패한 실행",
+    "earlier": "이전",
+    "category": "카테고리",
+    "approvalStatus": "승인 상태",
+    "requestedBy": "{{name}}님이 요청",
+    "updated": "{{time}} 업데이트",
+    "commented": "{{time}} 코멘트",
+    "requestedFromIp": "{{time}} 요청, IP {{ip}}",
+    "adapter": "어댑터: {{type}}"
+  },
+  "joinRequest": {
+    "human": "사용자 참여 요청",
+    "agent": "에이전트 참여 요청",
+    "agentNamed": "에이전트 참여 요청: {{name}}"
+  },
+  "alerts": {
+    "agentErrorSingular": "{{count}}개 에이전트에 오류 발생",
+    "agentErrorPlural": "{{count}}개 에이전트에 오류 발생",
+    "budgetUtilization": "이번 달 예산 사용률 {{percent}}%"
+  },
+  "errors": {
+    "failedToApprove": "승인에 실패했습니다",
+    "failedToReject": "거절에 실패했습니다",
+    "failedToApproveJoin": "참여 요청 승인에 실패했습니다",
+    "failedToRejectJoin": "참여 요청 거절에 실패했습니다",
+    "failedToArchive": "이슈 보관에 실패했습니다",
+    "retrySkipped": "에이전트가 현재 호출 가능한 상태가 아니어서 재시도가 생략되었습니다."
+  },
+  "approvalStatusLabels": {
+    "pending_approval": "승인 대기",
+    "approved": "승인됨",
+    "rejected": "거절됨",
+    "expired": "만료됨",
+    "pending_input": "입력 대기",
+    "cancelled": "취소됨"
+  }
+}

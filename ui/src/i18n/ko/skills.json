@@ -1,0 +1,19 @@
+{
+  "breadcrumb": "스킬",
+  "title": "회사 스킬",
+  "selectCompany": "스킬을 보려면 회사를 선택하세요.",
+  "noSkills": "아직 설치된 스킬이 없습니다.",
+  "addSkill": "스킬 추가",
+  "scanProjects": "프로젝트 스캔",
+  "scanning": "스캔 중...",
+  "installSkill": "스킬 설치",
+  "updateSkill": "스킬 업데이트",
+  "removeSkill": "스킬 제거",
+  "skillDetail": "스킬 상세",
+  "files": "파일",
+  "noFiles": "파일이 없습니다.",
+  "source": "소스",
+  "editBody": "본문 수정",
+  "viewBody": "본문 보기",
+  "saveChanges": "변경사항 저장"
+}

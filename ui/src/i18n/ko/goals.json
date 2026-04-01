@@ -1,0 +1,41 @@
+{
+  "breadcrumb": "목표",
+  "selectCompany": "목표를 보려면 회사를 선택하세요.",
+  "noGoals": "아직 목표가 없습니다.",
+  "addGoal": "목표 추가",
+  "newGoal": "새 목표",
+  "subGoal": "하위 목표",
+  "noSubGoals": "하위 목표가 없습니다.",
+  "noLinkedProjects": "연결된 프로젝트가 없습니다.",
+  "levels": {
+    "company": "회사",
+    "team": "팀",
+    "agent": "에이전트",
+    "task": "작업"
+  },
+  "detail": {
+    "linkedProjects": "연결된 프로젝트",
+    "childGoals": "하위 목표",
+    "addDescription": "설명 추가...",
+    "subGoalsCount": "하위 목표 ({{count}})",
+    "projectsCount": "프로젝트 ({{count}})"
+  },
+  "properties": {
+    "owner": "소유자",
+    "created": "생성일",
+    "updated": "수정일",
+    "none": "없음"
+  },
+  "newDialog": {
+    "title": "새 목표",
+    "newSubGoal": "새 하위 목표",
+    "titlePlaceholder": "목표 제목",
+    "descriptionPlaceholder": "설명 추가...",
+    "status": "상태",
+    "level": "레벨",
+    "parent": "상위 목표",
+    "createGoal": "목표 생성",
+    "createSubGoal": "하위 목표 생성",
+    "noParent": "상위 없음"
+  }
+}

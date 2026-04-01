@@ -1,0 +1,41 @@
+{
+  "title": "시작하기",
+  "step1": {
+    "title": "회사 만들기",
+    "subtitle": "에이전트가 소속될 조직입니다.",
+    "companyNamePlaceholder": "회사 이름",
+    "companyGoalPlaceholder": "회사 목표 (선택사항)"
+  },
+  "step2": {
+    "title": "첫 에이전트 설정",
+    "subtitle": "이 에이전트가 작업을 수행할 방법을 선택하세요.",
+    "agentNamePlaceholder": "에이전트 이름",
+    "selectAdapter": "어댑터 선택",
+    "modelPlaceholder": "모델",
+    "commandPlaceholder": "명령어",
+    "argsPlaceholder": "인자",
+    "urlPlaceholder": "URL",
+    "showMoreAdapters": "더 많은 어댑터 보기"
+  },
+  "step3": {
+    "title": "첫 작업 만들기",
+    "taskTitlePlaceholder": "작업 제목",
+    "taskDescriptionPlaceholder": "작업 설명"
+  },
+  "step4": {
+    "title": "출발!",
+    "launchDescription": "모든 준비가 완료되었습니다. 시작하세요!"
+  },
+  "createFirstCompany": "첫 번째 회사 만들기",
+  "createAnotherCompany": "다른 회사 만들기",
+  "addAgentTo": "{{name}}에 에이전트 추가",
+  "addAgentDescription": "온보딩을 다시 실행하여 이 회사에 에이전트와 시작 작업을 추가하세요.",
+  "createAnotherDescription": "온보딩을 다시 실행하여 다른 회사를 만들고 첫 에이전트를 설정하세요.",
+  "createFirstDescription": "회사를 만들고 첫 에이전트를 설정하여 시작하세요.",
+  "getStartedByCreating": "회사를 만들어 시작하세요.",
+  "addAgent": "에이전트 추가",
+  "startOnboarding": "온보딩 시작",
+  "newCompany": "새 회사",
+  "defaultTaskTitle": "첫 엔지니어를 고용하고 채용 계획을 만드세요",
+  "defaultTaskDescription": "당신은 CEO입니다. 회사의 방향을 설정합니다.\n\n- 창업 엔지니어를 고용하세요\n- 채용 계획을 작성하세요\n- 로드맵을 구체적인 작업으로 나누고 업무를 위임하기 시작하세요"
+}

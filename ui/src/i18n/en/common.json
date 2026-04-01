@@ -1,0 +1,187 @@
+{
+  "brand": "Paperclip",
+  "loading": "Loading\u2026",
+  "working": "Working\u2026",
+  "saving": "Saving...",
+  "creating": "Creating\u2026",
+  "deleting": "Deleting...",
+  "saved": "Saved",
+  "copied": "Copied",
+
+  "buttons": {
+    "save": "Save",
+    "saveChanges": "Save changes",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "close": "Close",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "retry": "Retry",
+    "retrying": "Retrying\u2026",
+    "approve": "Approve",
+    "reject": "Reject",
+    "enable": "Enable",
+    "disable": "Disable",
+    "pause": "Pause",
+    "resume": "Resume",
+    "archive": "Archive",
+    "restore": "Restore",
+    "export": "Export",
+    "import": "Import",
+    "clear": "Clear",
+    "copy": "Copy",
+    "dismiss": "Dismiss",
+    "goHome": "Go home",
+    "openDashboard": "Open dashboard",
+    "getStarted": "Get Started",
+    "runNow": "Run now"
+  },
+
+  "status": {
+    "active": "Active",
+    "paused": "Paused",
+    "error": "Error",
+    "done": "Done",
+    "running": "Running",
+    "idle": "Idle",
+    "pending": "Pending",
+    "terminated": "Terminated",
+    "blocked": "Blocked",
+    "cancelled": "Cancelled",
+    "queued": "Queued",
+    "on": "On",
+    "off": "Off",
+    "archived": "Archived",
+    "live": "Live",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "timed_out": "Timed out",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "expired": "Expired",
+    "revision_requested": "Revision requested"
+  },
+
+  "priority": {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low"
+  },
+
+  "empty": {
+    "noResults": "No results",
+    "noData": "No data available"
+  },
+
+  "time": {
+    "never": "never",
+    "lastNDays": "Last {{n}} days"
+  },
+
+  "timeAgo": {
+    "justNow": "just now",
+    "minutesAgo": "{{m}}m ago",
+    "hoursAgo": "{{h}}h ago",
+    "daysAgo": "{{d}}d ago",
+    "weeksAgo": "{{w}}w ago",
+    "monthsAgo": "{{mo}}mo ago"
+  },
+
+  "statusValues": {
+    "todo": "to do",
+    "in_progress": "in progress",
+    "in_review": "in review",
+    "done": "done",
+    "blocked": "blocked",
+    "cancelled": "cancelled",
+    "backlog": "backlog"
+  },
+
+  "priorityValues": {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "low": "low"
+  },
+
+  "errors": {
+    "failedToSave": "Failed to save",
+    "failedToLoad": "Failed to load",
+    "failedToLoadAppState": "Failed to load app state",
+    "authenticationFailed": "Authentication failed",
+    "fillRequiredFields": "Please fill in all required fields.",
+    "unknownError": "Unknown error",
+    "instanceSetupRequired": "Instance setup required",
+    "noAdminYet": "No instance admin exists yet.",
+    "bootstrapInviteActive": "A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:",
+    "bootstrapNoInvite": "Run this command in your Paperclip environment to generate the first admin invite URL:"
+  },
+
+  "labels": {
+    "name": "Name",
+    "email": "Email",
+    "password": "Password",
+    "description": "Description",
+    "title": "Title",
+    "status": "Status",
+    "priority": "Priority",
+    "assignee": "Assignee",
+    "project": "Project",
+    "targetDate": "Target Date",
+    "all": "All",
+    "filters": "Filters",
+    "search": "Search",
+    "beta": "Beta",
+    "optional": "optional",
+    "labels_label": "Labels",
+    "upload": "Upload",
+    "documents": "Documents",
+    "attachments": "Attachments",
+    "model": "Model",
+    "thinkingEffort": "Thinking effort",
+    "default": "Default",
+    "startDate": "Start date",
+    "dueDate": "Due date",
+    "run": "Run",
+    "reopen": "Re-open",
+    "worktree": "Worktree",
+    "companies": "Companies",
+    "companySettings": "Company Settings",
+    "manageCompanies": "Manage Companies",
+    "selectCompany": "Select company",
+    "noCompanies": "No companies",
+    "noGoals": "No goals.",
+    "viewDetails": "View details",
+    "requestedBy": "requested by",
+    "note": "Note",
+    "you": "You"
+  },
+
+  "pagination": {
+    "showMore": "Show more",
+    "showLess": "Show less"
+  },
+
+  "units": {
+    "agent": "agent",
+    "agents": "agents",
+    "company": "company",
+    "companies": "companies"
+  },
+
+  "adapter": {
+    "claude_local": "Claude",
+    "codex_local": "Codex",
+    "gemini_local": "Gemini",
+    "opencode_local": "OpenCode",
+    "cursor": "Cursor",
+    "hermes_local": "Hermes",
+    "openclaw_gateway": "OpenClaw Gateway",
+    "process": "Process",
+    "http": "HTTP"
+  }
+}

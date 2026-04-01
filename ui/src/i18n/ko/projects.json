@@ -1,0 +1,47 @@
+{
+  "breadcrumb": "프로젝트",
+  "selectCompany": "프로젝트를 보려면 회사를 선택하세요.",
+  "addProject": "프로젝트 추가",
+  "noProjects": "아직 프로젝트가 없습니다.",
+  "failedToCreate": "프로젝트 생성에 실패했습니다.",
+  "statuses": {
+    "backlog": "백로그",
+    "planned": "계획됨",
+    "in_progress": "진행중",
+    "completed": "완료됨",
+    "cancelled": "취소됨"
+  },
+  "detail": {
+    "addDescription": "설명 추가...",
+    "status": "상태",
+    "targetDate": "목표 날짜",
+    "overview": "개요",
+    "issues": "이슈",
+    "workspaces": "워크스페이스",
+    "configuration": "설정",
+    "budget": "예산",
+    "changeProjectColor": "프로젝트 색상 변경",
+    "pausedByBudget": "예산 초과로 일시정지됨",
+    "pausedByBudgetHardStop": "예산 한도 초과로 일시정지됨"
+  },
+  "newDialog": {
+    "title": "새 프로젝트",
+    "namePlaceholder": "프로젝트 이름",
+    "descriptionPlaceholder": "설명 추가...",
+    "status": "상태",
+    "goal": "목표",
+    "addGoal": "+ 목표",
+    "noGoal": "목표 없음",
+    "allGoalsSelected": "모든 목표가 이미 선택되었습니다.",
+    "targetDate": "목표 날짜",
+    "createProject": "프로젝트 생성",
+    "repoUrl": "저장소 URL",
+    "repoUrlPlaceholder": "https://github.com/org/repo",
+    "repoUrlHint": "GitHub 저장소를 연결하여 에이전트가 이 프로젝트의 코드를 클론, 읽기, 푸시할 수 있게 합니다.",
+    "localFolder": "로컬 폴더",
+    "localFolderPlaceholder": "/절대/경로/워크스페이스",
+    "localFolderHint": "이 머신에서 로컬 에이전트가 이 프로젝트의 파일을 읽고 쓸 절대 경로를 설정합니다.",
+    "localFolderMustBeAbsolute": "로컬 폴더는 절대 경로여야 합니다.",
+    "repoMustBeValidGithub": "저장소는 유효한 GitHub 저장소 URL이어야 합니다."
+  }
+}

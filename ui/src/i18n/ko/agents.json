@@ -1,0 +1,198 @@
+{
+  "breadcrumb": "에이전트",
+  "selectCompany": "에이전트를 보려면 회사를 선택하세요.",
+  "createFirst": "시작하려면 첫 번째 에이전트를 만드세요.",
+  "newAgent": "새 에이전트",
+  "noMatch": "선택한 필터에 맞는 에이전트가 없습니다.",
+  "noOrgHierarchy": "조직 구조가 정의되지 않았습니다.",
+  "showTerminated": "종료된 항목 표시",
+  "agentCount": "{{count}}개의 에이전트",
+  "agentCountPlural": "{{count}}개의 에이전트",
+  "tabs": {
+    "all": "전체",
+    "active": "활성",
+    "paused": "일시정지",
+    "error": "오류"
+  },
+  "newAgentPage": {
+    "title": "새 에이전트",
+    "subtitle": "고급 에이전트 설정",
+    "namePlaceholder": "에이전트 이름",
+    "titlePlaceholder": "직함 (예: VP of Engineering)",
+    "companySkills": "회사 스킬",
+    "companySkillsHint": "회사 라이브러리의 선택적 스킬입니다. 내장 Paperclip 런타임 스킬은 자동으로 추가됩니다.",
+    "noCompanySkills": "아직 설치된 선택적 회사 스킬이 없습니다.",
+    "thisCeo": "이 에이전트는 CEO가 됩니다",
+    "createAgent": "에이전트 생성",
+    "failedToCreate": "에이전트 생성에 실패했습니다"
+  },
+  "detail": {
+    "configuration": "설정",
+    "overview": "개요",
+    "runs": "실행",
+    "issues": "이슈"
+  },
+  "properties": {
+    "role": "역할",
+    "adapter": "어댑터",
+    "session": "세션",
+    "lastError": "마지막 오류",
+    "lastHeartbeat": "마지막 하트비트",
+    "reportsTo": "보고 대상",
+    "created": "생성일"
+  },
+  "errors": {
+    "opencodeRequiresModel": "OpenCode는 provider/model 형식의 명시적 모델이 필요합니다.",
+    "failedToLoadModels": "OpenCode 모델 로딩에 실패했습니다.",
+    "modelsStillLoading": "OpenCode 모델이 아직 로딩 중입니다. 잠시 후 다시 시도해 주세요.",
+    "noModelsDiscovered": "OpenCode 모델을 찾을 수 없습니다. opencode models를 실행하고 프로바이더를 인증하세요.",
+    "modelUnavailable": "설정된 OpenCode 모델을 사용할 수 없습니다: {{model}}"
+  },
+  "noRecentRuns": "최근 에이전트 실행이 없습니다.",
+  "liveNow": "실시간",
+  "finished": "완료됨",
+  "started": "시작됨",
+  "liveRuns": "실시간 실행",
+  "liveRunsDescription": "전체 실행 상세 페이지에서 사용하는 것과 동일한 트랜스크립트 UI로 스트리밍됩니다.",
+  "openRun": "실행 열기",
+  "stop": "중지",
+  "stopping": "중지 중\u2026",
+  "recommended": "추천",
+
+  "actionLabels": {
+    "issueCreated": "이슈를 생성했습니다",
+    "issueUpdated": "이슈를 업데이트했습니다",
+    "issueCheckedOut": "이슈를 체크아웃했습니다",
+    "issueReleased": "이슈를 릴리즈했습니다",
+    "commentAdded": "코멘트를 추가했습니다",
+    "attachmentAdded": "첨부파일을 추가했습니다",
+    "attachmentRemoved": "첨부파일을 제거했습니다",
+    "documentCreated": "문서를 생성했습니다",
+    "documentUpdated": "문서를 업데이트했습니다",
+    "documentDeleted": "문서를 삭제했습니다",
+    "issueDeleted": "이슈를 삭제했습니다",
+    "agentCreated": "에이전트를 생성했습니다",
+    "agentUpdated": "에이전트를 업데이트했습니다",
+    "agentPaused": "에이전트를 일시정지했습니다",
+    "agentResumed": "에이전트를 재개했습니다",
+    "agentTerminated": "에이전트를 종료했습니다",
+    "heartbeatInvoked": "하트비트를 실행했습니다",
+    "heartbeatCancelled": "하트비트를 취소했습니다",
+    "approvalCreated": "승인을 요청했습니다",
+    "approvalApproved": "승인했습니다",
+    "approvalRejected": "거절했습니다"
+  },
+  "form": {
+    "unsavedChanges": "저장되지 않은 변경사항",
+    "saving": "저장 중...",
+    "identity": "신원",
+    "name": "이름",
+    "title": "직함",
+    "reportsTo": "보고 대상",
+    "capabilities": "기능",
+    "chooseManager": "관리자 선택…",
+    "thinkingEffort": {
+      "auto": "자동",
+      "minimal": "최소",
+      "low": "낮음",
+      "medium": "보통",
+      "high": "높음",
+      "xhigh": "매우 높음",
+      "max": "최대",
+      "plan": "계획",
+      "ask": "확인"
+    }
+  },
+
+  "dialog": {
+    "addNewAgent": "새 에이전트 추가",
+    "recommendCeo": "CEO가 에이전트 설정을 처리하도록 하는 것을 권장합니다 — CEO는 조직 구조를 알고 있으며 보고 체계, 권한 및 어댑터를 설정할 수 있습니다.",
+    "askCeoToCreate": "CEO에게 새 에이전트 생성 요청",
+    "advancedConfigMyself": "직접 고급 설정하기",
+    "chooseAdapterType": "고급 설정을 위한 어댑터 유형을 선택하세요."
+  },
+
+  "transcript": {
+    "waitingForParsing": "트랜스크립트 파싱 대기 중...",
+    "waitingForOutput": "출력 대기 중...",
+    "noTranscript": "캡처된 트랜스크립트 없음."
+  },
+
+  "adapterLabels": {
+    "claude_local": "Claude (로컬)",
+    "codex_local": "Codex (로컬)",
+    "gemini_local": "Gemini CLI (로컬)",
+    "opencode_local": "OpenCode (로컬)",
+    "pi_local": "Pi (로컬)",
+    "openclaw_gateway": "OpenClaw 게이트웨이",
+    "cursor": "Cursor (로컬)",
+    "hermes_local": "Hermes 에이전트",
+    "process": "프로세스",
+    "http": "HTTP"
+  },
+
+  "workspace": {
+    "isolatedWorkspace": "격리된 워크스페이스",
+    "operatorBranch": "운영자 브랜치",
+    "cloudSandbox": "클라우드 샌드박스",
+    "adapterManaged": "어댑터 관리",
+    "workspace": "워크스페이스",
+    "projectDefault": "프로젝트 기본값",
+    "newIsolatedWorkspace": "새 격리된 워크스페이스",
+    "existingIsolatedWorkspace": "기존 격리된 워크스페이스",
+    "reuseExistingWorkspace": "기존 워크스페이스 재사용",
+    "copied": "복사됨!",
+    "copy": "복사",
+    "repo": "레포:",
+    "cancel": "취소",
+    "save": "저장",
+    "edit": "수정",
+    "freshIsolatedWillBeCreated": "이 이슈가 실행될 때 새 격리된 워크스페이스가 생성됩니다.",
+    "willReuseExisting": "이 이슈가 실행될 때 기존 워크스페이스를 재사용합니다.",
+    "willUseProjectDefault": "이 이슈가 실행될 때 프로젝트 기본 워크스페이스 설정을 사용합니다.",
+    "reusing": "재사용:",
+    "viewDetails": "워크스페이스 상세 보기 \u2192",
+    "chooseExisting": "기존 워크스페이스 선택",
+    "current": "현재:"
+  },
+
+  "schedule": {
+    "presets": {
+      "every_minute": "매분",
+      "every_hour": "매시간",
+      "every_day": "매일",
+      "weekdays": "평일",
+      "weekly": "매주",
+      "monthly": "매월",
+      "custom": "사용자 정의 (cron)"
+    },
+    "choosePlaceholder": "빈도 선택...",
+    "cronHelp": "5개 필드: 분 시 일 월 요일",
+    "at": "시간",
+    "atMinute": "분",
+    "on": "요일",
+    "onDay": "일",
+    "days": {
+      "mon": "월",
+      "tue": "화",
+      "wed": "수",
+      "thu": "목",
+      "fri": "금",
+      "sat": "토",
+      "sun": "일"
+    },
+    "describe": {
+      "everyMinute": "매분",
+      "everyHourAt": "매시간 :{{minute}}",
+      "everyDayAt": "매일 {{time}}",
+      "weekdaysAt": "평일 {{time}}",
+      "weeklyAt": "매주 {{day}} {{time}}",
+      "monthlyAt": "매월 {{day}}일 {{time}}",
+      "noSchedule": "스케줄 미설정"
+    },
+    "amPm": {
+      "am": "오전",
+      "pm": "오후"
+    }
+  }
+}

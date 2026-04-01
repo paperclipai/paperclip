@@ -1,0 +1,26 @@
+{
+  "breadcrumb": "워크스페이스",
+  "title": "실행 워크스페이스",
+  "selectCompany": "워크스페이스를 보려면 회사를 선택하세요.",
+  "detail": {
+    "name": "이름",
+    "cwd": "작업 디렉토리",
+    "repoUrl": "저장소 URL",
+    "baseRef": "베이스 참조",
+    "branchName": "브랜치 이름",
+    "providerRef": "프로바이더 참조",
+    "provisionCommand": "프로비전 명령어",
+    "teardownCommand": "해제 명령어",
+    "cleanupCommand": "정리 명령어",
+    "inheritRuntime": "런타임 상속",
+    "workspaceRuntime": "워크스페이스 런타임",
+    "saveChanges": "변경사항 저장",
+    "saving": "저장 중...",
+    "repoUrlMustBeValid": "저장소 URL은 유효한 URL이어야 합니다.",
+    "invalidJson": "유효하지 않은 JSON입니다.",
+    "workspaceRuntimeMustBeObject": "워크스페이스 런타임 JSON은 JSON 객체여야 합니다.",
+    "linkedIssues": "연결된 이슈",
+    "noLinkedIssues": "연결된 이슈가 없습니다.",
+    "closeWorkspace": "워크스페이스 닫기"
+  }
+}

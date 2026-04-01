@@ -1,0 +1,41 @@
+{
+  "title": "Get Started",
+  "step1": {
+    "title": "Create a company",
+    "subtitle": "This is the organization your agents will work for.",
+    "companyNamePlaceholder": "Company name",
+    "companyGoalPlaceholder": "Company goal (optional)"
+  },
+  "step2": {
+    "title": "Set up your first agent",
+    "subtitle": "Choose how this agent will run tasks.",
+    "agentNamePlaceholder": "Agent name",
+    "selectAdapter": "Select adapter",
+    "modelPlaceholder": "Model",
+    "commandPlaceholder": "Command",
+    "argsPlaceholder": "Arguments",
+    "urlPlaceholder": "URL",
+    "showMoreAdapters": "Show more adapters"
+  },
+  "step3": {
+    "title": "Create your first task",
+    "taskTitlePlaceholder": "Task title",
+    "taskDescriptionPlaceholder": "Task description"
+  },
+  "step4": {
+    "title": "Launch!",
+    "launchDescription": "Everything is set up. Let's go!"
+  },
+  "createFirstCompany": "Create your first company",
+  "createAnotherCompany": "Create another company",
+  "addAgentTo": "Add another agent to {{name}}",
+  "addAgentDescription": "Run onboarding again to add an agent and a starter task for this company.",
+  "createAnotherDescription": "Run onboarding again to create another company and seed its first agent.",
+  "createFirstDescription": "Get started by creating a company and your first agent.",
+  "getStartedByCreating": "Get started by creating a company.",
+  "addAgent": "Add Agent",
+  "startOnboarding": "Start Onboarding",
+  "newCompany": "New Company",
+  "defaultTaskTitle": "Hire your first engineer and create a hiring plan",
+  "defaultTaskDescription": "You are the CEO. You set the direction for the company.\n\n- hire a founding engineer\n- write a hiring plan\n- break the roadmap into concrete tasks and start delegating work"
+}

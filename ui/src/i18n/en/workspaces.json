@@ -1,0 +1,26 @@
+{
+  "breadcrumb": "Workspaces",
+  "title": "Execution Workspace",
+  "selectCompany": "Select a company to view workspaces.",
+  "detail": {
+    "name": "Name",
+    "cwd": "Working Directory",
+    "repoUrl": "Repo URL",
+    "baseRef": "Base Ref",
+    "branchName": "Branch Name",
+    "providerRef": "Provider Ref",
+    "provisionCommand": "Provision Command",
+    "teardownCommand": "Teardown Command",
+    "cleanupCommand": "Cleanup Command",
+    "inheritRuntime": "Inherit Runtime",
+    "workspaceRuntime": "Workspace Runtime",
+    "saveChanges": "Save Changes",
+    "saving": "Saving...",
+    "repoUrlMustBeValid": "Repo URL must be a valid URL.",
+    "invalidJson": "Invalid JSON.",
+    "workspaceRuntimeMustBeObject": "Workspace runtime JSON must be a JSON object.",
+    "linkedIssues": "Linked Issues",
+    "noLinkedIssues": "No linked issues.",
+    "closeWorkspace": "Close Workspace"
+  }
+}

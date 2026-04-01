@@ -1,0 +1,29 @@
+{
+  "transcript": {
+    "user": "User",
+    "streaming": "Streaming",
+    "executingCommand": "Executing command",
+    "executedCommand": "Executed command",
+    "executedCommands": "Executed {{count}} commands",
+    "commandFailed": "Command failed",
+    "usingTool": "Using {{tool}}",
+    "usedTool": "Used {{tool}}",
+    "usedToolCalls": "Used {{tool}} ({{count}} calls)",
+    "tools": "{{count}} tools",
+    "running": "Running",
+    "completed": "Completed",
+    "errored": "Errored",
+    "toolFailed": "Tool failed",
+    "waitingForResult": "Waiting for result",
+    "failedWithCode": "Failed with exit code {{code}}",
+    "failed": "Failed",
+    "runFailed": "Run failed",
+    "input": "Input",
+    "result": "Result",
+    "empty": "<empty>",
+    "noTranscript": "No transcript yet.",
+    "stderrLines": "{{count}} stderr lines",
+    "stderr": "stderr",
+    "stdout": "stdout"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "breadcrumb": "Inbox",
+  "selectCompany": "Select a company to view inbox.",
+  "tabs": {
+    "mine": "Mine",
+    "recent": "Recent",
+    "unread": "Unread",
+    "all": "All"
+  },
+  "sections": {
+    "workItems": "Work Items",
+    "alerts": "Alerts"
+  },
+  "categories": {
+    "everything": "Everything",
+    "allCategories": "All categories",
+    "issuesTouched": "Issues I Touched",
+    "myRecentIssues": "My recent issues",
+    "joinRequests": "Join Requests",
+    "approvals": "Approvals",
+    "failedRuns": "Failed Runs",
+    "alerts": "Alerts"
+  },
+  "empty": {
+    "noItems": "Your inbox is empty.",
+    "allCaughtUp": "All caught up!",
+    "inboxZero": "Inbox zero.",
+    "noNewItems": "No new inbox items.",
+    "noRecentItems": "No recent inbox items.",
+    "noMatchingFilters": "No inbox items match these filters."
+  },
+  "runExitedWithError": "Run exited with an error.",
+  "approvalFilters": {
+    "all": "All",
+    "allStatuses": "All approval statuses",
+    "pending": "Pending",
+    "actionable": "Needs action",
+    "resolved": "Resolved"
+  },
+  "actions": {
+    "approve": "Approve",
+    "reject": "Reject",
+    "retry": "Retry",
+    "retrying": "Retrying…",
+    "markAllAsRead": "Mark all as read",
+    "marking": "Marking…",
+    "dismiss": "Dismiss"
+  },
+  "labels": {
+    "live": "Live",
+    "failedRun": "Failed run",
+    "earlier": "Earlier",
+    "category": "Category",
+    "approvalStatus": "Approval status",
+    "requestedBy": "requested by {{name}}",
+    "updated": "updated {{time}}",
+    "commented": "commented {{time}}",
+    "requestedFromIp": "requested {{time}} from IP {{ip}}",
+    "adapter": "adapter: {{type}}"
+  },
+  "joinRequest": {
+    "human": "Human join request",
+    "agent": "Agent join request",
+    "agentNamed": "Agent join request: {{name}}"
+  },
+  "alerts": {
+    "agentErrorSingular": "{{count}} agent has errors",
+    "agentErrorPlural": "{{count}} agents have errors",
+    "budgetUtilization": "Budget at {{percent}}% utilization this month"
+  },
+  "errors": {
+    "failedToApprove": "Failed to approve",
+    "failedToReject": "Failed to reject",
+    "failedToApproveJoin": "Failed to approve join request",
+    "failedToRejectJoin": "Failed to reject join request",
+    "failedToArchive": "Failed to archive issue",
+    "retrySkipped": "Retry was skipped because the agent is not currently invokable."
+  },
+  "approvalStatusLabels": {
+    "pending_approval": "pending approval",
+    "approved": "approved",
+    "rejected": "rejected",
+    "expired": "expired",
+    "pending_input": "pending input",
+    "cancelled": "cancelled"
+  }
+}

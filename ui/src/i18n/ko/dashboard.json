@@ -1,0 +1,69 @@
+{
+  "breadcrumb": "대시보드",
+  "welcome": "Paperclip에 오신 것을 환영합니다. 첫 번째 회사와 에이전트를 설정하여 시작하세요.",
+  "selectCompany": "대시보드를 보려면 회사를 생성하거나 선택하세요.",
+  "noAgents": "에이전트가 없습니다.",
+  "createOneHere": "여기서 만들기",
+
+  "metrics": {
+    "agentsEnabled": "활성 에이전트",
+    "tasksInProgress": "진행 중인 작업",
+    "monthSpend": "이번 달 비용",
+    "pendingApprovals": "대기 중인 승인",
+    "running": "{{count}}개 실행 중",
+    "paused": "{{count}}개 일시정지",
+    "errors": "{{count}}개 오류",
+    "open": "{{count}}개 열림",
+    "blocked": "{{count}}개 차단됨",
+    "unlimitedBudget": "무제한 예산",
+    "budgetPercent": "{{budget}} 예산의 {{percent}}%",
+    "budgetOverridesAwaiting": "{{count}}개의 예산 재정이 이사회 검토 대기 중",
+    "awaitingBoardReview": "이사회 검토 대기 중"
+  },
+
+  "incidents": {
+    "activeBudgetIncident": "{{count}}개의 활성 예산 사고",
+    "activeBudgetIncidents": "{{count}}개의 활성 예산 사고",
+    "agentsPaused": "{{count}}개 에이전트 일시정지",
+    "projectsPaused": "{{count}}개 프로젝트 일시정지",
+    "pendingBudgetApprovals": "{{count}}개 예산 승인 대기",
+    "openBudgets": "예산 열기"
+  },
+
+  "charts": {
+    "runActivity": "실행 현황",
+    "issuesByPriority": "우선순위별 이슈",
+    "issuesByStatus": "상태별 이슈",
+    "successRate": "성공률",
+    "last14Days": "최근 14일",
+    "noRunsYet": "아직 실행 기록이 없습니다",
+    "succeeded": "성공",
+    "failed": "실패",
+    "other": "기타",
+    "statusLabels": {
+      "todo": "할 일",
+      "in_progress": "진행중",
+      "in_review": "검토중",
+      "done": "완료",
+      "blocked": "차단됨",
+      "cancelled": "취소됨",
+      "backlog": "백로그"
+    },
+    "priorityLabels": {
+      "critical": "긴급",
+      "high": "높음",
+      "medium": "보통",
+      "low": "낮음"
+    },
+    "tooltipRuns": "{{day}}: {{total}}개 실행",
+    "tooltipIssues": "{{day}}: {{total}}개 이슈",
+    "tooltipRate": "{{day}}: {{rate}}% ({{succeeded}}/{{total}})",
+    "noIssuesYet": "아직 이슈가 없습니다"
+  },
+
+  "sections": {
+    "recentActivity": "최근 활동",
+    "recentTasks": "최근 작업",
+    "noTasksYet": "아직 작업이 없습니다."
+  }
+}

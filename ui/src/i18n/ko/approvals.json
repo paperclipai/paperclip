@@ -1,0 +1,75 @@
+{
+  "breadcrumb": "승인",
+  "selectCompany": "먼저 회사를 선택하세요.",
+  "noPending": "대기 중인 승인이 없습니다.",
+  "noApprovals": "아직 승인이 없습니다.",
+  "failedToApprove": "승인 실패",
+  "failedToReject": "거부 실패",
+  "requestedBy": "요청자",
+  "updated": "업데이트됨",
+  "tabs": {
+    "pending": "대기 중",
+    "all": "전체"
+  },
+  "selectCompanyFirst": "먼저 회사를 선택하세요.",
+  "noPendingApprovals": "대기 중인 승인이 없습니다.",
+  "noApprovalsYet": "아직 승인이 없습니다.",
+  "pending": "대기 중",
+  "all": "전체",
+
+  "types": {
+    "hire_agent": "에이전트 채용",
+    "approve_ceo_strategy": "CEO 전략",
+    "budget_override_required": "예산 초과",
+    "humanJoinRequest": "사용자 가입 요청",
+    "agentJoinRequest": "에이전트 가입 요청"
+  },
+
+  "detail": {
+    "title": "승인 상세",
+    "approvalNotFound": "승인을 찾을 수 없습니다.",
+    "approve": "승인",
+    "reject": "거부",
+    "approveFailed": "승인 실패",
+    "rejectFailed": "거부 실패",
+    "revisionFailed": "수정 요청 실패",
+    "resubmitFailed": "재제출 실패",
+    "commentFailed": "댓글 실패",
+    "deleteFailed": "삭제 실패",
+    "seeFullRequest": "전체 요청 보기",
+    "decisionNote": "결정 메모: {{note}}",
+    "linkedIssues": "연결된 이슈",
+    "linkedIssuesNote": "연결된 이슈는 요청 에이전트가 후속 처리하여 닫을 때까지 열린 상태로 유지됩니다.",
+    "comments": "댓글 ({{count}})",
+    "addComment": "댓글 입력...",
+    "postComment": "댓글 작성",
+    "posting": "작성 중…",
+    "requestRevision": "수정 요청",
+    "markResubmitted": "재제출 완료 처리",
+    "deleteDisapprovedAgent": "거부된 에이전트 삭제",
+    "deleteConfirm": "거부된 에이전트를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "approvalConfirmed": "승인 확인됨",
+    "agentNotified": "요청 에이전트가 이 승인과 연결된 이슈를 검토하도록 알림을 받았습니다.",
+    "reviewLinkedIssues": "연결된 이슈 검토",
+    "reviewLinkedIssue": "연결된 이슈 검토",
+    "openHiredAgent": "채용된 에이전트 열기",
+    "backToApprovals": "승인 목록으로 돌아가기",
+    "budgetResolveNote": "예산 중지는 <1>비용</1> 페이지의 예산 컨트롤에서 해결하세요.",
+    "board": "이사회"
+  },
+
+  "payload": {
+    "name": "이름",
+    "role": "역할",
+    "title": "직함",
+    "icon": "아이콘",
+    "capabilities": "역량",
+    "adapter": "어댑터",
+    "skills": "스킬",
+    "scope": "범위",
+    "window": "기간",
+    "metric": "지표",
+    "limit": "한도",
+    "observed": "관측값"
+  }
+}
