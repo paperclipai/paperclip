@@ -74,7 +74,7 @@ Covered in the sweep:
 - later passes also moved workspace-close, live-run, budget-incident, issue-document, and more shared UI labels into catalogs
 - the latest cleanup pass moved transcript UX lab and design-guide locale tables out of TSX into catalog data under `ui/src/i18n/messages/demo.ts`, removing the remaining direct per-locale branching from current UI sources
 - shared status and priority labels are now localized through central helper functions and catalog-backed message keys, rather than rendering raw status codes in common UI primitives
-- later cleanup also covered live update toasts, workspace status chips, activity-chart status legends, localized change summaries, helper-layer copy such as seat pause labels, delegated permission labels, budget scope descriptions, and issue-detail breadcrumb defaults, plus locale-aware provider/billing/quota display names and onboarding adapter labels
+- later cleanup also covered live update toasts, workspace status chips, activity-chart status legends, localized change summaries, helper-layer copy such as seat pause labels, delegated permission labels, budget scope descriptions, and issue-detail breadcrumb defaults, plus locale-aware provider/billing/quota display names, onboarding adapter labels, and common component default copy like copy tooltips, command dialog text, Mermaid fallback text, and accounting-model cards
 
 Remaining follow-up is intentionally narrower:
 - residual demo/reference tokens such as model identifiers, icon names, and fixture-only placeholders in internal reference screens

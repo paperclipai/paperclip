@@ -76,6 +76,11 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       resume: "Resume",
       pause: "Pause",
     },
+    markdownBody: {
+      renderFailed: "Failed to render Mermaid diagram.",
+      rendering: "Rendering Mermaid diagram...",
+      unableToRender: "Unable to render Mermaid diagram: {{error}}",
+    },
     activityCharts: {
       noRunsYet: "No runs yet",
       noIssues: "No issues",
@@ -110,6 +115,8 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
         createAgent: "Create new agent",
         createProject: "Create new project",
       },
+      dialogTitle: "Command Palette",
+      dialogDescription: "Search for a command to run...",
     },
     companyRail: {
       addCompany: "Add company",
@@ -277,6 +284,11 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       resume: "재개",
       pause: "일시중지",
     },
+    markdownBody: {
+      renderFailed: "Mermaid 다이어그램을 렌더링하지 못했습니다.",
+      rendering: "Mermaid 다이어그램 렌더링 중...",
+      unableToRender: "Mermaid 다이어그램을 렌더링할 수 없습니다: {{error}}",
+    },
     activityCharts: {
       noRunsYet: "아직 실행이 없습니다",
       noIssues: "이슈가 없습니다",
@@ -311,6 +323,8 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
         createAgent: "새 에이전트 만들기",
         createProject: "새 프로젝트 만들기",
       },
+      dialogTitle: "명령 팔레트",
+      dialogDescription: "실행할 명령을 검색하세요...",
     },
     companyRail: {
       addCompany: "회사 추가",
@@ -478,6 +492,11 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
       resume: "再開",
       pause: "一時停止",
     },
+    markdownBody: {
+      renderFailed: "Mermaid ダイアグラムを描画できませんでした。",
+      rendering: "Mermaid ダイアグラムを描画中...",
+      unableToRender: "Mermaid ダイアグラムを描画できません: {{error}}",
+    },
     activityCharts: {
       noRunsYet: "まだ実行がありません",
       noIssues: "イシューがありません",
@@ -512,6 +531,8 @@ export const systemMessages: Record<ActiveLocale, MessageTree> = {
         createAgent: "新しいエージェントを作成",
         createProject: "新しいプロジェクトを作成",
       },
+      dialogTitle: "コマンドパレット",
+      dialogDescription: "実行するコマンドを検索...",
     },
     companyRail: {
       addCompany: "会社を追加",

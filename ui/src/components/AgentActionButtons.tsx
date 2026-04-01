@@ -5,7 +5,7 @@ import { useI18n } from "@/i18n";
 export function RunButton({
   onClick,
   disabled,
-  label = "Run now",
+  label,
   size = "sm",
 }: {
   onClick: () => void;
