@@ -123,7 +123,7 @@ jobs:
 
       - name: Release canary dry run
         run: |
-          git checkout -B dev HEAD
+          git checkout -B master HEAD
           git checkout -- pnpm-lock.yaml
           ./scripts/release.sh canary --skip-verify --dry-run
 

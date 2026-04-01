@@ -43,9 +43,15 @@ test.describe("Onboarding wizard", () => {
     const nextButton = page.getByRole("button", { name: "Next" });
     await nextButton.click();
 
-    await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 10_000 });
+    // After company creation, a Linear connect prompt may appear — skip it
+    const skipLinear = page.getByRole("button", { name: /Skip for now|Skip import/ });
+    const agentHeading = page.locator("h3", { hasText: "Create your first agent" });
+    await expect(skipLinear.or(agentHeading)).toBeVisible({ timeout: 10_000 });
+    if (await skipLinear.isVisible()) {
+      await skipLinear.click();
+    }
+
+    await expect(agentHeading).toBeVisible({ timeout: 10_000 });
 
     const agentNameInput = page.locator('input[placeholder="CEO"]');
     await expect(agentNameInput).toHaveValue(AGENT_NAME);
