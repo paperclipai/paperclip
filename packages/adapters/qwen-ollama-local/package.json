@@ -10,27 +10,6 @@
     "./ui": "./src/ui/index.ts",
     "./cli": "./src/cli/index.ts"
   },
-  "publishConfig": {
-    "access": "public",
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.js"
-      },
-      "./server": {
-        "types": "./dist/server/index.d.ts",
-        "import": "./dist/server/index.js"
-      },
-      "./ui": {
-        "types": "./dist/ui/index.d.ts",
-        "import": "./dist/ui/index.js"
-      },
-      "./cli": {
-        "types": "./dist/cli/index.d.ts",
-        "import": "./dist/cli/index.js"
-      }
-    }
-  },
   "scripts": {
     "build": "tsc"
   },
