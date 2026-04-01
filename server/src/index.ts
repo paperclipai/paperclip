@@ -18,6 +18,8 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  validatePostmasterPid,
+  removeStalePostmasterPid,
   authUsers,
   companies,
   companyMemberships,
@@ -313,32 +315,21 @@ export async function startServer(): Promise<StartedServer> {
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
     const clusterAlreadyInitialized = existsSync(clusterVersionFile);
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
-    const isPidRunning = (pid: number): boolean => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-  
-    const getRunningPid = (): number | null => {
-      if (!existsSync(postmasterPidFile)) return null;
-      try {
-        const pidLine = readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim();
-        const pid = Number(pidLine);
-        if (!Number.isInteger(pid) || pid <= 0) return null;
-        if (!isPidRunning(pid)) return null;
-        return pid;
-      } catch {
-        return null;
-      }
-    };
-  
-    const runningPid = getRunningPid();
-    if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+
+    const validatedPid = await validatePostmasterPid(postmasterPidFile, {
+      logger: { warn: (msg) => logger.warn(msg) },
+      tcpTimeoutMs: 2000,
+    });
+    if (validatedPid) {
+      const reusedPort = validatedPid.port ?? port;
+      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${validatedPid.pid}, port=${reusedPort})`);
+      port = reusedPort;
     } else {
+      // Clean up stale PID file if present (crash recovery)
+      removeStalePostmasterPid(postmasterPidFile, {
+        logger: { warn: (msg) => logger.warn(msg) },
+      });
+
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
@@ -384,8 +375,9 @@ export async function startServer(): Promise<StartedServer> {
           logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
         }
 
+        // removeStalePostmasterPid already cleaned it above, but guard
+        // against race conditions where the file reappeared.
         if (existsSync(postmasterPidFile)) {
-          logger.warn("Removing stale embedded PostgreSQL lock file");
           rmSync(postmasterPidFile, { force: true });
         }
         try {
@@ -717,22 +709,34 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    const shutdown = async (signal: string) => {
       logger.info({ signal }, "Stopping embedded PostgreSQL");
       try {
         await embeddedPostgres?.stop();
       } catch (err) {
         logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
       } finally {
-        process.exit(0);
+        process.exit(signal === "SIGINT" || signal === "SIGTERM" ? 0 : 1);
       }
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });
     process.once("SIGTERM", () => {
       void shutdown("SIGTERM");
+    });
+
+    // Crash recovery: ensure embedded PostgreSQL is stopped even if the
+    // Node.js process crashes due to an uncaught exception or unhandled
+    // rejection — these bypass the normal SIGINT/SIGTERM handlers.
+    process.once("uncaughtException", (err) => {
+      logger.error({ err }, "Uncaught exception; stopping embedded PostgreSQL before exit");
+      void shutdown("uncaughtException");
+    });
+    process.once("unhandledRejection", (err) => {
+      logger.error({ err }, "Unhandled rejection; stopping embedded PostgreSQL before exit");
+      void shutdown("unhandledRejection");
     });
   }
 

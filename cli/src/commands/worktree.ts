@@ -43,6 +43,7 @@ import {
   runDatabaseRestore,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
+  validatePostmasterPid,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -436,17 +437,7 @@ function readPidFilePort(postmasterPidFile: string): number | null {
   }
 }
 
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
+
 
 async function isPortAvailable(port: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
@@ -798,10 +789,10 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   }
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  if (runningPid) {
+  const validatedPid = await validatePostmasterPid(postmasterPidFile);
+  if (validatedPid) {
     return {
-      port: readPidFilePort(postmasterPidFile) ?? preferredPort,
+      port: validatedPid.port ?? preferredPort,
       startedByThisProcess: false,
       stop: async () => {},
     };

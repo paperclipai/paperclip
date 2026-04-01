@@ -29,4 +29,12 @@ export {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
+export {
+  readPostmasterPidFile,
+  isPidAlive,
+  tryTcpConnect,
+  validatePostmasterPid,
+  removeStalePostmasterPid,
+  type PostmasterPidInfo,
+} from "./embedded-pg-pid.js";
 export * from "./schema/index.js";
