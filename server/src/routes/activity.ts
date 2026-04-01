@@ -5,6 +5,8 @@ import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/index.js";
+import { heartbeatRuns } from "@ironworksai/db";
+import { eq } from "drizzle-orm";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -80,6 +82,11 @@ export function activityRoutes(db: Db) {
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
     const runId = req.params.runId as string;
+    // Verify the run belongs to a company the user can access
+    const [run] = await db.select({ companyId: heartbeatRuns.companyId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
+    if (run) {
+      assertCompanyAccess(req, run.companyId);
+    }
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });
