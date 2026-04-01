@@ -20,7 +20,7 @@ services:
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      DATABASE_URL: ${DATABASE_URL:-postgres://paperclip@db:5432/paperclip}
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
