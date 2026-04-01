@@ -113,7 +113,7 @@ export function NewAgentDialog() {
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
       title: t("newAgent.askCeoAction"),
-      description: t("newAgent.chooseAdapterForAdvanced"),
+      description: t("newAgent.askCeoRecommendation"),
     });
   }
 

@@ -439,8 +439,8 @@ const EnumField = React.memo(({
   error?: string;
   options: unknown[];
 }) => {
-  const { locale } = useI18n();
-  const selectPlaceholder = locale === "ko" ? "옵션 선택" : locale === "ja" ? "オプションを選択" : "Select an option";
+  const { t } = useI18n();
+  const selectPlaceholder = t("common.selectOption");
   return (
     <FieldWrapper
       label={label}
@@ -669,12 +669,7 @@ const ArrayField = React.memo(({
   errors: Record<string, string>;
   path: string;
 }) => {
-  const { locale } = useI18n();
-  const copy = locale === "ko"
-    ? { addItem: "항목 추가", add: "추가", item: "항목", removeItem: "항목 제거", noItems: "아직 추가된 항목이 없습니다." }
-    : locale === "ja"
-      ? { addItem: "項目を追加", add: "追加", item: "項目", removeItem: "項目を削除", noItems: "まだ項目は追加されていません。" }
-      : { addItem: "Add item", add: "Add", item: "Item", removeItem: "Remove item", noItems: "No items added yet." };
+  const { t } = useI18n();
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
@@ -705,7 +700,7 @@ const ArrayField = React.memo(({
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          {isComplex ? copy.addItem : copy.add}
+          {isComplex ? t("common.addItem") : t("common.add")}
         </Button>
       </div>
 
@@ -717,7 +712,7 @@ const ArrayField = React.memo(({
           >
             <div className="flex-1">
               <div className="mb-2 text-xs font-medium text-muted-foreground">
-                {copy.item} {index + 1}
+                {t("common.item")} {index + 1}
               </div>
               <FormField
                 propSchema={itemSchema}
@@ -750,13 +745,13 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">{copy.removeItem}</span>
+              <span className="sr-only">{t("common.removeItem")}</span>
             </Button>
           </div>
         ))}
         {items.length === 0 && (
           <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            {copy.noItems}
+            {t("common.noItemsAddedYet")}
           </div>
         )}
       </div>
