@@ -1,3 +1,4 @@
+export { chatService } from "./chat.js";
 export { companyService } from "./companies.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";

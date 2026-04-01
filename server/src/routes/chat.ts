@@ -1,11 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
-import { eq, and, desc, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { chatRooms, chatMessages, agents } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, logActivity } from "../services/index.js";
-import { issueService } from "../services/index.js";
+import { chatService, heartbeatService, issueService, logActivity } from "../services/index.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -19,24 +16,18 @@ const postMessageSchema = z.object({
   body: z.string().min(1).max(100_000),
 });
 
-const MAX_MESSAGE_LIMIT = 200;
-
 export function chatRoutes(db: Db) {
   const router = Router();
   const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
+  const chatSvc = chatService(db);
 
   // List rooms for a company
   router.get("/companies/:companyId/chat/rooms", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const rooms = await db
-      .select()
-      .from(chatRooms)
-      .where(eq(chatRooms.companyId, companyId))
-      .orderBy(desc(chatRooms.updatedAt));
-
+    const rooms = await chatSvc.listRooms(companyId);
     res.json(rooms);
   });
 
@@ -46,11 +37,7 @@ export function chatRoutes(db: Db) {
     const roomId = req.params.roomId as string;
     assertCompanyAccess(req, companyId);
 
-    const [room] = await db
-      .select()
-      .from(chatRooms)
-      .where(and(eq(chatRooms.id, roomId), eq(chatRooms.companyId, companyId)));
-
+    const room = await chatSvc.getRoom(roomId, companyId);
     if (!room) {
       res.status(404).json({ error: "Chat room not found" });
       return;
@@ -73,55 +60,20 @@ export function chatRoutes(db: Db) {
           res.status(400).json({ error: "agentId is required for direct rooms" });
           return;
         }
-        // Check agent exists and belongs to company
-        const [agent] = await db
-          .select({ id: agents.id })
-          .from(agents)
-          .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
-        if (!agent) {
+
+        const result = await chatSvc.getOrCreateDirectRoom(companyId, agentId);
+        if (result.error === "agent_not_found") {
           res.status(404).json({ error: "Agent not found" });
           return;
         }
 
-        // Find or create
-        const [existing] = await db
-          .select()
-          .from(chatRooms)
-          .where(
-            and(
-              eq(chatRooms.companyId, companyId),
-              eq(chatRooms.agentId, agentId),
-              eq(chatRooms.kind, "direct"),
-            ),
-          );
-        if (existing) {
-          res.json(existing);
-          return;
-        }
-
-        const [room] = await db
-          .insert(chatRooms)
-          .values({ companyId, kind: "direct", agentId })
-          .returning();
-        res.status(201).json(room);
+        res.status(result.created ? 201 : 200).json(result.room);
         return;
       }
 
-      // Boardroom: find or create the single boardroom
-      const [existing] = await db
-        .select()
-        .from(chatRooms)
-        .where(and(eq(chatRooms.companyId, companyId), eq(chatRooms.kind, "boardroom")));
-      if (existing) {
-        res.json(existing);
-        return;
-      }
-
-      const [room] = await db
-        .insert(chatRooms)
-        .values({ companyId, kind: "boardroom", title: "Boardroom" })
-        .returning();
-      res.status(201).json(room);
+      // Boardroom
+      const result = await chatSvc.getOrCreateBoardroom(companyId);
+      res.status(result.created ? 201 : 200).json(result.room);
     },
   );
 
@@ -132,60 +84,20 @@ export function chatRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
 
     // Verify room exists and belongs to company
-    const [room] = await db
-      .select({ id: chatRooms.id })
-      .from(chatRooms)
-      .where(and(eq(chatRooms.id, roomId), eq(chatRooms.companyId, companyId)));
+    const room = await chatSvc.getRoom(roomId, companyId);
     if (!room) {
       res.status(404).json({ error: "Chat room not found" });
       return;
     }
 
     const limitRaw =
-      typeof req.query.limit === "string" ? Number(req.query.limit) : MAX_MESSAGE_LIMIT;
-    const limit =
-      Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(Math.floor(limitRaw), MAX_MESSAGE_LIMIT)
-        : MAX_MESSAGE_LIMIT;
-
+      typeof req.query.limit === "string" ? Number(req.query.limit) : undefined;
     const before =
       typeof req.query.before === "string" && req.query.before.trim().length > 0
         ? req.query.before.trim()
-        : null;
+        : undefined;
 
-    if (!before) {
-      const messages = await db
-        .select()
-        .from(chatMessages)
-        .where(eq(chatMessages.chatRoomId, roomId))
-        .orderBy(desc(chatMessages.createdAt))
-        .limit(limit);
-      res.json(messages);
-      return;
-    }
-
-    // Fetch the cursor message's createdAt for keyset pagination
-    const [cursor] = await db
-      .select({ createdAt: chatMessages.createdAt })
-      .from(chatMessages)
-      .where(eq(chatMessages.id, before));
-
-    if (!cursor) {
-      res.json([]);
-      return;
-    }
-
-    const messages = await db
-      .select()
-      .from(chatMessages)
-      .where(
-        and(
-          eq(chatMessages.chatRoomId, roomId),
-          lt(chatMessages.createdAt, cursor.createdAt),
-        ),
-      )
-      .orderBy(desc(chatMessages.createdAt))
-      .limit(limit);
+    const messages = await chatSvc.listMessages(roomId, { before, limit: limitRaw });
     res.json(messages);
   });
 
@@ -198,10 +110,7 @@ export function chatRoutes(db: Db) {
       const roomId = req.params.roomId as string;
       assertCompanyAccess(req, companyId);
 
-      const [room] = await db
-        .select()
-        .from(chatRooms)
-        .where(and(eq(chatRooms.id, roomId), eq(chatRooms.companyId, companyId)));
+      const room = await chatSvc.getRoom(roomId, companyId);
       if (!room) {
         res.status(404).json({ error: "Chat room not found" });
         return;
@@ -210,23 +119,12 @@ export function chatRoutes(db: Db) {
       const actor = getActorInfo(req);
       const body: string = req.body.body;
 
-      const [message] = await db
-        .insert(chatMessages)
-        .values({
-          companyId,
-          chatRoomId: roomId,
-          authorAgentId: actor.agentId ?? undefined,
-          authorUserId: actor.actorType === "user" ? actor.actorId : undefined,
-          body,
-          runId: actor.runId ?? undefined,
-        })
-        .returning();
-
-      // Update room timestamp
-      await db
-        .update(chatRooms)
-        .set({ updatedAt: new Date() })
-        .where(eq(chatRooms.id, roomId));
+      const message = await chatSvc.addMessage(roomId, body, {
+        companyId,
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId ?? undefined,
+      });
 
       // Publish live event
       publishLiveEvent({
