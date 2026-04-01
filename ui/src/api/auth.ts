@@ -3,6 +3,15 @@ export type AuthSession = {
   user: { id: string; email: string | null; name: string | null };
 };
 
+export type SignInResult = {
+  twoFactorRedirect?: boolean;
+};
+
+export type TwoFactorEnableResult = {
+  totpURI: string;
+  backupCodes: string[];
+};
+
 function toSession(value: unknown): AuthSession | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
@@ -24,7 +33,7 @@ function toSession(value: unknown): AuthSession | null {
   };
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
+async function authPost<T = unknown>(path: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`/api/auth${path}`, {
     method: "POST",
     credentials: "include",
@@ -40,7 +49,7 @@ async function authPost(path: string, body: Record<string, unknown>) {
         : (payload as { error?: string } | null)?.error ?? `Request failed: ${res.status}`;
     throw new Error(message);
   }
-  return payload;
+  return payload as T;
 }
 
 export const authApi = {
@@ -60,8 +69,12 @@ export const authApi = {
     return nested;
   },
 
-  signInEmail: async (input: { email: string; password: string }) => {
-    await authPost("/sign-in/email", input);
+  signInEmail: async (input: { email: string; password: string }): Promise<SignInResult> => {
+    const result = await authPost<Record<string, unknown>>("/sign-in/email", input);
+    if (result && typeof result === "object" && "twoFactorRedirect" in result && result.twoFactorRedirect === true) {
+      return { twoFactorRedirect: true };
+    }
+    return {};
   },
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
@@ -70,5 +83,39 @@ export const authApi = {
 
   signOut: async () => {
     await authPost("/sign-out", {});
+  },
+
+  // Two-factor authentication methods
+  twoFactor: {
+    enable: async (input: { password: string }): Promise<TwoFactorEnableResult> => {
+      return await authPost<TwoFactorEnableResult>("/two-factor/enable", {
+        password: input.password,
+        issuer: "Paperclip",
+      });
+    },
+
+    disable: async (input: { password: string }): Promise<void> => {
+      await authPost("/two-factor/disable", { password: input.password });
+    },
+
+    verifyTotp: async (input: { code: string }): Promise<void> => {
+      await authPost("/two-factor/verify-totp", { code: input.code });
+    },
+
+    getTotpUri: async (input: { password: string }): Promise<{ totpURI: string }> => {
+      return await authPost<{ totpURI: string }>("/two-factor/get-totp-uri", {
+        password: input.password,
+      });
+    },
+
+    verifyBackupCode: async (input: { code: string }): Promise<void> => {
+      await authPost("/two-factor/verify-backup-code", { code: input.code });
+    },
+
+    generateBackupCodes: async (input: { password: string }): Promise<{ backupCodes: string[] }> => {
+      return await authPost<{ backupCodes: string[] }>("/two-factor/generate-backup-codes", {
+        password: input.password,
+      });
+    },
   },
 };

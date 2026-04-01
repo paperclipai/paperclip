@@ -1,5 +1,5 @@
 export { companies } from "./companies.js";
-export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
+export { authUsers, authSessions, authAccounts, authVerifications, authTwoFactors } from "./auth.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { agents } from "./agents.js";
 export { companyMemberships } from "./company_memberships.js";
@@ -36,3 +36,7 @@ export { providerCredentials } from "./provider_credentials.js";
 export { projectMembers } from "./project_members.js";
 export { projectPermissionGrants } from "./project_permission_grants.js";
 export { projectAgents } from "./project_agents.js";
+export { organizations } from "./organizations.js";
+export { orgMemberships } from "./org_memberships.js";
+export { agentTemplates } from "./agent_templates.js";
+export { credentialAccessGrants } from "./credential_access_grants.js";

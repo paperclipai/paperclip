@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { providerCredentials } from "./provider_credentials.js";
+import { agentTemplates } from "./agent_templates.js";
 
 export const agents = pgTable(
   "agents",
@@ -32,6 +33,7 @@ export const agents = pgTable(
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     credentialId: uuid("credential_id").references(() => providerCredentials.id),
+    templateId: uuid("template_id").references(() => agentTemplates.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

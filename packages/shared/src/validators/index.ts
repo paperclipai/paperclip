@@ -125,6 +125,15 @@ export {
 } from "./provider-credential.js";
 
 export {
+  createAgentTemplateSchema,
+  updateAgentTemplateSchema,
+  instantiateAgentTemplateSchema,
+  type CreateAgentTemplate,
+  type UpdateAgentTemplate,
+  type InstantiateAgentTemplate,
+} from "./agent-template.js";
+
+export {
   createCompanyInviteSchema,
   acceptInviteSchema,
   listJoinRequestsQuerySchema,
@@ -148,3 +157,12 @@ export {
   type AddProjectAgent,
   type ApplyProjectRolePreset,
 } from "./access.js";
+
+export {
+  createOrganizationSchema,
+  updateOrganizationSchema,
+  addOrgMemberSchema,
+  type CreateOrganization,
+  type UpdateOrganization,
+  type AddOrgMember,
+} from "./organization.js";

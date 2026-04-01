@@ -26,6 +26,8 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { telegramWebhookRoutes } from "./routes/webhooks-telegram.js";
+import { organizationRoutes } from "./routes/organizations.js";
+import { agentTemplateRoutes } from "./routes/agent-templates.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -116,6 +118,8 @@ export async function createApp(
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(organizationRoutes(db));
+  api.use(agentTemplateRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
