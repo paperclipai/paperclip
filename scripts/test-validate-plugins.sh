@@ -72,6 +72,7 @@ test_contains "$VALIDATE_SCRIPT" "Plugin E2E Lifecycle Tests" "Has E2E tests ste
 test_contains "$VALIDATE_SCRIPT" "Plugin Typecheck" "Has plugin typecheck step"
 test_contains "$VALIDATE_SCRIPT" "Plugin Build" "Has plugin build step"
 test_contains "$VALIDATE_SCRIPT" "Documentation Validation" "Has docs validation step"
+test_contains "$VALIDATE_SCRIPT" "Documentation status sync passed" "Checks docs status synchronization"
 
 echo ""
 echo "[Report Generation]"

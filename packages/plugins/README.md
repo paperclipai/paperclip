@@ -80,7 +80,7 @@ node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/my-plugin
 # [3/7] Plugin E2E Lifecycle Tests... ✅ (30 tests)
 # [4/7] Plugin Typecheck... ✅ (3 plugins)
 # [5/7] Plugin Build... ✅ (3 plugins)
-# [6/7] Documentation Validation... ✅
+# [6/7] Documentation Validation (presence + canonical README status sync)... ✅
 # [7/7] Install Script Validation... ✅
 ```
 
@@ -217,7 +217,7 @@ Validation includes:
 - SDK typecheck + unit tests
 - E2E lifecycle tests
 - All plugins typecheck + build
-- Documentation presence check
+- Documentation presence + canonical README status sync
 - Install script validation
 
 Reports are saved as JSON to `/tmp/paperclip-plugin-validation-<timestamp>.json`.

@@ -39,6 +39,54 @@ echo "Commit: $COMMIT"
 echo "========================================"
 echo ""
 
+# ── Documentation Sync Helpers ────────────────────────────────────────
+get_doc_field_line() {
+    local file="$1"
+    local field="$2"
+    grep -m1 "^\\*\\*${field}\\*\\* " "$file" || true
+}
+
+validate_doc_status_sync() {
+    local doc_readme="$PROJECT_ROOT/doc/plugins/README.md"
+    local package_readme="$PROJECT_ROOT/packages/plugins/README.md"
+    local doc_status_line pkg_status_line
+    local doc_updated_line pkg_updated_line
+    local doc_updated_date pkg_updated_date
+
+    doc_status_line="$(get_doc_field_line "$doc_readme" "Status:")"
+    pkg_status_line="$(get_doc_field_line "$package_readme" "Status:")"
+    doc_updated_line="$(get_doc_field_line "$doc_readme" "Last Updated:")"
+    pkg_updated_line="$(get_doc_field_line "$package_readme" "Last Updated:")"
+
+    if [ -z "$doc_status_line" ] || [ -z "$pkg_status_line" ] || [ -z "$doc_updated_line" ] || [ -z "$pkg_updated_line" ]; then
+        echo "❌ Documentation status sync failed: missing status metadata"
+        echo "   doc/plugins/README.md status: ${doc_status_line:-<missing>}"
+        echo "   packages/plugins/README.md status: ${pkg_status_line:-<missing>}"
+        return 1
+    fi
+
+    if [ "$doc_status_line" != "$pkg_status_line" ]; then
+        echo "❌ Documentation status sync failed: status lines differ"
+        echo "   doc/plugins/README.md: $doc_status_line"
+        echo "   packages/plugins/README.md: $pkg_status_line"
+        return 1
+    fi
+
+    doc_updated_date="${doc_updated_line#\*\*Last Updated:\*\* }"
+    doc_updated_date="${doc_updated_date%% *}"
+    pkg_updated_date="${pkg_updated_line#\*\*Last Updated:\*\* }"
+    pkg_updated_date="${pkg_updated_date%% *}"
+
+    if [ "$doc_updated_date" != "$pkg_updated_date" ]; then
+        echo "❌ Documentation status sync failed: last updated dates differ"
+        echo "   doc/plugins/README.md: $doc_updated_date"
+        echo "   packages/plugins/README.md: $pkg_updated_date"
+        return 1
+    fi
+
+    echo "✅ Documentation status sync passed"
+}
+
 # ── Step 0: Script Self-Tests ──────────────────────────────────────────
 echo "[0/7] Script Self-Tests..."
 STEP_START=$(date +%s)
@@ -181,6 +229,12 @@ echo ""
 echo "[6/7] Documentation Validation..."
 STEP_START=$(date +%s)
 DOCS_STATUS=()
+if ! validate_doc_status_sync; then
+    STEP_DURATION[docs]=$(($(date +%s) - STEP_START))
+    STEP_STATUS[docs]="fail"
+    exit 1
+fi
+
 if [ ! -f "doc/plugins/README.md" ]; then
     echo "❌ doc/plugins/README.md not found"
     DOCS_STATUS+=("\"doc/plugins/README.md\": \"missing\"")

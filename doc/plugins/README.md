@@ -157,7 +157,7 @@ sudo ./scripts/install-cron.sh --run-now
 4. **E2E Lifecycle Tests** — 30 tests, no Postgres required
 5. **Plugin Typecheck** — All 3 production plugins
 6. **Plugin Build** — Compile all plugins
-7. **Documentation Validation** — Check required docs present
+7. **Documentation Validation** — Check required docs present + canonical README status sync
 8. **Install Script Validation** — Verify cron install script is ready
 
 ### JSON Report Schema
