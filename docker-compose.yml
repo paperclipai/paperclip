@@ -59,7 +59,7 @@ volumes:
     external: true
   paperclip-claude-adi6ix_claude-config:
     external: true
-  paperclip-opencode-adi6ix_opencode-bin:
+  paperclip-opencode-kczeg5_opencode-bin:
     external: true
-  paperclip-opencode-adi6ix_opencode-config:
+  paperclip-opencode-kczeg5_opencode-config:
     external: true
