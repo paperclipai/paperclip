@@ -26,6 +26,7 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "gemini_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -33,6 +34,16 @@ export const AGENT_ADAPTER_TYPES = [
   "hermes_local",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
+
+export const KNOWN_PROVIDER_CREDENTIAL_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "gemini",
+  "google",
+  "cursor",
+] as const;
+export type KnownProviderCredentialProvider =
+  (typeof KNOWN_PROVIDER_CREDENTIAL_PROVIDERS)[number];
 
 export const AGENT_ROLES = [
   "ceo",

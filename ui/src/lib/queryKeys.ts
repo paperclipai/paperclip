@@ -85,6 +85,7 @@ export const queryKeys = {
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
   },
   access: {
+    me: ["access", "me"] as const,
     joinRequests: (companyId: string, status: string = "pending_approval") =>
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
@@ -101,6 +102,11 @@ export const queryKeys = {
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
+  },
+  providerConnections: {
+    status: (companyId: string) => ["provider-connections", companyId] as const,
+    adapterAuthStatus: (companyId: string, adapterType: string, adapterConfigKey: string) =>
+      ["provider-connections", companyId, "adapter-auth-status", adapterType, adapterConfigKey] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,

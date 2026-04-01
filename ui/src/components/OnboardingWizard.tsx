@@ -4,9 +4,11 @@ import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { accessApi } from "../api/access";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
+import { providerConnectionsApi } from "../api/providerConnections";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
@@ -36,7 +38,14 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { isOnboardingPath, resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import {
+  applyAdapterAuthSelections,
+  countUnresolvedAdapterAuth,
+  pruneAdapterAuthSelections,
+  requirementMissingMessage,
+  type AdapterAuthSelectionMap,
+} from "../lib/adapter-auth";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
@@ -84,14 +93,26 @@ export function OnboardingWizard() {
   const location = useLocation();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const [routeDismissed, setRouteDismissed] = useState(false);
+  const shouldCheckBoardAccess = onboardingOpen || isOnboardingPath(location.pathname);
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.me,
+    queryFn: () => accessApi.getBoardAccessSnapshot(),
+    retry: false,
+    enabled: shouldCheckBoardAccess,
+  });
+  const canCreateCompany =
+    !shouldCheckBoardAccess ||
+    boardAccessQuery.data?.source === "local_implicit" ||
+    Boolean(boardAccessQuery.data?.isInstanceAdmin);
 
   const routeOnboardingOptions =
-    companyPrefix && companiesLoading
+    (companyPrefix && companiesLoading) || boardAccessQuery.isLoading
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
+          canCreateCompany,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
@@ -123,6 +144,7 @@ export function OnboardingWizard() {
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
   const [adapterEnvLoading, setAdapterEnvLoading] = useState(false);
+  const [authSelections, setAuthSelections] = useState<AdapterAuthSelectionMap>({});
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
@@ -297,6 +319,7 @@ export function OnboardingWizard() {
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
+    setAuthSelections({});
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
     setTaskTitle("Hire your first engineer and create a hiring plan");
@@ -350,6 +373,48 @@ export function OnboardingWizard() {
     return config;
   }
 
+  const adapterConfigDraft = useMemo(
+    () => buildAdapterConfig(),
+    [adapterType, model, command, args, url, forceUnsetAnthropicApiKey],
+  );
+  const adapterAuthConfigKey = useMemo(
+    () => JSON.stringify(adapterConfigDraft),
+    [adapterConfigDraft],
+  );
+  const adapterAuthStatusQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.providerConnections.adapterAuthStatus(
+          createdCompanyId,
+          adapterType,
+          adapterAuthConfigKey,
+        )
+      : ["provider-connections", "none", "adapter-auth-status", adapterType],
+    queryFn: () =>
+      providerConnectionsApi.getAdapterAuthStatus(createdCompanyId!, {
+        adapterType,
+        adapterConfig: adapterConfigDraft,
+      }),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2,
+  });
+
+  useEffect(() => {
+    setAuthSelections((prev) => pruneAdapterAuthSelections(adapterAuthStatusQuery.data, prev));
+  }, [adapterAuthStatusQuery.data, adapterType]);
+
+  const unresolvedAuthCount = countUnresolvedAdapterAuth(
+    adapterAuthStatusQuery.data,
+    authSelections,
+  );
+
+  const adapterConfigWithAuth = useMemo(
+    () => applyAdapterAuthSelections(adapterConfigDraft, adapterAuthStatusQuery.data, authSelections),
+    [adapterAuthStatusQuery.data, adapterConfigDraft, authSelections],
+  );
+
+  const manageCredentialsHref = createdCompanyPrefix
+    ? `/${createdCompanyPrefix}/onboarding/connect-providers`
+    : "/onboarding/connect-providers";
+
   async function runAdapterEnvironmentTest(
     adapterConfigOverride?: Record<string, unknown>
   ): Promise<AdapterEnvironmentTestResult | null> {
@@ -366,7 +431,9 @@ export function OnboardingWizard() {
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig()
+          adapterConfig:
+            adapterConfigOverride
+            ?? adapterConfigWithAuth
         }
       );
       setAdapterEnvResult(result);
@@ -382,6 +449,12 @@ export function OnboardingWizard() {
   }
 
   async function handleStep1Next() {
+    if (!canCreateCompany) {
+      setError(
+        "You need instance admin access to create a company. Ask an instance admin to invite you to a company.",
+      );
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -422,6 +495,15 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      if (adapterAuthStatusQuery.isLoading) {
+        setError("Checking provider credential requirements. Try again in a moment.");
+        return;
+      }
+      if (unresolvedAuthCount > 0) {
+        setError("Connect required provider credentials before continuing.");
+        return;
+      }
+
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!selectedModelId) {
@@ -464,7 +546,7 @@ export function OnboardingWizard() {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: buildAdapterConfig(),
+        adapterConfig: adapterConfigWithAuth,
         runtimeConfig: {
           heartbeat: {
             enabled: true,
@@ -506,12 +588,17 @@ export function OnboardingWizard() {
       config.env = env;
       return config;
     })();
+    const configWithUnsetAndAuth = applyAdapterAuthSelections(
+      configWithUnset,
+      adapterAuthStatusQuery.data,
+      authSelections,
+    );
 
     try {
       if (createdAgentId) {
         await agentsApi.update(
           createdAgentId,
-          { adapterConfig: configWithUnset },
+          { adapterConfig: configWithUnsetAndAuth },
           createdCompanyId
         );
         queryClient.invalidateQueries({
@@ -519,7 +606,7 @@ export function OnboardingWizard() {
         });
       }
 
-      const result = await runAdapterEnvironmentTest(configWithUnset);
+      const result = await runAdapterEnvironmentTest(configWithUnsetAndAuth);
       if (result?.status === "fail") {
         setError(
           "Retried with ANTHROPIC_API_KEY unset in adapter config, but the environment test is still failing."
@@ -1018,6 +1105,100 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
+                  {adapterAuthStatusQuery.data &&
+                    adapterAuthStatusQuery.data.requirements.length > 0 && (
+                    <div className="space-y-2 rounded-md border border-border p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-medium">
+                            Provider credentials
+                          </p>
+                          <p className="text-[11px] text-muted-foreground">
+                            Choose a credential override or use provider defaults.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2.5 text-xs"
+                          onClick={() => navigate(manageCredentialsHref)}
+                        >
+                          Manage credentials
+                        </Button>
+                      </div>
+                      <div className="space-y-2">
+                        {adapterAuthStatusQuery.data.requirements.map((requirement) => {
+                          const selectedCredentialId =
+                            authSelections[requirement.requirementId] ?? "";
+                          const resolvedWithSelection =
+                            requirement.resolved ||
+                            requirement.availableCredentials.some(
+                              (credential) => credential.id === selectedCredentialId,
+                            );
+                          return (
+                            <div
+                              key={requirement.requirementId}
+                              className="rounded-md border border-border/60 p-2.5 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-medium">
+                                  {requirement.requiredEnvKeys.join(" or ") || "Manual credential required"}
+                                </p>
+                                <span className={cn(
+                                  "text-[11px]",
+                                  resolvedWithSelection ? "text-emerald-400" : "text-amber-400",
+                                )}>
+                                  {resolvedWithSelection ? "Resolved" : "Missing"}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">
+                                {requirementMissingMessage(requirement)}
+                              </p>
+                              <select
+                                className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-[11px] outline-none"
+                                value={selectedCredentialId}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  setAuthSelections((prev) => {
+                                    if (!value) {
+                                      const next = { ...prev };
+                                      delete next[requirement.requirementId];
+                                      return next;
+                                    }
+                                    return {
+                                      ...prev,
+                                      [requirement.requirementId]: value,
+                                    };
+                                  });
+                                }}
+                              >
+                                <option value="">
+                                  {requirement.defaultCredentialId
+                                    ? "Use provider default"
+                                    : "No override"}
+                                </option>
+                                {requirement.availableCredentials.map((credential) => (
+                                  <option key={credential.id} value={credential.id}>
+                                    {credential.label}
+                                    {credential.isDefault ? " (default)" : ""}
+                                    {" · "}
+                                    {credential.envKey}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {adapterAuthStatusQuery.isLoading && (
+                    <div className="rounded-md border border-border p-2.5 text-[11px] text-muted-foreground">
+                      Checking provider credential requirements…
+                    </div>
+                  )}
+
                   {isLocalAdapter && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       <div className="flex items-center justify-between gap-2">
@@ -1257,6 +1438,13 @@ export function OnboardingWizard() {
                   <p className="text-xs text-destructive">{error}</p>
                 </div>
               )}
+              {!error && step === 2 && unresolvedAuthCount > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs text-amber-400">
+                    Connect required provider credentials before continuing.
+                  </p>
+                </div>
+              )}
 
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
@@ -1292,7 +1480,11 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
+                        !agentName.trim()
+                        || loading
+                        || adapterEnvLoading
+                        || adapterAuthStatusQuery.isLoading
+                        || unresolvedAuthCount > 0
                       }
                       onClick={handleStep2Next}
                     >

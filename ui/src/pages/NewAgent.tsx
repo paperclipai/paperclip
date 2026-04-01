@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
+import { providerConnectionsApi } from "../api/providerConnections";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,13 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import {
+  applyAdapterAuthSelections,
+  countUnresolvedAdapterAuth,
+  pruneAdapterAuthSelections,
+  requirementMissingMessage,
+  type AdapterAuthSelectionMap,
+} from "../lib/adapter-auth";
 
 const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType"]>([
   "claude_local",
@@ -59,7 +67,7 @@ function createValuesForAdapterType(
 }
 
 export function NewAgent() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -74,6 +82,7 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [authSelections, setAuthSelections] = useState<AdapterAuthSelectionMap>({});
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -147,9 +156,56 @@ export function NewAgent() {
     return adapter.buildAdapterConfig(configValues);
   }
 
+  const adapterConfigDraft = useMemo(() => buildAdapterConfig(), [configValues]);
+  const adapterAuthConfigKey = useMemo(
+    () => JSON.stringify(adapterConfigDraft),
+    [adapterConfigDraft],
+  );
+  const adapterAuthStatusQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.providerConnections.adapterAuthStatus(
+          selectedCompanyId,
+          configValues.adapterType,
+          adapterAuthConfigKey,
+        )
+      : ["provider-connections", "none", "adapter-auth-status", configValues.adapterType],
+    queryFn: () =>
+      providerConnectionsApi.getAdapterAuthStatus(selectedCompanyId!, {
+        adapterType: configValues.adapterType,
+        adapterConfig: adapterConfigDraft,
+      }),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  useEffect(() => {
+    setAuthSelections((prev) => pruneAdapterAuthSelections(adapterAuthStatusQuery.data, prev));
+  }, [adapterAuthStatusQuery.data, configValues.adapterType]);
+
+  const unresolvedAuthCount = countUnresolvedAdapterAuth(
+    adapterAuthStatusQuery.data,
+    authSelections,
+  );
+
+  const adapterConfigWithAuth = useMemo(
+    () => applyAdapterAuthSelections(adapterConfigDraft, adapterAuthStatusQuery.data, authSelections),
+    [adapterAuthStatusQuery.data, adapterConfigDraft, authSelections],
+  );
+
+  const manageCredentialsHref = selectedCompany?.issuePrefix
+    ? `/${selectedCompany.issuePrefix}/onboarding/connect-providers`
+    : "/onboarding/connect-providers";
+
   function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
+    if (adapterAuthStatusQuery.isLoading) {
+      setFormError("Checking provider credential requirements. Try again in a moment.");
+      return;
+    }
+    if (unresolvedAuthCount > 0) {
+      setFormError("Connect required provider credentials before creating this agent.");
+      return;
+    }
     if (configValues.adapterType === "opencode_local") {
       const selectedModel = configValues.model.trim();
       if (!selectedModel) {
@@ -185,7 +241,7 @@ export function NewAgent() {
       ...(reportsTo ? { reportsTo } : {}),
       ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
       adapterType: configValues.adapterType,
-      adapterConfig: buildAdapterConfig(),
+      adapterConfig: adapterConfigWithAuth,
       runtimeConfig: {
         heartbeat: {
           enabled: configValues.heartbeatEnabled,
@@ -288,6 +344,85 @@ export function NewAgent() {
           adapterModels={adapterModels}
         />
 
+        {adapterAuthStatusQuery.data && adapterAuthStatusQuery.data.requirements.length > 0 && (
+          <div className="border-t border-border px-4 py-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-medium">Provider credentials</h2>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Select a credential per required env key or keep provider defaults.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => navigate(manageCredentialsHref)}
+              >
+                Manage credentials
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {adapterAuthStatusQuery.data.requirements.map((requirement) => {
+                const selectedCredentialId = authSelections[requirement.requirementId] ?? "";
+                const resolvedWithSelection =
+                  requirement.resolved ||
+                  requirement.availableCredentials.some(
+                    (credential) => credential.id === selectedCredentialId,
+                  );
+                return (
+                  <div key={requirement.requirementId} className="rounded-md border border-border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium">
+                        {requirement.requiredEnvKeys.join(" or ") || "Manual credential required"}
+                      </p>
+                      <span className={resolvedWithSelection ? "text-xs text-emerald-400" : "text-xs text-amber-400"}>
+                        {resolvedWithSelection ? "Resolved" : "Missing"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {requirementMissingMessage(requirement)}
+                    </p>
+                    <select
+                      className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none"
+                      value={selectedCredentialId}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setAuthSelections((prev) => {
+                          if (!value) {
+                            const next = { ...prev };
+                            delete next[requirement.requirementId];
+                            return next;
+                          }
+                          return { ...prev, [requirement.requirementId]: value };
+                        });
+                      }}
+                    >
+                      <option value="">
+                        {requirement.defaultCredentialId ? "Use provider default" : "No override"}
+                      </option>
+                      {requirement.availableCredentials.map((credential) => (
+                        <option key={credential.id} value={credential.id}>
+                          {credential.label}
+                          {credential.isDefault ? " (default)" : ""}
+                          {" · "}
+                          {credential.envKey}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {adapterAuthStatusQuery.isLoading && (
+          <div className="border-t border-border px-4 py-4">
+            <p className="text-xs text-muted-foreground">Checking provider credential requirements…</p>
+          </div>
+        )}
+
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
@@ -334,13 +469,23 @@ export function NewAgent() {
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
           )}
+          {!formError && unresolvedAuthCount > 0 && (
+            <p className="text-xs text-amber-400 mb-2">
+              Connect required provider credentials to continue.
+            </p>
+          )}
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
               Cancel
             </Button>
             <Button
               size="sm"
-              disabled={!name.trim() || createAgent.isPending}
+              disabled={
+                !name.trim()
+                || createAgent.isPending
+                || adapterAuthStatusQuery.isLoading
+                || unresolvedAuthCount > 0
+              }
               onClick={handleSubmit}
             >
               {createAgent.isPending ? "Creating…" : "Create agent"}

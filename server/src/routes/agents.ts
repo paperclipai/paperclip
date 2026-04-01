@@ -40,6 +40,7 @@ import {
   issueService,
   logActivity,
   secretService,
+  adapterAuthService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -90,6 +91,7 @@ export function agentRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const adapterAuth = adapterAuthService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -702,9 +704,14 @@ export function agentRoutes(db: Db) {
         inputAdapterConfig,
         { strictMode: strictSecretsMode },
       );
+      const authResolved = await adapterAuth.enforceResolved(
+        companyId,
+        type,
+        normalizedAdapterConfig,
+      );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
-        normalizedAdapterConfig,
+        authResolved.adapterConfig,
       );
 
       const result = await adapter.testEnvironment({
@@ -1204,14 +1211,19 @@ export function agentRoutes(db: Db) {
       desiredSkillAssignment.adapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    const authResolved = await adapterAuth.enforceResolved(
       companyId,
       hireInput.adapterType,
       normalizedAdapterConfig,
     );
+    await assertAdapterConfigConstraints(
+      companyId,
+      hireInput.adapterType,
+      authResolved.adapterConfig,
+    );
     const normalizedHireInput = {
       ...hireInput,
-      adapterConfig: normalizedAdapterConfig,
+      adapterConfig: authResolved.adapterConfig,
     };
 
     const company = await db
@@ -1364,15 +1376,20 @@ export function agentRoutes(db: Db) {
       desiredSkillAssignment.adapterConfig,
       { strictMode: strictSecretsMode },
     );
-    await assertAdapterConfigConstraints(
+    const authResolved = await adapterAuth.enforceResolved(
       companyId,
       createInput.adapterType,
       normalizedAdapterConfig,
     );
+    await assertAdapterConfigConstraints(
+      companyId,
+      createInput.adapterType,
+      authResolved.adapterConfig,
+    );
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
-      adapterConfig: normalizedAdapterConfig,
+      adapterConfig: authResolved.adapterConfig,
       status: "idle",
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,

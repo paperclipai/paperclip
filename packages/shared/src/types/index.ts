@@ -117,6 +117,19 @@ export type {
   SecretProviderDescriptor,
 } from "./secrets.js";
 export type {
+  ProviderCredentialProvider,
+  ProviderCredentialSummary,
+  ProviderCredentialProviderGroup,
+  LegacyProviderConnectionStatus,
+  ProviderConnectionStatus,
+  ProviderCredentialValidationResult,
+  ProviderConnectionResult,
+  AdapterAuthRequirementSource,
+  AdapterAuthResolutionSource,
+  AdapterAuthRequirementStatus,
+  AdapterAuthStatusResponse,
+} from "./provider-auth.js";
+export type {
   Routine,
   RoutineTrigger,
   RoutineRun,

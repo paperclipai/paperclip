@@ -30,6 +30,9 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
 }));
+const mockAdapterAuthService = vi.hoisted(() => ({
+  enforceResolved: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -45,6 +48,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  adapterAuthService: () => mockAdapterAuthService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => ({}),
 }));
@@ -152,6 +156,15 @@ describe("agent instructions bundle routes", () => {
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
       },
     });
+    mockAdapterAuthService.enforceResolved.mockImplementation(async (_companyId, _adapterType, adapterConfig) => ({
+      adapterConfig,
+      status: {
+        adapterType: String(_adapterType),
+        requirements: [],
+        unresolvedCount: 0,
+        status: "resolved",
+      },
+    }));
   });
 
   it("returns bundle metadata", async () => {

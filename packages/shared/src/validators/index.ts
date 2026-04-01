@@ -202,6 +202,24 @@ export {
 } from "./secret.js";
 
 export {
+  providerCredentialProviderSchema,
+  providerCredentialEnvKeySchema,
+  providerCredentialLabelSchema,
+  providerConnectionLegacySchema,
+  createProviderCredentialSchema,
+  rotateProviderCredentialSchema,
+  updateProviderCredentialSchema,
+  adapterAuthStatusRequestSchema,
+  knownProviderCredentialProvidersSchema,
+  type ProviderConnectionLegacyInput,
+  type CreateProviderCredential,
+  type RotateProviderCredential,
+  type UpdateProviderCredential,
+  type AdapterAuthStatusRequest,
+  type KnownProviderCredentialProviderInput,
+} from "./provider-auth.js";
+
+export {
   createRoutineSchema,
   updateRoutineSchema,
   createRoutineTriggerSchema,

@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { agentRoutes } from "../routes/agents.js";
+import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -76,6 +77,9 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
 }));
+const mockAdapterAuthService = vi.hoisted(() => ({
+  enforceResolved: vi.fn(),
+}));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -99,6 +103,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  adapterAuthService: () => mockAdapterAuthService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
@@ -174,6 +179,15 @@ describe("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockAdapterAuthService.enforceResolved.mockImplementation(async (_companyId, _adapterType, adapterConfig) => ({
+      adapterConfig,
+      status: {
+        adapterType: String(_adapterType),
+        requirements: [],
+        unresolvedCount: 0,
+        status: "resolved",
+      },
+    }));
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -210,6 +224,84 @@ describe("agent permission routes", () => {
       "tasks:assign",
       true,
       "board-user",
+    );
+  });
+
+  it("returns 422 when create is blocked by unresolved adapter auth", async () => {
+    mockAdapterAuthService.enforceResolved.mockRejectedValueOnce(
+      new HttpError(422, "Required adapter authentication is not configured."),
+    );
+
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Codex Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toContain("Required adapter authentication");
+  });
+
+  it("passes auto-attached auth bindings from resolver into agent creation", async () => {
+    mockAdapterAuthService.enforceResolved.mockResolvedValueOnce({
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: {
+            type: "secret_ref",
+            secretId: "secret-openai",
+            version: "latest",
+          },
+        },
+      },
+      status: {
+        adapterType: "codex_local",
+        requirements: [],
+        unresolvedCount: 0,
+        status: "resolved",
+      },
+    });
+
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Codex Agent",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          env: expect.objectContaining({
+            OPENAI_API_KEY: expect.objectContaining({
+              type: "secret_ref",
+              secretId: "secret-openai",
+            }),
+          }),
+        }),
+      }),
     );
   });
 
