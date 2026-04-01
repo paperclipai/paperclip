@@ -89,6 +89,8 @@ const HELP_TEXT = `<b>🐳 Whales Market Data Analyst Bot</b>
 /visual — Dashboard chart (daily)
 /visual weekly — Dashboard chart (weekly)
 /visual monthly — Dashboard chart (monthly)
+/wallet 0xABC — Full wallet analysis (classify + behavior + intent)
+/whales — Top 10 whale wallets
 
 <b>💬 Free chat:</b>
 Hỏi bất kỳ câu hỏi nào về data — bot sẽ query database và phân tích.
@@ -350,6 +352,25 @@ async function main() {
         } else if (cleanText.startsWith("/mom")) {
           const q = "So sánh MoM (tháng này vs tháng trước): Filled Order Volume, total orders, unique wallets, new users, acquisition rate. Đánh giá từng metric.";
           console.log(`[${chatKey}] /mom`);
+          await handleQuestion(chatId, q, chatKey, threadId);
+        } else if (cleanText.startsWith("/wallet")) {
+          const address = cleanText.replace("/wallet", "").trim();
+          if (!address) {
+            await reply(chatId, "Dùng: /wallet 0xABC... — phân tích full behavior 1 ví", threadId);
+          } else {
+            const q = `Phân tích wallet ${address} theo flow trong SYSTEM_PROMPT.md:
+Step 1: Classify (Pattern 14) — whale hay retail?
+Step 2: Profile (Pattern 15+16) — trade gì, PnL?
+Step 3: Behavior (Pattern 17) — trading pattern?
+Step 4: Network (Pattern 19) — counterparties?
+Step 5: Intent (Pattern 20) — động cơ?
+Chạy từng step, output theo format wallet analysis trong SYSTEM_PROMPT.md.`;
+            console.log(`[${chatKey}] /wallet ${address.slice(0, 10)}...`);
+            await handleQuestion(chatId, q, chatKey, threadId);
+          }
+        } else if (cleanText.startsWith("/whales")) {
+          const q = `Tìm top 10 whale wallets trên platform dùng Pattern 14. Classify theo volume. Với mỗi whale, cho biết: address (8 chars đầu), total volume, total orders, tokens traded, buyer/seller ratio. Sort by volume DESC.`;
+          console.log(`[${chatKey}] /whales`);
           await handleQuestion(chatId, q, chatKey, threadId);
         } else if (cleanText.startsWith("/visual")) {
           const arg = cleanText.replace("/visual", "").trim() || "daily";
