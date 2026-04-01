@@ -350,6 +350,7 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  fallbackToCodexOnRateLimit?: boolean;
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

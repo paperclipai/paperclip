@@ -112,6 +112,31 @@ export function ClaudeLocalAdvancedFields({
             : mark("adapterConfig", "dangerouslySkipPermissions", v)
         }
       />
+      <ToggleField
+        label="Fallback to Codex on rate limit"
+        hint={help.fallbackToCodexOnRateLimit}
+        checked={
+          isCreate
+            ? Boolean(values!.fallbackToCodexOnRateLimit)
+            : eff(
+                "adapterConfig",
+                "rateLimitFallback",
+                typeof config.rateLimitFallback === "object" &&
+                  config.rateLimitFallback !== null &&
+                  !Array.isArray(config.rateLimitFallback) &&
+                  (config.rateLimitFallback as Record<string, unknown>).adapterType === "codex_local",
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ fallbackToCodexOnRateLimit: v })
+            : mark(
+                "adapterConfig",
+                "rateLimitFallback",
+                v ? { adapterType: "codex_local" } : undefined,
+              )
+        }
+      />
       <Field label="Max turns per run" hint={help.maxTurnsPerRun}>
         {isCreate ? (
           <input

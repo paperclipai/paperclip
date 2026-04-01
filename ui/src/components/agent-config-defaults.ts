@@ -1,11 +1,12 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 
 export const defaultCreateValues: CreateConfigValues = {
   adapterType: "claude_local",
   cwd: "",
   instructionsFilePath: "",
   promptTemplate: "",
-  model: "",
+  model: DEFAULT_CLAUDE_LOCAL_MODEL,
   thinkingEffort: "",
   chrome: false,
   dangerouslySkipPermissions: true,
@@ -24,6 +25,7 @@ export const defaultCreateValues: CreateConfigValues = {
   workspaceBranchTemplate: "",
   worktreeParentDir: "",
   runtimeServicesJson: "",
+  fallbackToCodexOnRateLimit: false,
   maxTurnsPerRun: 300,
   heartbeatEnabled: false,
   intervalSec: 300,

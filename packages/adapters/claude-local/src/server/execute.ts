@@ -26,10 +26,12 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  detectClaudeRateLimited,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -313,7 +315,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const model = asString(config.model, "").trim() || DEFAULT_CLAUDE_LOCAL_MODEL;
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -493,6 +495,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    const rateLimited = detectClaudeRateLimited({
+      parsed,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    });
     const errorMeta =
       loginMeta.loginUrl != null
         ? {
@@ -518,7 +525,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: proc.signal,
         timedOut: false,
         errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorCode: loginMeta.requiresLogin
+          ? "claude_auth_required"
+          : rateLimited
+            ? "claude_rate_limited"
+            : null,
         errorMeta,
         resultJson: {
           stdout: proc.stdout,
@@ -561,7 +572,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) === 0
           ? null
           : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+      errorCode: loginMeta.requiresLogin
+        ? "claude_auth_required"
+        : rateLimited
+          ? "claude_rate_limited"
+          : null,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,

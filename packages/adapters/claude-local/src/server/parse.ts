@@ -2,6 +2,7 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_RATE_LIMIT_RE = /(?:rate(?:_| |-)?limit(?:ed)?|too many requests|\b429\b|quota exceeded|usage limit reached|resource exhausted|out of extra usage|overage(?:status)?\W*rejected|rate_limit_event|resets?\s+[a-z]{3,9}\s+\d)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -136,6 +137,35 @@ export function detectClaudeLoginRequired(input: {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
+}
+
+export function detectClaudeRateLimited(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): boolean {
+  const rateLimitEventDetected = [input.stdout, input.stderr].some((text) =>
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .some((line) => {
+        const parsedLine = parseJson(line);
+        if (!parsedLine) return false;
+        if (asString(parsedLine.type, "") === "rate_limit_event") return true;
+        return Object.keys(parseObject(parsedLine.rate_limit_info)).length > 0;
+      }),
+  );
+  if (rateLimitEventDetected) return true;
+
+  const resultText = asString(input.parsed?.result, "").trim();
+  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return messages.some((line) => CLAUDE_RATE_LIMIT_RE.test(line));
 }
 
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {

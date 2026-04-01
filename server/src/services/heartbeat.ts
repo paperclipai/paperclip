@@ -309,6 +309,25 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
+export type RateLimitFallbackTarget = {
+  adapterType: string;
+  adapterConfig: Record<string, unknown>;
+};
+
+const PORTABLE_RATE_LIMIT_FALLBACK_CONFIG_KEYS = [
+  "bootstrapPromptTemplate",
+  "cwd",
+  "env",
+  "graceSec",
+  "instructionsFilePath",
+  "paperclipRuntimeSkills",
+  "paperclipSkillSync",
+  "promptTemplate",
+  "timeoutSec",
+  "workspaceRuntime",
+  "workspaceStrategy",
+] as const;
+
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
@@ -636,6 +655,80 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
     chunk: `[paperclip] ${warning}\n`,
+  };
+}
+
+export function resolveRateLimitFallbackTarget(
+  primaryAdapterType: string,
+  runtimeConfig: Record<string, unknown>,
+): RateLimitFallbackTarget | null {
+  if (primaryAdapterType !== "claude_local") return null;
+
+  const fallback = parseObject(runtimeConfig.rateLimitFallback);
+  if (Object.keys(fallback).length === 0) return null;
+  if (fallback.enabled === false) return null;
+
+  const adapterType = readNonEmptyString(fallback.adapterType);
+  if (adapterType !== "codex_local") return null;
+
+  return {
+    adapterType,
+    adapterConfig: parseObject(fallback.adapterConfig),
+  };
+}
+
+export function shouldUseRateLimitFallback(
+  result: Pick<AdapterExecutionResult, "errorCode" | "errorMessage" | "resultJson" | "timedOut" | "exitCode">,
+  fallback: RateLimitFallbackTarget | null,
+): fallback is RateLimitFallbackTarget {
+  if (!fallback) return false;
+  if (result.timedOut) return false;
+  if ((result.exitCode ?? 0) === 0) return false;
+  if (result.errorCode === "claude_rate_limited") return true;
+
+  const resultJson = parseObject(result.resultJson);
+  const errorMessage = [
+    readNonEmptyString(result.errorMessage),
+    readNonEmptyString(resultJson.result),
+    readNonEmptyString(resultJson.error),
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n")
+    .toLowerCase();
+  return (
+    errorMessage.includes("rate limit") ||
+    errorMessage.includes("out of extra usage") ||
+    errorMessage.includes("too many requests") ||
+    errorMessage.includes("quota exceeded") ||
+    errorMessage.includes("usage limit")
+  );
+}
+
+export function stripAdapterSessionState(result: AdapterExecutionResult): AdapterExecutionResult {
+  return {
+    ...result,
+    sessionId: null,
+    sessionParams: null,
+    sessionDisplayId: null,
+    clearSession: false,
+  };
+}
+
+export function buildRateLimitFallbackConfig(
+  primaryRuntimeConfig: Record<string, unknown>,
+  fallback: RateLimitFallbackTarget,
+): Record<string, unknown> {
+  const portableConfig = Object.fromEntries(
+    PORTABLE_RATE_LIMIT_FALLBACK_CONFIG_KEYS.flatMap((key) =>
+      Object.prototype.hasOwnProperty.call(primaryRuntimeConfig, key)
+        ? [[key, primaryRuntimeConfig[key]]]
+        : [],
+    ),
+  );
+
+  return {
+    ...portableConfig,
+    ...fallback.adapterConfig,
   };
 }
 
@@ -1539,6 +1632,35 @@ export function heartbeatService(db: Db) {
         payload: sanitizedPayload ?? null,
       },
     });
+  }
+
+  async function appendRunEventBestEffort(
+    run: typeof heartbeatRuns.$inferSelect,
+    seq: number,
+    event: {
+      eventType: string;
+      stream?: "system" | "stdout" | "stderr";
+      level?: "info" | "warn" | "error";
+      color?: string;
+      message?: string;
+      payload?: Record<string, unknown>;
+    },
+    contextLabel: string,
+  ) {
+    try {
+      await appendRunEvent(run, seq, event);
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          runId: run.id,
+          agentId: run.agentId,
+          eventType: event.eventType,
+          contextLabel,
+        },
+        "heartbeat run event append failed; continuing",
+      );
+    }
   }
 
   async function nextRunEventSeq(runId: string) {
@@ -2600,16 +2722,21 @@ export function heartbeatService(db: Db) {
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
-        await appendRunEvent(currentRun, seq++, {
+        const eventSeq = seq++;
+        await appendRunEventBestEffort(currentRun, eventSeq, {
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
           message: "adapter invocation",
           payload: meta as unknown as Record<string, unknown>,
-        });
+        }, "adapter.invoke");
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      const rateLimitFallback =
+        resolveRateLimitFallbackTarget(agent.adapterType, mergedConfig) ??
+        resolveRateLimitFallbackTarget(agent.adapterType, parseObject(agent.adapterConfig)) ??
+        resolveRateLimitFallbackTarget(agent.adapterType, executionRunConfig);
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
@@ -2624,7 +2751,8 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
+      let executedAdapterType = agent.adapterType;
+      let adapterResult = await adapter.execute({
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
@@ -2637,10 +2765,90 @@ export function heartbeatService(db: Db) {
         },
         authToken: authToken ?? undefined,
       });
+      const shouldFallback = shouldUseRateLimitFallback(adapterResult, rateLimitFallback);
+      if (rateLimitFallback) {
+        const eventSeq = seq++;
+        await appendRunEventBestEffort(currentRun, eventSeq, {
+          eventType: "adapter.fallback.decision",
+          stream: "system",
+          level: shouldFallback ? "warn" : "info",
+          message: shouldFallback
+            ? `fallback decision: retry with ${rateLimitFallback.adapterType}`
+            : "fallback decision: no retry",
+          payload: {
+            configured: true,
+            fallbackAdapterType: rateLimitFallback.adapterType,
+            errorCode: adapterResult.errorCode ?? null,
+            errorMessage: adapterResult.errorMessage ?? null,
+            exitCode: adapterResult.exitCode ?? null,
+            timedOut: adapterResult.timedOut,
+          },
+        }, "adapter.fallback.decision");
+      }
+      if (shouldFallback) {
+        const fallbackAdapter = getServerAdapter(rateLimitFallback.adapterType);
+        const fallbackConfig = buildRateLimitFallbackConfig(runtimeConfig, rateLimitFallback);
+        const fallbackAuthToken = fallbackAdapter.supportsLocalAgentJwt
+          ? createLocalAgentJwt(agent.id, agent.companyId, rateLimitFallback.adapterType, run.id)
+          : null;
+        if (fallbackAdapter.supportsLocalAgentJwt && !fallbackAuthToken) {
+          logger.warn(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              adapterType: rateLimitFallback.adapterType,
+            },
+            "local agent jwt secret missing or invalid for fallback adapter; running without injected PAPERCLIP_API_KEY",
+          );
+        }
+        const eventSeq = seq++;
+        await appendRunEventBestEffort(currentRun, eventSeq, {
+          eventType: "adapter.fallback",
+          stream: "system",
+          level: "warn",
+          message: `primary adapter rate limited; retrying with ${rateLimitFallback.adapterType}`,
+          payload: {
+            from: agent.adapterType,
+            to: rateLimitFallback.adapterType,
+            reason: adapterResult.errorCode,
+          },
+        }, "adapter.fallback");
+        await onLog(
+          "stdout",
+          `[paperclip] ${agent.adapterType} hit a rate limit; retrying this heartbeat with ${rateLimitFallback.adapterType}.\n`,
+        );
+        const fallbackAgent = {
+          ...agent,
+          adapterType: rateLimitFallback.adapterType,
+          adapterConfig: fallbackConfig,
+        };
+        const fallbackRuntime = {
+          ...runtimeForAdapter,
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+        };
+        const fallbackResult = await fallbackAdapter.execute({
+          runId: run.id,
+          agent: fallbackAgent,
+          runtime: fallbackRuntime,
+          config: fallbackConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, meta);
+          },
+          authToken: fallbackAuthToken ?? undefined,
+        });
+        executedAdapterType = rateLimitFallback.adapterType;
+        adapterResult = stripAdapterSessionState(fallbackResult);
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: executedAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
