@@ -39,6 +39,7 @@ const SUPPORTED_ADVANCED_ADAPTER_TYPES = new Set<CreateConfigValues["adapterType
   "cursor",
   "hermes_local",
   "openclaw_gateway",
+  "openrouter_local",
 ]);
 
 function createValuesForAdapterType(
@@ -58,6 +59,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_OLLAMA_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = "";
+  } else if (adapterType === "openrouter_local") {
+    nextValues.model = "deepseek/deepseek-v3.2";
   }
   return nextValues;
 }
