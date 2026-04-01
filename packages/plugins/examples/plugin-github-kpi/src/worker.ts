@@ -437,7 +437,7 @@ async function syncGitHubData(ctx: PluginContext): Promise<KpiSnapshot> {
     contributorsThisMonth: activeContributors,
     topContributors,
     deploysThisWeek: totalDeploys,
-    latestRelease: latestReleaseGlobal?.tag ?? null,
+    latestRelease: (latestReleaseGlobal as { tag: string } | null)?.tag ?? null,
     velocityMultiplier: Math.round((totalCommits / PRE_AI_BASELINE_COMMITS_WEEK) * 10) / 10,
     throughputPerDev: Math.round(totalCommits / activeContributors),
     cicd,
