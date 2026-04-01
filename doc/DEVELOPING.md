@@ -39,6 +39,17 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+`pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
+
+`pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
+
+Inspect or stop the current repo's managed dev runner:
+
+```sh
+pnpm dev:list
+pnpm dev:stop
+```
+
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
 Tailscale/private-auth dev mode:
@@ -134,6 +145,8 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 
 - `~/.paperclip/instances/default/companies/<company-id>/codex-home`
 
+If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.
@@ -205,6 +218,17 @@ paperclipai worktree init --from-instance default
 paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
+
+Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install:
+
+```sh
+cd ~/.paperclip/worktrees/PAP-884-ai-commits-component
+pnpm paperclipai worktree init --force --seed-mode minimal \
+  --name PAP-884-ai-commits-component \
+  --from-config ~/.paperclip/instances/default/config.json
+```
+
+That rewrites the worktree-local `.paperclip/config.json` + `.paperclip/.env`, recreates the isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`, and preserves the git worktree contents themselves.
 
 **`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 

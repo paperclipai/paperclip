@@ -44,6 +44,7 @@ import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-field
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { ReportsToPicker } from "./ReportsToPicker";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 
 /* ---- Create mode values ---- */
@@ -139,6 +140,7 @@ const codexThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+  { id: "xhigh", label: "X-High" },
 ] as const;
 
 const openCodeThinkingEffortOptions = [
@@ -147,6 +149,7 @@ const openCodeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
+  { id: "xhigh", label: "X-High" },
   { id: "max", label: "Max" },
 ] as const;
 
@@ -247,9 +250,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     if (overlay.adapterType !== undefined) {
       patch.adapterType = overlay.adapterType;
-      // When adapter type changes, send only the new config — don't merge
-      // with old config since old adapter fields are meaningless for the new type
-      patch.adapterConfig = overlay.adapterConfig;
+      // When adapter type changes, replace adapter-specific fields but preserve
+      // adapter-agnostic fields (env, promptTemplate, etc.) that are shared
+      // across all adapter types.
+      const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+      const adapterAgnosticKeys = [
+        "env",
+        "promptTemplate",
+        "instructionsFilePath",
+        "cwd",
+        "timeoutSec",
+        "graceSec",
+        "bootstrapPromptTemplate",
+      ];
+      const preserved: Record<string, unknown> = {};
+      for (const key of adapterAgnosticKeys) {
+        if (key in existing) {
+          preserved[key] = existing[key];
+        }
+      }
+      patch.adapterConfig = { ...preserved, ...overlay.adapterConfig };
     } else if (Object.keys(overlay.adapterConfig).length > 0) {
       const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
       patch.adapterConfig = { ...existing, ...overlay.adapterConfig };
@@ -295,9 +315,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
+    adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
+  const isHermesLocal = adapterType === "hermes_local";
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -314,6 +336,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];
+  const {
+    data: detectedModelData,
+    refetch: refetchDetectedModel,
+  } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.detectModel(selectedCompanyId, adapterType)
+      : ["agents", "none", "detect-model", adapterType],
+    queryFn: () => {
+      if (!selectedCompanyId) {
+        throw new Error("Select a company to detect the Hermes model");
+      }
+      return agentsApi.detectModel(selectedCompanyId, adapterType);
+    },
+    enabled: Boolean(selectedCompanyId && isHermesLocal),
+  });
+  const detectedModel = detectedModelData?.model ?? null;
+
+  const { data: companyAgents = [] } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none", "list"],
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: Boolean(!isCreate && selectedCompanyId),
+  });
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
@@ -460,6 +504,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 immediate
                 className={inputClass}
                 placeholder="e.g. VP of Engineering"
+              />
+            </Field>
+            <Field label="Reports to" hint={help.reportsTo}>
+              <ReportsToPicker
+                agents={companyAgents}
+                value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
+                onChange={(id) => mark("identity", "reportsTo", id)}
+                excludeAgentIds={[props.agent.id]}
+                chooseLabel="Choose manager…"
               />
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
@@ -672,6 +725,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? "codex"
                       : adapterType === "gemini_local"
                         ? "gemini"
+                        : adapterType === "hermes_local"
+                          ? "hermes"
                         : adapterType === "pi_local"
                           ? "pi"
                         : adapterType === "cursor"
@@ -693,9 +748,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "hermes_local"}
+                required={adapterType === "opencode_local" || adapterType === "hermes_local"}
                 groupByProvider={adapterType === "opencode_local"}
+                creatable={adapterType === "hermes_local"}
+                detectedModel={adapterType === "hermes_local" ? detectedModel : null}
+                onDetectModel={adapterType === "hermes_local"
+                  ? async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }
+                  : undefined}
+                detectModelLabel={adapterType === "hermes_local" ? "Detect from Hermes config" : undefined}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -960,7 +1024,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
@@ -1091,9 +1155,17 @@ function EnvVarEditor({
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
+  const emittingRef = useRef(false);
 
-  // Sync when value identity changes (overlay reset after save)
+  // Sync when value identity changes (overlay reset after save).
+  // Skip re-sync when the change was triggered by our own emit() to avoid
+  // reverting local row state (e.g. a secret-transition dropdown choice).
   useEffect(() => {
+    if (emittingRef.current) {
+      emittingRef.current = false;
+      valueRef.current = value;
+      return;
+    }
     if (value !== valueRef.current) {
       valueRef.current = value;
       setRows(toRows(value));
@@ -1106,12 +1178,18 @@ function EnvVarEditor({
       const k = row.key.trim();
       if (!k) continue;
       if (row.source === "secret") {
-        if (!row.secretId) continue;
-        rec[k] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
+        if (row.secretId) {
+          rec[k] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
+        } else {
+          // Row is transitioning to secret but user hasn't picked one yet.
+          // Preserve the plain value so it isn't silently dropped.
+          rec[k] = { type: "plain", value: row.plainValue };
+        }
       } else {
         rec[k] = { type: "plain", value: row.plainValue };
       }
     }
+    emittingRef.current = true;
     onChange(Object.keys(rec).length > 0 ? rec : undefined);
   }
 
@@ -1277,6 +1355,10 @@ function ModelDropdown({
   allowDefault,
   required,
   groupByProvider,
+  creatable,
+  detectedModel,
+  onDetectModel,
+  detectModelLabel,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1286,9 +1368,20 @@ function ModelDropdown({
   allowDefault: boolean;
   required: boolean;
   groupByProvider: boolean;
+  creatable?: boolean;
+  detectedModel?: string | null;
+  onDetectModel?: () => Promise<string | null>;
+  detectModelLabel?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
+  const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
+  const manualModel = modelSearch.trim();
+  const canCreateManualModel = Boolean(
+    creatable &&
+      manualModel &&
+      !models.some((m) => m.id.toLowerCase() === manualModel.toLowerCase()),
+  );
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
       if (!modelSearch.trim()) return true;
@@ -1325,6 +1418,21 @@ function ModelDropdown({
       }));
   }, [filteredModels, groupByProvider]);
 
+  async function handleDetectModel() {
+    if (!onDetectModel) return;
+    setDetectingModel(true);
+    try {
+      const nextModel = await onDetectModel();
+      if (nextModel) {
+        onChange(nextModel);
+        onOpenChange(false);
+        setModelSearch("");
+      }
+    } finally {
+      setDetectingModel(false);
+    }
+  }
+
   return (
     <Field label="Model" hint={help.model}>
       <Popover
@@ -1335,7 +1443,7 @@ function ModelDropdown({
         }}
       >
         <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+          <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
@@ -1345,16 +1453,84 @@ function ModelDropdown({
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-          <input
-            className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-            placeholder="Search models..."
-            value={modelSearch}
-            onChange={(e) => setModelSearch(e.target.value)}
-            autoFocus
-          />
+          <div className="relative mb-1">
+            <input
+              className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
+              placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
+              value={modelSearch}
+              onChange={(e) => setModelSearch(e.target.value)}
+              autoFocus
+            />
+            {modelSearch && (
+              <button
+                type="button"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setModelSearch("")}
+              >
+                <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            )}
+          </div>
+          {onDetectModel && !detectedModel && !modelSearch.trim() && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+              onClick={() => {
+                void handleDetectModel();
+              }}
+              disabled={detectingModel}
+            >
+              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+              {detectingModel ? "Detecting..." : (detectModelLabel ?? "Detect from config")}
+            </button>
+          )}
+          {value && !models.some((m) => m.id === value) && (
+            <button
+              type="button"
+              className={cn(
+                "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
+              )}
+              onClick={() => {
+                onOpenChange(false);
+              }}
+            >
+              <span className="block w-full text-left truncate font-mono text-xs" title={value}>
+                {value}
+              </span>
+              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
+                current
+              </span>
+            </button>
+          )}
+          {detectedModel && detectedModel !== value && (
+            <button
+              type="button"
+              className={cn(
+                "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+              )}
+              onClick={() => {
+                onChange(detectedModel);
+                onOpenChange(false);
+              }}
+            >
+              <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
+                {detectedModel}
+              </span>
+              <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
+                detected
+              </span>
+            </button>
+          )}
           <div className="max-h-[240px] overflow-y-auto">
             {allowDefault && (
               <button
+                type="button"
                 className={cn(
                   "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   !value && "bg-accent",
@@ -1367,6 +1543,20 @@ function ModelDropdown({
                 Default
               </button>
             )}
+            {canCreateManualModel && (
+              <button
+                type="button"
+                className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
+                onClick={() => {
+                  onChange(manualModel);
+                  onOpenChange(false);
+                  setModelSearch("");
+                }}
+              >
+                <span>Use manual model</span>
+                <span className="text-xs font-mono text-muted-foreground">{manualModel}</span>
+              </button>
+            )}
             {groupedModels.map((group) => (
               <div key={group.provider} className="mb-1 last:mb-0">
                 {groupByProvider && (
@@ -1376,6 +1566,7 @@ function ModelDropdown({
                 )}
                 {group.entries.map((m) => (
                   <button
+                    type="button"
                     key={m.id}
                     className={cn(
                       "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
@@ -1393,8 +1584,14 @@ function ModelDropdown({
                 ))}
               </div>
             ))}
-            {filteredModels.length === 0 && (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">No models found.</p>
+            {filteredModels.length === 0 && !canCreateManualModel && (
+              <div className="px-2 py-2 space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  {onDetectModel
+                    ? "No Hermes model detected yet. Configure Hermes or enter a provider/model manually."
+                    : "No models found."}
+                </p>
+              </div>
             )}
           </div>
         </PopoverContent>

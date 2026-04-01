@@ -887,6 +887,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   </div>
                   {onUpdate || onFieldUpdate ? (
                     <button
+                      data-slot="toggle"
                       className={cn(
                         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
                         executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
@@ -925,6 +926,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                         </div>
                       </div>
                       <button
+                        data-slot="toggle"
                         className={cn(
                           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
                           executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",

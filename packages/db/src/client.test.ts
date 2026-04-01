@@ -1,83 +1,24 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
-  ensurePostgresDatabase,
   inspectMigrations,
 } from "./client.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./test-embedded-postgres.js";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-const tempPaths: string[] = [];
-const runningInstances: EmbeddedPostgresInstance[] = [];
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
-}
-
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
+const cleanups: Array<() => Promise<void>> = [];
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function createTempDatabase(): Promise<string> {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-client-"));
-  tempPaths.push(dataDir);
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-  runningInstances.push(instance);
-
-  const adminUrl = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminUrl, "paperclip");
-  return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+  const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
+  cleanups.push(db.cleanup);
+  return db.connectionString;
 }
 
 async function migrationHash(migrationFile: string): Promise<string> {
@@ -89,19 +30,19 @@ async function migrationHash(migrationFile: string): Promise<string> {
 }
 
 afterEach(async () => {
-  while (runningInstances.length > 0) {
-    const instance = runningInstances.pop();
-    if (!instance) continue;
-    await instance.stop();
-  }
-  while (tempPaths.length > 0) {
-    const tempPath = tempPaths.pop();
-    if (!tempPath) continue;
-    fs.rmSync(tempPath, { recursive: true, force: true });
+  while (cleanups.length > 0) {
+    const cleanup = cleanups.pop();
+    await cleanup?.();
   }
 });
 
-describe("applyPendingMigrations", () => {
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres migration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -148,6 +89,152 @@ describe("applyPendingMigrations", () => {
           "company_logos",
           "execution_workspaces",
         ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0044 safely when its schema changes already exist",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const illegalToadHash = await migrationHash("0044_illegal_toad.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${illegalToadHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'instance_settings'
+              AND column_name = 'general'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0044_illegal_toad.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+    },
+    20_000,
+  );
+
+  it(
+    "enforces a unique board_api_keys.key_hash after migration 0044",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
+          VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+          VALUES ('00000000-0000-0000-0000-000000000001', 'user-1', 'Key One', 'dup-hash', now())
+        `);
+        await expect(
+          sql.unsafe(`
+            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
+            VALUES ('00000000-0000-0000-0000-000000000002', 'user-1', 'Key Two', 'dup-hash', now())
+          `),
+        ).rejects.toThrow();
+      } finally {
+        await sql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0046 safely when document revision columns already exist",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const smoothSentinelsHash = await migrationHash("0046_smooth_sentinels.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${smoothSentinelsHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string; is_nullable: string; column_default: string | null }[]>(
+          `
+            SELECT column_name, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'document_revisions'
+              AND column_name IN ('title', 'format')
+            ORDER BY column_name
+          `,
+        );
+        expect(columns).toHaveLength(2);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0046_smooth_sentinels.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; column_default: string | null }[]>(
+          `
+            SELECT column_name, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'document_revisions'
+              AND column_name IN ('title', 'format')
+            ORDER BY column_name
+          `,
+        );
+        expect(columns).toEqual([
+          expect.objectContaining({
+            column_name: "format",
+            is_nullable: "NO",
+          }),
+          expect.objectContaining({
+            column_name: "title",
+            is_nullable: "YES",
+          }),
+        ]);
+        expect(columns[0]?.column_default).toContain("'markdown'");
       } finally {
         await verifySql.end();
       }

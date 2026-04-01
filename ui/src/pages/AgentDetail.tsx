@@ -18,6 +18,7 @@ import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -68,6 +69,7 @@ import {
   ChevronDown,
   ArrowLeft,
   HelpCircle,
+  FolderOpen,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -571,9 +573,9 @@ export function AgentDetail() {
   });
 
   const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(resolvedCompanyId!),
-    queryFn: () => issuesApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsDashboardData,
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
   });
 
   const { data: allAgents } = useQuery({
@@ -591,7 +593,6 @@ export function AgentDetail() {
   });
 
   const assignedIssues = (allIssues ?? [])
-    .filter((i) => i.assigneeAgentId === agent?.id)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
@@ -1074,9 +1075,27 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   const isLive = run.status === "running" || run.status === "queued";
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
-  const summary = run.resultJson
+  const summaryRaw = run.resultJson
     ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
     : run.error ?? "";
+
+  // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
+  const summary = useMemo(() => {
+    if (!summaryRaw) return "";
+    const lines = summaryRaw
+      .replace(/^#{1,6}\s+/gm, "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("---") && !l.startsWith("|") && !l.startsWith("```") && !/^[-*>]/.test(l) && !/^\d+\./.test(l));
+    const excerpt: string[] = [];
+    let chars = 0;
+    for (const line of lines) {
+      if (excerpt.length >= 3 || chars + line.length > 280) break;
+      excerpt.push(line);
+      chars += line.length;
+    }
+    return excerpt.join(" ");
+  }, [summaryRaw]);
 
   return (
     <div className="space-y-3">
@@ -1173,12 +1192,15 @@ function AgentOverview({
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Recent Issues</h3>
-          <Link to={`/issues?assignee=${agentId}`} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <Link
+            to={`/issues?participantAgentId=${agentId}`}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
             See All &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No assigned issues.</p>
+          <p className="text-sm text-muted-foreground">No recent issues.</p>
         ) : (
           <div className="border border-border rounded-lg">
             {assignedIssues.slice(0, 10).map((issue) => (
@@ -1420,6 +1442,7 @@ function ConfigurationTab({
   hideInstructionsFile?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
@@ -1441,9 +1464,17 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
     },
-    onError: () => {
+    onError: (err) => {
       setAwaitingRefreshAfterSave(false);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not save agent";
+      pushToast({ title: "Save failed", body: message, tone: "error" });
     },
   });
 
@@ -1502,6 +1533,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canCreateAgents}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1533,6 +1565,7 @@ function ConfigurationTab({
             <button
               type="button"
               role="switch"
+              data-slot="toggle"
               aria-checked={canAssignTasks}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-50",
@@ -1579,7 +1612,9 @@ function PromptsTab({
 }) {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
     mode: "managed" | "external";
@@ -1599,6 +1634,20 @@ function PromptsTab({
     entryFile: string;
     selectedFile: string;
   } | null>(null);
+
+  useEffect(() => {
+    setSelectedFile("AGENTS.md");
+    setShowFilePanel(false);
+    setDraft(null);
+    setBundleDraft(null);
+    setNewFilePath("");
+    setShowNewFileInput(false);
+    setPendingFiles([]);
+    setExpandedDirs(new Set());
+    setAwaitingRefresh(false);
+    lastFileVersionRef.current = null;
+    externalBundleRef.current = null;
+  }, [agent.id]);
 
   const isLocal =
     agent.adapterType === "claude_local" ||
@@ -2032,21 +2081,38 @@ function PromptsTab({
         </CollapsibleContent>
       </Collapsible>
 
-      <div ref={containerRef} className="flex gap-0">
-        <div className="border border-border rounded-lg p-3 space-y-3 shrink-0" style={{ width: filePanelWidth }}>
+      <div ref={containerRef} className={cn("flex gap-0", isMobile && "flex-col gap-3")}>
+        <div className={cn(
+          "border border-border rounded-lg p-3 space-y-3 shrink-0",
+          isMobile && showFilePanel && "block",
+          isMobile && !showFilePanel && "hidden",
+        )} style={isMobile ? undefined : { width: filePanelWidth }}>
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Files</h4>
-            {!showNewFileInput && (
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="h-7 w-7"
-                onClick={() => setShowNewFileInput(true)}
-              >
-                +
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {!showNewFileInput && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  onClick={() => setShowNewFileInput(true)}
+                >
+                  +
+                </Button>
+              )}
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => setShowFilePanel(false)}
+                >
+                  ✕
+                </Button>
+              )}
+            </div>
           </div>
           {showNewFileInput && (
             <div className="space-y-2">
@@ -2111,6 +2177,7 @@ function PromptsTab({
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
               if (!fileOptions.includes(filePath)) setDraft("");
+              if (isMobile) setShowFilePanel(false);
             }}
             onToggleCheck={() => {}}
             showCheckboxes={false}
@@ -2141,22 +2208,37 @@ function PromptsTab({
         </div>
 
         {/* Draggable separator */}
-        <div
-          className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
-          onMouseDown={handleSeparatorDrag}
-        />
+        {!isMobile && (
+          <div
+            className="w-1 shrink-0 cursor-col-resize hover:bg-border active:bg-primary/50 rounded transition-colors mx-1"
+            onMouseDown={handleSeparatorDrag}
+          />
+        )}
 
-        <div className="border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1">
+        <div className={cn("border border-border rounded-lg p-4 space-y-3 min-w-0 flex-1", isMobile && showFilePanel && "hidden")}>
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <h4 className="text-sm font-medium font-mono">{selectedOrEntryFile}</h4>
-              <p className="text-xs text-muted-foreground">
-                {selectedFileExists
-                  ? selectedFileSummary?.deprecated
-                    ? "Deprecated virtual file"
-                    : `${selectedFileDetail?.language ?? "text"} file`
-                  : "New file in this bundle"}
-              </p>
+            <div className="flex items-center gap-2 min-w-0">
+              {isMobile && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => setShowFilePanel(true)}
+                >
+                  <FolderOpen className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <div className="min-w-0">
+                <h4 className="text-sm font-medium font-mono truncate">{selectedOrEntryFile}</h4>
+                <p className="text-xs text-muted-foreground">
+                  {selectedFileExists
+                    ? selectedFileSummary?.deprecated
+                      ? "Deprecated virtual file"
+                      : `${selectedFileDetail?.language ?? "text"} file`
+                    : "New file in this bundle"}
+                </p>
+              </div>
             </div>
             {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
               <Button
@@ -2287,6 +2369,7 @@ function AgentSkillsTab({
   const queryClient = useQueryClient();
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const [unmanagedOpen, setUnmanagedOpen] = useState(false);
   const lastSavedSkillsRef = useRef<string[]>([]);
   const hasHydratedSkillSnapshotRef = useRef(false);
   const skipNextSkillAutosaveRef = useRef(true);
@@ -2616,12 +2699,19 @@ function AgentSkillsTab({
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">
-                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="flex cursor-pointer items-center gap-2 border-b border-border bg-muted/40 px-3 py-2 select-none"
+                      onClick={() => setUnmanagedOpen((v) => !v)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUnmanagedOpen((v) => !v); } }}
+                    >
                       <span className="text-xs font-medium text-muted-foreground">
-                        User-installed skills, not managed by Paperclip
+                        ({unmanagedSkillRows.length}) User-installed skills, not managed by Paperclip
                       </span>
+                      {unmanagedOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
                     </div>
-                    {unmanagedSkillRows.map(renderSkillRow)}
+                    {unmanagedOpen && unmanagedSkillRows.map(renderSkillRow)}
                   </section>
                 )}
               </>
