@@ -150,6 +150,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const CODE_DELIVERY_TYPES = new Set(["branch", "commit", "pull_request"]);
   const PR_VALID_STATUSES = new Set(["active", "ready_for_review", "approved", "merged"]);
 
+  // GitHub URL patterns for work product integrity verification
+  const GH_PR_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
+  const GH_BRANCH_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/tree\/[^/]+$/;
+  const GH_COMMIT_URL_PATTERN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/commit\/[0-9a-f]+$/;
+
   async function assertDeliveryGate(
     workProducts: ReturnType<typeof workProductService>,
     req: Request,
@@ -171,11 +176,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (targetStatus === "done") {
       const hasValidPR = products.some(
-        wp => wp.type === "pull_request" && PR_VALID_STATUSES.has(wp.status),
+        wp => wp.type === "pull_request"
+          && PR_VALID_STATUSES.has(wp.status)
+          && wp.url
+          && GH_PR_URL_PATTERN.test(wp.url),
       );
       if (!hasValidPR) return {
         gate: "done_requires_pr",
-        reason: "Cannot mark done without a pull request. Create a PR first.",
+        reason: "Cannot mark done without a pull request that has a valid GitHub PR URL.",
       };
     }
 
@@ -687,6 +695,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+
+    // Agents must provide valid GitHub URLs for code delivery work products
+    if (req.actor.type === "agent") {
+      const { type, url, externalId } = req.body;
+      if (type === "pull_request") {
+        if (!url || !GH_PR_URL_PATTERN.test(url)) {
+          res.status(422).json({
+            error: "Pull request work products require a valid GitHub PR URL (https://github.com/{owner}/{repo}/pull/{number}).",
+            gate: "invalid_work_product_url",
+          });
+          return;
+        }
+        if (!externalId) {
+          res.status(422).json({
+            error: "Pull request work products require an externalId (the PR number).",
+            gate: "invalid_work_product_url",
+          });
+          return;
+        }
+      }
+      if (type === "branch" && url && !GH_BRANCH_URL_PATTERN.test(url)) {
+        res.status(422).json({
+          error: "Branch work products must use a valid GitHub branch URL (https://github.com/{owner}/{repo}/tree/{branch}).",
+          gate: "invalid_work_product_url",
+        });
+        return;
+      }
+      if (type === "commit" && url && !GH_COMMIT_URL_PATTERN.test(url)) {
+        res.status(422).json({
+          error: "Commit work products must use a valid GitHub commit URL (https://github.com/{owner}/{repo}/commit/{sha}).",
+          gate: "invalid_work_product_url",
+        });
+        return;
+      }
+    }
+
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,

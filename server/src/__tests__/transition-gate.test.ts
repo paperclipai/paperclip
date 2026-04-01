@@ -132,7 +132,7 @@ describe("transition gate", () => {
     });
     // Default: delivery + QA gates pass
     mockWorkProductService.listForIssue.mockResolvedValue([
-      { type: "pull_request", status: "merged" },
+      { type: "pull_request", status: "merged", url: "https://github.com/org/repo/pull/1" },
     ]);
     mockIssueService.listComments.mockResolvedValue([
       { body: "QA: PASS", authorAgentId: "qa-agent-1", authorUserId: null },

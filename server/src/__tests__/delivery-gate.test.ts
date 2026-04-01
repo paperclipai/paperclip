@@ -176,7 +176,7 @@ describe("delivery gate", () => {
   it("agent → done on code issue with draft PR → 422", async () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockWorkProductService.listForIssue.mockResolvedValue([
-      { type: "pull_request", status: "draft" },
+      { type: "pull_request", status: "draft", url: "https://github.com/org/repo/pull/1" },
     ]);
 
     const app = createAgentApp();
@@ -234,7 +234,7 @@ describe("delivery gate", () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
     mockWorkProductService.listForIssue.mockResolvedValue([
-      { type: "pull_request", status: "merged" },
+      { type: "pull_request", status: "merged", url: "https://github.com/org/repo/pull/1" },
     ]);
 
     const app = createAgentApp();
@@ -243,6 +243,36 @@ describe("delivery gate", () => {
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
+  });
+
+  it("agent → done on code issue with PR missing URL → 422", async () => {
+    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      { type: "pull_request", status: "merged", url: null },
+    ]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${codeIssue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("done_requires_pr");
+  });
+
+  it("agent → done on code issue with PR having non-GitHub URL → 422", async () => {
+    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      { type: "pull_request", status: "merged", url: "https://example.com/fake-pr" },
+    ]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${codeIssue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("done_requires_pr");
   });
 
   it("activity log contains gate details on rejection", async () => {

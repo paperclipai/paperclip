@@ -92,7 +92,7 @@ const nonCodeIssue = {
 };
 
 /** Provide a valid PR so the delivery gate passes — QA gate tests focus on the QA layer. */
-const validPR = { type: "pull_request" as const, status: "merged" };
+const validPR = { type: "pull_request" as const, status: "merged", url: "https://github.com/org/repo/pull/1" };
 
 function createAgentApp() {
   const app = express();
