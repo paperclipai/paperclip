@@ -20,7 +20,11 @@ import {
   joinPromptSections,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import {
+  parseCodexJsonl,
+  isCodexContextWindowExceededError,
+  isCodexUnknownSessionError,
+} from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
@@ -137,6 +141,25 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
 
 function resolveCodexWorkspaceSkillsDir(cwd: string): string {
   return path.join(cwd, ".agents", "skills");
+}
+
+function buildFreshSessionHandoffNote(input: {
+  previousSessionId: string;
+  taskId: string | null;
+  reason: string;
+  lastErrorMessage: string | null;
+}) {
+  const { previousSessionId, taskId, reason, lastErrorMessage } = input;
+  return [
+    "Paperclip session handoff:",
+    `- Previous session: ${previousSessionId}`,
+    taskId ? `- Task: ${taskId}` : "",
+    `- Rotation reason: ${reason}`,
+    lastErrorMessage ? `- Last run summary: ${lastErrorMessage}` : "",
+    "Continue from the current task state. Rebuild only the minimum context you need.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 type EnsureCodexSkillsInjectedOptions = {
@@ -452,24 +475,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const renderedPrompt = renderTemplate(promptTemplate, templateData);
-  const renderedBootstrapPrompt =
-    !sessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-      : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    instructionsPrefix,
-    renderedBootstrapPrompt,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    promptChars: prompt.length,
-    instructionsChars,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
-  };
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["exec", "--json"];
@@ -483,8 +489,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return args;
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
+  const buildPromptForAttempt = (
+    resumeSessionId: string | null,
+    extraHandoffNote: string | null = null,
+  ) => {
+    const renderedBootstrapPrompt =
+      !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+        : "";
+    const mergedHandoffNote = joinPromptSections([
+      sessionHandoffNote,
+      extraHandoffNote?.trim() ?? "",
+    ]);
+    const prompt = joinPromptSections([
+      instructionsPrefix,
+      renderedBootstrapPrompt,
+      mergedHandoffNote,
+      renderedPrompt,
+    ]);
+
+    return {
+      prompt,
+      promptMetrics: {
+        promptChars: prompt.length,
+        instructionsChars,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
+        sessionHandoffChars: mergedHandoffNote.length,
+        heartbeatPromptChars: renderedPrompt.length,
+      },
+    };
+  };
+
+  const runAttempt = async (
+    resumeSessionId: string | null,
+    extraHandoffNote: string | null = null,
+  ) => {
     const args = buildArgs(resumeSessionId);
+    const { prompt, promptMetrics } = buildPromptForAttempt(resumeSessionId, extraHandoffNote);
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -599,6 +640,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
+    return toResult(retry, true);
+  }
+
+  if (
+    sessionId &&
+    !initial.proc.timedOut &&
+    (initial.proc.exitCode ?? 0) !== 0 &&
+    isCodexContextWindowExceededError(initial.proc.stdout, initial.rawStderr)
+  ) {
+    const retryHandoffNote = buildFreshSessionHandoffNote({
+      previousSessionId: sessionId,
+      taskId: wakeTaskId,
+      reason: "Codex reported that the previous thread ran out of room in the model's context window",
+      lastErrorMessage: initial.parsed.errorMessage,
+    });
+    await onLog(
+      "stdout",
+      `[paperclip] Codex session "${sessionId}" exceeded the context window; retrying with a fresh session.\n`,
+    );
+    const retry = await runAttempt(null, retryHandoffNote);
     return toResult(retry, true);
   }
 

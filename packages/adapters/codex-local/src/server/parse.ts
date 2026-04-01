@@ -71,3 +71,14 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     haystack,
   );
 }
+
+export function isCodexContextWindowExceededError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /ran out of room in the model's context window|context window.*(?:start a new thread|clear earlier history)/i.test(
+    haystack,
+  );
+}
