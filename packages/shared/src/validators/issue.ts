@@ -85,6 +85,10 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  // agentId: allows non-agent callers (e.g. Hermes via curl) to attribute a comment
+  // to a specific agent. Without this, Zod strips the field and comments always
+  // land as authorAgentId=null / authorUserId="local-board".
+  agentId: z.string().uuid().optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;

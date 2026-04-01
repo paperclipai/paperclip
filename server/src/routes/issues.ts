@@ -1536,10 +1536,53 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-    });
+    // Resolve agentId: explicit body > actor > infer from active run on this issue
+    // Only infer for non-browser requests (curl from Hermes agent, no Referer header)
+    // to avoid misattributing user UI comments to agents.
+    let resolvedAgentId: string | undefined = (req.body.agentId as string | undefined) ?? actor.agentId ?? undefined;
+    // Validate body agentId against the database: must exist and belong to the same company.
+    // Prevents impersonation (P0) and selfComment spoofing (P1).
+    if (resolvedAgentId && resolvedAgentId === req.body.agentId) {
+      const agentRecord = await agentsSvc.getById(resolvedAgentId);
+      if (!agentRecord || agentRecord.companyId !== currentIssue.companyId) {
+        resolvedAgentId = actor.agentId ?? undefined; // discard invalid, fall through to auto-inference
+      }
+    }
+    if (!resolvedAgentId && currentIssue.assigneeAgentId && req.actor.source === "local_implicit" && !req.header("referer")) {
+      const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
+      if (activeRun && activeRun.status === "running") {
+        const runIssueId =
+          activeRun.contextSnapshot &&
+          typeof activeRun.contextSnapshot === "object" &&
+          typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (runIssueId === currentIssue.id) {
+          resolvedAgentId = currentIssue.assigneeAgentId;
+        }
+      }
+    }
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    try {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: resolvedAgentId,
+        userId: resolvedAgentId ? undefined : (actor.actorType === "user" ? actor.actorId : undefined),
+      });
+    } catch (commentErr: unknown) {
+      // FK violation (23503) = LLM sent a wrong agentId that doesn't exist in agents table.
+      // Local LLMs sometimes mix up digits between issue ID and agent ID.
+      // Retry with the issue's assignee agent ID as fallback.
+      const pgErr = commentErr as { code?: string };
+      if (pgErr.code === "23503" && req.body.agentId && currentIssue.assigneeAgentId) {
+        resolvedAgentId = currentIssue.assigneeAgentId;
+        comment = await svc.addComment(id, req.body.body, {
+          agentId: resolvedAgentId,
+          userId: undefined,
+        });
+      } else {
+        throw commentErr;
+      }
+    }
 
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
@@ -1570,7 +1613,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      // Fix: also treat as self-comment when resolvedAgentId matches the assignee.
+      // This prevents wakeOnDemand loops when a Hermes agent posts a comment via curl
+      // (which authenticates as local-board, not as an agent).
+      const selfComment = (actorIsAgent && actor.actorId === assigneeId) ||
+        (resolvedAgentId != null && resolvedAgentId === assigneeId);
       const skipWake = selfComment || isClosed;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
