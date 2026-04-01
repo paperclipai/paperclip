@@ -861,6 +861,9 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       }
       const token = await svc.resolveSecretValue(companyId, secret.id, "latest");
 
+      // Look up Linear plugin for link backfill
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.pluginKey, "paperclip-plugin-linear")).limit(1);
+
       // Get all Paperclip issues with Linear identifiers
       const paperclipIssues = await db
         .select()
@@ -1116,6 +1119,42 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
                 issueId: pIssue.id,
                 cycleId,
                 companyId,
+              }).onConflictDoNothing();
+            }
+          }
+
+          // Backfill plugin state link if missing (needed for webhook lookups)
+          if (plugin) {
+            const { pluginState: pluginStateTable } = await import("@paperclipai/db");
+            const [existingLink] = await db.select()
+              .from(pluginStateTable)
+              .where(eq(pluginStateTable.stateKey, `linear:${li.id}`))
+              .limit(1);
+
+            if (!existingLink) {
+              await db.insert(pluginStateTable).values({
+                pluginId: plugin.id,
+                scopeKind: "instance",
+                scopeId: null,
+                namespace: "default",
+                stateKey: `link:${pIssue.id}`,
+                valueJson: JSON.stringify({
+                  paperclipIssueId: pIssue.id,
+                  paperclipCompanyId: companyId,
+                  linearIssueId: li.id,
+                  linearIdentifier: li.identifier,
+                  linearUrl: li.url,
+                  syncDirection: "bidirectional",
+                  lastSyncAt: new Date().toISOString(),
+                }),
+              }).onConflictDoNothing();
+              await db.insert(pluginStateTable).values({
+                pluginId: plugin.id,
+                scopeKind: "instance",
+                scopeId: null,
+                namespace: "default",
+                stateKey: `linear:${li.id}`,
+                valueJson: JSON.stringify(pIssue.id),
               }).onConflictDoNothing();
             }
           }
