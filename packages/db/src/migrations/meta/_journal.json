@@ -365,6 +365,13 @@
       "when": 1743379200000,
       "tag": "0046_run_todos",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1774960197878,
+      "tag": "0046_smooth_sentinels",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import { api } from "./client";
 type InviteSummary = {
   id: string;
   companyId: string | null;
+  companyName?: string | null;
   inviteType: "company_join" | "bootstrap_ceo";
   allowedJoinTypes: "human" | "agent" | "both";
   expiresAt: string;
@@ -19,12 +20,12 @@ type InviteSummary = {
 type AcceptInviteInput =
   | { requestType: "human" }
   | {
-    requestType: "agent";
-    agentName: string;
-    adapterType?: AgentAdapterType;
-    capabilities?: string | null;
-    agentDefaultsPayload?: Record<string, unknown> | null;
-  };
+      requestType: "agent";
+      agentName: string;
+      adapterType?: AgentAdapterType;
+      capabilities?: string | null;
+      agentDefaultsPayload?: Record<string, unknown> | null;
+    };
 
 type AgentJoinRequestAccepted = JoinRequest & {
   claimSecret: string;
@@ -87,6 +88,7 @@ type CompanyInviteCreated = {
   inviteUrl: string;
   expiresAt: string;
   allowedJoinTypes: "human" | "agent" | "both";
+  companyName?: string | null;
   onboardingTextPath?: string;
   onboardingTextUrl?: string;
   inviteMessage?: string | null;
@@ -100,23 +102,17 @@ export const accessApi = {
       defaultsPayload?: Record<string, unknown> | null;
       agentMessage?: string | null;
     } = {},
-  ) =>
-    api.post<CompanyInviteCreated>(`/companies/${companyId}/invites`, input),
+  ) => api.post<CompanyInviteCreated>(`/companies/${companyId}/invites`, input),
 
   createOpenClawInvitePrompt: (
     companyId: string,
     input: {
       agentMessage?: string | null;
     } = {},
-  ) =>
-    api.post<CompanyInviteCreated>(
-      `/companies/${companyId}/openclaw/invite-prompt`,
-      input,
-    ),
+  ) => api.post<CompanyInviteCreated>(`/companies/${companyId}/openclaw/invite-prompt`, input),
 
   getInvite: (token: string) => api.get<InviteSummary>(`/invites/${token}`),
-  getInviteOnboarding: (token: string) =>
-    api.get<InviteOnboardingManifest>(`/invites/${token}/onboarding`),
+  getInviteOnboarding: (token: string) => api.get<InviteOnboardingManifest>(`/invites/${token}/onboarding`),
 
   acceptInvite: (token: string, input: AcceptInviteInput) =>
     api.post<AgentJoinRequestAccepted | JoinRequest | { bootstrapAccepted: true; userId: string }>(

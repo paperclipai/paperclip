@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companies, invites } from "@paperclipai/db";
 import { accessRoutes } from "../routes/access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -51,19 +52,35 @@ function createDbStub() {
     inviteType: "company_join",
     allowedJoinTypes: "agent",
     defaultsPayload: null,
-    expiresAt: new Date("2026-03-07T00:10:00.000Z"),
+    expiresAt: new Date("2099-03-07T00:10:00.000Z"),
     invitedByUserId: null,
     tokenHash: "hash",
     revokedAt: null,
     acceptedAt: null,
-    createdAt: new Date("2026-03-07T00:00:00.000Z"),
-    updatedAt: new Date("2026-03-07T00:00:00.000Z"),
+    createdAt: new Date("2099-03-07T00:00:00.000Z"),
+    updatedAt: new Date("2099-03-07T00:00:00.000Z"),
   };
   const returning = vi.fn().mockResolvedValue([createdInvite]);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
+  const select = vi.fn(() => ({
+    from(table: unknown) {
+      return {
+        where: vi.fn().mockImplementation(() => {
+          if (table === invites) {
+            return Promise.resolve([createdInvite]);
+          }
+          if (table === companies) {
+            return Promise.resolve([{ name: "Acme AI" }]);
+          }
+          return Promise.resolve([]);
+        }),
+      };
+    },
+  }));
   return {
     insert,
+    select,
   };
 }
 
@@ -111,9 +128,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");
@@ -143,7 +158,28 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.status).toBe(201);
     expect(res.body.allowedJoinTypes).toBe("agent");
     expect(typeof res.body.token).toBe("string");
+    expect(res.body.companyName).toBe("Acme AI");
     expect(res.body.onboardingTextPath).toContain("/api/invites/");
+  });
+
+  it("includes companyName in invite summary responses", async () => {
+    const db = createDbStub();
+    const app = createApp(
+      {
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-1"],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      db,
+    );
+
+    const res = await request(app).get("/api/invites/pcp_invite_test");
+
+    expect(res.status).toBe(200);
+    expect(res.body.companyId).toBe("company-1");
+    expect(res.body.companyName).toBe("Acme AI");
   });
 
   it("allows board callers with invite permission", async () => {
@@ -160,9 +196,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
 
     expect(res.status).toBe(201);
     expect(res.body.allowedJoinTypes).toBe("agent");
@@ -182,9 +216,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       db,
     );
 
-    const res = await request(app)
-      .post("/api/companies/company-1/openclaw/invite-prompt")
-      .send({});
+    const res = await request(app).post("/api/companies/company-1/openclaw/invite-prompt").send({});
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Permission denied");

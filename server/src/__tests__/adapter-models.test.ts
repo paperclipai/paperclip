@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
@@ -35,10 +36,7 @@ describe("adapter model listing", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => ({
-        data: [
-          { id: "gpt-5-pro" },
-          { id: "gpt-5" },
-        ],
+        data: [{ id: "gpt-5-pro" }, { id: "gpt-5" }],
       }),
     } as Response);
 
@@ -63,7 +61,6 @@ describe("adapter model listing", () => {
     expect(models).toEqual(codexFallbackModels);
   });
 
-
   it("returns cursor fallback models when CLI discovery is unavailable", async () => {
     setCursorModelsRunnerForTests(() => ({
       status: null,
@@ -74,6 +71,14 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("cursor");
     expect(models).toEqual(cursorFallbackModels);
+  });
+
+  it("returns opencode fallback models including gpt-5.4", async () => {
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+
+    const models = await listAdapterModels("opencode_local");
+
+    expect(models).toEqual(opencodeFallbackModels);
   });
 
   it("loads cursor models dynamically and caches them", async () => {
@@ -93,12 +98,5 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
-  });
-
-  it("returns no opencode models when opencode command is unavailable", async () => {
-    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
-
-    const models = await listAdapterModels("opencode_local");
-    expect(models).toEqual([]);
   });
 });

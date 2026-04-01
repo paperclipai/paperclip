@@ -145,6 +145,8 @@ For `codex_local`, Paperclip also manages a per-company Codex home under the ins
 
 - `~/.paperclip/instances/default/companies/<company-id>/codex-home`
 
+If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.

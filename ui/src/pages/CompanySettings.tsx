@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -10,11 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Pause, Play, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
-import {
-  Field,
-  ToggleField,
-  HintIcon
-} from "../components/agent-config-primitives";
+import { Field, ToggleField, HintIcon } from "../components/agent-config-primitives";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -23,12 +19,7 @@ type AgentSnippetInput = {
 };
 
 export function CompanySettings() {
-  const {
-    companies,
-    selectedCompany,
-    selectedCompanyId,
-    setSelectedCompanyId
-  } = useCompany();
+  const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -42,7 +33,7 @@ export function CompanySettings() {
   // Sync local state from selected company
   useEffect(() => {
     if (!selectedCompany) return;
-    setCompanyName(selectedCompany.name);
+    setCompanyName(selectedCompany.name); // eslint-disable-line react-hooks/set-state-in-effect
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
@@ -60,39 +51,31 @@ export function CompanySettings() {
       brandColor !== (selectedCompany.brandColor ?? ""));
 
   const generalMutation = useMutation({
-    mutationFn: (data: {
-      name: string;
-      description: string | null;
-      brandColor: string | null;
-    }) => companiesApi.update(selectedCompanyId!, data),
+    mutationFn: (data: { name: string; description: string | null; brandColor: string | null }) =>
+      companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
   });
 
   const settingsMutation = useMutation({
     mutationFn: (requireApproval: boolean) =>
       companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
+        requireBoardApprovalForNewAgents: requireApproval,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
   });
 
   const inviteMutation = useMutation({
-    mutationFn: () =>
-      accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
+    mutationFn: () => accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
     onSuccess: async (invite) => {
       setInviteError(null);
       const base = window.location.origin.replace(/\/+$/, "");
       const onboardingTextLink =
-        invite.onboardingTextUrl ??
-        invite.onboardingTextPath ??
-        `/api/invites/${invite.token}/onboarding.txt`;
-      const absoluteUrl = onboardingTextLink.startsWith("http")
-        ? onboardingTextLink
-        : `${base}${onboardingTextLink}`;
+        invite.onboardingTextUrl ?? invite.onboardingTextPath ?? `/api/invites/${invite.token}/onboarding.txt`;
+      const absoluteUrl = onboardingTextLink.startsWith("http") ? onboardingTextLink : `${base}${onboardingTextLink}`;
       setSnippetCopied(false);
       setSnippetCopyDelightId(0);
       let snippet: string;
@@ -100,17 +83,14 @@ export function CompanySettings() {
         const manifest = await accessApi.getInviteOnboarding(invite.token);
         snippet = buildAgentSnippet({
           onboardingTextUrl: absoluteUrl,
-          connectionCandidates:
-            manifest.onboarding.connectivity?.connectionCandidates ?? null,
-          testResolutionUrl:
-            manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
+          connectionCandidates: manifest.onboarding.connectivity?.connectionCandidates ?? null,
+          testResolutionUrl: manifest.onboarding.connectivity?.testResolutionEndpoint?.url ?? null,
         });
       } catch {
         snippet = buildAgentSnippet({
           onboardingTextUrl: absoluteUrl,
           connectionCandidates: null,
-          testResolutionUrl: null
+          testResolutionUrl: null,
         });
       }
       setInviteSnippet(snippet);
@@ -123,14 +103,12 @@ export function CompanySettings() {
         /* clipboard may not be available */
       }
       queryClient.invalidateQueries({
-        queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
+        queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
       });
     },
     onError: (err) => {
-      setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
-      );
-    }
+      setInviteError(err instanceof Error ? err.message : "Failed to create invite");
+    },
   });
 
   const syncLogoState = (nextLogoUrl: string | null) => {
@@ -146,7 +124,7 @@ export function CompanySettings() {
     onSuccess: (company) => {
       syncLogoState(company.logoUrl);
       setLogoUploadError(null);
-    }
+    },
   });
 
   const clearLogoMutation = useMutation({
@@ -154,7 +132,7 @@ export function CompanySettings() {
     onSuccess: (company) => {
       setLogoUploadError(null);
       syncLogoState(company.logoUrl);
-    }
+    },
   });
 
   function handleLogoFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -184,38 +162,30 @@ export function CompanySettings() {
   });
 
   useEffect(() => {
-    setInviteError(null);
+    setInviteError(null); // eslint-disable-line react-hooks/set-state-in-effect
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
   }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
-    mutationFn: ({
-      companyId,
-      nextCompanyId
-    }: {
-      companyId: string;
-      nextCompanyId: string | null;
-    }) => companiesApi.archive(companyId).then(() => ({ nextCompanyId })),
+    mutationFn: ({ companyId, nextCompanyId }: { companyId: string; nextCompanyId: string | null }) =>
+      companiesApi.archive(companyId).then(() => ({ nextCompanyId })),
     onSuccess: async ({ nextCompanyId }) => {
       if (nextCompanyId) {
         setSelectedCompanyId(nextCompanyId);
       }
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.all
+        queryKey: queryKeys.companies.all,
       });
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.stats
+        queryKey: queryKeys.companies.stats,
       });
-    }
+    },
   });
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
-    ]);
+    setBreadcrumbs([{ label: selectedCompany?.name ?? "Company", href: "/dashboard" }, { label: "Settings" }]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompany) {
@@ -230,7 +200,7 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      brandColor: brandColor || null
+      brandColor: brandColor || null,
     });
   }
 
@@ -243,9 +213,7 @@ export function CompanySettings() {
 
       {/* General */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
-        </div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">General</div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <Field label="Company name" hint="The display name for your company.">
             <input
@@ -255,10 +223,7 @@ export function CompanySettings() {
               onChange={(e) => setCompanyName(e.target.value)}
             />
           </Field>
-          <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
-          >
+          <Field label="Description" hint="Optional description shown in the company profile.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -272,9 +237,7 @@ export function CompanySettings() {
 
       {/* Appearance */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
-        </div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Appearance</div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
@@ -286,10 +249,7 @@ export function CompanySettings() {
               />
             </div>
             <div className="flex-1 space-y-3">
-              <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
-              >
+              <Field label="Logo" hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.">
                 <div className="space-y-2">
                   <input
                     type="file"
@@ -318,9 +278,7 @@ export function CompanySettings() {
                     </span>
                   )}
                   {clearLogoMutation.isError && (
-                    <span className="text-xs text-destructive">
-                      {clearLogoMutation.error.message}
-                    </span>
+                    <span className="text-xs text-destructive">{clearLogoMutation.error.message}</span>
                   )}
                   {logoUploadMutation.isPending && (
                     <span className="text-xs text-muted-foreground">Uploading logo...</span>
@@ -370,73 +328,58 @@ export function CompanySettings() {
       {/* Save button for General + Appearance */}
       {generalDirty && (
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim()}
-          >
+          <Button size="sm" onClick={handleSaveGeneral} disabled={generalMutation.isPending || !companyName.trim()}>
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
-          {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
-          )}
+          {generalMutation.isSuccess && <span className="text-xs text-muted-foreground">Saved</span>}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
-              {generalMutation.error instanceof Error
-                  ? generalMutation.error.message
-                  : "Failed to save"}
+              {generalMutation.error instanceof Error ? generalMutation.error.message : "Failed to save"}
             </span>
           )}
         </div>
       )}
 
       {/* Hiring */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
-        </div>
+      <div className="space-y-4" data-testid="company-settings-team-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Hiring</div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
+            toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
       </div>
 
       {/* Invites */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
-        </div>
+      <div className="space-y-4" data-testid="company-settings-invites-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Invites</div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
-            </span>
+            <span className="text-xs text-muted-foreground">Generate an OpenClaw agent invite snippet.</span>
             <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
+              data-testid="company-settings-invites-generate-button"
               size="sm"
               onClick={() => inviteMutation.mutate()}
               disabled={inviteMutation.isPending}
             >
-              {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+              {inviteMutation.isPending ? "Generating..." : "Generate OpenClaw Invite Prompt"}
             </Button>
           </div>
-          {inviteError && (
-            <p className="text-sm text-destructive">{inviteError}</p>
-          )}
+          {inviteError && <p className="text-sm text-destructive">{inviteError}</p>}
           {inviteSnippet && (
-            <div className="rounded-md border border-border bg-muted/30 p-2">
+            <div
+              className="rounded-md border border-border bg-muted/30 p-2"
+              data-testid="company-settings-invites-snippet"
+            >
               <div className="flex items-center justify-between gap-2">
-                <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
-                </div>
+                <div className="text-xs text-muted-foreground">OpenClaw Invite Prompt</div>
                 {snippetCopied && (
                   <span
                     key={snippetCopyDelightId}
@@ -449,12 +392,14 @@ export function CompanySettings() {
               </div>
               <div className="mt-1 space-y-1.5">
                 <textarea
+                  data-testid="company-settings-invites-snippet-textarea"
                   className="h-[28rem] w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
                   value={inviteSnippet}
                   readOnly
                 />
                 <div className="flex justify-end">
                   <Button
+                    data-testid="company-settings-invites-copy-button"
                     size="sm"
                     variant="ghost"
                     onClick={async () => {
@@ -479,9 +424,7 @@ export function CompanySettings() {
 
       {/* Pause / Resume */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Operations
-        </div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Operations</div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           {selectedCompany.status === "paused" ? (
             <>
@@ -497,11 +440,7 @@ export function CompanySettings() {
               <p className="text-sm text-muted-foreground">
                 All agent heartbeats are suspended. Resume to allow agents to work again.
               </p>
-              <Button
-                size="sm"
-                onClick={() => resumeMutation.mutate()}
-                disabled={resumeMutation.isPending}
-              >
+              <Button size="sm" onClick={() => resumeMutation.mutate()} disabled={resumeMutation.isPending}>
                 <Play className="mr-1.5 h-3.5 w-3.5" />
                 {resumeMutation.isPending ? "Resuming..." : "Resume company"}
               </Button>
@@ -509,7 +448,8 @@ export function CompanySettings() {
           ) : (
             <>
               <p className="text-sm text-muted-foreground">
-                Pause this company to temporarily stop all agent heartbeats. Agents keep their state and resume where they left off.
+                Pause this company to temporarily stop all agent heartbeats. Agents keep their state and resume where
+                they left off.
               </p>
               <Button
                 size="sm"
@@ -517,7 +457,7 @@ export function CompanySettings() {
                 disabled={pauseMutation.isPending || selectedCompany.status === "archived"}
                 onClick={() => {
                   const confirmed = window.confirm(
-                    `Pause company "${selectedCompany.name}"? This will stop all agent work until you resume.`
+                    `Pause company "${selectedCompany.name}"? This will stop all agent work until you resume.`,
                   );
                   if (confirmed) pauseMutation.mutate();
                 }}
@@ -529,9 +469,9 @@ export function CompanySettings() {
           )}
           {(pauseMutation.isError || resumeMutation.isError) && (
             <span className="text-xs text-destructive">
-              {((pauseMutation.error ?? resumeMutation.error) instanceof Error
+              {(pauseMutation.error ?? resumeMutation.error) instanceof Error
                 ? (pauseMutation.error ?? resumeMutation.error)!.message
-                : "Operation failed")}
+                : "Operation failed"}
             </span>
           )}
         </div>
@@ -539,13 +479,14 @@ export function CompanySettings() {
 
       {/* Import / Export */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
-        </div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Company Packages</div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            <a href="/org" className="underline hover:text-foreground">
+              Org Chart
+            </a>{" "}
+            header.
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
@@ -566,51 +507,40 @@ export function CompanySettings() {
 
       {/* Danger Zone */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
-        </div>
+        <div className="text-xs font-medium text-destructive uppercase tracking-wide">Danger Zone</div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            Archive this company to hide it from the sidebar. This persists in the database.
           </p>
           <div className="flex items-center gap-2">
             <Button
               size="sm"
               variant="destructive"
-              disabled={
-                archiveMutation.isPending ||
-                selectedCompany.status === "archived"
-              }
+              disabled={archiveMutation.isPending || selectedCompany.status === "archived"}
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`,
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
-                  companies.find(
-                    (company) =>
-                      company.id !== selectedCompanyId &&
-                      company.status !== "archived"
-                  )?.id ?? null;
+                  companies.find((company) => company.id !== selectedCompanyId && company.status !== "archived")?.id ??
+                  null;
                 archiveMutation.mutate({
                   companyId: selectedCompanyId,
-                  nextCompanyId
+                  nextCompanyId,
                 });
               }}
             >
               {archiveMutation.isPending
                 ? "Archiving..."
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                  ? "Already archived"
+                  : "Archive company"}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
-                {archiveMutation.error instanceof Error
-                  ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                {archiveMutation.error instanceof Error ? archiveMutation.error.message : "Failed to archive company"}
               </span>
             )}
           </div>
@@ -625,9 +555,7 @@ function buildAgentSnippet(input: AgentSnippetInput) {
   const resolutionTestUrl = buildResolutionTestUrl(input);
 
   const candidateList =
-    candidateUrls.length > 0
-      ? candidateUrls.map((u) => `- ${u}`).join("\n")
-      : "- (No candidate URLs available yet.)";
+    candidateUrls.length > 0 ? candidateUrls.map((u) => `- ${u}`).join("\n") : "- (No candidate URLs available yet.)";
 
   const connectivityBlock =
     candidateUrls.length === 0
@@ -682,9 +610,7 @@ Then after you've connected to Paperclip (exchanged keys etc.) you MUST review a
 }
 
 function buildCandidateOnboardingUrls(input: AgentSnippetInput): string[] {
-  const candidates = (input.connectionCandidates ?? [])
-    .map((candidate) => candidate.trim())
-    .filter(Boolean);
+  const candidates = (input.connectionCandidates ?? []).map((candidate) => candidate.trim()).filter(Boolean);
   const urls = new Set<string>();
   let onboardingUrl: URL | null = null;
 
@@ -724,10 +650,7 @@ function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
 
   try {
     const onboardingUrl = new URL(input.onboardingTextUrl);
-    const testPath = onboardingUrl.pathname.replace(
-      /\/onboarding\.txt$/,
-      "/test-resolution"
-    );
+    const testPath = onboardingUrl.pathname.replace(/\/onboarding\.txt$/, "/test-resolution");
     return `${onboardingUrl.origin}${testPath}`;
   } catch {
     return null;

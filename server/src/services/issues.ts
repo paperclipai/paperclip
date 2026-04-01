@@ -26,6 +26,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
+  issueExecutionWorkspaceModeForPersistedWorkspace,
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -107,6 +108,11 @@ type IssueUserContextInput = {
   updatedAt: Date | string;
 };
 type ProjectGoalReader = Pick<Db, "select">;
+type DbReader = Pick<Db, "select">;
+type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
+  labelIds?: string[];
+  inheritExecutionWorkspaceFromIssueId?: string | null;
+};
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
@@ -127,6 +133,24 @@ async function getProjectDefaultGoalId(db: ProjectGoalReader, companyId: string,
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   return row?.goalId ?? null;
+}
+
+async function getWorkspaceInheritanceIssue(db: DbReader, companyId: string, issueId: string) {
+  const issue = await db
+    .select({
+      id: issues.id,
+      projectId: issues.projectId,
+      projectWorkspaceId: issues.projectWorkspaceId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspaceSettings: issues.executionWorkspaceSettings,
+    })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) {
+    throw notFound("Workspace inheritance issue not found");
+  }
+  return issue;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -481,8 +505,9 @@ export function issueService(db: Db) {
     companyId: string,
     projectId: string | null | undefined,
     projectWorkspaceId: string,
+    dbOrTx: DbReader = db,
   ) {
-    const workspace = await db
+    const workspace = await dbOrTx
       .select({
         id: projectWorkspaces.id,
         companyId: projectWorkspaces.companyId,
@@ -498,42 +523,13 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertValidProject(companyId: string, projectId: string) {
-    const project = await db
-      .select({ id: projects.id, companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, projectId))
-      .then((rows) => rows[0] ?? null);
-    if (!project) throw unprocessable("Project not found");
-    if (project.companyId !== companyId) throw unprocessable("Project must belong to same company");
-  }
-
-  async function assertValidGoal(companyId: string, goalId: string) {
-    const goal = await db
-      .select({ id: goals.id, companyId: goals.companyId })
-      .from(goals)
-      .where(eq(goals.id, goalId))
-      .then((rows) => rows[0] ?? null);
-    if (!goal) throw unprocessable("Goal not found");
-    if (goal.companyId !== companyId) throw unprocessable("Goal must belong to same company");
-  }
-
-  async function assertValidParentIssue(companyId: string, parentId: string) {
-    const parent = await db
-      .select({ id: issues.id, companyId: issues.companyId })
-      .from(issues)
-      .where(eq(issues.id, parentId))
-      .then((rows) => rows[0] ?? null);
-    if (!parent) throw unprocessable("Parent issue not found");
-    if (parent.companyId !== companyId) throw unprocessable("Parent issue must belong to same company");
-  }
-
   async function assertValidExecutionWorkspace(
     companyId: string,
     projectId: string | null | undefined,
     executionWorkspaceId: string,
+    dbOrTx: DbReader = db,
   ) {
-    const workspace = await db
+    const workspace = await dbOrTx
       .select({
         id: executionWorkspaces.id,
         companyId: executionWorkspaces.companyId,
@@ -892,11 +888,8 @@ export function issueService(db: Db) {
       return enriched;
     },
 
-    create: async (
-      companyId: string,
-      data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
-    ) => {
-      const { labelIds: inputLabelIds, ...issueData } = data;
+    create: async (companyId: string, data: IssueCreateInput) => {
+      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -912,30 +905,51 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
-      if (data.projectId) {
-        await assertValidProject(companyId, data.projectId);
-      }
-      if (data.goalId) {
-        await assertValidGoal(companyId, data.goalId);
-      }
-      if (data.parentId) {
-        await assertValidParentIssue(companyId, data.parentId);
-      }
-      if (data.projectWorkspaceId) {
-        await assertValidProjectWorkspace(companyId, data.projectId, data.projectWorkspaceId);
-      }
-      if (data.executionWorkspaceId) {
-        await assertValidExecutionWorkspace(companyId, data.projectId, data.executionWorkspaceId);
-      }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
+        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
+        let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
+        let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        if (executionWorkspaceSettings == null && issueData.projectId) {
+        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const hasExplicitExecutionWorkspaceOverride =
+          issueData.executionWorkspaceId !== undefined ||
+          issueData.executionWorkspacePreference !== undefined ||
+          issueData.executionWorkspaceSettings !== undefined;
+        if (workspaceInheritanceIssueId) {
+          const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
+          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+            projectWorkspaceId = workspaceSource.projectWorkspaceId;
+          }
+          if (
+            isolatedWorkspacesEnabled &&
+            !hasExplicitExecutionWorkspaceOverride &&
+            workspaceSource.executionWorkspaceId
+          ) {
+            const sourceWorkspace = await tx
+              .select({
+                id: executionWorkspaces.id,
+                mode: executionWorkspaces.mode,
+              })
+              .from(executionWorkspaces)
+              .where(eq(executionWorkspaces.id, workspaceSource.executionWorkspaceId))
+              .then((rows) => rows[0] ?? null);
+            if (sourceWorkspace) {
+              executionWorkspaceId = sourceWorkspace.id;
+              executionWorkspacePreference = "reuse_existing";
+              executionWorkspaceSettings = {
+                ...((workspaceSource.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? {}),
+                mode: issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
+              };
+            }
+          }
+        }
+        if (executionWorkspaceSettings == null && executionWorkspaceId == null && issueData.projectId) {
           const project = await tx
             .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
             .from(projects)
@@ -948,7 +962,6 @@ export function issueService(db: Db) {
             ),
           ) as Record<string, unknown> | null;
         }
-        let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
             .select({
@@ -970,6 +983,12 @@ export function issueService(db: Db) {
               .then((rows) => rows[0]?.id ?? null);
           }
         }
+        if (projectWorkspaceId) {
+          await assertValidProjectWorkspace(companyId, issueData.projectId, projectWorkspaceId, tx);
+        }
+        if (executionWorkspaceId) {
+          await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+        }
         const [company] = await tx
           .update(companies)
           .set({ issueCounter: sql`${companies.issueCounter} + 1` })
@@ -989,6 +1008,8 @@ export function issueService(db: Db) {
             defaultGoalId: defaultCompanyGoal?.id ?? null,
           }),
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
+          ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),
           ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
           companyId,
           issueNumber,
@@ -1054,15 +1075,6 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
-      }
-      if (issueData.projectId) {
-        await assertValidProject(existing.companyId, issueData.projectId);
-      }
-      if (issueData.goalId) {
-        await assertValidGoal(existing.companyId, issueData.goalId);
-      }
-      if (issueData.parentId) {
-        await assertValidParentIssue(existing.companyId, issueData.parentId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =

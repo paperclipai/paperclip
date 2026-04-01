@@ -1,12 +1,20 @@
 FROM node:lts-trixie-slim AS base
+ARG USER_UID=1000
+ARG USER_GID=1000
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    ca-certificates curl git unzip jq \
+    ca-certificates curl git gosu unzip jq \
     libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
     libxfixes3 libxrandr2 libgbm1 libasound2 \
   && rm -rf /var/lib/apt/lists/*
+
 RUN corepack enable
+
+# Modify the existing node user/group to have the specified UID/GID to match host user
+RUN usermod -u $USER_UID --non-unique node \
+  && groupmod -g $USER_GID --non-unique node \
+  && usermod -g $USER_GID -d /paperclip node
 
 FROM base AS deps
 WORKDIR /app
@@ -49,6 +57,8 @@ RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 FROM base AS production
+ARG USER_UID=1000
+ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli \
@@ -63,6 +73,9 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -70,6 +83,8 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  USER_UID=${USER_UID} \
+  USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
@@ -77,5 +92,5 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-USER node
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

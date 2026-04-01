@@ -197,9 +197,9 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
 function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
   const raw = (value ?? "").trim().toLowerCase();
   const normalized = raw
-    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^[-/]+|[-/]+$/g, "");
+    .replace(/^[-_]+|[-_]+$/g, "");
   return normalized.length > 0 ? normalized : fallback;
 }
 
