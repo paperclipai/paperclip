@@ -12,6 +12,8 @@ services:
       retries: 30
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./pg-override.conf:/etc/postgresql/pg-override.conf:ro
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg-override.conf"]
 
   server:
     build: .
