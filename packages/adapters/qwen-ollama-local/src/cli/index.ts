@@ -21,5 +21,3 @@ export const module: CLIAdapterModule = {
 };
 
 export default module;
-
-export default module;
