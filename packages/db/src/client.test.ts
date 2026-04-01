@@ -203,7 +203,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0046_smooth_sentinels.sql"],
+        pendingMigrations: ["0051_smooth_sentinels.sql"],
         reason: "pending-migrations",
       });
 
