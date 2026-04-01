@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - master
+      - dev
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -44,13 +45,27 @@ jobs:
       - name: Build
         run: pnpm build
 
-  deploy:
+  deploy-dev:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    timeout-minutes: 5
+    steps:
+      - name: Deploy to dev (paper-dev.zenova.id)
+        run: |
+          curl -sf -X POST \
+            -H "X-API-Key: ${{ secrets.DOKPLOY_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"composeId":"OebpXiXB663ZmdWv-2G1p"}' \
+            "https://dokploy.zenova.id/api/compose.deploy"
+
+  deploy-prod:
     needs: verify
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
     timeout-minutes: 5
     steps:
-      - name: Trigger Dokploy deploy
+      - name: Deploy to production (paper.zenova.id)
         run: |
           curl -sf -X POST \
             -H "X-API-Key: ${{ secrets.DOKPLOY_API_KEY }}" \
