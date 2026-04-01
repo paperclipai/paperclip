@@ -67,4 +67,46 @@ describe("activity routes", () => {
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
     expect(res.body).toEqual([{ runId: "run-1" }]);
   });
+
+  it("passes action/cursor/limit filters through to the issue activity service", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-uuid-1",
+      companyId: "company-1",
+    });
+    mockActivityService.forIssue.mockResolvedValue([
+      {
+        id: "event-1",
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/PAP-475/activity?action=issue.comment_added&cursor=2026-03-31T12:34:56.000Z&limit=250",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PAP-475");
+    expect(mockActivityService.forIssue).toHaveBeenCalledWith("issue-uuid-1", {
+      action: "issue.comment_added",
+      cursor: "2026-03-31T12:34:56.000Z",
+      limit: 250,
+    });
+    expect(res.body).toEqual([{ id: "event-1" }]);
+  });
+
+  it("maps legacy eventType filter to action for backward compatibility", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({
+      id: "issue-uuid-1",
+      companyId: "company-1",
+    });
+    mockActivityService.forIssue.mockResolvedValue([{ id: "event-1" }]);
+
+    const res = await request(createApp()).get("/api/issues/PAP-475/activity?eventType=issue.comment_added");
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.forIssue).toHaveBeenCalledWith("issue-uuid-1", {
+      action: "issue.comment_added",
+      cursor: undefined,
+      limit: undefined,
+    });
+  });
 });

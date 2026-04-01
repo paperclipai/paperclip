@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 
@@ -7,6 +7,21 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+}
+
+export interface IssueActivityOptions {
+  action?: string;
+  eventType?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+function parseIssueActivityCursor(rawCursor: string): { createdAt: Date; id: string | null } | null {
+  const [rawCreatedAt, rawId] = rawCursor.split("|", 2);
+  const createdAt = new Date(rawCreatedAt);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  const id = rawId && rawId.trim().length > 0 ? rawId.trim() : null;
+  return { createdAt, id };
 }
 
 export function activityService(db: Db) {
@@ -48,17 +63,42 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
-    forIssue: (issueId: string) =>
-      db
+    forIssue: (issueId: string, opts: IssueActivityOptions = {}) => {
+      const conditions = [eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)];
+      const action = opts.action ?? opts.eventType;
+
+      if (action) {
+        conditions.push(eq(activityLog.action, action));
+      }
+
+      if (opts.cursor) {
+        const cursor = parseIssueActivityCursor(opts.cursor);
+        if (cursor) {
+          const cursorCreatedAt = cursor.createdAt.toISOString();
+          conditions.push(
+            cursor.id
+              ? sql<boolean>`(
+                  ${activityLog.createdAt} < ${cursorCreatedAt}::timestamptz
+                  OR (${activityLog.createdAt} = ${cursorCreatedAt}::timestamptz AND ${activityLog.id} < ${cursor.id})
+                )`
+              : lt(activityLog.createdAt, cursor.createdAt),
+          );
+        }
+      }
+
+      const query = db
         .select()
         .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueId),
-          ),
-        )
-        .orderBy(desc(activityLog.createdAt)),
+        .where(and(...conditions))
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+
+      if (typeof opts.limit === "number" && Number.isFinite(opts.limit)) {
+        const limit = Math.max(1, Math.min(opts.limit, 100));
+        return query.limit(limit);
+      }
+
+      return query;
+    },
 
     runsForIssue: (companyId: string, issueId: string) =>
       db

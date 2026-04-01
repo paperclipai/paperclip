@@ -62,7 +62,19 @@ export function activityRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const result = await svc.forIssue(issue.id);
+    const rawLimit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const parsedLimit =
+      typeof rawLimit === "string" && rawLimit.trim().length > 0 ? Number(rawLimit) : undefined;
+    const actionFilter = typeof req.query.action === "string"
+      ? req.query.action
+      : typeof req.query.eventType === "string"
+        ? req.query.eventType
+        : undefined;
+    const result = await svc.forIssue(issue.id, {
+      action: actionFilter,
+      cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+    });
     res.json(result);
   });
 

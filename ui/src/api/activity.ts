@@ -30,7 +30,16 @@ export const activityApi = {
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`);
   },
-  forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
+  forIssue: (issueId: string, filters?: { action?: string; cursor?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.action) params.set("action", filters.action);
+    if (filters?.cursor) params.set("cursor", filters.cursor);
+    if (typeof filters?.limit === "number" && Number.isFinite(filters.limit)) {
+      params.set("limit", String(filters.limit));
+    }
+    const qs = params.toString();
+    return api.get<ActivityEvent[]>(`/issues/${issueId}/activity${qs ? `?${qs}` : ""}`);
+  },
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),
 };
