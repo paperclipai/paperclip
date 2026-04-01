@@ -836,35 +836,27 @@ export async function startServer(): Promise<StartedServer> {
   });
 
   // Ensure plugins directory uses the workspace SDK (with fork extensions).
-  // Symlink the workspace @paperclipai/plugin-sdk into the plugins node_modules
-  // so workers resolve our fork's SDK instead of the npm-published version.
+  // Copy the built dist + package.json from the workspace SDK into the plugins
+  // node_modules so workers use our fork's SDK (with labels/projects extensions).
   try {
     const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
     const thisDir = path.dirname(new URL(import.meta.url).pathname);
-    const workspaceSdk = path.resolve(thisDir, "../../packages/plugins/sdk");
-    if (fs.existsSync(workspaceSdk) && fs.existsSync(path.join(workspaceSdk, "dist"))) {
-      // Remove existing (npm-installed) and replace with symlink to workspace
-      if (fs.existsSync(pluginsSdkDir)) {
-        const stat = fs.lstatSync(pluginsSdkDir);
-        if (stat.isSymbolicLink()) {
-          // Already a symlink — check if it points to the right place
-          const target = fs.readlinkSync(pluginsSdkDir);
-          if (target !== workspaceSdk) {
-            fs.unlinkSync(pluginsSdkDir);
-            fs.symlinkSync(workspaceSdk, pluginsSdkDir);
-          }
-        } else {
-          fs.rmSync(pluginsSdkDir, { recursive: true });
-          fs.symlinkSync(workspaceSdk, pluginsSdkDir);
-        }
-      } else {
-        fs.mkdirSync(path.dirname(pluginsSdkDir), { recursive: true });
-        fs.symlinkSync(workspaceSdk, pluginsSdkDir);
+    const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
+    const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
+    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
+      // Remove symlink if left over from a previous approach
+      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
+        fs.unlinkSync(pluginsSdkDir);
+        fs.mkdirSync(pluginsSdkDir, { recursive: true });
       }
-      logger.info("Workspace plugin SDK linked for plugin workers");
+      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
+      if (fs.existsSync(workspaceSdkPkg)) {
+        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
+      }
+      logger.info("Copied workspace plugin SDK dist to local plugins directory");
     }
   } catch (err) {
-    logger.warn({ err }, "Failed to link workspace SDK (non-fatal)");
+    logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
   }
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
