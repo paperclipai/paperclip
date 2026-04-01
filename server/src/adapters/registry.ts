@@ -91,6 +91,7 @@ import {
 } from "@paperclipai/adapter-ollama-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { openrouterAdapter } from "./openrouter/index.js";
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -220,6 +221,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     openclawGatewayAdapter,
     hermesLocalAdapter,
     ollamaLocalAdapter,
+    openrouterAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
