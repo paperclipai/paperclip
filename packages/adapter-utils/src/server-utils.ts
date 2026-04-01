@@ -476,8 +476,7 @@ function quoteForCmd(arg: string) {
 
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
-  const candidate = path.join(fallbackRoot, "System32", "cmd.exe");
-  return candidate;
+  return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
 async function resolveSpawnTarget(
