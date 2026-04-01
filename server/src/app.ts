@@ -347,9 +347,25 @@ export async function createApp(
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
       const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
-      app.use(express.static(uiDist));
-      app.get(/.*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
+      // Hashed assets: long-lived immutable cache
+      app.use("/assets", express.static(path.join(uiDist, "assets"), {
+        maxAge: "1y",
+        immutable: true,
+      }));
+      // Other static files (favicon, manifest, etc.): short cache
+      app.use(express.static(uiDist, { maxAge: "1h" }));
+      // SPA fallback: serve index.html for non-asset routes only
+      app.get(/.*/, (req, res) => {
+        // Don't serve HTML for missing asset files — return 404 instead
+        // so the browser doesn't cache the SPA shell as a JS module.
+        if (req.path.startsWith("/assets/")) {
+          res.status(404).end();
+          return;
+        }
+        res.status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(indexHtml);
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
