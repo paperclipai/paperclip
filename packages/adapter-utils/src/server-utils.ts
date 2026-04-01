@@ -137,7 +137,10 @@ export function asNumber(value: unknown, fallback: number): number {
 }
 
 export function asBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
 }
 
 export function asStringArray(value: unknown): string[] {
