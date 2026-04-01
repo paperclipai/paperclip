@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Linear Plugin — Dev Preview</title>
+  <style>
+    :root {
+      --background: #0a0a0a;
+      --foreground: #e5e5e5;
+      --card: #141414;
+      --border: #262626;
+      --muted-foreground: #737373;
+      --primary: #5e6ad2;
+      --destructive: #ef4444;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--background);
+      color: var(--foreground);
+      padding: 24px;
+    }
+    .dev-shell { max-width: 1280px; margin: 0 auto; }
+    .dev-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 32px;
+    }
+    .dev-header h1 { font-size: 16px; font-weight: 600; }
+    .dev-header span { font-size: 12px; color: var(--muted-foreground); font-family: monospace; }
+    .dev-section { margin-bottom: 48px; }
+    .dev-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted-foreground);
+      margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
+    .widget-frame {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px; background: var(--card);
+      max-width: 480px;
+    }
+    .page-frame {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; background: var(--card);
+    }
+    .tab-bar { display: flex; gap: 0; margin-bottom: 24px; }
+    .tab-bar button {
+      padding: 8px 20px; border: 1px solid var(--border); background: transparent;
+      color: var(--muted-foreground); cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .tab-bar button:first-child { border-radius: 6px 0 0 6px; }
+    .tab-bar button:last-child  { border-radius: 0 6px 6px 0; }
+    .tab-bar button.active {
+      background: var(--primary); color: #fff; border-color: var(--primary);
+    }
+    #mount-widget, #mount-page { min-height: 60px; }
+  </style>
+</head>
+<body>
+  <div class="dev-shell">
+    <div class="dev-header">
+      <h1>Linear Plugin — Dev Preview</h1>
+      <span>valctrl.linear v0.1.0</span>
+    </div>
+
+    <div class="tab-bar">
+      <button class="active" onclick="showView('widget')">Dashboard Widget</button>
+      <button onclick="showView('page')">Full Page</button>
+    </div>
+
+    <div class="dev-section" id="section-widget">
+      <div class="dev-section-title">Dashboard Widget Slot</div>
+      <div class="widget-frame">
+        <div id="mount-widget"></div>
+      </div>
+    </div>
+
+    <div class="dev-section" id="section-page" style="display:none">
+      <div class="dev-section-title">Full Page View</div>
+      <div class="page-frame">
+        <div id="mount-page"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@19?dev",
+      "react-dom": "https://esm.sh/react-dom@19?dev",
+      "react-dom/client": "https://esm.sh/react-dom@19/client?dev",
+      "react/jsx-runtime": "https://esm.sh/react@19/jsx-runtime?dev",
+      "@paperclipai/plugin-sdk/ui": "/dev/sdk-ui-shim.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+
+    // ── Mock Linear data ──────────────────────────────────────────────
+    const MOCK_SNAPSHOT = {
+      syncedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      workspace: "ValCtrl",
+      teamCount: 3,
+      totalOpenIssues: 47,
+      issuesCreatedThisWeek: 23,
+      issuesCompletedThisWeek: 31,
+      avgResolutionHours: 18.4,
+      priorityDistribution: { urgent: 3, high: 12, medium: 18, low: 9, none: 5 },
+      activeCycles: [
+        {
+          teamKey: "ENG",
+          teamName: "Engineering",
+          number: 14,
+          name: "Sprint 14",
+          progress: 62,
+          startsAt: new Date(Date.now() - 7 * 86400_000).toISOString(),
+          endsAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
+          daysRemaining: 7,
+          scopeHistory: [20, 22, 24, 24, 25, 25, 25],
+          completedScopeHistory: [0, 3, 6, 9, 12, 14, 16],
+        },
+        {
+          teamKey: "PLT",
+          teamName: "Platform",
+          number: 8,
+          name: null,
+          progress: 45,
+          startsAt: new Date(Date.now() - 5 * 86400_000).toISOString(),
+          endsAt: new Date(Date.now() + 9 * 86400_000).toISOString(),
+          daysRemaining: 9,
+          scopeHistory: [15, 16, 18, 18, 18],
+          completedScopeHistory: [0, 2, 4, 6, 8],
+        },
+      ],
+      activeProjects: [
+        { name: "Linear Integration", state: "started", progress: 35, lead: "Gaurav", targetDate: new Date(Date.now() + 14 * 86400_000).toISOString(), url: "#" },
+        { name: "Agent Governance v2", state: "started", progress: 72, lead: "Alice", targetDate: new Date(Date.now() + 21 * 86400_000).toISOString(), url: "#" },
+        { name: "Plugin Marketplace", state: "planned", progress: 10, lead: null, targetDate: new Date(Date.now() + 45 * 86400_000).toISOString(), url: "#" },
+      ],
+      teams: [
+        { name: "Engineering", key: "ENG", openIssues: 28, inProgressIssues: 8, completedThisWeek: 19, avgResolutionHours: 14.2 },
+        { name: "Platform", key: "PLT", openIssues: 12, inProgressIssues: 4, completedThisWeek: 8, avgResolutionHours: 22.1 },
+        { name: "Design", key: "DES", openIssues: 7, inProgressIssues: 3, completedThisWeek: 4, avgResolutionHours: 28.5 },
+      ],
+      topAssignees: [
+        { name: "Alice", completedThisWeek: 9, inProgress: 3 },
+        { name: "Bob", completedThisWeek: 7, inProgress: 2 },
+        { name: "Carol", completedThisWeek: 6, inProgress: 4 },
+        { name: "Dave", completedThisWeek: 5, inProgress: 1 },
+        { name: "Eve", completedThisWeek: 4, inProgress: 2 },
+      ],
+    };
+
+    const MOCK_ISSUES = [
+      { identifier: "ENG-142", title: "Implement Linear webhook handler", priority: 1, priorityLabel: "Urgent", state: "In Progress", stateType: "started", assignee: "Alice", team: "ENG", createdAt: new Date(Date.now() - 2 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 3600_000).toISOString(), dueDate: new Date(Date.now() + 2 * 86400_000).toISOString(), url: "#" },
+      { identifier: "ENG-139", title: "Add cycle burndown chart to dashboard", priority: 2, priorityLabel: "High", state: "In Progress", stateType: "started", assignee: "Bob", team: "ENG", createdAt: new Date(Date.now() - 3 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 7200_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "PLT-087", title: "Plugin state persistence reliability", priority: 2, priorityLabel: "High", state: "In Review", stateType: "started", assignee: "Carol", team: "PLT", createdAt: new Date(Date.now() - 5 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 1800_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "ENG-137", title: "Agent tool registration validation", priority: 3, priorityLabel: "Medium", state: "Todo", stateType: "unstarted", assignee: "Dave", team: "ENG", createdAt: new Date(Date.now() - 4 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 14400_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "DES-034", title: "Dashboard widget spacing audit", priority: 3, priorityLabel: "Medium", state: "In Progress", stateType: "started", assignee: "Eve", team: "DES", createdAt: new Date(Date.now() - 1 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 5400_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "ENG-135", title: "Rate limit handling for external APIs", priority: 3, priorityLabel: "Medium", state: "Backlog", stateType: "backlog", assignee: null, team: "ENG", createdAt: new Date(Date.now() - 6 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 28800_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "PLT-085", title: "Database connection pooling tuning", priority: 4, priorityLabel: "Low", state: "Backlog", stateType: "backlog", assignee: null, team: "PLT", createdAt: new Date(Date.now() - 10 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 86400_000).toISOString(), dueDate: null, url: "#" },
+      { identifier: "ENG-141", title: "Fix concurrent plugin state writes", priority: 1, priorityLabel: "Urgent", state: "Done", stateType: "completed", assignee: "Alice", team: "ENG", createdAt: new Date(Date.now() - 4 * 86400_000).toISOString(), updatedAt: new Date(Date.now() - 7200_000).toISOString(), dueDate: null, url: "#" },
+    ];
+
+    // ── Mock plugin bridge ─────────────────────────────────────────────
+    const dataStore = {
+      "linear-summary": { status: "ok", snapshot: MOCK_SNAPSHOT },
+      "issue-list": MOCK_ISSUES,
+    };
+
+    function usePluginData(key, _params) {
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(true);
+      React.useEffect(() => {
+        const timer = setTimeout(() => {
+          setData(dataStore[key] ?? null);
+          setLoading(false);
+        }, 400);
+        return () => clearTimeout(timer);
+      }, [key]);
+      return {
+        data,
+        loading,
+        error: null,
+        refresh: () => {
+          setLoading(true);
+          setTimeout(() => { setData(dataStore[key] ?? null); setLoading(false); }, 300);
+        },
+      };
+    }
+
+    function usePluginAction(_key) {
+      return async (params) => {
+        await new Promise(r => setTimeout(r, 800));
+        MOCK_SNAPSHOT.issuesCompletedThisWeek += Math.floor(Math.random() * 3) + 1;
+        MOCK_SNAPSHOT.syncedAt = new Date().toISOString();
+        dataStore["linear-summary"] = { status: "ok", snapshot: { ...MOCK_SNAPSHOT } };
+        return { ok: true };
+      };
+    }
+
+    function useHostContext() {
+      return { companyId: "dev-company-id", companyPrefix: "dev", projectId: null, entityId: null, entityType: null, userId: "dev-user" };
+    }
+
+    function usePluginStream() {
+      return { events: [], lastEvent: null, connecting: false, connected: false, error: null, close() {} };
+    }
+
+    function usePluginToast() {
+      return (input) => { console.log("[toast]", input); return null; };
+    }
+
+    globalThis.__paperclipPluginBridge__ = {
+      react: { createElement: React.createElement },
+      sdkUi: {
+        usePluginData,
+        usePluginAction,
+        useHostContext,
+        usePluginStream,
+        usePluginToast,
+      },
+    };
+
+    // ── Load plugin UI module and render ────────────────────────────────
+    const pluginModule = await import("../dist/ui/index.js");
+    const Widget = pluginModule.LinearDashboardWidget;
+    const Page = pluginModule.LinearPage;
+
+    const mockCtx = { companyId: "dev-company-id", companyPrefix: "dev", projectId: null, entityId: null, entityType: null, userId: "dev-user" };
+
+    const widgetRoot = createRoot(document.getElementById("mount-widget"));
+    widgetRoot.render(React.createElement(Widget, { context: mockCtx }));
+
+    const pageRoot = createRoot(document.getElementById("mount-page"));
+    pageRoot.render(React.createElement(Page, { context: mockCtx }));
+
+    // ── Tab switching ──────────────────────────────────────────────────
+    globalThis.showView = function(view) {
+      document.getElementById("section-widget").style.display = view === "widget" ? "" : "none";
+      document.getElementById("section-page").style.display   = view === "page"   ? "" : "none";
+      document.querySelectorAll(".tab-bar button").forEach(btn => {
+        btn.classList.toggle("active", btn.textContent.toLowerCase().includes(view));
+      });
+    };
+  </script>
+</body>
+</html>
