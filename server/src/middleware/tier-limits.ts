@@ -49,7 +49,6 @@ export function enforceProjectLimit(db: Db) {
       const sub = await billing.getOrCreateSubscription(companyId);
       const plan = PLAN_DEFINITIONS[sub.planTier];
       if (plan.projects === -1) {
-        // unlimited
         next();
         return;
       }
@@ -65,7 +64,13 @@ export function enforceProjectLimit(db: Db) {
 
       next();
     } catch (err) {
-      next(err);
+      // If error is a tier limit violation, forward it. Otherwise fail-open
+      // (e.g., subscription lookup failed in local_trusted/test mode).
+      if (err instanceof HttpError) {
+        next(err);
+      } else {
+        next();
+      }
     }
   };
 }
@@ -100,7 +105,7 @@ export function enforceStorageLimit(db: Db) {
 
       next();
     } catch (err) {
-      next(err);
+      if (err instanceof HttpError) { next(err); } else { next(); }
     }
   };
 }
@@ -163,7 +168,7 @@ export function enforcePlaybookRunLimit(db: Db) {
 
       next();
     } catch (err) {
-      next(err);
+      if (err instanceof HttpError) { next(err); } else { next(); }
     }
   };
 }

@@ -73,6 +73,7 @@ jobs:
           set -a
           source "$metadata_file"
           set +a
+          echo "::add-mask::$SMOKE_ADMIN_PASSWORD"
           {
             echo "SMOKE_BASE_URL=$SMOKE_BASE_URL"
             echo "SMOKE_ADMIN_EMAIL=$SMOKE_ADMIN_EMAIL"

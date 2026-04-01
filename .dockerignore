@@ -1,6 +1,9 @@
 .git
 .github
 .ironworks
+.env*
+.design-reports
+.security-reports
 .pnpm-store
 node_modules
 **/node_modules

@@ -14,6 +14,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 
+  // SEC-TAINT-001: Block arbitrary command execution. Only permit known adapter binaries.
+  const ALLOWED_COMMANDS = new Set([
+    "claude", "codex", "opencode", "aider", "cursor", "pi",
+    "npx", "node", "tsx", "python", "python3",
+  ]);
+  const basename = command.split("/").pop() ?? "";
+  if (!ALLOWED_COMMANDS.has(basename)) {
+    throw new Error(`Process adapter command "${basename}" is not in the allowed list. Contact your instance admin.`);
+  }
+
   const args = asStringArray(config.args);
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);

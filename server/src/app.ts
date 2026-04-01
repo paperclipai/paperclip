@@ -12,6 +12,7 @@ import { cacheControl, etag } from "./middleware/cache.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { enforceProjectLimit, enforceStorageLimit, enforcePlaybookRunLimit } from "./middleware/tier-limits.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -93,6 +94,32 @@ export async function createApp(
   },
 ) {
   const app = express();
+
+  // ── Global Rate Limiting (SEC-ADV-013) ──
+  // Simple in-memory sliding window rate limiter. No external dependency.
+  const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT = 200; // requests per window
+  const RATE_WINDOW_MS = 60_000; // 1 minute
+  app.use((req, res, next) => {
+    if (!req.path.startsWith("/api") || req.method === "OPTIONS") return next();
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const now = Date.now();
+    let bucket = rateBuckets.get(ip);
+    if (!bucket || now > bucket.resetAt) {
+      bucket = { count: 0, resetAt: now + RATE_WINDOW_MS };
+      rateBuckets.set(ip, bucket);
+    }
+    bucket.count++;
+    if (bucket.count > RATE_LIMIT) {
+      res.status(429).json({ error: "Too many requests. Try again later." });
+      return;
+    }
+    // Prune stale buckets every ~1000 requests
+    if (bucket.count === 1 && rateBuckets.size > 1000) {
+      for (const [k, v] of rateBuckets) { if (now > v.resetAt) rateBuckets.delete(k); }
+    }
+    next();
+  });
 
   // ── Security Headers (no external dependency) ──
   app.disable("x-powered-by");
@@ -228,6 +255,13 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
+  // ── Tier enforcement middleware ──
+  // SEC-ADV-001: Wire billing tier limits to mutation endpoints
+  api.post("/companies/:companyId/projects", enforceProjectLimit(db));
+  api.post("/companies/:companyId/playbooks/:playbookId/run", enforcePlaybookRunLimit(db));
+  api.post("/companies/:companyId/assets", enforceStorageLimit(db));
+  api.post("/companies/:companyId/assets/*path", enforceStorageLimit(db));
+
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));

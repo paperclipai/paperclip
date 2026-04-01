@@ -460,11 +460,13 @@ export function billingService(db: Db) {
     return rows.length;
   }
 
-  async function getCompanyCount(userId: string): Promise<number> {
-    // For now return 1 — multi-company counting requires membership table query
-    // which depends on the auth mode. Placeholder for enterprise tier check.
-    void userId;
-    return 1;
+  async function getCompanyCount(_userId: string): Promise<number> {
+    // SEC-INTEG-006: Count actual companies. In local_trusted mode all
+    // companies are visible; in authenticated mode this should query
+    // the user-company membership table. For now, count all companies
+    // as a safe upper bound — prevents unlimited company creation.
+    const rows = await db.select().from(companies);
+    return rows.length;
   }
 
   return {
@@ -500,44 +502,81 @@ function mapPolarStatus(polarStatus: string): SubscriptionStatus {
   }
 }
 
+// Maximum age of a webhook event before we reject it (replay-attack prevention).
+const WEBHOOK_TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
- * Verify a Polar webhook signature. Returns the parsed event or throws.
+ * Verify a Polar webhook signature (Standard Webhooks / Svix format).
  *
- * Polar signs webhooks with HMAC-SHA256. The signature is in the
- * `webhook-signature` header. Format: "v1,<timestamp>.<signature>"
+ * Standard Webhooks signs: "${webhook-id}.${webhook-timestamp}.${rawBody}"
+ * The secret is base64-encoded with a "whsec_" prefix in the env var.
+ *
+ * Headers required:
+ *   webhook-id        (or svix-id)
+ *   webhook-timestamp (or svix-timestamp) — Unix seconds as a string
+ *   webhook-signature (or svix-signature) — "v1,<base64sig>" (space-separated for multiple)
+ *
+ * Returns the parsed event or throws on any verification failure.
  */
 export function verifyPolarWebhookSignature(
   rawBody: Buffer,
-  signatureHeader: string,
+  headers: {
+    webhookId: string;
+    webhookTimestamp: string;
+    webhookSignature: string;
+  },
 ): PolarWebhookEvent {
   const secret = process.env.POLAR_WEBHOOK_SECRET;
   if (!secret) {
     throw new Error("POLAR_WEBHOOK_SECRET is not configured");
   }
 
-  // Polar webhook-signature format: "v1,<base64-signature>"
-  // The signed payload is "<webhook-id>.<webhook-timestamp>.<body>"
-  // But the standard Polar webhook uses the Standard Webhooks format.
-  // We verify using the raw body and the provided signature.
-  const parts = signatureHeader.split(",");
-  if (parts.length < 2) {
-    throw new Error("Invalid Polar webhook signature format");
+  const { webhookId, webhookTimestamp, webhookSignature } = headers;
+
+  // --- 1. Timestamp staleness check (SEC-INTEG-001: replay attack prevention) ---
+  const tsSeconds = parseInt(webhookTimestamp, 10);
+  if (!Number.isFinite(tsSeconds)) {
+    throw new Error("Invalid webhook-timestamp header");
+  }
+  const tsMs = tsSeconds * 1000;
+  const nowMs = Date.now();
+  if (Math.abs(nowMs - tsMs) > WEBHOOK_TIMESTAMP_TOLERANCE_MS) {
+    throw new Error(
+      `Webhook timestamp is too old or too far in the future (age: ${Math.round((nowMs - tsMs) / 1000)}s)`,
+    );
   }
 
-  // Standard Webhooks verification
-  const signatures = parts.slice(1); // skip "v1" prefix marker if present
-  const sigTimestamp = signatureHeader; // full header for logging
+  // --- 2. Decode the signing key ---
+  // Polar / Standard Webhooks stores the secret as "whsec_<base64>".
+  // Strip the prefix and base64-decode to obtain the raw key bytes.
+  const rawSecret = secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret;
+  let keyBytes: Buffer;
+  try {
+    keyBytes = Buffer.from(rawSecret, "base64");
+  } catch {
+    throw new Error("Failed to decode POLAR_WEBHOOK_SECRET — expected base64 after 'whsec_' prefix");
+  }
 
-  // Compute expected signature
-  const hmac = createHmac("sha256", secret);
-  hmac.update(rawBody);
+  // --- 3. Build the signed payload ---
+  // Standard Webhooks: "${webhook-id}.${webhook-timestamp}.${rawBody}"
+  const bodyString = rawBody.toString("utf-8");
+  const signedPayload = `${webhookId}.${webhookTimestamp}.${bodyString}`;
+
+  // --- 4. Compute expected HMAC-SHA256 ---
+  const hmac = createHmac("sha256", keyBytes);
+  hmac.update(signedPayload);
   const expectedSig = hmac.digest("base64");
+  const expectedBuf = Buffer.from(expectedSig, "base64");
 
-  // Check if any provided signature matches
-  const valid = signatures.some((sig) => {
+  // --- 5. Compare against all provided signatures ---
+  // The header may contain multiple space-separated "v1,<sig>" tokens.
+  const signatureTokens = webhookSignature.split(" ");
+  const valid = signatureTokens.some((token) => {
+    // Each token is "v1,<base64sig>" — strip the version prefix.
+    const commaIdx = token.indexOf(",");
+    const sigB64 = commaIdx >= 0 ? token.slice(commaIdx + 1) : token;
     try {
-      const sigBuf = Buffer.from(sig.trim(), "base64");
-      const expectedBuf = Buffer.from(expectedSig, "base64");
+      const sigBuf = Buffer.from(sigB64.trim(), "base64");
       return sigBuf.length === expectedBuf.length && timingSafeEqual(sigBuf, expectedBuf);
     } catch {
       return false;
@@ -548,5 +587,5 @@ export function verifyPolarWebhookSignature(
     throw new Error("Invalid Polar webhook signature");
   }
 
-  return JSON.parse(rawBody.toString("utf-8")) as PolarWebhookEvent;
+  return JSON.parse(bodyString) as PolarWebhookEvent;
 }

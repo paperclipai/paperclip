@@ -202,6 +202,22 @@ export function emailWebhookRoutes(db: Db) {
   const router = Router();
 
   router.post("/webhooks/email", async (req, res) => {
+    // SEC-INTEG-002: Validate webhook secret to prevent unauthorized issue creation.
+    // Mailgun/SendGrid should be configured to include this token as a query param
+    // or header. Without it, anyone can POST fake emails to create issues.
+    // SEC-ADV-002: Webhook secret is mandatory in authenticated deployment mode.
+    // Without it, anyone on the internet can create issues in any company.
+    const webhookSecret = process.env.IRONWORKS_EMAIL_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.warn("[email-bridge] IRONWORKS_EMAIL_WEBHOOK_SECRET not set — rejecting all email webhooks");
+      res.status(503).json({ ok: false, error: "Email bridge not configured" });
+      return;
+    }
+    const token = req.query.token ?? req.headers["x-webhook-secret"];
+    if (token !== webhookSecret) {
+      res.status(401).json({ ok: false, error: "Invalid webhook secret" });
+      return;
+    }
     try {
       const result = await handleInboundEmail(db, req.body as Record<string, unknown>);
       if (result.ok) {

@@ -903,6 +903,12 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
 
 async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
   const resolvedPath = path.resolve(sourcePath);
+  // SEC-TAINT-004: Confine local skill imports to the working directory.
+  // Prevent arbitrary filesystem reads via crafted source paths like "/etc/passwd".
+  const cwd = process.cwd();
+  if (!resolvedPath.startsWith(cwd + path.sep) && resolvedPath !== cwd) {
+    throw unprocessable("Skill source path must be within the project directory");
+  }
   const stat = await fs.stat(resolvedPath).catch(() => null);
   if (!stat) {
     throw unprocessable(`Skill source path does not exist: ${sourcePath}`);

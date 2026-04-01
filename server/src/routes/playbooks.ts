@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@ironworksai/db";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCanWrite, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
 import { playbookService } from "../services/playbooks.js";
 import { playbookExecutionService } from "../services/playbook-execution.js";
@@ -32,7 +32,7 @@ export function playbookRoutes(db: Db) {
   /** Create a new playbook. */
   router.post("/companies/:companyId/playbooks", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
 
     const { name, description, body, icon, category, estimatedMinutes, steps } = req.body;
     if (!name) throw badRequest("name is required");
@@ -54,7 +54,7 @@ export function playbookRoutes(db: Db) {
   /** Update a playbook. */
   router.patch("/companies/:companyId/playbooks/:playbookId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
 
     const existing = await svc.getById(req.params.playbookId as string);
     if (!existing || existing.companyId !== companyId) {
@@ -68,7 +68,7 @@ export function playbookRoutes(db: Db) {
   /** Delete a playbook. */
   router.delete("/companies/:companyId/playbooks/:playbookId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
 
     const existing = await svc.getById(req.params.playbookId as string);
     if (!existing || existing.companyId !== companyId) {
@@ -82,7 +82,7 @@ export function playbookRoutes(db: Db) {
   /** Seed default playbooks for a company. */
   router.post("/companies/:companyId/playbooks/seed", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
     const result = await svc.seedDefaults(companyId);
     res.json(result);
   });
@@ -90,7 +90,7 @@ export function playbookRoutes(db: Db) {
   /** Run a playbook — creates goal, issues, and tracks execution. */
   router.post("/companies/:companyId/playbooks/:playbookId/run", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
     const actor = getActorInfo(req);
 
     const result = await execSvc.runPlaybook({

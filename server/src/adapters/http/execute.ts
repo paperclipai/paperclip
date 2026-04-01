@@ -5,6 +5,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const { config, runId, agent, context } = ctx;
   const url = asString(config.url, "");
   if (!url) throw new Error("HTTP adapter missing url");
+  // SEC-TAINT-003: Block SSRF — reject private/reserved IP targets
+  try {
+    const hostname = new URL(url).hostname;
+    if (/^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|0\.|169\.254\.|localhost|::1|\[::1\])/.test(hostname)) {
+      throw new Error("HTTP adapter URL resolves to a private or reserved address");
+    }
+  } catch (e) {
+    if ((e as Error).message.includes("private or reserved")) throw e;
+    throw new Error(`HTTP adapter URL is invalid: ${url}`);
+  }
 
   const method = asString(config.method, "POST");
   const timeoutMs = asNumber(config.timeoutMs, 0);

@@ -83,10 +83,13 @@ export function activityRoutes(db: Db) {
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
     const runId = req.params.runId as string;
     // Verify the run belongs to a company the user can access
+    // SEC-LOGIC-003: Always verify ownership — return 404 if run not found
     const [run] = await db.select({ companyId: heartbeatRuns.companyId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
-    if (run) {
-      assertCompanyAccess(req, run.companyId);
+    if (!run) {
+      res.status(404).json({ error: "Run not found" });
+      return;
     }
+    assertCompanyAccess(req, run.companyId);
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });

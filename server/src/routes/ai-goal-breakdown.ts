@@ -2,7 +2,7 @@ import { Router } from "express";
 import { eq } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import { agents } from "@ironworksai/db";
-import { assertCompanyAccess } from "./authz.js";
+import { assertCanWrite } from "./authz.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -44,7 +44,7 @@ export function aiGoalBreakdownRoutes(db: Db) {
     "/companies/:companyId/ai/generate-goal-breakdown",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCanWrite(req, companyId, db);
 
       const { goalTitle: rawGoalTitle, goalDescription: rawGoalDescription, projectId } = req.body as {
         goalTitle?: string;

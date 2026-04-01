@@ -224,15 +224,18 @@ function startTelegramPollLoop(db: Db, bot: BotInstance): void {
 
         if (!existingIssueId) {
           // Create new issue
-          const senderName = msg.from?.first_name ?? msg.from?.username ?? "Unknown";
+          // SEC-INTEG-004: Sanitize Telegram content before creating issues
+          const rawSenderName = msg.from?.first_name ?? msg.from?.username ?? "Unknown";
+          const senderName = rawSenderName.replace(/[`*_~\[\]<>]/g, "").slice(0, 50);
+          const safeText = text.slice(0, 4000);
           await sendTelegram(bot.token, chatId, "Creating task for CEO...");
 
           const issue = await createBridgeIssue(
             db,
             bot.companyId,
             bot.ceoAgentId,
-            `[Telegram] ${text.slice(0, 150)}`,
-            `Message from Telegram (${senderName}, chat ${chatId}):\n\n${text}`,
+            `[Telegram] ${safeText.slice(0, 150)}`,
+            `Message from Telegram (${senderName}, chat ${chatId}):\n\n${safeText}`,
           );
 
           if (issue.error) {

@@ -185,10 +185,13 @@ export function setupRoutes(db: Db) {
     const { checkoutId, companyName, userName, email, password, tosAccepted } = parsed.data;
     void tosAccepted; // validated via z.literal(true)
 
-    // Check checkout hasn't been consumed already
+    // SEC-LOGIC-001: Atomic check-and-claim to prevent race condition.
+    // Mark the checkout as consumed BEFORE async work. If provisioning
+    // fails, we leave it claimed (user retries with a new checkout).
     if (consumedCheckouts.has(checkoutId)) {
       throw conflict("This checkout has already been used to create an account.");
     }
+    consumedCheckouts.add(checkoutId);
 
     // 1. Verify checkout with Polar
     let checkout: PolarCheckout;
@@ -203,6 +206,13 @@ export function setupRoutes(db: Db) {
       throw badRequest(
         `Payment has not been completed (status: ${checkout.status}). Please complete checkout first.`,
       );
+    }
+
+    // SEC-ADV-012: Verify the submitted email matches the checkout email
+    // to prevent checkout ID hijacking (someone using another person's payment)
+    if (checkout.customer_email && checkout.customer_email.toLowerCase() !== email) {
+      consumedCheckouts.delete(checkoutId); // release the claim
+      throw badRequest("Email does not match the checkout. Use the email you paid with.");
     }
 
     // 2. Determine plan tier from product_id
@@ -317,8 +327,7 @@ export function setupRoutes(db: Db) {
       updatedAt: now,
     });
 
-    // Mark checkout as consumed
-    consumedCheckouts.add(checkoutId);
+    // (checkoutId already claimed at top of handler — SEC-LOGIC-001)
 
     // Set session cookie (same approach as Better Auth)
     res.cookie("better-auth.session_token", sessionToken, {

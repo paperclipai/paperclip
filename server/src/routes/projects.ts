@@ -168,6 +168,14 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    // SEC-TAINT-002: Reject shell commands from non-admin users
+    const body = req.body as Record<string, unknown>;
+    if (body.provisionCommand || body.teardownCommand) {
+      if (req.actor.type !== "board" || !req.actor.isInstanceAdmin) {
+        res.status(403).json({ error: "Only instance admins can set workspace shell commands" });
+        return;
+      }
+    }
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });

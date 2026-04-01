@@ -327,8 +327,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
     if (responseContentType === SVG_CONTENT_TYPE) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
-    const filename = asset.originalFilename ?? "asset";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
+    // SEC-TAINT-009: Strip CRLF and quotes to prevent header injection
+    const filename = (asset.originalFilename ?? "asset").replace(/[\r\n"]/g, "");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);;
 
     object.stream.on("error", (err) => {
       next(err);

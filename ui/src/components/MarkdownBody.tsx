@@ -144,7 +144,11 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
         className,
       )}
     >
-      <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => url}>
+      <Markdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url) => {
+        const lower = url.trim().toLowerCase();
+        if (lower.startsWith("javascript:") || lower.startsWith("data:") || lower.startsWith("vbscript:")) return "#";
+        return url;
+      }}>
         {children}
       </Markdown>
     </div>

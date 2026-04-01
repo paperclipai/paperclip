@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Db } from "@ironworksai/db";
 import { agents } from "@ironworksai/db";
 import { eq } from "drizzle-orm";
-import { assertCompanyAccess } from "./authz.js";
+import { assertCanWrite } from "./authz.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -22,7 +22,7 @@ export function aiGenerateRoutes(db: Db) {
   /** Generate a playbook from a natural language description. */
   router.post("/companies/:companyId/ai/generate-playbook", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanWrite(req, companyId, db);
 
     const { prompt: rawPrompt } = req.body as { prompt?: string };
     if (!rawPrompt || rawPrompt.trim().length < 10) {

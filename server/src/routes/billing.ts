@@ -53,6 +53,13 @@ export function billingRoutes(db: Db) {
     if (!successUrl || !cancelUrl) {
       throw badRequest("successUrl and cancelUrl are required");
     }
+    // SEC-TAINT-008: Validate redirect URLs are relative paths (same-origin)
+    // to prevent open redirect via Polar checkout flow
+    for (const url of [successUrl, cancelUrl]) {
+      if (typeof url === "string" && (url.startsWith("http") || url.startsWith("//"))) {
+        throw badRequest("Redirect URLs must be relative paths, not absolute URLs");
+      }
+    }
 
     const url = await svc.createCheckoutSession(
       companyId,
@@ -89,9 +96,22 @@ export function polarWebhookRoute(db: Db) {
   const svc = billingService(db);
 
   router.post("/api/webhooks/polar", async (req, res) => {
-    const signature = req.headers["webhook-signature"] as string | undefined;
-    if (!signature) {
-      res.status(400).json({ error: "Missing webhook-signature header" });
+    // Standard Webhooks / Svix uses three headers for signature verification.
+    // Accept both the canonical "webhook-*" names and the legacy "svix-*" aliases.
+    const webhookId =
+      (req.headers["webhook-id"] as string | undefined) ??
+      (req.headers["svix-id"] as string | undefined);
+    const webhookTimestamp =
+      (req.headers["webhook-timestamp"] as string | undefined) ??
+      (req.headers["svix-timestamp"] as string | undefined);
+    const webhookSignature =
+      (req.headers["webhook-signature"] as string | undefined) ??
+      (req.headers["svix-signature"] as string | undefined);
+
+    if (!webhookId || !webhookTimestamp || !webhookSignature) {
+      res.status(400).json({
+        error: "Missing required Standard Webhooks headers (webhook-id, webhook-timestamp, webhook-signature)",
+      });
       return;
     }
 
@@ -101,7 +121,11 @@ export function polarWebhookRoute(db: Db) {
         res.status(400).json({ error: "Missing raw body — ensure express.json verify is configured" });
         return;
       }
-      const event = verifyPolarWebhookSignature(rawBody, signature);
+      const event = verifyPolarWebhookSignature(rawBody, {
+        webhookId,
+        webhookTimestamp,
+        webhookSignature,
+      });
       await svc.handleWebhook(event);
       res.json({ received: true });
     } catch (err) {
