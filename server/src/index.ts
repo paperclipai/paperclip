@@ -182,7 +182,7 @@ export async function startServer(): Promise<StartedServer> {
       return rawUrl;
     }
   }
-  
+
   const LOCAL_BOARD_USER_ID = "local-board";
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
   const LOCAL_BOARD_USER_NAME = "Board";
@@ -464,8 +464,8 @@ export async function startServer(): Promise<StartedServer> {
       createBetterAuthHandler,
       createBetterAuthInstance,
       deriveAuthTrustedOrigins,
-      resolveBetterAuthSession,
-      resolveBetterAuthSessionFromHeaders,
+      resolveAuthSession,
+      resolveAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
     const betterAuthSecret =
       process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
@@ -494,8 +494,8 @@ export async function startServer(): Promise<StartedServer> {
     );
     const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
     betterAuthHandler = createBetterAuthHandler(auth);
-    resolveSession = (req) => resolveBetterAuthSession(auth, req);
-    resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
+    resolveSession = (req) => resolveAuthSession(auth, db as any, req);
+    resolveSessionFromHeaders = (headers) => resolveAuthSessionFromHeaders(auth, db as any, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }

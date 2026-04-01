@@ -42,6 +42,7 @@ describe("resolveDatabaseTarget", () => {
   });
 
   it("uses DATABASE_URL from repo-local .paperclip/.env", () => {
+    delete process.env.DATABASE_URL;
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const projectDir = path.join(tempDir, "repo");
     fs.mkdirSync(projectDir, { recursive: true });
@@ -65,6 +66,7 @@ describe("resolveDatabaseTarget", () => {
   });
 
   it("uses config postgres connection string when configured", () => {
+    delete process.env.DATABASE_URL;
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
     process.env.PAPERCLIP_CONFIG = configPath;
@@ -85,6 +87,7 @@ describe("resolveDatabaseTarget", () => {
   });
 
   it("falls back to embedded postgres settings from config", () => {
+    delete process.env.DATABASE_URL;
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
     const configPath = path.join(tempDir, "instance", "config.json");
     process.env.PAPERCLIP_CONFIG = configPath;
