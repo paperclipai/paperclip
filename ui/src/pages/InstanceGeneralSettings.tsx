@@ -5,16 +5,18 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
+import { useTranslation } from "react-i18next";
 
 export function InstanceGeneralSettings() {
+  const { t } = useTranslation(["settings", "common"]);
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: t("settings:instanceSettings") },
+      { label: t("settings:generalSettings.title") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -31,12 +33,12 @@ export function InstanceGeneralSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(error instanceof Error ? error.message : t("settings:generalSettings.failedToUpdate"));
     },
   });
 
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("settings:generalSettings.loadingSettings")}</div>;
   }
 
   if (generalQuery.error) {
@@ -44,7 +46,7 @@ export function InstanceGeneralSettings() {
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : t("settings:generalSettings.failedToLoad")}
       </div>
     );
   }
@@ -56,10 +58,10 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">{t("settings:generalSettings.title")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide defaults that affect how operator-visible logs are displayed.
+          {t("settings:generalSettings.description")}
         </p>
       </div>
 
@@ -72,7 +74,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">{t("settings:generalSettings.censorUsername")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
               username mentions outside of paths are not yet masked in the live transcript view. This is off by

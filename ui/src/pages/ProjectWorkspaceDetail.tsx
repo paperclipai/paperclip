@@ -11,6 +11,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { useTranslation } from "react-i18next";
 
 type WorkspaceFormState = {
   name: string;
@@ -205,6 +206,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 export function ProjectWorkspaceDetail() {
+  const { t } = useTranslation(["workspaces", "projects", "common"]);
   const { companyPrefix, projectId, workspaceId } = useParams<{
     companyPrefix?: string;
     projectId: string;

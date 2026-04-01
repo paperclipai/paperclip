@@ -12,10 +12,12 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { useTranslation } from "react-i18next";
 
 type StatusFilter = "pending" | "all";
 
 export function Approvals() {
+  const { t } = useTranslation(["approvals", "common"]);
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -26,8 +28,8 @@ export function Approvals() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("approvals:breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
@@ -49,7 +51,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : t("approvals:failedToApprove"));
     },
   });
 
@@ -60,7 +62,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : t("approvals:failedToReject"));
     },
   });
 
@@ -75,7 +77,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("approvals:selectCompanyFirst")}</p>;
   }
 
   if (isLoading) {
@@ -87,7 +89,7 @@ export function Approvals() {
       <div className="flex items-center justify-between">
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
-            { value: "pending", label: <>Pending{pendingCount > 0 && (
+            { value: "pending", label: <>{t("approvals:pending")}{pendingCount > 0 && (
               <span className={cn(
                 "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
                 "bg-yellow-500/20 text-yellow-500"
@@ -95,7 +97,7 @@ export function Approvals() {
                 {pendingCount}
               </span>
             )}</> },
-            { value: "all", label: "All" },
+            { value: "all", label: t("approvals:all") },
           ]} />
         </Tabs>
       </div>
@@ -107,7 +109,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? t("approvals:noPendingApprovals") : t("approvals:noApprovalsYet")}
           </p>
         </div>
       )}

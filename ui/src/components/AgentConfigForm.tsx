@@ -46,6 +46,7 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { useTranslation } from "react-i18next";
 
 /* ---- Create mode values ---- */
 
@@ -134,42 +135,16 @@ function formatArgList(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
-
-const openCodeThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-  { id: "max", label: "Max" },
-] as const;
-
-const cursorModeOptions = [
-  { id: "", label: "Auto" },
-  { id: "plan", label: "Plan" },
-  { id: "ask", label: "Ask" },
-] as const;
-
-const claudeThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-] as const;
+const codexThinkingEffortIds = ["", "minimal", "low", "medium", "high", "xhigh"] as const;
+const openCodeThinkingEffortIds = ["", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const cursorModeIds = ["", "plan", "ask"] as const;
+const claudeThinkingEffortIds = ["", "low", "medium", "high"] as const;
 
 
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
+  const { t } = useTranslation(["agents", "common"]);
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
@@ -417,14 +392,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? "variant"
           : "effort";
+  const thinkingEffortLabelMap: Record<string, string> = {
+    "": t("agents:form.thinkingEffort.auto"),
+    minimal: t("agents:form.thinkingEffort.minimal"),
+    low: t("agents:form.thinkingEffort.low"),
+    medium: t("agents:form.thinkingEffort.medium"),
+    high: t("agents:form.thinkingEffort.high"),
+    xhigh: t("agents:form.thinkingEffort.xhigh"),
+    max: t("agents:form.thinkingEffort.max"),
+    plan: t("agents:form.thinkingEffort.plan"),
+    ask: t("agents:form.thinkingEffort.ask"),
+  };
+  const toOption = (id: string) => ({ id, label: thinkingEffortLabelMap[id] ?? id });
   const thinkingEffortOptions =
     adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+      ? codexThinkingEffortIds.map(toOption)
       : adapterType === "cursor"
-        ? cursorModeOptions
+        ? cursorModeIds.map(toOption)
         : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : claudeThinkingEffortOptions;
+          ? openCodeThinkingEffortIds.map(toOption)
+          : claudeThinkingEffortIds.map(toOption);
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -468,13 +455,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            <span className="text-xs text-muted-foreground">{t("agents:form.unsavedChanges")}</span>
             <Button
               size="sm"
               onClick={handleSave}
               disabled={!isCreate && props.isSaving}
             >
-              {!isCreate && props.isSaving ? "Saving..." : "Save"}
+              {!isCreate && props.isSaving ? t("agents:form.saving") : t("common:buttons.save")}
             </Button>
           </div>
         </div>
@@ -484,38 +471,38 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {!isCreate && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
+            ? <h3 className="text-sm font-medium mb-3">{t("agents:form.identity")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("agents:form.identity")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field label="Name" hint={help.name}>
+            <Field label={t("agents:form.name")} hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
                 onCommit={(v) => mark("identity", "name", v)}
                 immediate
                 className={inputClass}
-                placeholder="Agent name"
+                placeholder={t("agents:newAgentPage.namePlaceholder")}
               />
             </Field>
-            <Field label="Title" hint={help.title}>
+            <Field label={t("agents:form.title")} hint={help.title}>
               <DraftInput
                 value={eff("identity", "title", props.agent.title ?? "")}
                 onCommit={(v) => mark("identity", "title", v || null)}
                 immediate
                 className={inputClass}
-                placeholder="e.g. VP of Engineering"
+                placeholder={t("agents:newAgentPage.titlePlaceholder")}
               />
             </Field>
-            <Field label="Reports to" hint={help.reportsTo}>
+            <Field label={t("agents:form.reportsTo")} hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
                 value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
                 onChange={(id) => mark("identity", "reportsTo", id)}
                 excludeAgentIds={[props.agent.id]}
-                chooseLabel="Choose manager…"
+                chooseLabel={t("agents:form.chooseManager")}
               />
             </Field>
-            <Field label="Capabilities" hint={help.capabilities}>
+            <Field label={t("agents:form.capabilities")} hint={help.capabilities}>
               <MarkdownEditor
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "")}
                 onChange={(v) => mark("identity", "capabilities", v || null)}

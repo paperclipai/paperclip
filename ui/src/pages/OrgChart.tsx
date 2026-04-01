@@ -12,6 +12,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Network, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 
 // Layout constants
 const CARD_W = 200;
@@ -141,6 +142,7 @@ const defaultDotColor = "#a3a3a3";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useTranslation(["org", "common"]);
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -164,8 +166,8 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("org:breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -257,7 +259,7 @@ export function OrgChart() {
   }, [zoom, pan]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("org:selectCompany")} />;
   }
 
   if (isLoading) {
@@ -265,7 +267,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("org:noOrgHierarchy")} />;
   }
 
   return (

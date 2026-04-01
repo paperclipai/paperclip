@@ -19,18 +19,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
-
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  hermes_local: "Hermes",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
+import { useTranslation } from "react-i18next";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -64,6 +53,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 }
 
 export function Agents() {
+  const { t } = useTranslation(["agents", "common"]);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -119,11 +109,11 @@ export function Agents() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("agents:breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={t("agents:selectCompany")} />;
   }
 
   if (isLoading) {
@@ -139,10 +129,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: t("agents:tabs.all") },
+              { value: "active", label: t("agents:tabs.active") },
+              { value: "paused", label: t("agents:tabs.paused") },
+              { value: "error", label: t("agents:tabs.error") },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -159,7 +149,7 @@ export function Agents() {
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
               <SlidersHorizontal className="h-3 w-3" />
-              Filters
+              {t("common:labels.filters")}
               {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
             </button>
             {filtersOpen && (
@@ -174,7 +164,7 @@ export function Agents() {
                   )}>
                     {showTerminated && <span className="text-background text-[10px] leading-none">&#10003;</span>}
                   </span>
-                  Show terminated
+                  {t("agents:showTerminated")}
                 </button>
               </div>
             )}
@@ -204,13 +194,13 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {t("agents:newAgent")}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">{filtered.length !== 1 ? t("agents:agentCountPlural", { count: filtered.length }) : t("agents:agentCount", { count: filtered.length })}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -218,8 +208,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={t("agents:createFirst")}
+          action={t("agents:newAgent")}
           onAction={openNewAgent}
         />
       )}
@@ -263,7 +253,7 @@ export function Agents() {
                         />
                       )}
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
-                        {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                        {t(`agents:adapterLabels.${agent.adapterType}`, { defaultValue: agent.adapterType })}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
@@ -282,7 +272,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {t("agents:noMatch")}
         </p>
       )}
 
@@ -297,13 +287,13 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {t("agents:noMatch")}
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No organizational hierarchy defined.
+          {t("agents:noOrgHierarchy")}
         </p>
       )}
     </div>
@@ -321,6 +311,7 @@ function OrgTreeNode({
   agentMap: Map<string, Agent>;
   liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
 }) {
+  const { t } = useTranslation(["agents"]);
   const agent = agentMap.get(node.id);
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
@@ -364,7 +355,7 @@ function OrgTreeNode({
             {agent && (
               <>
                 <span className="text-xs text-muted-foreground font-mono w-14 text-right">
-                  {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                  {t(`agents:adapterLabels.${agent.adapterType}`, { defaultValue: agent.adapterType })}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}

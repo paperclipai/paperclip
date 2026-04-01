@@ -7,6 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { RunTranscriptView, type TranscriptDensity, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { runTranscriptFixtureEntries, runTranscriptFixtureMeta } from "../fixtures/runTranscriptFixtures";
 import { ExternalLink, FlaskConical, LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 type SurfaceId = "detail" | "live" | "dashboard";
 
@@ -191,6 +192,7 @@ function DashboardPreview({
 }
 
 export function RunTranscriptUxLab() {
+  const { t } = useTranslation(["common"]);
   const [selectedSurface, setSelectedSurface] = useState<SurfaceId>("detail");
   const [detailMode, setDetailMode] = useState<TranscriptMode>("nice");
   const [streaming, setStreaming] = useState(true);

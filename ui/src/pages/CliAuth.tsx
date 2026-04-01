@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
+import { useTranslation } from "react-i18next";
 
 export function CliAuthPage() {
+  const { t } = useTranslation(["auth"]);
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -45,18 +47,18 @@ export function CliAuthPage() {
   });
 
   if (!challengeId || !token) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid CLI auth URL.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">{t("auth:cliAuth.invalidUrl")}</div>;
   }
 
   if (sessionQuery.isLoading || challengeQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading CLI auth challenge...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("auth:cliAuth.loadingChallenge")}</div>;
   }
 
   if (challengeQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">CLI auth challenge unavailable</h1>
+          <h1 className="text-lg font-semibold">{t("auth:cliAuth.challengeUnavailable")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {challengeQuery.error instanceof Error ? challengeQuery.error.message : "Challenge is invalid or expired."}
           </p>
@@ -74,7 +76,7 @@ export function CliAuthPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-xl font-semibold">CLI access approved</h1>
+          <h1 className="text-xl font-semibold">{t("auth:cliAuth.cliAccessApproved")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             The Paperclip CLI can now finish authentication on the requesting machine.
           </p>

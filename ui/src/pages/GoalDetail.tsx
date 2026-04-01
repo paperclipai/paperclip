@@ -20,8 +20,10 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
+import { useTranslation } from "react-i18next";
 
 export function GoalDetail() {
+  const { t } = useTranslation(["goals", "common"]);
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
@@ -136,7 +138,7 @@ export function GoalDetail() {
           onSave={(description) => updateGoal.mutate({ description })}
           as="p"
           className="text-sm text-muted-foreground"
-          placeholder="Add a description..."
+          placeholder={t("goals:detail.addDescription")}
           multiline
           imageUploadHandler={async (file) => {
             const asset = await uploadImage.mutateAsync(file);

@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -137,6 +138,7 @@ function CommentCard({
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
+  const { t } = useTranslation(["common"]);
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
@@ -162,7 +164,7 @@ function CommentCard({
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={t("common:labels.you")} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -255,8 +257,9 @@ const TimelineList = memo(function TimelineList({
   projectId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const { t } = useTranslation(["issues"]);
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("issues:detail.noCommentsYet", "No comments or runs yet.")}</p>;
   }
 
   return (
@@ -327,6 +330,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
 }: CommentThreadProps) {
+  const { t } = useTranslation(["issues", "common"]);
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -467,7 +471,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
+      <h3 className="text-sm font-semibold">{t("issues:detail.comments")} &amp; {t("issues:detail.runs", "Runs")} ({timeline.length + queuedComments.length})</h3>
 
       {timeline.length > 0 ? (
         <TimelineList
@@ -485,7 +489,7 @@ export function CommentThread({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
+              {t("issues:detail.queuedComments", "Queued Comments")} ({queuedComments.length})
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
@@ -495,7 +499,7 @@ export function CommentThread({
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? t("issues:detail.interrupting", "Interrupting...") : t("issues:detail.interrupt", "Interrupt")}
               </Button>
             ) : null}
           </div>
@@ -520,7 +524,7 @@ export function CommentThread({
           ref={editorRef}
           value={body}
           onChange={setBody}
-          placeholder="Leave a comment..."
+          placeholder={t("issues:detail.leaveComment", "Leave a comment...")}
           mentions={mentions}
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
@@ -554,20 +558,20 @@ export function CommentThread({
               onChange={(e) => setReopen(e.target.checked)}
               className="rounded border-border"
             />
-            Re-open
+            {t("common:labels.reopen")}
           </label>
           {enableReassign && reassignOptions.length > 0 && (
             <InlineEntitySelector
               value={reassignTarget}
               options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
+              placeholder={t("issues:filterBar.assignee")}
+              noneLabel={t("issues:newDialog.noAssignee")}
+              searchPlaceholder={t("issues:newDialog.searchAssignees")}
+              emptyMessage={t("issues:newDialog.noAssigneesFound")}
               onChange={setReassignTarget}
               className="text-xs h-8"
               renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                if (!option) return <span className="text-muted-foreground">{t("issues:filterBar.assignee")}</span>;
                 const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
@@ -595,7 +599,7 @@ export function CommentThread({
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
+            {submitting ? t("issues:detail.posting", "Posting...") : t("issues:detail.comment", "Comment")}
           </Button>
         </div>
       </div>

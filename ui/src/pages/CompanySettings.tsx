@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { useTranslation } from "react-i18next";
 import {
   Field,
   ToggleField,
@@ -23,6 +24,7 @@ type AgentSnippetInput = {
 };
 
 export function CompanySettings() {
+  const { t } = useTranslation(["settings", "common"]);
   const {
     companies,
     selectedCompany,
@@ -128,7 +130,7 @@ export function CompanySettings() {
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : t("settings:general.failedToCreateInvite")
       );
     }
   });
@@ -230,10 +232,10 @@ export function CompanySettings() {
       {/* General */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {t("settings:general.title")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label={t("settings:general.companyName")} hint={t("settings:general.companyNameHint")}>
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -242,14 +244,14 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label={t("settings:general.description")}
+            hint={t("settings:general.descriptionHint")}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={t("settings:general.descriptionPlaceholder")}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -259,7 +261,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {t("settings:general.appearance")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
@@ -273,8 +275,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label={t("settings:general.logo")}
+                hint={t("settings:general.logoHint")}
               >
                 <div className="space-y-2">
                   <input
@@ -291,7 +293,7 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending ? t("settings:general.removingLogo") : t("settings:general.removeLogo")}
                       </Button>
                     </div>
                   )}
@@ -300,7 +302,7 @@ export function CompanySettings() {
                       {logoUploadError ??
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                          : t("settings:general.logoUploadFailed"))}
                     </span>
                   )}
                   {clearLogoMutation.isError && (
@@ -309,13 +311,13 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">{t("settings:general.uploadingLogo")}</span>
                   )}
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label={t("settings:general.brandColor")}
+                hint={t("settings:general.brandColorHint")}
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -333,7 +335,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder={t("settings:general.brandColorAuto")}
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -361,16 +363,16 @@ export function CompanySettings() {
             onClick={handleSaveGeneral}
             disabled={generalMutation.isPending || !companyName.trim()}
           >
-            {generalMutation.isPending ? "Saving..." : "Save changes"}
+            {generalMutation.isPending ? t("settings:general.saving") : t("settings:general.saveChanges")}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{t("settings:general.saved")}</span>
           )}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
                   ? generalMutation.error.message
-                  : "Failed to save"}
+                  : t("settings:general.failedToSave")}
             </span>
           )}
         </div>
@@ -379,12 +381,12 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {t("settings:general.hiring")}
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={t("settings:general.requireApproval")}
+            hint={t("settings:general.requireApprovalHint")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -395,14 +397,14 @@ export function CompanySettings() {
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          {t("settings:general.invites")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              {t("settings:general.generateInviteDescription")}
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text={t("settings:general.inviteHint")} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -412,8 +414,8 @@ export function CompanySettings() {
               disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+                ? t("settings:general.generating")
+                : t("settings:general.generateOpenClawInvite")}
             </Button>
           </div>
           {inviteError && (
@@ -426,7 +428,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  {t("settings:general.openClawInvitePrompt")}
                 </div>
                 {snippetCopied && (
                   <span
@@ -434,7 +436,7 @@ export function CompanySettings() {
                     className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
                   >
                     <Check className="h-3 w-3" />
-                    Copied
+                    {t("common:copied")}
                   </span>
                 )}
               </div>
@@ -461,7 +463,7 @@ export function CompanySettings() {
                       }
                     }}
                   >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                    {snippetCopied ? t("settings:general.copiedSnippet") : t("settings:general.copySnippet")}
                   </Button>
                 </div>
               </div>
@@ -473,24 +475,23 @@ export function CompanySettings() {
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
+          {t("settings:general.companyPackages")}
         </div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            {t("settings:general.companyPackagesDescription")}
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <a href="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
+                {t("common:buttons.export")}
               </a>
             </Button>
             <Button size="sm" variant="outline" asChild>
               <a href="/company/import">
                 <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
+                {t("common:buttons.import")}
               </a>
             </Button>
           </div>
@@ -500,12 +501,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {t("settings:general.dangerZone")}
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            {t("settings:general.archiveDescription")}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -534,16 +534,16 @@ export function CompanySettings() {
               }}
             >
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? t("settings:general.archiving")
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? t("settings:general.alreadyArchived")
+                : t("settings:general.archiveCompany")}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : t("settings:general.failedToArchive")}
               </span>
             )}
           </div>

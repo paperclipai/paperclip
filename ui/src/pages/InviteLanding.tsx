@@ -6,24 +6,13 @@ import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 
 type JoinType = "human" | "agent";
 const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude (local)",
-  codex_local: "Codex (local)",
-  gemini_local: "Gemini CLI (local)",
-  opencode_local: "OpenCode (local)",
-  pi_local: "Pi (local)",
-  openclaw_gateway: "OpenClaw Gateway",
-  cursor: "Cursor (local)",
-  hermes_local: "Hermes Agent",
-  process: "Process",
-  http: "HTTP",
-};
 
 const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
 
@@ -41,6 +30,7 @@ function readNestedString(value: unknown, path: string[]): string | null {
 }
 
 export function InviteLandingPage() {
+  const { t } = useTranslation(["auth", "agents"]);
   const queryClient = useQueryClient();
   const params = useParams();
   const token = (params.token ?? "").trim();
@@ -113,25 +103,25 @@ export function InviteLandingPage() {
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to accept invite");
+      setError(err instanceof Error ? err.message : t("auth:invite.failedToAccept"));
     },
   });
 
   if (!token) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid invite token.</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">{t("auth:invite.invalidToken")}</div>;
   }
 
   if (inviteQuery.isLoading || healthQuery.isLoading || sessionQuery.isLoading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading invite...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">{t("auth:invite.loadingInvite")}</div>;
   }
 
   if (inviteQuery.error || !invite) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Invite not available</h1>
+          <h1 className="text-lg font-semibold">{t("auth:invite.inviteNotAvailable")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            This invite may be expired, revoked, or already used.
+            {t("auth:invite.inviteMayBeExpired")}
           </p>
         </div>
       </div>
@@ -142,12 +132,12 @@ export function InviteLandingPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Bootstrap complete</h1>
+          <h1 className="text-lg font-semibold">{t("auth:invite.bootstrapComplete")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            The first instance admin is now configured. You can continue to the board.
+            {t("auth:invite.firstAdminConfigured")}
           </p>
           <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
+            <Link to="/">{t("auth:invite.openBoard")}</Link>
           </Button>
         </div>
       </div>
@@ -177,38 +167,38 @@ export function InviteLandingPage() {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">Join request submitted</h1>
+          <h1 className="text-lg font-semibold">{t("auth:invite.joinRequestSubmitted")}</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Your request is pending admin approval. You will not have access until approved.
+            {t("auth:invite.requestPendingApproval")}
           </p>
           <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            Request ID: <span className="font-mono">{payload.id}</span>
+            {t("auth:invite.requestId")}: <span className="font-mono">{payload.id}</span>
           </div>
           {claimSecret && claimApiKeyPath && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">One-time claim secret (save now)</p>
+              <p className="font-medium text-foreground">{t("auth:invite.oneTimeClaimSecret")}</p>
               <p className="font-mono break-all">{claimSecret}</p>
               <p className="font-mono break-all">POST {claimApiKeyPath}</p>
             </div>
           )}
           {(onboardingSkillUrl || onboardingSkillPath || onboardingInstallPath) && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Paperclip skill bootstrap</p>
+              <p className="font-medium text-foreground">{t("auth:invite.paperclipSkillBootstrap")}</p>
               {onboardingSkillUrl && <p className="font-mono break-all">GET {onboardingSkillUrl}</p>}
               {!onboardingSkillUrl && onboardingSkillPath && <p className="font-mono break-all">GET {onboardingSkillPath}</p>}
-              {onboardingInstallPath && <p className="font-mono break-all">Install to {onboardingInstallPath}</p>}
+              {onboardingInstallPath && <p className="font-mono break-all">{t("auth:invite.installTo")} {onboardingInstallPath}</p>}
             </div>
           )}
           {(onboardingTextUrl || onboardingTextPath) && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Agent-readable onboarding text</p>
+              <p className="font-medium text-foreground">{t("auth:invite.agentOnboardingText")}</p>
               {onboardingTextUrl && <p className="font-mono break-all">GET {onboardingTextUrl}</p>}
               {!onboardingTextUrl && onboardingTextPath && <p className="font-mono break-all">GET {onboardingTextPath}</p>}
             </div>
           )}
           {diagnostics.length > 0 && (
             <div className="mt-3 space-y-1 rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <p className="font-medium text-foreground">Connectivity diagnostics</p>
+              <p className="font-medium text-foreground">{t("auth:invite.connectivityDiagnostics")}</p>
               {diagnostics.map((diag, idx) => (
                 <div key={`${diag.code}:${idx}`} className="space-y-0.5">
                   <p className={diag.level === "warn" ? "text-amber-600 dark:text-amber-400" : undefined}>
@@ -229,16 +219,16 @@ export function InviteLandingPage() {
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
           {invite.inviteType === "bootstrap_ceo"
-            ? "Bootstrap your Paperclip instance"
+            ? t("auth:invite.bootstrapInstance")
             : companyName
-              ? `Join ${companyName}`
-              : "Join this Paperclip company"}
+              ? t("auth:invite.joinCompany", { company: companyName })
+              : t("auth:invite.joinPaperclipCompany")}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {invite.inviteType !== "bootstrap_ceo" && companyName
-            ? `You were invited to join ${companyName}. `
+            ? t("auth:invite.invitedToJoin", { company: companyName })
             : null}
-          Invite expires {dateTime(invite.expiresAt)}.
+          {t("auth:invite.inviteExpires", { datetime: dateTime(invite.expiresAt) })}
         </p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
@@ -254,7 +244,7 @@ export function InviteLandingPage() {
                     : "border-border bg-background text-foreground"
                 }`}
               >
-                Join as {type}
+                {type === "human" ? t("auth:invite.joinAsHuman") : t("auth:invite.joinAsAgent")}
               </button>
             ))}
           </div>
@@ -263,7 +253,7 @@ export function InviteLandingPage() {
         {joinType === "agent" && invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-4 space-y-3">
             <label className="block text-sm">
-              <span className="mb-1 block text-muted-foreground">Agent name</span>
+              <span className="mb-1 block text-muted-foreground">{t("auth:invite.agentName")}</span>
               <input
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 value={agentName}
@@ -271,7 +261,7 @@ export function InviteLandingPage() {
               />
             </label>
             <label className="block text-sm">
-              <span className="mb-1 block text-muted-foreground">Adapter type</span>
+              <span className="mb-1 block text-muted-foreground">{t("auth:invite.adapterType")}</span>
               <select
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 value={adapterType}
@@ -279,13 +269,13 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    {t(`agents:adapterLabels.${type}`, { defaultValue: type })}{!ENABLED_INVITE_ADAPTERS.has(type) ? ` ${t("auth:invite.comingSoon")}` : ""}
                   </option>
                 ))}
               </select>
             </label>
             <label className="block text-sm">
-              <span className="mb-1 block text-muted-foreground">Capabilities (optional)</span>
+              <span className="mb-1 block text-muted-foreground">{t("auth:invite.capabilitiesOptional")}</span>
               <textarea
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 rows={4}
@@ -298,10 +288,10 @@ export function InviteLandingPage() {
 
         {requiresAuthForHuman && (
           <div className="mt-4 rounded-md border border-border bg-muted/30 p-3 text-sm">
-            Sign in or create an account before submitting a human join request.
+            {t("auth:invite.signInBeforeSubmitting")}
             <div className="mt-2">
               <Button asChild size="sm" variant="outline">
-                <Link to={`/auth?next=${encodeURIComponent(`/invite/${token}`)}`}>Sign in / Create account</Link>
+                <Link to={`/auth?next=${encodeURIComponent(`/invite/${token}`)}`}>{t("auth:cliAuth.signInCreateAccount")}</Link>
               </Button>
             </div>
           </div>
@@ -319,10 +309,10 @@ export function InviteLandingPage() {
           onClick={() => acceptMutation.mutate()}
         >
           {acceptMutation.isPending
-            ? "Submitting…"
+            ? t("auth:invite.submittingEllipsis")
             : invite.inviteType === "bootstrap_ceo"
-              ? "Accept bootstrap invite"
-              : "Submit join request"}
+              ? t("auth:invite.acceptBootstrapInvite")
+              : t("auth:invite.submitJoinRequest")}
         </Button>
       </div>
     </div>

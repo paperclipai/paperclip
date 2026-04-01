@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
@@ -91,12 +92,17 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 }
 
+function NoGoalsMessage() {
+  const { t } = useTranslation(["goals"]);
+  return <p className="text-sm text-muted-foreground">{t("goals:noGoals")}</p>;
+}
+
 export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
   if (goals.length === 0) {
-    return <p className="text-sm text-muted-foreground">No goals.</p>;
+    return <NoGoalsMessage />;
   }
 
   return (

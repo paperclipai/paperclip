@@ -18,6 +18,7 @@ import { companiesApi } from "../api/companies";
 import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
+import { useTranslation } from "react-i18next";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { cn } from "../lib/utils";
@@ -578,6 +579,7 @@ function expandAncestors(filePath: string): string[] {
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation(["settings", "common"]);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();

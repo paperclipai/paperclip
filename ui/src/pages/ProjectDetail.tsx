@@ -32,6 +32,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { Clock3, Copy, GitBranch, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /* ── Top-level tab types ── */
 
@@ -447,6 +448,7 @@ function ProjectWorkspacesContent({
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { t } = useTranslation(["projects", "common"]);
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -816,7 +818,7 @@ export function ProjectDetail() {
           {project.pauseReason === "budget" ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
-              Paused by budget hard stop
+              {t("projects:detail.pausedByBudgetHardStop")}
             </div>
           ) : null}
         </div>

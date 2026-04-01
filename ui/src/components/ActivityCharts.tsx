@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
@@ -59,6 +60,7 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
 /* ---- Chart Components ---- */
 
 export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
+  const { t } = useTranslation(["dashboard"]);
   const days = getLast14Days();
 
   const grouped = new Map<string, { succeeded: number; failed: number; other: number }>();
@@ -75,7 +77,7 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => v.succeeded + v.failed + v.other), 1);
   const hasData = Array.from(grouped.values()).some(v => v.succeeded + v.failed + v.other > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:charts.noRunsYet")}</p>;
 
   return (
     <div>
@@ -85,7 +87,7 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
           const total = entry.succeeded + entry.failed + entry.other;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard:charts.tooltipRuns", { day, total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
@@ -100,6 +102,11 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
         })}
       </div>
       <DateLabels days={days} />
+      <ChartLegend items={[
+        { color: "#10b981", label: t("dashboard:charts.succeeded") },
+        { color: "#ef4444", label: t("dashboard:charts.failed") },
+        { color: "#737373", label: t("dashboard:charts.other") },
+      ]} />
     </div>
   );
 }
@@ -114,6 +121,7 @@ const priorityColors: Record<string, string> = {
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
 export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+  const { t } = useTranslation(["issues", "dashboard"]);
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
@@ -127,7 +135,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:charts.noIssuesYet")}</p>;
 
   return (
     <div>
@@ -137,7 +145,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard:charts.tooltipIssues", { day, total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -152,7 +160,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
+      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: t("dashboard:charts.priorityLabels." + p) }))} />
     </div>
   );
 }
@@ -167,17 +175,10 @@ const statusColors: Record<string, string> = {
   backlog: "#64748b",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
+// statusLabels are now provided via i18n (dashboard:charts.statusLabels.*)
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+  const { t } = useTranslation(["issues", "dashboard"]);
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
@@ -194,7 +195,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 
-  if (!hasData) return <p className="text-xs text-muted-foreground">No issues</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:charts.noIssuesYet")}</p>;
 
   return (
     <div>
@@ -204,7 +205,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard:charts.tooltipIssues", { day, total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -219,12 +220,13 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: t("dashboard:charts.statusLabels." + s, s) }))} />
     </div>
   );
 }
 
 export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
+  const { t } = useTranslation(["dashboard"]);
   const days = getLast14Days();
   const grouped = new Map<string, { succeeded: number; total: number }>();
   for (const day of days) grouped.set(day, { succeeded: 0, total: 0 });
@@ -237,7 +239,7 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
   }
 
   const hasData = Array.from(grouped.values()).some(v => v.total > 0);
-  if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
+  if (!hasData) return <p className="text-xs text-muted-foreground">{t("dashboard:charts.noRunsYet")}</p>;
 
   return (
     <div>
@@ -247,7 +249,7 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("dashboard:charts.tooltipRate", { day, rate: entry.total > 0 ? Math.round(rate * 100) : 0, succeeded: entry.succeeded, total: entry.total })}>
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (

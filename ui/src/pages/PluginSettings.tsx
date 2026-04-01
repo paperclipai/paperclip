@@ -19,6 +19,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { PageTabBar } from "@/components/PageTabBar";
+import { useTranslation } from "react-i18next";
 import {
   JsonSchemaForm,
   validateJsonSchemaForm,
@@ -58,6 +59,7 @@ import {
  * @see doc/plugins/PLUGIN_SPEC.md §19.8 — Plugin Settings UI.
  */
 export function PluginSettings() {
+  const { t } = useTranslation(["plugins", "common"]);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();

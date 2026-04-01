@@ -30,6 +30,7 @@ import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange"
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -108,6 +109,7 @@ function FinanceSummaryCard({
   estimatedDebitCents: number;
   eventCount: number;
 }) {
+  const { t } = useTranslation(["costs"]);
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
@@ -126,19 +128,19 @@ function FinanceSummaryCard({
         <MetricTile
           label="Credits"
           value={formatCents(creditCents)}
-          subtitle="Refunds, offsets, and credit returns"
+          subtitle={t("costs:refundsAndCredits")}
           icon={ArrowDownLeft}
         />
         <MetricTile
           label="Net"
           value={formatCents(netCents)}
-          subtitle="Debit minus credit for the selected period"
+          subtitle={t("costs:debitMinusCredit")}
           icon={ReceiptText}
         />
         <MetricTile
           label="Estimated"
           value={formatCents(estimatedDebitCents)}
-          subtitle="Estimated debits that are not yet invoice-authoritative"
+          subtitle={t("costs:estimatedDebits")}
           icon={Coins}
         />
       </CardContent>
@@ -147,6 +149,7 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
+  const { t } = useTranslation(["costs", "common"]);
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -168,8 +171,8 @@ export function Costs() {
   } = useDateRange();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("costs:breadcrumb") }]);
+  }, [setBreadcrumbs, t]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
   const todayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -529,7 +532,7 @@ export function Costs() {
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message={t("costs:selectCompany")} />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
@@ -849,25 +852,25 @@ export function Costs() {
                   <MetricTile
                     label="Active incidents"
                     value={String(activeBudgetIncidents.length)}
-                    subtitle="Open soft or hard threshold crossings"
+                    subtitle={t("costs:budget.activeIncidentsSubtitle")}
                     icon={ReceiptText}
                   />
                   <MetricTile
                     label="Pending approvals"
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
-                    subtitle="Budget override approvals awaiting board action"
+                    subtitle={t("costs:budget.pendingApprovalsSubtitle")}
                     icon={ArrowUpRight}
                   />
                   <MetricTile
                     label="Paused agents"
                     value={String(budgetData?.pausedAgentCount ?? 0)}
-                    subtitle="Agent heartbeats blocked by budget"
+                    subtitle={t("costs:budget.pausedAgentsSubtitle")}
                     icon={Coins}
                   />
                   <MetricTile
                     label="Paused projects"
                     value={String(budgetData?.pausedProjectCount ?? 0)}
-                    subtitle="Project execution blocked by budget"
+                    subtitle={t("costs:budget.pausedProjectsSubtitle")}
                     icon={DollarSign}
                   />
                 </CardContent>
