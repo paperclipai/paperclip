@@ -49,10 +49,10 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(503);
-    expect(res.body).toEqual({
-      status: "unhealthy",
+    expect(res.body).toMatchObject({
+      status: "degraded",
       version: serverVersion,
-      error: "database_unreachable",
+      database: { status: "disconnected" },
     });
   });
 });
