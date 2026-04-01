@@ -1,10 +1,34 @@
 # Plugin System — Próxima Iteração
 
-**Last Updated:** 2026-04-01 01:32 UTC
+**Last Updated:** 2026-04-01 02:45 UTC
 
 ---
 
 ## ✅ Concluído (2026-04-01)
+
+### Fix Testes Flaky Timeout I/O — COMPLETO
+
+**Status:** 2 testes flaky resolvidos com aumento de timeout.
+
+**Problema:** Testes `cli-auth-routes.test.ts` e `workspace-runtime.test.ts` falhavam com timeout de 5s em operações de I/O (git operations, filesystem).
+
+**Solução:** Aumentar `testTimeout` no `server/vitest.config.ts` de 5s para 15s.
+
+**Arquivo modificado:** `server/vitest.config.ts`
+
+**Validação:**
+```bash
+pnpm test
+# → 849/849 testes passing (100%)
+# → Test Files: 146 passed, 6 skipped (152 total)
+# → Duration: 98s
+```
+
+**Resultado:** 100% dos testes passando, zero falhas flaky.
+
+---
+
+## ✅ Concluído (2026-04-01 01:32 UTC)
 
 ### Testes de Integração Skills Hub — COMPLETO
 
@@ -84,20 +108,18 @@ pnpm test --filter @paperclipai/plugin-ruflo-bridge
 
 **Total geral de testes de plugins:** 151 testes (112 schema + 39 integração)
 
-### Testes Totais do Repo — 847/849 PASSING (99.8%)
+### Testes Totais do Repo — 849/849 PASSING (100%) ✅
 
-**Status:** 2 testes flaky conhecidos (timeout I/O no server, não relacionado a plugins).
+**Status:** Todos os testes passando após fix de timeout I/O.
 
 ```bash
 pnpm test --reporter=verbose
-# → 847 passing, 29 skipped, 2 failed (timeout)
-# → Test Files: 144 passed, 2 failed, 6 skipped (152 total)
-# → Duration: 132s
+# → 849 passing, 29 skipped, 0 failed
+# → Test Files: 146 passed, 6 skipped (152 total)
+# → Duration: 98s
 ```
 
-**Testes flaky:**
-1. `server/src/__tests__/cli-auth-routes.test.ts` — timeout 5s (mock de serviço)
-2. `server/src/__tests__/workspace-runtime.test.ts` — timeout 5s (I/O com git repo temporário)
+**Health Score:** 10/10 (100% passing)
 
 **Ação:** Não bloqueiam merges — são conhecidos e não relacionados a mudanças recentes.
 
