@@ -16,6 +16,7 @@ export const openrouterAdapter: ServerAdapterModule = {
     { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
     { id: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
     { id: "qwen/qwen3.5-plus", label: "Qwen 3.5 Plus" },
+    { id: "qwen/qwen3.6-plus-preview:free", label: "Qwen 3.6 Plus Preview (free)" },
     { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
     { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
   ],
