@@ -35,6 +35,7 @@ jobs:
             docker compose -f docker-compose.quickstart.yml build --no-cache
 
             echo "==> Restarting container..."
+            docker compose -f docker-compose.quickstart.yml down
             docker compose -f docker-compose.quickstart.yml up -d
 
             echo "==> Pruning old images..."
