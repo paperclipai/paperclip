@@ -633,6 +633,28 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
+  // Ensure plugins directory uses the workspace SDK (with fork extensions).
+  // Must run BEFORE createApp which spawns plugin workers.
+  try {
+    const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
+    const thisDir = path.dirname(new URL(import.meta.url).pathname);
+    const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
+    const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
+    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
+      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
+        fs.unlinkSync(pluginsSdkDir);
+        fs.mkdirSync(pluginsSdkDir, { recursive: true });
+      }
+      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
+      if (fs.existsSync(workspaceSdkPkg)) {
+        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
+      }
+      logger.info("Copied workspace plugin SDK dist to local plugins directory");
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
+  }
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const app = await createApp(db as any, {
@@ -834,30 +856,6 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-
-  // Ensure plugins directory uses the workspace SDK (with fork extensions).
-  // Copy the built dist + package.json from the workspace SDK into the plugins
-  // node_modules so workers use our fork's SDK (with labels/projects extensions).
-  try {
-    const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
-    const thisDir = path.dirname(new URL(import.meta.url).pathname);
-    const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
-    const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
-    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
-      // Remove symlink if left over from a previous approach
-      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
-        fs.unlinkSync(pluginsSdkDir);
-        fs.mkdirSync(pluginsSdkDir, { recursive: true });
-      }
-      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
-      if (fs.existsSync(workspaceSdkPkg)) {
-        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
-      }
-      logger.info("Copied workspace plugin SDK dist to local plugins directory");
-    }
-  } catch (err) {
-    logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
-  }
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
   void autoInstallBundledPlugins(db as any).catch((err) => {
