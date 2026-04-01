@@ -402,6 +402,51 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       resurfacedIssueId,
     ]));
   });
+
+  it("finds plain-text mentions for agents with multi-word names", async () => {
+    const companyId = randomUUID();
+    const qaEngineerId = randomUUID();
+    const singleWordAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: qaEngineerId,
+        companyId,
+        name: "QA Engineer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: singleWordAgentId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const mentionedIds = await svc.findMentionedAgents(
+      companyId,
+      "Please sync with @QA Engineer and @CEO before shipping.",
+    );
+
+    expect(new Set(mentionedIds)).toEqual(new Set([qaEngineerId, singleWordAgentId]));
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

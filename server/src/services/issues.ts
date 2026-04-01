@@ -343,6 +343,25 @@ export function normalizeAgentMentionToken(raw: string): string {
   return s.trim();
 }
 
+function containsPlainTextAgentMention(bodyLower: string, agentNameLower: string): boolean {
+  const needle = `@${agentNameLower}`;
+  let index = bodyLower.indexOf(needle);
+
+  while (index !== -1) {
+    const before = index > 0 ? bodyLower[index - 1] : "";
+    const afterIndex = index + needle.length;
+    const after = afterIndex < bodyLower.length ? bodyLower[afterIndex] : "";
+
+    const startsMention = before === "" || /[^a-z0-9_]/.test(before);
+    const endsMention = after === "" || /[\s,!?;:.)\]}>"'`]/.test(after);
+    if (startsMention && endsMention) return true;
+
+    index = bodyLower.indexOf(needle, index + 1);
+  }
+
+  return false;
+}
+
 export function deriveIssueUserContext(
   issue: IssueUserContextInput,
   userId: string,
@@ -1745,8 +1764,13 @@ export function issueService(db: Db) {
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
+      const bodyLower = body.toLowerCase();
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
+        const agentNameLower = agent.name.toLowerCase();
+        if (
+          tokens.has(agentNameLower) ||
+          (agentNameLower.includes(" ") && containsPlainTextAgentMention(bodyLower, agentNameLower))
+        ) {
           resolved.add(agent.id);
         }
       }
