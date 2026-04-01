@@ -12,6 +12,7 @@ import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { formatMessage } from "../i18n";
 import { getRuntimeLocale } from "../i18n/runtime";
+import { localizedStatusLabel } from "../lib/displayLabels";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -64,13 +65,13 @@ function resolveActorLabel(
   actorId: string | null,
 ): string {
   if (actorType === "agent" && actorId) {
-    return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
+    return resolveAgentName(queryClient, companyId, actorId) ?? formatMessage(getRuntimeLocale(), "liveUpdates.actorAgent", { id: shortId(actorId) });
   }
-  if (actorType === "system") return "System";
+  if (actorType === "system") return formatMessage(getRuntimeLocale(), "liveUpdates.actorSystem");
   if (actorType === "user" && actorId) {
-    return "Board";
+    return formatMessage(getRuntimeLocale(), "liveUpdates.actorBoard");
   }
-  return "Someone";
+  return formatMessage(getRuntimeLocale(), "liveUpdates.actorSomeone");
 }
 
 interface IssueToastContext {
@@ -306,10 +307,10 @@ function buildActivityToast(
 
   if (action === "issue.created") {
     return {
-      title: `${actor} created ${issue.ref}`,
+      title: formatMessage(getRuntimeLocale(), "liveUpdates.issueCreated", { actor, ref: issue.ref }),
       body: issue.title ? truncate(issue.title, 96) : undefined,
       tone: "success",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewIssue", { ref: issue.ref }), href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
@@ -328,10 +329,10 @@ function buildActivityToast(
         ? truncate(issue.title, 96)
         : issue.label;
     return {
-      title: `${actor} updated ${issue.ref}`,
+      title: formatMessage(getRuntimeLocale(), "liveUpdates.issueUpdated", { actor, ref: issue.ref }),
       body: truncate(body, 100),
       tone: "info",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewIssue", { ref: issue.ref }), href: issue.href },
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
@@ -343,14 +344,14 @@ function buildActivityToast(
   const reopenedFrom = readString(details?.reopenedFrom);
   const reopenedLabel = reopened
     ? reopenedFrom
-      ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
+      ? formatMessage(getRuntimeLocale(), "liveUpdates.reopenedFrom", { status: localizedStatusLabel(reopenedFrom) })
+      : formatMessage(getRuntimeLocale(), "liveUpdates.reopened")
     : null;
   const title = reopened
-    ? `${actor} reopened and commented on ${issue.ref}`
+    ? formatMessage(getRuntimeLocale(), "liveUpdates.issueCommentedReopened", { actor, ref: issue.ref })
     : updated
-      ? `${actor} commented and updated ${issue.ref}`
-      : `${actor} commented on ${issue.ref}`;
+      ? formatMessage(getRuntimeLocale(), "liveUpdates.issueCommentedUpdated", { actor, ref: issue.ref })
+      : formatMessage(getRuntimeLocale(), "liveUpdates.issueCommented", { actor, ref: issue.ref });
   const body = bodySnippet
     ? reopenedLabel
       ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
@@ -364,7 +365,7 @@ function buildActivityToast(
     title,
     body: body ? truncate(body, 96) : undefined,
     tone: "info",
-    action: { label: `View ${issue.ref}`, href: issue.href },
+    action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewIssue", { ref: issue.ref }), href: issue.href },
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
   };
 }
@@ -381,13 +382,13 @@ function buildJoinRequestToast(
   if (action !== "join.requested" && action !== "join.request_replayed") return null;
 
   const requestType = readString(details?.requestType);
-  const label = requestType === "agent" ? "Agent" : "Someone";
+  const label = requestType === "agent" ? formatMessage(getRuntimeLocale(), "liveUpdates.joinRequesterAgent") : formatMessage(getRuntimeLocale(), "liveUpdates.joinRequesterSomeone");
 
   return {
-    title: `${label} wants to join`,
-    body: "A new join request is waiting for approval.",
+    title: formatMessage(getRuntimeLocale(), "liveUpdates.joinWantsToJoin", { label }),
+    body: formatMessage(getRuntimeLocale(), "liveUpdates.joinWaitingApproval"),
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/mine" },
+    action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewInbox"), href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -403,7 +404,7 @@ function buildAgentStatusToast(
   if (!agentId || !status || !AGENT_TOAST_STATUSES.has(status)) return null;
 
   const tone = status === "error" ? "error" : "info";
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
+  const name = nameOf(agentId) ?? formatMessage(getRuntimeLocale(), "liveUpdates.actorAgent", { id: shortId(agentId) });
   const title =
     status === "running"
       ? formatMessage(getRuntimeLocale(), "liveUpdates.agentStarted", { name })
@@ -417,7 +418,7 @@ function buildAgentStatusToast(
     title,
     body,
     tone,
-    action: { label: formatMessage(getRuntimeLocale(), "common.agents"), href: `/agents/${agentId}` },
+    action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewAgent"), href: `/agents/${agentId}` },
     dedupeKey: `agent-status:${agentId}:${status}`,
   };
 }
@@ -433,7 +434,7 @@ function buildRunStatusToast(
 
   const error = readString(payload.error);
   const triggerDetail = readString(payload.triggerDetail);
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
+  const name = nameOf(agentId) ?? formatMessage(getRuntimeLocale(), "liveUpdates.actorAgent", { id: shortId(agentId) });
   const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";
   const title =
     status === "succeeded" ? formatMessage(getRuntimeLocale(), "liveUpdates.runSucceeded", { name })
