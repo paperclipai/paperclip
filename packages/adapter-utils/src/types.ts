@@ -316,7 +316,6 @@ export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 // ---------------------------------------------------------------------------
 // CLI types (moved from cli/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
-
 export interface CLIAdapterModule {
   type: string;
   formatStdoutEvent: (line: string, debug: boolean) => void;
@@ -325,6 +324,13 @@ export interface CLIAdapterModule {
 // ---------------------------------------------------------------------------
 // UI config form values (moved from ui/src/components/AgentConfigForm.tsx)
 // ---------------------------------------------------------------------------
+
+export interface AdapterFallbackChainEntryConfig {
+  adapterType: string;
+  model?: string;
+  adapterConfig?: Record<string, unknown>;
+  enabled?: boolean;
+}
 
 export interface CreateConfigValues {
   adapterType: string;
@@ -350,7 +356,10 @@ export interface CreateConfigValues {
   workspaceBranchTemplate?: string;
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
+  /** @deprecated Use adapterFallbackChain instead */
   fallbackToCodexOnRateLimit?: boolean;
+  /** Ordered list of fallback adapters tried on rate-limit errors */
+  adapterFallbackChain?: AdapterFallbackChainEntryConfig[];
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;

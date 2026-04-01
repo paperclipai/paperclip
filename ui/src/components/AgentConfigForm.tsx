@@ -47,6 +47,8 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { AdapterFallbackChainEditor } from "./AdapterFallbackChainEditor";
+import type { AdapterFallbackChainEntryConfig } from "@paperclipai/adapter-utils";
 
 /* ---- Create mode values ---- */
 
@@ -461,6 +463,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       heartbeat: mergedHeartbeat,
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
+
+  const currentFallbackChain = isCreate
+    ? (val!.adapterFallbackChain ?? [])
+    : eff("adapterConfig", "adapterFallbackChain", Array.isArray(config.adapterFallbackChain) ? config.adapterFallbackChain : (config.rateLimitFallback ? [config.rateLimitFallback] : []) as AdapterFallbackChainEntryConfig[]);
+
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -770,6 +777,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ? fetchedModelsError.message
                     : "Failed to load adapter models."}
                 </p>
+              )}
+
+              {isLocal && (
+                <div className="pt-2 pb-2">
+                  <AdapterFallbackChainEditor
+                    companyId={selectedCompanyId!}
+                    primaryAdapterType={adapterType}
+                    chain={currentFallbackChain}
+                    onChange={(newChain) => {
+                      if (isCreate) {
+                        set!({ adapterFallbackChain: newChain });
+                        return;
+                      }
+                      mark("adapterConfig", "adapterFallbackChain", newChain.length > 0 ? newChain : []);
+                      mark("adapterConfig", "rateLimitFallback", null);
+                    }}
+                  />
+                </div>
               )}
 
               {showThinkingEffort && (

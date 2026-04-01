@@ -26,6 +26,7 @@ export const defaultCreateValues: CreateConfigValues = {
   worktreeParentDir: "",
   runtimeServicesJson: "",
   fallbackToCodexOnRateLimit: false,
+  adapterFallbackChain: [],
   maxTurnsPerRun: 300,
   heartbeatEnabled: false,
   intervalSec: 300,

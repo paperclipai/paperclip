@@ -1,69 +1,104 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildRateLimitFallbackConfig,
-  resolveRateLimitFallbackTarget,
-  shouldUseRateLimitFallback,
+  buildFallbackConfig,
+  resolveAdapterFallbackChain,
+  isRateLimitError,
+  shouldContinueFallbackChain,
   stripAdapterSessionState,
 } from "../services/heartbeat.js";
 
-describe("heartbeat rate-limit fallback helpers", () => {
-  it("resolves claude -> codex fallback config", () => {
+describe("heartbeat adapter fallback chain helpers", () => {
+  it("resolves multi-step fallback chain", () => {
     expect(
-      resolveRateLimitFallbackTarget("claude_local", {
+      resolveAdapterFallbackChain("claude_local", {
+        adapterFallbackChain: [
+          {
+            adapterType: "codex_local",
+            adapterConfig: { model: "gpt-5.4" },
+            enabled: true,
+          },
+          {
+            adapterType: "gemini_local",
+            adapterConfig: { model: "gemini-3.1-pro" },
+            enabled: true,
+          },
+          {
+            adapterType: "pi_local",
+            adapterConfig: {},
+            enabled: false, // Should be filtered out
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        enabled: true,
+      },
+      {
+        adapterType: "gemini_local",
+        adapterConfig: { model: "gemini-3.1-pro" },
+        enabled: true,
+      },
+    ]);
+  });
+
+  it("resolves legacy rateLimitFallback into a single-entry chain for backward compat", () => {
+    expect(
+      resolveAdapterFallbackChain("claude_local", {
         rateLimitFallback: {
           adapterType: "codex_local",
           adapterConfig: { model: "gpt-5.4" },
         },
       }),
-    ).toEqual({
-      adapterType: "codex_local",
-      adapterConfig: { model: "gpt-5.4" },
-    });
+    ).toEqual([
+      {
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        enabled: true,
+      },
+    ]);
   });
 
-  it("ignores fallback config for non-claude adapters", () => {
+  it("allows non-claude primary adapters to have fallbacks", () => {
     expect(
-      resolveRateLimitFallbackTarget("codex_local", {
-        rateLimitFallback: { adapterType: "codex_local" },
+      resolveAdapterFallbackChain("codex_local", {
+        adapterFallbackChain: [
+          { adapterType: "gemini_local", adapterConfig: {} },
+        ],
       }),
-    ).toBeNull();
+    ).toEqual([
+      { adapterType: "gemini_local", adapterConfig: {}, enabled: true },
+    ]);
   });
 
-  it("retries only when the primary result is rate limited", () => {
-    const fallback = { adapterType: "codex_local", adapterConfig: {} };
-
+  it("identifies rate limit and quota errors accurately", () => {
     expect(
-      shouldUseRateLimitFallback(
-        { errorCode: "claude_rate_limited", timedOut: false, exitCode: 1 },
-        fallback,
-      ),
+      isRateLimitError({ errorCode: "claude_rate_limited", timedOut: false, exitCode: 1 }),
     ).toBe(true);
     expect(
-      shouldUseRateLimitFallback(
-        { errorCode: "claude_auth_required", timedOut: false, exitCode: 1 },
-        fallback,
-      ),
+      isRateLimitError({ errorCode: "claude_auth_required", timedOut: false, exitCode: 1 }),
     ).toBe(false);
     expect(
-      shouldUseRateLimitFallback(
-        { errorCode: "claude_rate_limited", timedOut: true, exitCode: 1 },
-        fallback,
-      ),
-    ).toBe(false);
+      isRateLimitError({ errorCode: "claude_rate_limited", timedOut: true, exitCode: 1 }),
+    ).toBe(false); // Timeouts are not treated as rate limits for fallback purposes
     expect(
-      shouldUseRateLimitFallback(
-        {
-          errorCode: null,
-          errorMessage: "Claude run failed: subtype=success: You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)",
-          resultJson: {
-            result: "You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)",
-          },
-          timedOut: false,
-          exitCode: 1,
+      isRateLimitError({
+        errorCode: null,
+        errorMessage: "Claude run failed: subtype=success: You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)",
+        resultJson: {
+          result: "You're out of extra usage · resets Apr 4, 3am (Asia/Jerusalem)",
         },
-        fallback,
-      ),
+        timedOut: false,
+        exitCode: 1,
+      }),
     ).toBe(true);
+  });
+
+  it("continues fallback-chain execution after any failed fallback step", () => {
+    expect(shouldContinueFallbackChain({ exitCode: 1, timedOut: false })).toBe(true);
+    expect(shouldContinueFallbackChain({ exitCode: null, timedOut: true })).toBe(true);
+    expect(shouldContinueFallbackChain({ exitCode: 0, timedOut: false })).toBe(false);
   });
 
   it("strips incompatible session state from fallback adapter results", () => {
@@ -90,9 +125,9 @@ describe("heartbeat rate-limit fallback helpers", () => {
     });
   });
 
-  it("builds fallback config from portable shared settings instead of reusing claude-only command fields", () => {
+  it("builds fallback config from portable shared settings instead of reusing primary-only command fields", () => {
     expect(
-      buildRateLimitFallbackConfig(
+      buildFallbackConfig(
         {
           command: "claude",
           promptTemplate: "Continue",
@@ -125,6 +160,55 @@ describe("heartbeat rate-limit fallback helpers", () => {
       graceSec: 15,
       paperclipRuntimeSkills: [{ key: "paperclip" }],
       model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      extraArgs: ["--skip-git-repo-check"],
+    });
+  });
+
+  it("adds --skip-git-repo-check to codex fallbacks when the user did not provide it", () => {
+    expect(
+      buildFallbackConfig(
+        {
+          cwd: "C:\\repo",
+        },
+        {
+          adapterType: "codex_local",
+          adapterConfig: {
+            command: "codex",
+            model: "gpt-5.4",
+          },
+        },
+      ),
+    ).toEqual({
+      cwd: "C:\\repo",
+      command: "codex",
+      model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      extraArgs: ["--skip-git-repo-check"],
+    });
+  });
+
+  it("preserves an explicit codex fallback sandbox choice instead of forcing bypass", () => {
+    expect(
+      buildFallbackConfig(
+        {
+          cwd: "C:\\repo",
+        },
+        {
+          adapterType: "codex_local",
+          adapterConfig: {
+            command: "codex",
+            model: "gpt-5.4",
+            dangerouslyBypassApprovalsAndSandbox: false,
+          },
+        },
+      ),
+    ).toEqual({
+      cwd: "C:\\repo",
+      command: "codex",
+      model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: false,
+      extraArgs: ["--skip-git-repo-check"],
     });
   });
 });

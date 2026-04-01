@@ -89,6 +89,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
     typeof v.dangerouslyBypassSandbox === "boolean"
       ? v.dangerouslyBypassSandbox
       : DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+  if (v.adapterFallbackChain && v.adapterFallbackChain.length > 0) {
+    ac.adapterFallbackChain = v.adapterFallbackChain;
+  }
   if (v.workspaceStrategyType === "git_worktree") {
     ac.workspaceStrategy = {
       type: "git_worktree",

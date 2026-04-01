@@ -64,6 +64,9 @@ export function buildPiLocalConfig(v: CreateConfigValues): Record<string, unknow
     }
   }
   if (Object.keys(env).length > 0) ac.env = env;
+  if (v.adapterFallbackChain && v.adapterFallbackChain.length > 0) {
+    ac.adapterFallbackChain = v.adapterFallbackChain;
+  }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = v.extraArgs;
   if (v.args) ac.args = v.args;

@@ -83,7 +83,9 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (Object.keys(env).length > 0) ac.env = env;
   ac.maxTurnsPerRun = v.maxTurnsPerRun;
   ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
-  if (v.fallbackToCodexOnRateLimit) {
+  if (v.adapterFallbackChain && v.adapterFallbackChain.length > 0) {
+    ac.adapterFallbackChain = v.adapterFallbackChain;
+  } else if (v.fallbackToCodexOnRateLimit) {
     ac.rateLimitFallback = {
       adapterType: "codex_local",
     };
