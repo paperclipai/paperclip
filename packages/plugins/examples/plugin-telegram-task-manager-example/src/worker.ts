@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import TelegramBot from "node-telegram-bot-api";
+import manifest from "./manifest.js";
 import {
   formatCommentTimestamp as formatLocalizedCommentTimestamp,
   formatCommentAddedNotice,
@@ -156,6 +157,7 @@ const ISSUE_REOPEN_STATUS_STATE_NAMESPACE = "issue-reopen-status";
 const ACTIVE_ISSUE_STATUSES = new Set(["backlog", "todo", "open", "in_progress"]);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled", "canceled"]);
 const ALLOWED_CONFIG_KEYS = new Set(["language", "telegramBotToken", "telegramChatId", "allowedTelegramUserId"]);
+const MAX_SESSION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 let bot: TelegramBot | null = null;
 let currentCompanyId: string | null = null;
@@ -396,8 +398,8 @@ function parseTaskDraft(input: string): { title: string; description: string } |
   };
 }
 
-function sortProjectsByName(projects: BotProject[]): BotProject[] {
-  return [...projects].sort((left, right) => left.name.localeCompare(right.name, projectSortLocale("ru")));
+function sortProjectsByName(projects: BotProject[], language: SupportedLanguage = "ru"): BotProject[] {
+  return [...projects].sort((left, right) => left.name.localeCompare(right.name, projectSortLocale(language)));
 }
 
 function buildPageButtons(
@@ -446,6 +448,7 @@ async function stopBot(): Promise<void> {
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("🚀 Telegram Task Manager starting...");
+    cachedLocalBoardCredentials = undefined;
 
     const rawConfig = await ctx.config.get();
     activeConfig = normalizeConfig(rawConfig);
@@ -471,7 +474,18 @@ const plugin = definePlugin({
       await ctx.state.set({ scopeKind: "instance", stateKey: LAST_CHAT_ID_STATE_KEY }, chatId);
     };
 
+    const pruneSessions = () => {
+      const cutoff = Date.now() - MAX_SESSION_AGE_MS;
+      for (const [chatId, session] of sessions.entries()) {
+        const timestamp = new Date(session.lastMessageAt).getTime();
+        if (!Number.isFinite(timestamp) || timestamp < cutoff) {
+          sessions.delete(chatId);
+        }
+      }
+    };
+
     const upsertSession = (chatId: string, patch: Partial<SessionState> = {}): SessionState => {
+      pruneSessions();
       const nextSession: SessionState = {
         chatId,
         lastMessageAt: new Date().toISOString(),
@@ -662,7 +676,7 @@ const plugin = definePlugin({
         limit: 200,
       })) as BotProject[];
 
-      const activeProjects = sortProjectsByName(projects.filter((project) => !project.archivedAt));
+      const activeProjects = sortProjectsByName(projects.filter((project) => !project.archivedAt), language);
       for (const project of activeProjects) {
         rememberProjectName(project);
       }
@@ -793,7 +807,7 @@ const plugin = definePlugin({
     };
 
     const persistSanitizedPluginConfig = async (nextConfig: Record<string, unknown>): Promise<void> => {
-      await callLocalBoardApi(`/api/plugins/telegram-task-manager/config`, {
+      await callLocalBoardApi(`/api/plugins/${manifest.id}/config`, {
         method: "POST",
         body: {
           configJson: nextConfig,
