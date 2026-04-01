@@ -70,7 +70,7 @@ node packages/plugins/create-paperclip-plugin/dist/index.js @yourscope/my-plugin
 ### Validate All Plugins
 
 ```bash
-# Run full validation suite (7 steps, ~36s)
+# Run full validation suite (8 steps, ~55s)
 ./scripts/validate-plugins.sh
 
 # Output:

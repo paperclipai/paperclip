@@ -141,7 +141,7 @@ sudo ./scripts/install-cron.sh --run-now
 ### Manual Validation
 
 ```bash
-# Full validation (7 steps, ~30s)
+# Full validation (8 steps, ~55s)
 ./scripts/validate-plugins.sh
 
 # Script self-tests only
