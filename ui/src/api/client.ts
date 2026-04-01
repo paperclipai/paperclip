@@ -19,10 +19,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
+  const signal = init?.signal ?? AbortSignal.timeout(60_000);
+
   const res = await fetch(`${BASE}${path}`, {
     headers,
     credentials: "include",
     ...init,
+    signal,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);

@@ -518,6 +518,16 @@ export function agentRoutes(db: Db) {
     return details;
   }
 
+  function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timerId: ReturnType<typeof setTimeout>;
+    return Promise.race([
+      promise.finally(() => clearTimeout(timerId)),
+      new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  }
+
   function buildUnsupportedSkillSnapshot(
     adapterType: string,
     desiredSkills: string[] = [],
@@ -726,35 +736,48 @@ export function agentRoutes(db: Db) {
     }
     await assertCanReadConfigurations(req, agent.companyId);
 
-    const adapter = findServerAdapter(agent.adapterType);
-    if (!adapter?.listSkills) {
-      const preference = readPaperclipSkillSyncPreference(
-        agent.adapterConfig as Record<string, unknown>,
-      );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
-      return;
-    }
+    try {
+      const adapter = findServerAdapter(agent.adapterType);
+      if (!adapter?.listSkills) {
+        const preference = readPaperclipSkillSyncPreference(
+          agent.adapterConfig as Record<string, unknown>,
+        );
+        const runtimeSkillEntries = await withTimeout(
+          companySkills.listRuntimeSkillEntries(agent.companyId, {
+            materializeMissing: false,
+          }),
+          30_000,
+          "listRuntimeSkillEntries",
+        );
+        const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
+        res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+        return;
+      }
 
-    const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
-      agent.adapterConfig,
-    );
-    const runtimeSkillConfig = await buildRuntimeSkillConfig(
-      agent.companyId,
-      agent.adapterType,
-      runtimeConfig,
-    );
-    const snapshot = await adapter.listSkills({
-      agentId: agent.id,
-      companyId: agent.companyId,
-      adapterType: agent.adapterType,
-      config: runtimeSkillConfig,
-    });
-    res.json(snapshot);
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+        agent.companyId,
+        agent.adapterConfig,
+      );
+      const runtimeSkillConfig = await buildRuntimeSkillConfig(
+        agent.companyId,
+        agent.adapterType,
+        runtimeConfig,
+      );
+      const snapshot = await withTimeout(
+        adapter.listSkills({
+          agentId: agent.id,
+          companyId: agent.companyId,
+          adapterType: agent.adapterType,
+          config: runtimeSkillConfig,
+        }),
+        30_000,
+        "adapter.listSkills",
+      );
+      res.json(snapshot);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(504).json({ error: message });
+    }
   });
 
   router.post(
@@ -813,21 +836,37 @@ export function agentRoutes(db: Db) {
         ...runtimeConfig,
         paperclipRuntimeSkills: runtimeSkillEntries,
       };
-      const snapshot = adapter?.syncSkills
-        ? await adapter.syncSkills({
-            agentId: updated.id,
-            companyId: updated.companyId,
-            adapterType: updated.adapterType,
-            config: runtimeSkillConfig,
-          }, desiredSkills)
-        : adapter?.listSkills
-          ? await adapter.listSkills({
-              agentId: updated.id,
-              companyId: updated.companyId,
-              adapterType: updated.adapterType,
-              config: runtimeSkillConfig,
-            })
-          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+
+      let snapshot: AgentSkillSnapshot;
+      try {
+        snapshot = adapter?.syncSkills
+          ? await withTimeout(
+              adapter.syncSkills({
+                agentId: updated.id,
+                companyId: updated.companyId,
+                adapterType: updated.adapterType,
+                config: runtimeSkillConfig,
+              }, desiredSkills),
+              30_000,
+              "adapter.syncSkills",
+            )
+          : adapter?.listSkills
+            ? await withTimeout(
+                adapter.listSkills({
+                  agentId: updated.id,
+                  companyId: updated.companyId,
+                  adapterType: updated.adapterType,
+                  config: runtimeSkillConfig,
+                }),
+                30_000,
+                "adapter.listSkills",
+              )
+            : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        res.status(504).json({ error });
+        return;
+      }
 
       await logActivity(db, {
         companyId: updated.companyId,
