@@ -1310,6 +1310,16 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
       const paperclipIssueId = JSON.parse(String(linkEntry.valueJson));
 
+      // Look up the Paperclip issue for companyId (needed for activity logging)
+      const [paperclipIssue] = await db
+        .select({ companyId: issuesTable.companyId, identifier: issuesTable.identifier })
+        .from(issuesTable)
+        .where(eq(issuesTable.id, paperclipIssueId))
+        .limit(1);
+
+      const companyId = paperclipIssue?.companyId;
+      const issueIdentifier = paperclipIssue?.identifier ?? paperclipIssueId;
+
       // Handle issue updates
       if (type === "Issue" && action === "update") {
         const statusMap: Record<string, string> = {
@@ -1321,28 +1331,52 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         };
 
         const patch: Record<string, unknown> = {};
+        const changedFields: string[] = [];
 
         // Status
         const state = data.state as Record<string, unknown> | undefined;
         if (state?.type) {
           const newStatus = statusMap[state.type as string];
-          if (newStatus) patch.status = newStatus;
+          if (newStatus) {
+            patch.status = newStatus;
+            changedFields.push(`status → ${newStatus}`);
+            // Track timestamps for status transitions
+            if (newStatus === "in_progress") patch.startedAt = new Date();
+            if (newStatus === "done") patch.completedAt = new Date();
+          }
         }
 
         // Priority
         if (data.priority !== undefined) {
           const newPriority = priorityMap[data.priority as number];
-          if (newPriority) patch.priority = newPriority;
+          if (newPriority) {
+            patch.priority = newPriority;
+            changedFields.push(`priority → ${newPriority}`);
+          }
         }
 
         // Title
         if (data.title) {
           patch.title = data.title;
+          changedFields.push("title");
+        }
+
+        // Description
+        if (data.description !== undefined) {
+          patch.description = data.description as string | null;
+          changedFields.push("description");
         }
 
         // Estimate
         if (data.estimate !== undefined) {
           patch.estimate = (data.estimate as number) ?? null;
+          changedFields.push(`estimate → ${data.estimate ?? "none"}`);
+        }
+
+        // Due date
+        if (data.dueDate !== undefined) {
+          patch.dueDate = data.dueDate as string | null;
+          changedFields.push(`dueDate → ${data.dueDate ?? "none"}`);
         }
 
         if (Object.keys(patch).length > 0) {
@@ -1350,31 +1384,121 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             .set({ ...patch, updatedAt: new Date() })
             .where(eq(issuesTable.id, paperclipIssueId));
 
-          console.log(`[linear-webhook] updated ${paperclipIssueId}: ${Object.keys(patch).join(", ")}`);
+          // Log activity
+          if (companyId) {
+            await logActivity(db, {
+              companyId,
+              actorType: "user",
+              actorId: "linear-webhook",
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: paperclipIssueId,
+              details: { source: "linear", fields: changedFields },
+            });
+
+            // Publish live event so UI updates in real-time
+            const { publishLiveEvent } = await import("../services/live-events.js");
+            publishLiveEvent({
+              companyId,
+              type: "activity.logged",
+              payload: { entityType: "issue", entityId: paperclipIssueId, action: "issue.updated" },
+            });
+          }
+
+          console.log(`[linear-webhook] updated ${issueIdentifier}: ${changedFields.join(", ")}`);
         }
       }
 
-      // Handle comments
-      if (type === "Comment" && action === "create") {
+      // Handle issue creation from Linear (new issues created in Linear appear in Paperclip)
+      if (type === "Issue" && action === "create") {
+        const identifier = data.identifier as string | undefined;
+        if (identifier && companyId) {
+          // Check if already exists
+          const [existing] = await db.select({ id: issuesTable.id }).from(issuesTable)
+            .where(eq(issuesTable.identifier, identifier)).limit(1);
+
+          if (!existing) {
+            const statusMap: Record<string, string> = {
+              backlog: "backlog", unstarted: "todo", started: "in_progress",
+              completed: "done", cancelled: "cancelled",
+            };
+            const priorityMap: Record<number, string> = {
+              0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
+            };
+            const state = data.state as Record<string, unknown> | undefined;
+            const status = statusMap[(state?.type as string) ?? "backlog"] ?? "backlog";
+            const priority = priorityMap[(data.priority as number) ?? 0] ?? "medium";
+
+            await db.insert(issuesTable).values({
+              companyId,
+              issueNumber: data.number as number,
+              identifier,
+              title: (data.title as string) ?? "Untitled",
+              description: (data.description as string) ?? null,
+              status,
+              priority,
+              originKind: "linear",
+              originId: data.id as string,
+            });
+
+            // Create plugin state link for future webhook lookups
+            await db.insert(pluginStateTable).values({
+              pluginId: plugin.id,
+              scopeKind: "instance",
+              scopeId: null,
+              namespace: "default",
+              stateKey: `linear:${data.id}`,
+              valueJson: JSON.stringify(paperclipIssueId),
+            }).onConflictDoNothing();
+
+            await logActivity(db, {
+              companyId,
+              actorType: "user",
+              actorId: "linear-webhook",
+              action: "issue.created",
+              entityType: "issue",
+              entityId: identifier,
+              details: { source: "linear", identifier },
+            });
+
+            console.log(`[linear-webhook] created issue from Linear: ${identifier}`);
+          }
+        }
+      }
+
+      // Handle comments (create and update)
+      if (type === "Comment" && (action === "create" || action === "update")) {
         const commentBody = data.body as string;
         const userName = (data.user as Record<string, unknown>)?.name as string;
 
         if (commentBody && !commentBody.includes("[synced from Paperclip]")) {
           const { issueComments } = await import("@paperclipai/db");
-          // Look up the issue to get companyId
-          const [issue] = await db
-            .select({ companyId: issuesTable.companyId })
-            .from(issuesTable)
-            .where(eq(issuesTable.id, paperclipIssueId))
-            .limit(1);
 
-          if (issue) {
+          if (companyId) {
             await db.insert(issueComments).values({
               issueId: paperclipIssueId,
-              companyId: issue.companyId,
+              companyId,
               body: `**${userName || "Linear user"}** (from Linear):\n\n${commentBody}`,
             });
-            console.log(`[linear-webhook] comment bridged to ${paperclipIssueId}`);
+
+            await logActivity(db, {
+              companyId,
+              actorType: "user",
+              actorId: "linear-webhook",
+              action: "comment.created",
+              entityType: "issue",
+              entityId: paperclipIssueId,
+              details: { source: "linear", author: userName || "Linear user" },
+            });
+
+            const { publishLiveEvent } = await import("../services/live-events.js");
+            publishLiveEvent({
+              companyId,
+              type: "activity.logged",
+              payload: { entityType: "issue", entityId: paperclipIssueId, action: "comment.created" },
+            });
+
+            console.log(`[linear-webhook] comment bridged to ${issueIdentifier}`);
           }
         }
       }
@@ -1383,6 +1507,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         const projectName = data.name as string;
         const projectDesc = data.description as string | null;
         const projectState = (data.state as Record<string, unknown>)?.name as string | undefined;
+        const targetDate = data.targetDate as string | null | undefined;
 
         if (projectName) {
           const linearStatusMap: Record<string, string> = {
@@ -1394,7 +1519,6 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           };
           const status = projectState ? (linearStatusMap[projectState] ?? "backlog") : undefined;
 
-          // Find all companies (local trusted mode = one company)
           const allCompanies = await db.select({ id: companies.id }).from(companies);
           for (const c of allCompanies) {
             const [existing] = await db.select().from(projects)
@@ -1405,15 +1529,39 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
               const patch: Record<string, unknown> = { updatedAt: new Date() };
               if (projectDesc !== undefined) patch.description = projectDesc;
               if (status) patch.status = status;
+              if (targetDate !== undefined) patch.targetDate = targetDate;
               await db.update(projects).set(patch).where(eq(projects.id, existing.id));
+
+              await logActivity(db, {
+                companyId: c.id,
+                actorType: "user",
+                actorId: "linear-webhook",
+                action: "project.updated",
+                entityType: "project",
+                entityId: existing.id,
+                details: { source: "linear", name: projectName },
+              });
               console.log(`[linear-webhook] updated project: ${projectName}`);
-            } else if (action === "create") {
-              await db.insert(projects).values({
+            } else {
+              const [created] = await db.insert(projects).values({
                 companyId: c.id,
                 name: projectName,
                 description: projectDesc,
                 status: status ?? "backlog",
-              });
+                targetDate: targetDate ?? null,
+              }).returning();
+
+              if (created) {
+                await logActivity(db, {
+                  companyId: c.id,
+                  actorType: "user",
+                  actorId: "linear-webhook",
+                  action: "project.created",
+                  entityType: "project",
+                  entityId: created.id,
+                  details: { source: "linear", name: projectName },
+                });
+              }
               console.log(`[linear-webhook] created project: ${projectName}`);
             }
           }
@@ -1438,6 +1586,12 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             }
           }
         }
+      }
+
+      // Handle issue label assignment changes
+      if (type === "Issue" && action === "update" && data.labelIds) {
+        // Linear sends labelIds array when labels change on an issue
+        // We'd need to resolve label names from IDs — skip for now, handled by full sync
       }
     } catch (err) {
       console.error("[linear-webhook] error:", err);
