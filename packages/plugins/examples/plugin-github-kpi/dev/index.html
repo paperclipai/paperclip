@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GitHub Org KPI Plugin — Dev Preview</title>
+  <style>
+    :root {
+      --background: #0a0a0a;
+      --foreground: #e5e5e5;
+      --card: #141414;
+      --border: #262626;
+      --muted-foreground: #737373;
+      --primary: #3b82f6;
+      --destructive: #ef4444;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--background);
+      color: var(--foreground);
+      padding: 24px;
+    }
+    .dev-shell { max-width: 1280px; margin: 0 auto; }
+    .dev-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0; border-bottom: 1px solid var(--border); margin-bottom: 32px;
+    }
+    .dev-header h1 { font-size: 16px; font-weight: 600; }
+    .dev-header span { font-size: 12px; color: var(--muted-foreground); font-family: monospace; }
+    .dev-section { margin-bottom: 48px; }
+    .dev-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted-foreground);
+      margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
+    .widget-frame {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px; background: var(--card);
+      max-width: 480px;
+    }
+    .page-frame {
+      border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; background: var(--card);
+    }
+    .tab-bar { display: flex; gap: 0; margin-bottom: 24px; }
+    .tab-bar button {
+      padding: 8px 20px; border: 1px solid var(--border); background: transparent;
+      color: var(--muted-foreground); cursor: pointer; font-size: 13px; font-weight: 500;
+    }
+    .tab-bar button:first-child { border-radius: 6px 0 0 6px; }
+    .tab-bar button:last-child  { border-radius: 0 6px 6px 0; }
+    .tab-bar button.active {
+      background: var(--primary); color: #fff; border-color: var(--primary);
+    }
+    #mount-widget, #mount-page { min-height: 60px; }
+  </style>
+</head>
+<body>
+  <div class="dev-shell">
+    <div class="dev-header">
+      <h1>GitHub Org KPI Plugin — Dev Preview</h1>
+      <span>valctrl.github-kpi v0.2.0</span>
+    </div>
+
+    <div class="tab-bar">
+      <button class="active" onclick="showView('widget')">Dashboard Widget</button>
+      <button onclick="showView('page')">Full Page</button>
+    </div>
+
+    <div class="dev-section" id="section-widget">
+      <div class="dev-section-title">Dashboard Widget Slot</div>
+      <div class="widget-frame">
+        <div id="mount-widget"></div>
+      </div>
+    </div>
+
+    <div class="dev-section" id="section-page" style="display:none">
+      <div class="dev-section-title">Full Page View</div>
+      <div class="page-frame">
+        <div id="mount-page"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@19?dev",
+      "react-dom": "https://esm.sh/react-dom@19?dev",
+      "react-dom/client": "https://esm.sh/react-dom@19/client?dev",
+      "react/jsx-runtime": "https://esm.sh/react@19/jsx-runtime?dev",
+      "@paperclipai/plugin-sdk/ui": "/sdk-ui-shim.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+
+    // ── Mock KPI data — org-level AI-era development ─────────────────
+    const MOCK_SNAPSHOT = {
+      syncedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+      org: "paperclipai",
+      repoCount: 8,
+      // velocity
+      commitsThisWeek: 1247,
+      commitActivitySpark: [85, 142, 268, 410, 580, 790, 1020, 1247],
+      linesChangedThisWeek: 94_350,
+      // PR pipeline
+      openPRs: 34,
+      mergedPRsThisWeek: 178,
+      avgPRCycleMinutes: 38,
+      // issue throughput
+      openIssues: 67,
+      closedIssuesThisWeek: 143,
+      avgIssueResolutionHours: 1.8,
+      // team
+      contributorsThisMonth: 14,
+      topContributors: [
+        { login: "cursor-agent", commits: 312 },
+        { login: "codex-worker", commits: 248 },
+        { login: "claude-dev", commits: 178 },
+        { login: "alice", commits: 134 },
+        { login: "bob", commits: 98 },
+        { login: "carol", commits: 72 },
+        { login: "dave", commits: 61 },
+        { login: "copilot-pr-bot", commits: 48 },
+        { login: "eve", commits: 37 },
+        { login: "frank", commits: 28 },
+        { login: "renovate-bot", commits: 18 },
+        { login: "grace", commits: 13 },
+      ],
+      // releases
+      deploysThisWeek: 23,
+      latestRelease: "paperclip@v3.8.0",
+      // derived
+      velocityMultiplier: 29.7,
+      throughputPerDev: 89,
+      // CI/CD
+      cicd: {
+        totalRuns: 842,
+        passed: 781,
+        failed: 47,
+        cancelled: 14,
+        passRate: 93,
+        avgDurationMinutes: 4.8,
+        mttrMinutes: 22,
+        failuresByAuthor: [
+          { login: "cursor-agent", failures: 18 },
+          { login: "codex-worker", failures: 12 },
+          { login: "alice", failures: 6 },
+          { login: "claude-dev", failures: 5 },
+          { login: "bob", failures: 4 },
+          { login: "carol", failures: 2 },
+        ],
+        failuresByWorkflow: [
+          { name: "CI", repo: "paperclip", failures: 14, total: 210, passRate: 93 },
+          { name: "Integration Tests", repo: "paperclip", failures: 8, total: 85, passRate: 91 },
+          { name: "CI", repo: "paperclip-sdk", failures: 7, total: 140, passRate: 95 },
+          { name: "E2E Tests", repo: "agent-runtime", failures: 6, total: 42, passRate: 86 },
+          { name: "Deploy Preview", repo: "paperclip-docs", failures: 5, total: 98, passRate: 95 },
+          { name: "Terraform Plan", repo: "paperclip-infra", failures: 4, total: 38, passRate: 89 },
+          { name: "Lint & Type Check", repo: "dashboard-ui", failures: 3, total: 52, passRate: 94 },
+        ],
+        recentFailures: [
+          { repo: "paperclip", workflow: "Integration Tests", branch: "feat/multi-agent-orchestration", actor: "cursor-agent", conclusion: "failure", createdAt: new Date(Date.now() - 12 * 60_000).toISOString(), runNumber: 1847 },
+          { repo: "agent-runtime", workflow: "E2E Tests", branch: "feat/agent-memory", actor: "claude-dev", conclusion: "failure", createdAt: new Date(Date.now() - 38 * 60_000).toISOString(), runNumber: 312 },
+          { repo: "paperclip-sdk", workflow: "CI", branch: "feat/hot-reload", actor: "codex-worker", conclusion: "failure", createdAt: new Date(Date.now() - 52 * 60_000).toISOString(), runNumber: 890 },
+          { repo: "paperclip", workflow: "CI", branch: "feat/nl-query-builder", actor: "alice", conclusion: "failure", createdAt: new Date(Date.now() - 85 * 60_000).toISOString(), runNumber: 1842 },
+          { repo: "paperclip-infra", workflow: "Terraform Plan", branch: "feat/multi-region-tf", actor: "cursor-agent", conclusion: "failure", createdAt: new Date(Date.now() - 120 * 60_000).toISOString(), runNumber: 201 },
+          { repo: "paperclip", workflow: "Integration Tests", branch: "refactor/edge-auth", actor: "cursor-agent", conclusion: "failure", createdAt: new Date(Date.now() - 180 * 60_000).toISOString(), runNumber: 1838 },
+          { repo: "paperclip-docs", workflow: "Deploy Preview", branch: "docs/typedoc-gen", actor: "copilot-pr-bot", conclusion: "failure", createdAt: new Date(Date.now() - 240 * 60_000).toISOString(), runNumber: 445 },
+          { repo: "dashboard-ui", workflow: "Lint & Type Check", branch: "feat/visual-diff", actor: "eve", conclusion: "failure", createdAt: new Date(Date.now() - 320 * 60_000).toISOString(), runNumber: 128 },
+        ],
+      },
+      // per-repo breakdown
+      repos: [
+        { repo: "paperclip", openPRs: 14, mergedPRsThisWeek: 63, avgPRCycleMinutes: 42, commitsThisWeek: 487, linesChanged: 34820, openIssues: 31, closedIssuesThisWeek: 58, deploysThisWeek: 11, latestRelease: "v3.8.0",
+          contributors: [{ login: "cursor-agent", commits: 142 }, { login: "alice", commits: 98 }, { login: "codex-worker", commits: 87 }, { login: "claude-dev", commits: 68 }, { login: "bob", commits: 52 }, { login: "carol", commits: 40 }],
+          ciRuns: 295, ciPassed: 273, ciFailed: 22, ciPassRate: 93 },
+        { repo: "paperclip-sdk", openPRs: 6, mergedPRsThisWeek: 38, avgPRCycleMinutes: 28, commitsThisWeek: 264, linesChanged: 21400, openIssues: 12, closedIssuesThisWeek: 31, deploysThisWeek: 5, latestRelease: "v2.1.0",
+          contributors: [{ login: "codex-worker", commits: 104 }, { login: "alice", commits: 62 }, { login: "cursor-agent", commits: 48 }, { login: "carol", commits: 32 }, { login: "frank", commits: 18 }],
+          ciRuns: 140, ciPassed: 133, ciFailed: 7, ciPassRate: 95 },
+        { repo: "paperclip-docs", openPRs: 3, mergedPRsThisWeek: 25, avgPRCycleMinutes: 15, commitsThisWeek: 189, linesChanged: 14200, openIssues: 5, closedIssuesThisWeek: 22, deploysThisWeek: 3, latestRelease: "v1.4.2",
+          contributors: [{ login: "copilot-pr-bot", commits: 48 }, { login: "bob", commits: 46 }, { login: "eve", commits: 37 }, { login: "renovate-bot", commits: 18 }, { login: "alice", commits: 22 }, { login: "grace", commits: 18 }],
+          ciRuns: 98, ciPassed: 93, ciFailed: 5, ciPassRate: 95 },
+        { repo: "paperclip-infra", openPRs: 4, mergedPRsThisWeek: 21, avgPRCycleMinutes: 55, commitsThisWeek: 142, linesChanged: 10800, openIssues: 8, closedIssuesThisWeek: 14, deploysThisWeek: 2, latestRelease: "v1.2.0",
+          contributors: [{ login: "cursor-agent", commits: 74 }, { login: "dave", commits: 42 }, { login: "claude-dev", commits: 26 }],
+          ciRuns: 38, ciPassed: 34, ciFailed: 4, ciPassRate: 89 },
+        { repo: "agent-runtime", openPRs: 3, mergedPRsThisWeek: 15, avgPRCycleMinutes: 35, commitsThisWeek: 98, linesChanged: 8200, openIssues: 6, closedIssuesThisWeek: 10, deploysThisWeek: 1, latestRelease: "v0.9.3",
+          contributors: [{ login: "claude-dev", commits: 54 }, { login: "cursor-agent", commits: 28 }, { login: "alice", commits: 16 }],
+          ciRuns: 42, ciPassed: 36, ciFailed: 6, ciPassRate: 86 },
+        { repo: "plugin-examples", openPRs: 2, mergedPRsThisWeek: 9, avgPRCycleMinutes: 22, commitsThisWeek: 42, linesChanged: 3100, openIssues: 3, closedIssuesThisWeek: 5, deploysThisWeek: 1, latestRelease: null,
+          contributors: [{ login: "codex-worker", commits: 22 }, { login: "bob", commits: 12 }, { login: "dave", commits: 8 }],
+          ciRuns: 78, ciPassed: 77, ciFailed: 1, ciPassRate: 99 },
+        { repo: "dashboard-ui", openPRs: 1, mergedPRsThisWeek: 4, avgPRCycleMinutes: 48, commitsThisWeek: 18, linesChanged: 1400, openIssues: 1, closedIssuesThisWeek: 2, deploysThisWeek: 0, latestRelease: "v1.0.1",
+          contributors: [{ login: "eve", commits: 10 }, { login: "carol", commits: 5 }, { login: "frank", commits: 3 }],
+          ciRuns: 52, ciPassed: 49, ciFailed: 3, ciPassRate: 94 },
+        { repo: "company-website", openPRs: 1, mergedPRsThisWeek: 3, avgPRCycleMinutes: 30, commitsThisWeek: 7, linesChanged: 430, openIssues: 1, closedIssuesThisWeek: 1, deploysThisWeek: 0, latestRelease: null,
+          contributors: [{ login: "grace", commits: 4 }, { login: "frank", commits: 3 }],
+          ciRuns: 99, ciPassed: 99, ciFailed: 0, ciPassRate: 100 },
+      ],
+    };
+
+    const MOCK_PRS = [
+      { number: 891, title: "feat: multi-agent task orchestration with priority queues", repo: "paperclip", author: "cursor-agent", branch: "feat/multi-agent-orchestration", ageHours: 0.3, draft: false, reviewers: ["alice"], additions: 2340, deletions: 180, updatedAt: new Date(Date.now() - 1200_000).toISOString() },
+      { number: 445, title: "feat: add plugin hot-reload support in dev mode", repo: "paperclip-sdk", author: "codex-worker", branch: "feat/hot-reload", ageHours: 0.5, draft: false, reviewers: ["bob"], additions: 1820, deletions: 340, updatedAt: new Date(Date.now() - 1800_000).toISOString() },
+      { number: 889, title: "feat: real-time KPI streaming via SSE push", repo: "paperclip", author: "codex-worker", branch: "feat/kpi-sse-push", ageHours: 0.8, draft: false, reviewers: ["bob"], additions: 1580, deletions: 420, updatedAt: new Date(Date.now() - 2400_000).toISOString() },
+      { number: 887, title: "fix: race condition in concurrent plugin state writes", repo: "paperclip", author: "claude-dev", branch: "fix/state-race", ageHours: 1.2, draft: false, reviewers: ["alice", "carol"], additions: 89, deletions: 34, updatedAt: new Date(Date.now() - 3600_000).toISOString() },
+      { number: 210, title: "docs: auto-generate API reference from TypeDoc", repo: "paperclip-docs", author: "copilot-pr-bot", branch: "docs/typedoc-gen", ageHours: 1.5, draft: false, reviewers: [], additions: 8400, deletions: 5200, updatedAt: new Date(Date.now() - 4200_000).toISOString() },
+      { number: 885, title: "feat: natural language query builder for entity search", repo: "paperclip", author: "alice", branch: "feat/nl-query-builder", ageHours: 2.1, draft: false, reviewers: ["bob"], additions: 945, deletions: 52, updatedAt: new Date(Date.now() - 5400_000).toISOString() },
+      { number: 112, title: "feat: Terraform module for multi-region agent pools", repo: "paperclip-infra", author: "cursor-agent", branch: "feat/multi-region-tf", ageHours: 2.8, draft: false, reviewers: ["dave"], additions: 3480, deletions: 280, updatedAt: new Date(Date.now() - 6000_000).toISOString() },
+      { number: 882, title: "refactor: migrate auth middleware to edge runtime", repo: "paperclip", author: "cursor-agent", branch: "refactor/edge-auth", ageHours: 3.5, draft: false, reviewers: ["carol"], additions: 3200, deletions: 2890, updatedAt: new Date(Date.now() - 7200_000).toISOString() },
+      { number: 78, title: "feat: agent memory persistence across sessions", repo: "agent-runtime", author: "claude-dev", branch: "feat/agent-memory", ageHours: 4.0, draft: false, reviewers: ["alice"], additions: 2100, deletions: 450, updatedAt: new Date(Date.now() - 9000_000).toISOString() },
+      { number: 880, title: "chore: upgrade to TypeScript 5.9 strict mode", repo: "paperclip", author: "codex-worker", branch: "chore/ts59-strict", ageHours: 4.0, draft: true, reviewers: [], additions: 8420, deletions: 6190, updatedAt: new Date(Date.now() - 10800_000).toISOString() },
+      { number: 878, title: "feat: plugin marketplace with install/uninstall flow", repo: "paperclip", author: "bob", branch: "feat/plugin-marketplace", ageHours: 5.2, draft: false, reviewers: ["alice", "dave"], additions: 1820, deletions: 310, updatedAt: new Date(Date.now() - 14400_000).toISOString() },
+      { number: 44, title: "feat: visual diff viewer for dashboard changes", repo: "dashboard-ui", author: "eve", branch: "feat/visual-diff", ageHours: 6.5, draft: false, reviewers: ["carol"], additions: 780, deletions: 120, updatedAt: new Date(Date.now() - 16200_000).toISOString() },
+      { number: 870, title: "feat: predictive deploy confidence scoring", repo: "paperclip", author: "carol", branch: "feat/deploy-confidence", ageHours: 11.5, draft: false, reviewers: ["alice"], additions: 670, deletions: 95, updatedAt: new Date(Date.now() - 28800_000).toISOString() },
+    ];
+
+    // ── Mock plugin bridge ─────────────────────────────────────────────
+    const dataStore = {
+      "kpi-summary": { status: "ok", snapshot: MOCK_SNAPSHOT },
+      "pr-list": MOCK_PRS,
+    };
+
+    function usePluginData(key, _params) {
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(true);
+      React.useEffect(() => {
+        const timer = setTimeout(() => {
+          setData(dataStore[key] ?? null);
+          setLoading(false);
+        }, 400);
+        return () => clearTimeout(timer);
+      }, [key]);
+      return {
+        data,
+        loading,
+        error: null,
+        refresh: () => {
+          setLoading(true);
+          setTimeout(() => { setData(dataStore[key] ?? null); setLoading(false); }, 300);
+        },
+      };
+    }
+
+    function usePluginAction(_key) {
+      return async (params) => {
+        await new Promise(r => setTimeout(r, 800));
+        MOCK_SNAPSHOT.commitsThisWeek += Math.floor(Math.random() * 40) + 10;
+        MOCK_SNAPSHOT.mergedPRsThisWeek += Math.floor(Math.random() * 8) + 2;
+        MOCK_SNAPSHOT.linesChangedThisWeek += Math.floor(Math.random() * 5000) + 1000;
+        MOCK_SNAPSHOT.syncedAt = new Date().toISOString();
+        dataStore["kpi-summary"] = { status: "ok", snapshot: { ...MOCK_SNAPSHOT } };
+        return { ok: true };
+      };
+    }
+
+    function useHostContext() {
+      return { companyId: "dev-company-id", companyPrefix: "dev", projectId: null, entityId: null, entityType: null, userId: "dev-user" };
+    }
+
+    function usePluginStream() {
+      return { events: [], lastEvent: null, connecting: false, connected: false, error: null, close() {} };
+    }
+
+    function usePluginToast() {
+      return (input) => { console.log("[toast]", input); return null; };
+    }
+
+    globalThis.__paperclipPluginBridge__ = {
+      react: { createElement: React.createElement },
+      sdkUi: {
+        usePluginData,
+        usePluginAction,
+        useHostContext,
+        usePluginStream,
+        usePluginToast,
+      },
+    };
+
+    // ── Load plugin UI module and render ────────────────────────────────
+    const pluginModule = await import("./bundle.js");
+    const Widget = pluginModule.GitHubKpiDashboardWidget;
+    const Page = pluginModule.GitHubKpiPage;
+
+    const mockCtx = { companyId: "dev-company-id", companyPrefix: "dev", projectId: null, entityId: null, entityType: null, userId: "dev-user" };
+
+    const widgetRoot = createRoot(document.getElementById("mount-widget"));
+    widgetRoot.render(React.createElement(Widget, { context: mockCtx }));
+
+    const pageRoot = createRoot(document.getElementById("mount-page"));
+    pageRoot.render(React.createElement(Page, { context: mockCtx }));
+
+    // ── Tab switching ──────────────────────────────────────────────────
+    globalThis.showView = function(view) {
+      document.getElementById("section-widget").style.display = view === "widget" ? "" : "none";
+      document.getElementById("section-page").style.display   = view === "page"   ? "" : "none";
+      document.querySelectorAll(".tab-bar button").forEach(btn => {
+        btn.classList.toggle("active", btn.textContent.toLowerCase().includes(view));
+      });
+    };
+  </script>
+</body>
+</html>
