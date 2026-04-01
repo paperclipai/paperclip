@@ -2,7 +2,7 @@
 FROM node:22-trixie-slim AS base
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git tini \
+  && apt-get install -y --no-install-recommends ca-certificates curl git gosu tini \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
@@ -66,8 +66,11 @@ LABEL org.opencontainers.image.description="Paperclip - AI company orchestration
 LABEL org.opencontainers.image.vendor="Paperclip Inc."
 LABEL org.opencontainers.image.licenses="MIT"
 
+ARG USER_UID=1000
+ARG USER_GID=1000
+
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tini curl git ca-certificates \
+  && apt-get install -y --no-install-recommends tini curl git ca-certificates gosu \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
@@ -82,6 +85,9 @@ WORKDIR /app
 
 COPY --chown=node:node --from=build /app /app
 
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \
@@ -89,6 +95,8 @@ ENV NODE_ENV=production \
   SERVE_UI=true \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
+  USER_UID=${USER_UID} \
+  USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private
@@ -96,10 +104,8 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-USER node
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS http://localhost:3100/api/health || exit 1
 
-ENTRYPOINT ["tini", "--"]
+ENTRYPOINT ["tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--conditions=production", "server/dist/index.js"]

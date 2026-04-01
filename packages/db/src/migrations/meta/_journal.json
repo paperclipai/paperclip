@@ -358,6 +358,13 @@
       "when": 1774994400000,
       "tag": "0050_subscription_trial",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1774960197878,
+      "tag": "0051_smooth_sentinels",
+      "breakpoints": true
     }
   ]
 }

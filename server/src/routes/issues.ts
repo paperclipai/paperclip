@@ -11,6 +11,7 @@ import {
   createIssueSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
@@ -576,6 +577,57 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
     res.json(revisions);
   });
+
+  router.post(
+    "/issues/:id/documents/:key/revisions/:revisionId/restore",
+    validate(restoreIssueDocumentRevisionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const revisionId = req.params.revisionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await documentsSvc.restoreIssueDocumentRevision({
+        issueId: issue.id,
+        key: keyParsed.data,
+        revisionId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_restored",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+        },
+      });
+
+      res.json(result.document);
+    },
+  );
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
