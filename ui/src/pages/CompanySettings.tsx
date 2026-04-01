@@ -8,6 +8,7 @@ import { credentialsApi } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X, Users, Shield, UserPlus, Copy, Clock, ChevronDown, ChevronRight, Eye, EyeOff } from "lucide-react";
+import { TwoFactorSettings } from "../components/TwoFactorSettings";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -333,6 +334,9 @@ export function CompanySettings() {
 
       {/* Members & Permissions */}
       <MembersSection companyId={selectedCompanyId!} />
+
+      {/* Two-Factor Authentication */}
+      <TwoFactorSettings />
 
       {/* Invites */}
       <div className="space-y-4">
