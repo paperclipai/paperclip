@@ -130,11 +130,11 @@ describe("worktree config repair", () => {
     expect(repairedConfig.logging.logDir).toBe(path.join(instanceRoot, "logs"));
     expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
     expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
-    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
-    expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID="pap-884-ai-commits-component"');
-    expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);
-    expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
-    expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET="shared-secret"');
+    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${isolatedHome}`);
+    expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID=pap-884-ai-commits-component');
+    expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${await fs.realpath(configPath)}`);
+    expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${path.join(isolatedHome, "context.json")}`);
+    expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET=shared-secret');
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
   });
