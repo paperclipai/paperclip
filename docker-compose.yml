@@ -28,10 +28,8 @@ services:
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # Make `claude` available as a command anywhere in the container
-      PATH: /claude-bin/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      # Make `opencode` available as a command anywhere in the container
-      PATH: /opencode-bin/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Make `claude` and `opencode` available as commands anywhere in the container
+      PATH: /claude-bin/bin:/opencode-bin/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Writable config dir — credentials are copied here from the shared volume on startup
       CLAUDE_CONFIG_DIR: /paperclip/.claude-config
       OPENCODE_CONFIG_DIR: /opencode-config
