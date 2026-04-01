@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Agent, ChatMessage } from "@paperclipai/shared";
-import { Send } from "lucide-react";
+import type { Agent, ChatMessage, ChatMessageAttachment } from "@paperclipai/shared";
+import { Send, Paperclip, FileText, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import { AgentIcon } from "./AgentIconPicker";
@@ -19,13 +19,26 @@ interface ChatRoomProps {
   agentMap?: Map<string, Agent>;
 }
 
+type MessageWithAttachments = ChatMessage & {
+  attachments?: (ChatMessageAttachment & { contentPath: string })[];
+};
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
   const typingAgentIds = useChatTypingAgents(selectedCompanyId ?? null, roomId, roomAgentId ?? null);
 
   const { data: messages = [], isLoading } = useQuery({
@@ -36,7 +49,7 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
   });
 
   // Messages come newest-first from API, reverse for display
-  const sorted = [...messages].reverse();
+  const sorted = [...(messages as MessageWithAttachments[])].reverse();
 
   const sendMessage = useMutation({
     mutationFn: async (body: string) => {
@@ -49,12 +62,29 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
     },
   });
 
+  const uploadMessage = useMutation({
+    mutationFn: async ({ file, body }: { file: File; body?: string }) => {
+      if (!selectedCompanyId) throw new Error("No company selected");
+      return chatApi.postMessageWithAttachment(selectedCompanyId, roomId, file, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.chat.messages(roomId) });
+      setAutoScroll(true);
+    },
+  });
+
   const handleSend = useCallback(() => {
     const body = draft.trim();
+    if (pendingFile) {
+      setPendingFile(null);
+      setDraft("");
+      uploadMessage.mutate({ file: pendingFile, body: body || undefined });
+      return;
+    }
     if (!body || sendMessage.isPending) return;
     setDraft("");
     sendMessage.mutate(body);
-  }, [draft, sendMessage]);
+  }, [draft, sendMessage, pendingFile, uploadMessage]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -64,6 +94,41 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
       }
     },
     [handleSend],
+  );
+
+  const handleFileSelect = useCallback((file: File) => {
+    setPendingFile(file);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) handleFileSelect(file);
+      // Reset so the same file can be selected again
+      e.target.value = "";
+    },
+    [handleFileSelect],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragOver(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) handleFileSelect(file);
+    },
+    [handleFileSelect],
   );
 
   // Auto-scroll to bottom on new messages
@@ -103,8 +168,59 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
     return <span className="text-xs text-muted-foreground">Unknown</span>;
   }
 
+  function renderAttachments(attachments?: (ChatMessageAttachment & { contentPath: string })[]) {
+    if (!attachments || attachments.length === 0) return null;
+
+    return (
+      <div className="mt-2 space-y-2">
+        {attachments.map((a) => {
+          if (a.contentType.startsWith("image/")) {
+            return (
+              <div key={a.id} className="max-w-sm">
+                <img
+                  src={a.contentPath}
+                  alt={a.originalFilename ?? "Attached image"}
+                  className="rounded-md border border-border max-h-64 object-contain"
+                />
+                {a.originalFilename && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    {a.originalFilename} ({formatFileSize(a.byteSize)})
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <a
+              key={a.id}
+              href={a.contentPath}
+              download={a.originalFilename ?? undefined}
+              className="flex items-center gap-2 px-3 py-2 rounded-md border border-border hover:bg-muted/50 transition-colors max-w-sm"
+            >
+              <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm truncate">
+                  {a.originalFilename ?? "Attachment"}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {formatFileSize(a.byteSize)} - {a.contentType}
+                </div>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className={cn("flex flex-col h-full", isDragOver && "ring-2 ring-primary ring-inset")}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Message list */}
       <div
         ref={scrollRef}
@@ -130,6 +246,7 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
             <div className="pl-0 prose prose-sm dark:prose-invert max-w-none">
               <MarkdownBody>{msg.body}</MarkdownBody>
             </div>
+            {renderAttachments(msg.attachments)}
           </div>
         ))}
       </div>
@@ -139,15 +256,48 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
         <TypingIndicator agentIds={typingAgentIds} agentMap={agentMap} />
       )}
 
+      {/* Pending file indicator */}
+      {pendingFile && (
+        <div className="px-4 py-2 border-t border-border bg-muted/30">
+          <div className="flex items-center gap-2 text-sm">
+            <Paperclip className="h-4 w-4 text-muted-foreground" />
+            <span className="truncate">{pendingFile.name}</span>
+            <span className="text-xs text-muted-foreground">({formatFileSize(pendingFile.size)})</span>
+            <button
+              onClick={() => setPendingFile(null)}
+              className="ml-auto p-0.5 rounded hover:bg-muted"
+            >
+              <X className="h-3.5 w-3.5 text-muted-foreground" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Composer */}
       <div className="border-t border-border px-4 py-3">
         <div className="flex items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadMessage.isPending}
+            className="h-[38px] px-2"
+            title="Attach file"
+          >
+            <Paperclip className="h-4 w-4" />
+          </Button>
           <textarea
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+            placeholder={pendingFile ? "Add a message (optional), then press Enter to send" : "Type a message... (Enter to send, Shift+Enter for newline)"}
             rows={1}
             className={cn(
               "flex-1 resize-none rounded-md border border-border bg-transparent px-3 py-2 text-sm",
@@ -164,13 +314,13 @@ export function ChatRoom({ roomId, roomAgentId, agentMap }: ChatRoomProps) {
           <Button
             size="sm"
             onClick={handleSend}
-            disabled={!draft.trim() || sendMessage.isPending}
+            disabled={(!draft.trim() && !pendingFile) || sendMessage.isPending || uploadMessage.isPending}
             className="h-[38px] px-3"
           >
             <Send className="h-4 w-4" />
           </Button>
         </div>
-        {sendMessage.isError && (
+        {(sendMessage.isError || uploadMessage.isError) && (
           <p className="text-xs text-destructive mt-1">
             Failed to send message. Try again.
           </p>

@@ -11,6 +11,8 @@ const mockChatService = vi.hoisted(() => ({
   getOrCreateBoardroom: vi.fn(),
   listMessages: vi.fn(),
   addMessage: vi.fn(),
+  createAttachment: vi.fn(),
+  listMessageAttachments: vi.fn(async () => new Map()),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -51,7 +53,7 @@ function createApp(actorOverride?: Record<string, unknown>) {
     };
     next();
   });
-  app.use("/api", chatRoutes({} as any));
+  app.use("/api", chatRoutes({} as any, {} as any));
   app.use(errorHandler);
   return app;
 }

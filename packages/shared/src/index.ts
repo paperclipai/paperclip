@@ -253,6 +253,7 @@ export type {
   InstanceSchedulerHeartbeatAgent,
   ChatRoom,
   ChatMessage,
+  ChatMessageAttachment,
   LiveEvent,
   DashboardSummary,
   ActivityEvent,

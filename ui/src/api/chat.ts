@@ -1,4 +1,4 @@
-import type { ChatRoom, ChatMessage } from "@paperclipai/shared";
+import type { ChatRoom, ChatMessage, ChatMessageAttachment } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const chatApi = {
@@ -23,4 +23,14 @@ export const chatApi = {
       `/companies/${encodeURIComponent(companyId)}/chat/rooms/${encodeURIComponent(roomId)}/messages`,
       data,
     ),
+
+  postMessageWithAttachment: (companyId: string, roomId: string, file: File, body?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (body) form.append("body", body);
+    return api.postForm<ChatMessage & { attachments: ChatMessageAttachment[] }>(
+      `/companies/${encodeURIComponent(companyId)}/chat/rooms/${encodeURIComponent(roomId)}/messages/with-attachment`,
+      form,
+    );
+  },
 };

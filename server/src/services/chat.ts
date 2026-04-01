@@ -1,6 +1,6 @@
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, lt, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { chatRooms, chatMessages, agents } from "@paperclipai/db";
+import { chatRooms, chatMessages, agents, chatMessageAttachments, assets } from "@paperclipai/db";
 
 export function chatService(db: Db) {
   return {
@@ -134,6 +134,86 @@ export function chatService(db: Db) {
         .where(eq(chatRooms.id, roomId));
 
       return message;
+    },
+
+    createAttachment: async (input: {
+      companyId: string;
+      chatMessageId: string;
+      provider: string;
+      objectKey: string;
+      contentType: string;
+      byteSize: number;
+      sha256: string;
+      originalFilename?: string | null;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    }) => {
+      const [asset] = await db.insert(assets).values({
+        companyId: input.companyId,
+        provider: input.provider,
+        objectKey: input.objectKey,
+        contentType: input.contentType,
+        byteSize: input.byteSize,
+        sha256: input.sha256,
+        originalFilename: input.originalFilename ?? null,
+        createdByAgentId: input.createdByAgentId ?? null,
+        createdByUserId: input.createdByUserId ?? null,
+      }).returning();
+
+      const [attachment] = await db.insert(chatMessageAttachments).values({
+        companyId: input.companyId,
+        chatMessageId: input.chatMessageId,
+        assetId: asset.id,
+      }).returning();
+
+      return {
+        ...attachment,
+        provider: asset.provider,
+        objectKey: asset.objectKey,
+        contentType: asset.contentType,
+        byteSize: asset.byteSize,
+        originalFilename: asset.originalFilename,
+      };
+    },
+
+    listMessageAttachments: async (messageIds: string[]) => {
+      if (messageIds.length === 0) return new Map<string, Array<{
+        id: string;
+        companyId: string;
+        chatMessageId: string;
+        assetId: string;
+        createdAt: Date;
+        provider: string;
+        objectKey: string;
+        contentType: string;
+        byteSize: number;
+        originalFilename: string | null;
+      }>>();
+
+      const rows = await db
+        .select({
+          id: chatMessageAttachments.id,
+          companyId: chatMessageAttachments.companyId,
+          chatMessageId: chatMessageAttachments.chatMessageId,
+          assetId: chatMessageAttachments.assetId,
+          createdAt: chatMessageAttachments.createdAt,
+          provider: assets.provider,
+          objectKey: assets.objectKey,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+          originalFilename: assets.originalFilename,
+        })
+        .from(chatMessageAttachments)
+        .innerJoin(assets, eq(chatMessageAttachments.assetId, assets.id))
+        .where(inArray(chatMessageAttachments.chatMessageId, messageIds));
+
+      const map = new Map<string, typeof rows>();
+      for (const row of rows) {
+        const arr = map.get(row.chatMessageId) ?? [];
+        arr.push(row);
+        map.set(row.chatMessageId, arr);
+      }
+      return map;
     },
   };
 }

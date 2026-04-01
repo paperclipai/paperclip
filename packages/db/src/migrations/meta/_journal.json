@@ -337,6 +337,13 @@
       "when": 1775072662189,
       "tag": "0047_familiar_ultragirl",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1775087150181,
+      "tag": "0048_heavy_riptide",
+      "breakpoints": true
     }
   ]
 }
