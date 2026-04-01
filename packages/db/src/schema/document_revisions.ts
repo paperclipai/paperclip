@@ -10,6 +10,8 @@ export const documentRevisions = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     documentId: uuid("document_id").notNull().references(() => documents.id, { onDelete: "cascade" }),
     revisionNumber: integer("revision_number").notNull(),
+    title: text("title"),
+    format: text("format").notNull().default("markdown"),
     body: text("body").notNull(),
     changeSummary: text("change_summary"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),

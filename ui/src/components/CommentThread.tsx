@@ -10,11 +10,16 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
   runAgentId?: string | null;
+  clientId?: string;
+  clientStatus?: "pending" | "queued";
+  queueState?: "queued";
+  queueTargetRunId?: string | null;
 }
 
 interface LinkedRunItem {
@@ -32,6 +37,7 @@ interface CommentReassignment {
 
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
+  queuedComments?: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
   companyId?: string | null;
   projectId?: string | null;
@@ -48,6 +54,8 @@ interface CommentThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
+  onInterruptQueued?: (runId: string) => Promise<void>;
+  interruptingQueuedRunId?: string | null;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -114,6 +122,122 @@ function CopyMarkdownButton({ text }: { text: string }) {
   );
 }
 
+function CommentCard({
+  comment,
+  agentMap,
+  companyId,
+  projectId,
+  highlightCommentId,
+  queued = false,
+}: {
+  comment: CommentWithRunMeta;
+  agentMap?: Map<string, Agent>;
+  companyId?: string | null;
+  projectId?: string | null;
+  highlightCommentId?: string | null;
+  queued?: boolean;
+}) {
+  const isHighlighted = highlightCommentId === comment.id;
+  const isPending = comment.clientStatus === "pending";
+  const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+
+  return (
+    <div
+      key={comment.id}
+      id={`comment-${comment.id}`}
+      className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
+        isQueued
+          ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
+          : isHighlighted
+            ? "border-primary/50 bg-primary/5"
+            : "border-border"
+      } ${isPending ? "opacity-80" : ""}`}
+    >
+      <div className="flex items-center justify-between mb-1">
+        {comment.authorAgentId ? (
+          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
+            <Identity
+              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+              size="sm"
+            />
+          </Link>
+        ) : (
+          <Identity name="You" size="sm" />
+        )}
+        <span className="flex items-center gap-1.5">
+          {isQueued ? (
+            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+              Queued
+            </span>
+          ) : null}
+          {companyId && !isPending ? (
+            <PluginSlotOutlet
+              slotTypes={["commentContextMenuItem"]}
+              entityType="comment"
+              context={{
+                companyId,
+                projectId: projectId ?? null,
+                entityId: comment.id,
+                entityType: "comment",
+                parentEntityId: comment.issueId,
+              }}
+              className="flex flex-wrap items-center gap-1.5"
+              itemClassName="inline-flex"
+              missingBehavior="placeholder"
+            />
+          ) : null}
+          {isPending ? (
+            <span className="text-xs text-muted-foreground">{isQueued ? "Queueing..." : "Sending..."}</span>
+          ) : (
+            <a
+              href={`#comment-${comment.id}`}
+              className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
+            >
+              {formatDateTime(comment.createdAt)}
+            </a>
+          )}
+          <CopyMarkdownButton text={comment.body} />
+        </span>
+      </div>
+      <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      {companyId && !isPending ? (
+        <div className="mt-2 space-y-2">
+          <PluginSlotOutlet
+            slotTypes={["commentAnnotation"]}
+            entityType="comment"
+            context={{
+              companyId,
+              projectId: projectId ?? null,
+              entityId: comment.id,
+              entityType: "comment",
+              parentEntityId: comment.issueId,
+            }}
+            className="space-y-2"
+            itemClassName="rounded-md"
+            missingBehavior="placeholder"
+          />
+        </div>
+      ) : null}
+      {comment.runId && !isPending ? (
+        <div className="mt-2 pt-2 border-t border-border/60">
+          {comment.runAgentId ? (
+            <Link
+              to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
+              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            >
+              run {comment.runId.slice(0, 8)}
+            </Link>
+          ) : (
+            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+              run {comment.runId.slice(0, 8)}
+            </span>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
@@ -168,86 +292,15 @@ const TimelineList = memo(function TimelineList({
         }
 
         const comment = item.comment;
-        const isHighlighted = highlightCommentId === comment.id;
         return (
-          <div
+          <CommentCard
             key={comment.id}
-            id={`comment-${comment.id}`}
-            className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${isHighlighted ? "border-primary/50 bg-primary/5" : "border-border"}`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              {comment.authorAgentId ? (
-                <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-                  <Identity
-                    name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
-                    size="sm"
-                  />
-                </Link>
-              ) : (
-                <Identity name="You" size="sm" />
-              )}
-              <span className="flex items-center gap-1.5">
-                {companyId ? (
-                  <PluginSlotOutlet
-                    slotTypes={["commentContextMenuItem"]}
-                    entityType="comment"
-                    context={{
-                      companyId,
-                      projectId: projectId ?? null,
-                      entityId: comment.id,
-                      entityType: "comment",
-                      parentEntityId: comment.issueId,
-                    }}
-                    className="flex flex-wrap items-center gap-1.5"
-                    itemClassName="inline-flex"
-                    missingBehavior="placeholder"
-                  />
-                ) : null}
-                <a
-                  href={`#comment-${comment.id}`}
-                  className="text-xs text-muted-foreground hover:text-foreground hover:underline transition-colors"
-                >
-                  {formatDateTime(comment.createdAt)}
-                </a>
-                <CopyMarkdownButton text={comment.body} />
-              </span>
-            </div>
-            <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
-            {companyId ? (
-              <div className="mt-2 space-y-2">
-                <PluginSlotOutlet
-                  slotTypes={["commentAnnotation"]}
-                  entityType="comment"
-                  context={{
-                    companyId,
-                    projectId: projectId ?? null,
-                    entityId: comment.id,
-                    entityType: "comment",
-                    parentEntityId: comment.issueId,
-                  }}
-                  className="space-y-2"
-                  itemClassName="rounded-md"
-                  missingBehavior="placeholder"
-                />
-              </div>
-            ) : null}
-            {comment.runId && (
-              <div className="mt-2 pt-2 border-t border-border/60">
-                {comment.runAgentId ? (
-                  <Link
-                    to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                    className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-                  >
-                    run {comment.runId.slice(0, 8)}
-                  </Link>
-                ) : (
-                  <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
-                    run {comment.runId.slice(0, 8)}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
+            comment={comment}
+            agentMap={agentMap}
+            companyId={companyId}
+            projectId={projectId}
+            highlightCommentId={highlightCommentId}
+          />
         );
       })}
     </div>
@@ -256,6 +309,7 @@ const TimelineList = memo(function TimelineList({
 
 export function CommentThread({
   comments,
+  queuedComments = [],
   linkedRuns = [],
   companyId,
   projectId,
@@ -270,6 +324,8 @@ export function CommentThread({
   currentAssigneeValue = "",
   suggestedAssigneeValue,
   mentions: providedMentions,
+  onInterruptQueued,
+  interruptingQueuedRunId = null,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -345,7 +401,7 @@ export function CommentThread({
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
     const hash = location.hash;
-    if (!hash.startsWith("#comment-") || comments.length === 0) return;
+    if (!hash.startsWith("#comment-") || comments.length + queuedComments.length === 0) return;
     const commentId = hash.slice("#comment-".length);
     // Only scroll once per hash
     if (hasScrolledRef.current) return;
@@ -358,21 +414,31 @@ export function CommentThread({
       const timer = setTimeout(() => setHighlightCommentId(null), 3000);
       return () => clearTimeout(timer);
     }
-  }, [location.hash, comments]);
+  }, [location.hash, comments, queuedComments]);
 
   async function handleSubmit() {
     const trimmed = body.trim();
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const submittedBody = trimmed;
 
     setSubmitting(true);
+    setBody("");
     try {
-      await onAdd(trimmed, reopen ? true : undefined, reassignment ?? undefined);
-      setBody("");
+      // TODO: wire an explicit "send + interrupt" action through the composer if we expose it in the UI.
+      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
+    } catch {
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      // Parent mutation handlers surface the failure and the draft is restored for retry.
     } finally {
       setSubmitting(false);
     }
@@ -401,17 +467,53 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        companyId={companyId}
-        projectId={projectId}
-        highlightCommentId={highlightCommentId}
-      />
+      {timeline.length > 0 ? (
+        <TimelineList
+          timeline={timeline}
+          agentMap={agentMap}
+          companyId={companyId}
+          projectId={projectId}
+          highlightCommentId={highlightCommentId}
+        />
+      ) : null}
 
       {liveRunSlot}
+
+      {queuedComments.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+              Queued Comments ({queuedComments.length})
+            </h4>
+            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
+              >
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+              </Button>
+            ) : null}
+          </div>
+          <div className="space-y-3">
+            {queuedComments.map((comment) => (
+              <CommentCard
+                key={comment.id}
+                comment={comment}
+                agentMap={agentMap}
+                companyId={companyId}
+                projectId={projectId}
+                highlightCommentId={highlightCommentId}
+                queued
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         <MarkdownEditor
