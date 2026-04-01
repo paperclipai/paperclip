@@ -41,6 +41,17 @@ async function handleAgentRunStarted(
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+
+  // Run counter
+  const runCounter = otel.meter.createCounter(METRIC_NAMES.agentRunsStarted, {
+    description: "Count of agent runs started",
+  });
+  runCounter.add(1, {
+    agent_id: String(p.agentId ?? ""),
+    invocation_source: String(p.invocationSource ?? ""),
+  });
+
+  // Root span — kept open for correlation on run.finished/failed
   const span = otel.tracer.startSpan("agent.run", {
     attributes: {
       // Paperclip-specific
@@ -198,6 +209,22 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     });
   }
   if (p.costCents != null) costCounter.add(Number(p.costCents), tags);
+
+  // LLM span for cost event
+  const span = otel.tracer.startSpan("llm.cost", {
+    attributes: {
+      "paperclip.agent.id": String(p.agentId ?? ""),
+      "paperclip.company.id": String(p.companyId ?? ""),
+      "paperclip.cost.cents": Number(p.costCents ?? 0),
+      "paperclip.billing.type": String(p.billingType ?? ""),
+      "gen_ai.operation.name": "chat",
+      "gen_ai.provider.name": String(p.provider ?? "anthropic"),
+      "gen_ai.request.model": String(p.model ?? "unknown"),
+      "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
+      "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
+    },
+  });
+  span.end();
 }
 
 async function handleIssueUpdated(event: PluginEvent<unknown>): Promise<void> {
@@ -252,6 +279,38 @@ async function handleApprovalDecided(
   });
 }
 
+async function handleIssueCreated(event: PluginEvent<unknown>): Promise<void> {
+  if (!otel) return;
+  eventsProcessed++;
+
+  const p = event.payload as Record<string, unknown>;
+
+  const issueCounter = otel.meter.createCounter(METRIC_NAMES.issuesCreated, {
+    description: "Count of issues created",
+  });
+  issueCounter.add(1, {
+    project_id: String(p.projectId ?? ""),
+    priority: String(p.priority ?? "medium"),
+  });
+}
+
+async function handleApprovalCreated(
+  event: PluginEvent<unknown>,
+): Promise<void> {
+  if (!otel) return;
+  eventsProcessed++;
+
+  const p = event.payload as Record<string, unknown>;
+
+  const approvalCounter = otel.meter.createCounter(
+    METRIC_NAMES.approvalsCreated,
+    { description: "Count of approvals created" },
+  );
+  approvalCounter.add(1, {
+    company_id: String(p.companyId ?? ""),
+  });
+}
+
 async function handleGenericEvent(event: PluginEvent<unknown>): Promise<void> {
   if (!otel) return;
   eventsProcessed++;
@@ -299,12 +358,12 @@ const plugin: PaperclipPlugin = definePlugin({
 
     ctx.events.on("cost_event.created", handleCostEvent);
 
-    ctx.events.on("issue.created", handleGenericEvent);
+    ctx.events.on("issue.created", handleIssueCreated);
     ctx.events.on("issue.updated", handleIssueUpdated);
 
     ctx.events.on("agent.status_changed", handleAgentStatusChanged);
 
-    ctx.events.on("approval.created", handleGenericEvent);
+    ctx.events.on("approval.created", handleApprovalCreated);
     ctx.events.on("approval.decided", handleApprovalDecided);
 
     ctx.events.on("activity.logged", handleGenericEvent);
