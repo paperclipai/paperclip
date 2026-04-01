@@ -43,10 +43,15 @@ async function handleAgentRunStarted(
   const p = event.payload as Record<string, unknown>;
   const span = otel.tracer.startSpan("agent.run", {
     attributes: {
+      // Paperclip-specific
       "paperclip.agent.id": String(p.agentId ?? ""),
       "paperclip.run.id": String(p.runId ?? ""),
       "paperclip.company.id": String(p.companyId ?? ""),
       "paperclip.run.invocation_source": String(p.invocationSource ?? ""),
+      // GenAI semconv agent span attributes
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.agent.id": String(p.agentId ?? ""),
+      "gen_ai.agent.name": String(p.agentName ?? ""),
     },
   });
 
@@ -85,10 +90,25 @@ async function handleAgentRunFinished(
     },
   );
 
+  // GenAI semconv: gen_ai.client.operation.duration (seconds)
+  const genAIDurationHist = otel.meter.createHistogram(
+    "gen_ai.client.operation.duration",
+    {
+      description: "GenAI operation duration",
+      unit: "s",
+    },
+  );
+
   if (p.durationMs != null) {
-    durationHist.record(Number(p.durationMs), {
+    const durationMs = Number(p.durationMs);
+    durationHist.record(durationMs, {
       agent_id: String(p.agentId ?? ""),
       status: "finished",
+    });
+    genAIDurationHist.record(durationMs / 1000, {
+      "gen_ai.operation.name": "invoke_agent",
+      "gen_ai.provider.name": String(p.provider ?? "anthropic"),
+      "gen_ai.request.model": String(p.model ?? "unknown"),
     });
   }
 
@@ -140,14 +160,43 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     unit: "cents",
   });
 
+  // GenAI semconv: gen_ai.client.token.usage histogram
+  const genAITokenUsage = otel.meter.createHistogram(
+    "gen_ai.client.token.usage",
+    {
+      description: "Measures number of input and output tokens used",
+      unit: "{token}",
+    },
+  );
+
   const tags = {
     agent_id: String(p.agentId ?? ""),
     company_id: String(p.companyId ?? ""),
     model: String(p.model ?? "unknown"),
   };
 
-  if (p.inputTokens != null) inputTokens.add(Number(p.inputTokens), tags);
-  if (p.outputTokens != null) outputTokens.add(Number(p.outputTokens), tags);
+  const genAIBaseTags = {
+    "gen_ai.operation.name": "invoke_agent",
+    "gen_ai.provider.name": String(p.provider ?? "anthropic"),
+    "gen_ai.request.model": String(p.model ?? "unknown"),
+  };
+
+  if (p.inputTokens != null) {
+    const count = Number(p.inputTokens);
+    inputTokens.add(count, tags);
+    genAITokenUsage.record(count, {
+      ...genAIBaseTags,
+      "gen_ai.token.type": "input",
+    });
+  }
+  if (p.outputTokens != null) {
+    const count = Number(p.outputTokens);
+    outputTokens.add(count, tags);
+    genAITokenUsage.record(count, {
+      ...genAIBaseTags,
+      "gen_ai.token.type": "output",
+    });
+  }
   if (p.costCents != null) costCounter.add(Number(p.costCents), tags);
 }
 
