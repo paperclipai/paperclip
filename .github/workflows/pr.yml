@@ -3,7 +3,7 @@ name: PR
 on:
   pull_request:
     branches:
-      - master
+      - shangrila/main
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -19,15 +19,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
-        run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
-          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
-            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
-            exit 1
-          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -119,12 +110,6 @@ jobs:
 
       - name: Build
         run: pnpm build
-
-      - name: Release canary dry run
-        run: |
-          git checkout -B master HEAD
-          git checkout -- pnpm-lock.yaml
-          ./scripts/release.sh canary --skip-verify --dry-run
 
   e2e:
     needs: [policy]

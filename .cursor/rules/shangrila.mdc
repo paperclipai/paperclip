@@ -1,0 +1,121 @@
+# Shangrila ? ValCtrl's Internal Paperclip Fork
+
+## Identity
+
+This repo is **Shangrila** (`valctrltech/shangrila`), ValCtrl's customized fork of [Paperclip](https://github.com/paperclipai/paperclip) ? the open-source orchestration platform for AI-agent companies.
+
+Shangrila is not a separate product. It is Paperclip with ValCtrl-specific customizations layered on top. All upstream Paperclip documentation (`doc/`, `AGENTS.md`) remains authoritative for core behavior.
+
+## Repo Structure
+
+Upstream Paperclip monorepo structure applies:
+
+- `server/` ? Express REST API and orchestration services
+- `ui/` ? React + Vite board UI
+- `packages/db/` ? Drizzle schema, migrations, DB clients
+- `packages/shared/` ? shared types, constants, validators
+- `packages/adapters/` ? agent adapter implementations (Claude, Codex, Cursor, OpenClaw, etc.)
+- `packages/adapter-utils/` ? shared adapter utilities
+- `packages/plugins/` ? plugin system packages
+- `cli/` ? CLI tool (`paperclipai`)
+- `skills/` ? runtime skill definitions for agents
+- `doc/` ? upstream operational and product docs
+
+## Git Topology
+
+```
+origin    ? github.com/valctrltech/shangrila   (our fork)
+upstream  ? github.com/paperclipai/paperclip    (source of truth)
+```
+
+### Branches
+
+- `master` ? untouched mirror of upstream. Never commit directly. Used only as a merge source.
+- `shangrila/main` ? **default branch**. All ValCtrl customizations live here.
+- `shangrila/feat-*` ? feature branches for individual changes, merged into `shangrila/main`.
+- `internal` ? legacy name for `shangrila/main` (may be pruned).
+
+### Upstream Sync
+
+Periodically pull upstream releases into `master`, then merge into `shangrila/main`:
+
+```sh
+git checkout master
+git fetch upstream
+git merge upstream/master --ff-only
+git push origin master
+
+git checkout shangrila/main
+git merge master --no-edit
+# resolve conflicts, typecheck, test, push
+```
+
+## Customization Rules
+
+To minimize merge conflicts on upstream sync, follow these layering rules:
+
+### Safe (additive, zero conflict risk)
+- New files in `skills/` ? custom ValCtrl skills
+- New packages in `packages/plugins/` ? custom plugins
+- New packages in `packages/adapters/` ? custom adapters
+- Files in `.cursor/rules/` ? project-specific Cursor rules
+
+### Low conflict
+- `docker/` and deploy configs
+- `.env.example`, `.env.local`
+
+### Medium conflict (add new files, avoid modifying existing)
+- `server/` ? new routes or services
+- `packages/db/` ? new tables only; avoid modifying existing table schemas
+
+### High conflict (keep changes minimal and surgical)
+- `ui/` ? upstream iterates fast on board UI components
+- `packages/shared/` ? core type contracts; modifications ripple everywhere
+
+When modifying upstream files is unavoidable, keep the diff as small as possible and document the reason in the commit message.
+
+## Deployment
+
+Shangrila runs on an existing AWS EC2 instance via Docker.
+
+- **Database**: embedded PGlite (no external Postgres). Omit `DATABASE_URL` to use it.
+- **Data persistence**: Docker volume at `/opt/shangrila/data` mounted to `/paperclip` inside the container.
+- **Port**: 3100
+- **Auth**: Google OAuth via Better Auth (`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `BETTER_AUTH_SECRET` in env).
+- **Mode**: `PAPERCLIP_DEPLOYMENT_MODE=authenticated`, `PAPERCLIP_DEPLOYMENT_EXPOSURE=private`.
+- **Agent keys**: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` set as container env vars.
+
+Paperclip's built-in auto-backup runs every 60 minutes with 30-day retention.
+
+## Local Development
+
+```sh
+pnpm install
+pnpm dev
+```
+
+API + UI at `http://localhost:3100`. Uses embedded PGlite locally (no external DB needed).
+
+Reset local dev DB:
+
+```sh
+rm -rf data/pglite
+pnpm dev
+```
+
+## Verification
+
+Before any PR or merge:
+
+```sh
+pnpm -r typecheck
+pnpm test:run
+pnpm build
+```
+
+## Key Differences from Upstream
+
+1. **Google OAuth login** ? `feat/google-oauth-login` branch adds Better Auth Google OAuth sign-in.
+2. **AWS EC2 deployment** ? runs as Docker container on existing EC2, not Railway/Vercel.
+3. **Embedded PGlite** ? no external Postgres dependency in production.
+4. **ValCtrl branding and skills** ? custom skills and rules specific to ValCtrl workflows.

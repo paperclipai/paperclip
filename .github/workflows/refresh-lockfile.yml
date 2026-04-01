@@ -3,11 +3,11 @@ name: Refresh Lockfile
 on:
   push:
     branches:
-      - master
+      - shangrila/main
   workflow_dispatch:
 
 concurrency:
-  group: refresh-lockfile-master
+  group: refresh-lockfile-shangrila
   cancel-in-progress: false
 
 jobs:
@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: shangrila/main
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -31,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Refresh pnpm lockfile
@@ -70,13 +72,13 @@ jobs:
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
           git push --force origin "$BRANCH"
 
-          # Create PR if one doesn't already exist
-          existing=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          existing=$(gh pr list --head "$BRANCH" --base "shangrila/main" --json number --jq '.[0].number')
           if [ -z "$existing" ]; then
             gh pr create \
               --head "$BRANCH" \
+              --base "shangrila/main" \
               --title "chore(lockfile): refresh pnpm-lock.yaml" \
-              --body "Auto-generated lockfile refresh after dependencies changed on master. This PR only updates pnpm-lock.yaml."
+              --body "Auto-generated lockfile refresh after dependencies changed on shangrila/main."
             echo "Created new PR."
           else
             echo "PR #$existing already exists, branch updated via force push."
@@ -88,7 +90,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pr_url="$(gh pr list --head chore/refresh-lockfile --json url --jq '.[0].url')"
+          pr_url="$(gh pr list --head chore/refresh-lockfile --base shangrila/main --json url --jq '.[0].url')"
           if [ -z "$pr_url" ]; then
             echo "Error: lockfile PR was not found." >&2
             exit 1

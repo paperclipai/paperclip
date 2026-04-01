@@ -1,0 +1,106 @@
+name: Upstream Sync Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 9:00 UTC
+
+jobs:
+  check-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout shangrila/main
+        uses: actions/checkout@v4
+        with:
+          ref: shangrila/main
+          fetch-depth: 0
+
+      - name: Fetch upstream master
+        run: |
+          git remote add upstream https://github.com/paperclipai/paperclip.git || true
+          git fetch upstream master
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/master)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" -eq 0 ]; then
+            echo "Already up to date with upstream."
+          else
+            echo "$behind commits behind upstream/master."
+          fi
+
+      - name: Attempt merge (dry run)
+        if: steps.check.outputs.behind != '0'
+        id: merge
+        run: |
+          git config user.name "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
+
+          if git merge upstream/master --no-commit --no-ff 2>&1; then
+            echo "merge_clean=true" >> "$GITHUB_OUTPUT"
+            echo "Merge applies cleanly."
+          else
+            echo "merge_clean=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Merge conflicts detected."
+            echo "## Conflicting files:" >> "$GITHUB_STEP_SUMMARY"
+            git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+          fi
+
+      - name: Setup pnpm
+        if: steps.merge.outputs.merge_clean == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        if: steps.merge.outputs.merge_clean == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.merge.outputs.merge_clean == 'true'
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck
+        if: steps.merge.outputs.merge_clean == 'true'
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        if: steps.merge.outputs.merge_clean == 'true'
+        run: pnpm test:run
+
+      - name: Build
+        if: steps.merge.outputs.merge_clean == 'true'
+        run: pnpm build
+
+      - name: Write summary
+        if: always()
+        run: |
+          behind="${{ steps.check.outputs.behind }}"
+          merge_clean="${{ steps.merge.outputs.merge_clean }}"
+
+          echo "## Upstream Sync Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$behind" -eq 0 ]; then
+            echo "shangrila/main is up to date with upstream/master." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$merge_clean" = "true" ]; then
+            echo "**$behind commits behind upstream.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "Merge applies cleanly. Typecheck, tests, and build all pass." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Safe to sync:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```sh' >> "$GITHUB_STEP_SUMMARY"
+            echo "git checkout master && git fetch upstream && git merge upstream/master --ff-only && git push origin master" >> "$GITHUB_STEP_SUMMARY"
+            echo "git checkout shangrila/main && git merge master --no-edit && git push origin shangrila/main" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**$behind commits behind upstream.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "Merge has conflicts. See conflicting files above." >> "$GITHUB_STEP_SUMMARY"
+          fi

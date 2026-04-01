@@ -3,7 +3,7 @@ name: Docker
 on:
   push:
     branches:
-      - "master"
+      - shangrila/main
     tags:
       - "v*"
 
@@ -36,12 +36,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/valctrltech/shangrila
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=ref,event=tag
 
       - name: Build and push
         uses: docker/build-push-action@v6

@@ -1,0 +1,94 @@
+name: Shangrila CI
+
+on:
+  push:
+    branches:
+      - shangrila/main
+
+concurrency:
+  group: shangrila-ci-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Run tests
+        run: pnpm test:run
+
+      - name: Build
+        run: pnpm build
+
+  docker-smoke:
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: shangrila:smoke-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run container and health check
+        run: |
+          docker run -d \
+            --name shangrila-smoke \
+            -p 3100:3100 \
+            -e HOST=0.0.0.0 \
+            -e PORT=3100 \
+            -e SERVE_UI=true \
+            -e PAPERCLIP_HOME=/paperclip \
+            -e PAPERCLIP_DEPLOYMENT_MODE=local_trusted \
+            shangrila:smoke-${{ github.sha }}
+
+          echo "Waiting for Shangrila to start..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3100/api/health > /dev/null 2>&1; then
+              echo "Health check passed on attempt $i"
+              curl -s http://localhost:3100/api/health
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::Health check failed after 60 seconds"
+          docker logs shangrila-smoke
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f shangrila-smoke >/dev/null 2>&1 || true
