@@ -16,6 +16,7 @@ import {
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
+import { resolveCodexCommand } from "./command.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -57,7 +58,7 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "codex");
+  const command = resolveCodexCommand(config);
   const cwd = asString(config.cwd, process.cwd());
 
   try {
@@ -137,7 +138,7 @@ export async function testEnvironment(
         level: "info",
         message: "Skipped hello probe because command is not `codex`.",
         detail: command,
-        hint: "Use the `codex` CLI command to run the automatic login and installation probe.",
+        hint: "Use a Codex CLI command name/path (for example `codex` or `codex.cmd`) to run the automatic login and installation probe.",
       });
     } else {
       const model = asString(config.model, "").trim();

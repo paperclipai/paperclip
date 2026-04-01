@@ -28,7 +28,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
-- command (string, optional): defaults to "codex"
+- command (string, optional): overrides the Codex executable path/name. Defaults to PAPERCLIP_CODEX_COMMAND/CODEX_COMMAND env vars when set, otherwise "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }

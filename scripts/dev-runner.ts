@@ -83,6 +83,18 @@ const env: NodeJS.ProcessEnv = {
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
 
+function deriveDefaultInstanceId() {
+  const repoName = path.basename(repoRoot);
+  const slug = repoName
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return `dev-${slug || "workspace"}`;
+}
+
+env.PAPERCLIP_INSTANCE_ID ??= deriveDefaultInstanceId();
+
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
   env.PAPERCLIP_MIGRATION_AUTO_APPLY ??= "true";

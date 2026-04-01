@@ -99,12 +99,44 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("uses PAPERCLIP_CODEX_COMMAND when adapter command is omitted", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-command-fallback-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const cwd = path.join(root, "workspace");
+
+    try {
+      vi.stubEnv("PAPERCLIP_CODEX_COMMAND", process.execPath);
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          cwd,
+          env: { OPENAI_API_KEY: "test-key" },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_command_resolvable")).toBe(true);
+      expect(
+        result.checks.some(
+          (check) =>
+            check.code === "codex_command_resolvable" &&
+            check.message === `Command is executable: ${process.execPath}`,
+        ),
+      ).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),
-      `paperclip-codex-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      `paperclip codex local probe ${Date.now()} ${Math.random().toString(16).slice(2)}`,
     );
-    const binDir = path.join(root, "bin");
+    const binDir = path.join(root, "bin with spaces");
     const cwd = path.join(root, "workspace");
     const fakeCodex = path.join(binDir, "codex.cmd");
     const script = [

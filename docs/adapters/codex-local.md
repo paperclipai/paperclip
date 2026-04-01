@@ -10,6 +10,8 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 - Codex CLI installed (`codex` command available)
 - `OPENAI_API_KEY` set in the environment or agent config
 
+If Codex is installed under a custom executable name/path (for example `codex.cmd` on Windows), set it either in the agent `command` field or via the `PAPERCLIP_CODEX_COMMAND` (or `CODEX_COMMAND`) environment variable on the Paperclip server process.
+
 ## Configuration Fields
 
 | Field | Type | Required | Description |
@@ -21,6 +23,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+| `command` | string | No | CLI executable override. Resolution order: adapter config `command` → `PAPERCLIP_CODEX_COMMAND` / `CODEX_COMMAND` env var → `codex` |
 
 ## Session Persistence
 

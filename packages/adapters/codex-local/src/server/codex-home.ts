@@ -46,7 +46,7 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await fs.symlink(source, target, "file");
     return;
   }
 
@@ -61,7 +61,35 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === source) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await fs.symlink(source, target, "file");
+}
+
+async function ensureSymlinkOrCopy(
+  target: string,
+  source: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<"symlinked" | "copied"> {
+  let symlinkError: Error | null = null;
+
+  try {
+    await ensureSymlink(target, source);
+    const stat = await fs.lstat(target).catch(() => null);
+    if (stat?.isSymbolicLink()) return "symlinked";
+  } catch (err) {
+    symlinkError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  await ensureParentDir(target);
+  await fs.copyFile(source, target);
+
+  if (symlinkError) {
+    await onLog(
+      "stdout",
+      `[paperclip] Could not symlink Codex file "${path.basename(target)}"; copied instead (${symlinkError.message}).\n`,
+    );
+  }
+
+  return "copied";
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -86,7 +114,7 @@ export async function prepareManagedCodexHome(
   for (const name of SYMLINKED_SHARED_FILES) {
     const source = path.join(sourceHome, name);
     if (!(await pathExists(source))) continue;
-    await ensureSymlink(path.join(targetHome, name), source);
+    await ensureSymlinkOrCopy(path.join(targetHome, name), source, onLog);
   }
 
   for (const name of COPIED_SHARED_FILES) {

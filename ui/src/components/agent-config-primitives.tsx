@@ -40,7 +40,7 @@ export const help: Record<string, string> = {
   runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
   maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
   command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
+  localCommand: "Override the path/name of the CLI command (for example /usr/local/bin/claude, codex, codex.cmd, opencode). For Codex, leaving this blank falls back to PAPERCLIP_CODEX_COMMAND/CODEX_COMMAND if set on the server.",
   args: "Command-line arguments, comma-separated.",
   extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
