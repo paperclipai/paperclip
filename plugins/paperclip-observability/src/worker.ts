@@ -31,6 +31,30 @@ let eventsProcessed = 0;
 let lastError: string | null = null;
 
 // ---------------------------------------------------------------------------
+// Provider name mapping (adapter type → OTel well-known value)
+// ---------------------------------------------------------------------------
+
+function mapProvider(adapterType: string): string {
+  switch (adapterType) {
+    case "claude_local":
+    case "claude":
+      return "anthropic";
+    case "openai":
+    case "cursor-local":
+    case "codex-local":
+      return "openai";
+    case "gemini-local":
+      return "gcp.gemini";
+    case "openclaw-gateway":
+    case "openclaw":
+      // OpenClaw proxies multiple providers; best-effort from model name
+      return adapterType;
+    default:
+      return adapterType || "unknown";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Event handlers
 // ---------------------------------------------------------------------------
 
@@ -159,20 +183,38 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+  const provider = mapProvider(String(p.provider ?? ""));
 
-  const inputTokens = otel.meter.createCounter(METRIC_NAMES.tokensInput, {
-    description: "Total input tokens consumed",
-  });
-  const outputTokens = otel.meter.createCounter(METRIC_NAMES.tokensOutput, {
-    description: "Total output tokens consumed",
-  });
+  // --- Paperclip-specific counters ---
+
+  const inputTokensCounter = otel.meter.createCounter(
+    METRIC_NAMES.tokensInput,
+    { description: "Total input tokens consumed" },
+  );
+  const outputTokensCounter = otel.meter.createCounter(
+    METRIC_NAMES.tokensOutput,
+    { description: "Total output tokens consumed" },
+  );
   const costCounter = otel.meter.createCounter(METRIC_NAMES.costCents, {
     description: "Total cost in cents",
-    unit: "cents",
+    unit: "cent",
   });
 
-  // GenAI semconv: gen_ai.client.token.usage histogram
-  const genAITokenUsage = otel.meter.createHistogram(
+  const costTags = {
+    agent_id: String(p.agentId ?? ""),
+    provider,
+    model: String(p.model ?? "unknown"),
+    billing_type: String(p.billingType ?? ""),
+    biller: String(p.biller ?? ""),
+  };
+
+  if (p.inputTokens != null) inputTokensCounter.add(Number(p.inputTokens), costTags);
+  if (p.outputTokens != null) outputTokensCounter.add(Number(p.outputTokens), costTags);
+  if (p.costCents != null) costCounter.add(Number(p.costCents), costTags);
+
+  // --- GenAI semconv: gen_ai.client.token.usage histogram ---
+
+  const tokenUsage = otel.meter.createHistogram(
     "gen_ai.client.token.usage",
     {
       description: "Measures number of input and output tokens used",
@@ -180,48 +222,42 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     },
   );
 
-  const tags = {
-    agent_id: String(p.agentId ?? ""),
-    company_id: String(p.companyId ?? ""),
-    model: String(p.model ?? "unknown"),
-  };
-
-  const genAIBaseTags = {
-    "gen_ai.operation.name": "invoke_agent",
-    "gen_ai.provider.name": String(p.provider ?? "anthropic"),
+  const genAIBaseAttrs = {
+    "gen_ai.operation.name": "chat",
+    "gen_ai.provider.name": provider,
     "gen_ai.request.model": String(p.model ?? "unknown"),
   };
 
   if (p.inputTokens != null) {
-    const count = Number(p.inputTokens);
-    inputTokens.add(count, tags);
-    genAITokenUsage.record(count, {
-      ...genAIBaseTags,
+    tokenUsage.record(Number(p.inputTokens), {
+      ...genAIBaseAttrs,
       "gen_ai.token.type": "input",
     });
   }
   if (p.outputTokens != null) {
-    const count = Number(p.outputTokens);
-    outputTokens.add(count, tags);
-    genAITokenUsage.record(count, {
-      ...genAIBaseTags,
+    tokenUsage.record(Number(p.outputTokens), {
+      ...genAIBaseAttrs,
       "gen_ai.token.type": "output",
     });
   }
-  if (p.costCents != null) costCounter.add(Number(p.costCents), tags);
 
-  // LLM span for cost event
+  // --- LLM span for cost event ---
+
   const span = otel.tracer.startSpan("llm.cost", {
     attributes: {
       "paperclip.agent.id": String(p.agentId ?? ""),
       "paperclip.company.id": String(p.companyId ?? ""),
       "paperclip.cost.cents": Number(p.costCents ?? 0),
       "paperclip.billing.type": String(p.billingType ?? ""),
+      "paperclip.billing.biller": String(p.biller ?? ""),
       "gen_ai.operation.name": "chat",
-      "gen_ai.provider.name": String(p.provider ?? "anthropic"),
+      "gen_ai.provider.name": provider,
       "gen_ai.request.model": String(p.model ?? "unknown"),
       "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
       "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
+      "gen_ai.usage.cache_read.input_tokens": Number(
+        p.cachedInputTokens ?? 0,
+      ),
     },
   });
   span.end();
