@@ -15,6 +15,8 @@ interface AgentPropertiesProps {
   runtimeState?: AgentRuntimeState;
 }
 
+
+
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {

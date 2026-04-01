@@ -26,6 +26,7 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "copilot_local",
   "gemini_local",
   "opencode_local",
   "pi_local",
