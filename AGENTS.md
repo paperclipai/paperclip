@@ -74,7 +74,7 @@ If you change schema/API behavior, update all impacted layers:
 - Approval gates for governed actions
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
-- QA via direct assignment (not @-mentions in comments)
+- QA approval gate: code issues require a `QA: PASS` comment before moving to done
 
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
@@ -249,3 +249,4 @@ A change is done when all are true:
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
 5. Code is pushed to a remote branch and a pull request is created (enforced by delivery gate for agent-authored code tasks)
+6. QA approval comment (`QA: PASS`) exists on the issue (enforced by QA gate for agent-authored code tasks)
