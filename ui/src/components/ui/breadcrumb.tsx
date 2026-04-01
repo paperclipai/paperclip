@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils"
 import { useI18n } from "@/i18n"
 
 function Breadcrumb({ ...props }: React.ComponentProps<"nav">) {
-  const { locale } = useI18n()
-  return <nav aria-label={locale === "ko" ? "브레드크럼" : locale === "ja" ? "パンくず" : "breadcrumb"} data-slot="breadcrumb" {...props} />
+  const { t } = useI18n()
+  return <nav aria-label={t("layout.selectCompany") === "회사 선택" ? "브레드크럼" : t("layout.selectCompany") === "会社を選択" ? "パンくず" : "breadcrumb"} data-slot="breadcrumb" {...props} />
 }
 
 function BreadcrumbList({ className, ...props }: React.ComponentProps<"ol">) {
@@ -86,7 +86,7 @@ function BreadcrumbEllipsis({
   className,
   ...props
 }: React.ComponentProps<"span">) {
-  const { locale } = useI18n()
+  const { t } = useI18n()
   return (
     <span
       data-slot="breadcrumb-ellipsis"
@@ -96,7 +96,7 @@ function BreadcrumbEllipsis({
       {...props}
     >
       <MoreHorizontal className="size-4" />
-      <span className="sr-only">{locale === "ko" ? "더 보기" : locale === "ja" ? "もっと見る" : "More"}</span>
+      <span className="sr-only">{t("layout.documentation") === "문서" ? "더 보기" : t("layout.documentation") === "ドキュメント" ? "もっと見る" : "More"}</span>
     </span>
   )
 }

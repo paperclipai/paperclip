@@ -31,46 +31,15 @@ export function BudgetIncidentCard({
   isMutating?: boolean;
   onInspect?: (() => void) | undefined;
 }) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const [draftAmount, setDraftAmount] = useState(
     centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
   const parsed = parseDollarInput(draftAmount);
-  const copy = locale === "ko"
-    ? {
-        hardStop: "하드 스톱",
-        spendingReached: "사용량 {{observed}}, 한도 {{limit}}에 도달했습니다.",
-        details: "상세",
-        newBudget: "새 예산 (USD)",
-        applying: "적용 중...",
-        raiseAndResume: "예산 상향 후 재개",
-        exceedSpend: "새 예산은 현재 사용 금액보다 커야 합니다.",
-        keepPaused: "계속 일시중지 유지",
-      }
-    : locale === "ja"
-      ? {
-          hardStop: "ハードストップ",
-          spendingReached: "利用額 {{observed}} が上限 {{limit}} に達しました。",
-          details: "詳細",
-          newBudget: "新しい予算 (USD)",
-          applying: "適用中...",
-          raiseAndResume: "予算を引き上げて再開",
-          exceedSpend: "新しい予算は現在の利用額を上回る必要があります。",
-          keepPaused: "停止を維持",
-        }
-      : {
-          hardStop: "hard stop",
-          spendingReached: "Spending reached {{observed}} against a limit of {{limit}}.",
-          details: "Details",
-          newBudget: "New budget (USD)",
-          applying: "Applying...",
-          raiseAndResume: "Raise budget & resume",
-          exceedSpend: "The new budget must exceed current observed spend.",
-          keepPaused: "Keep paused",
-        };
-  const spendingText = copy.spendingReached
-    .replace("{{observed}}", formatCents(incident.amountObserved))
-    .replace("{{limit}}", formatCents(incident.amountLimit));
+  const spendingText = t("budgetIncident.spendingReached", {
+    observed: formatCents(incident.amountObserved),
+    limit: formatCents(incident.amountLimit),
+  });
 
   return (
     <Card className="overflow-hidden border-red-500/20 bg-[linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02))]">
@@ -78,7 +47,7 @@ export function BudgetIncidentCard({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-red-200/80">
-              {incident.scopeType} {copy.hardStop}
+              {incident.scopeType} {t("budgetIncident.hardStop")}
             </div>
             <CardTitle className="mt-1 text-base text-red-50">{incident.scopeName}</CardTitle>
             <CardDescription className="mt-1 text-red-100/70">
@@ -92,7 +61,7 @@ export function BudgetIncidentCard({
         {onInspect ? (
           <div className="flex justify-end">
             <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-red-100/80" onClick={onInspect}>
-              {copy.details}
+              {t("budgetIncident.details")}
             </Button>
           </div>
         ) : null}
@@ -105,7 +74,7 @@ export function BudgetIncidentCard({
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            {copy.newBudget}
+            {t("budgetIncident.newBudget")}
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
@@ -122,19 +91,19 @@ export function BudgetIncidentCard({
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? copy.applying : copy.raiseAndResume}
+              {isMutating ? t("budgetIncident.applying") : t("budgetIncident.raiseAndResume")}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (
             <p className="mt-2 text-xs text-red-200/80">
-              {copy.exceedSpend}
+              {t("budgetIncident.exceedSpend")}
             </p>
           ) : null}
         </div>
 
         <div className="flex justify-end">
           <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}>
-            {copy.keepPaused}
+            {t("budgetIncident.keepPaused")}
           </Button>
         </div>
       </CardContent>

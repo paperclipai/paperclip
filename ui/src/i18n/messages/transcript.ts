@@ -39,6 +39,15 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       noInput: "No {{name}} input",
       noTranscriptYet: "No transcript yet.",
     },
+    liveWidget: {
+      title: "Live Runs",
+      subtitle: "Streamed with the same transcript UI used on the full run detail page.",
+      stopping: "Stopping…",
+      stop: "Stop",
+      openRun: "Open run",
+      waitingParsing: "Waiting for transcript parsing...",
+      waitingOutput: "Waiting for run output...",
+    },
   },
   ko: {
     transcript: {
@@ -78,6 +87,15 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       noInput: "{{name}} 입력 없음",
       noTranscriptYet: "아직 트랜스크립트가 없습니다.",
     },
+    liveWidget: {
+      title: "라이브 실행",
+      subtitle: "전체 실행 상세 페이지와 같은 transcript UI로 스트리밍됩니다.",
+      stopping: "중지 중…",
+      stop: "중지",
+      openRun: "실행 열기",
+      waitingParsing: "트랜스크립트 파싱 대기 중...",
+      waitingOutput: "실행 출력 대기 중...",
+    },
   },
   ja: {
     transcript: {
@@ -116,6 +134,15 @@ export const transcriptMessages: Record<ActiveLocale, MessageTree> = {
       inspectInput: "{{name}} 入力を確認",
       noInput: "{{name}} 入力なし",
       noTranscriptYet: "まだトランスクリプトはありません。",
+    },
+    liveWidget: {
+      title: "ライブ実行",
+      subtitle: "フル実行詳細ページと同じ transcript UI でストリーミングされます。",
+      stopping: "停止中…",
+      stop: "停止",
+      openRun: "実行を開く",
+      waitingParsing: "トランスクリプト解析を待機中...",
+      waitingOutput: "実行出力を待機中...",
     },
   },
 };

@@ -26,38 +26,9 @@ function isRunActive(status: string): boolean {
 }
 
 export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
-  const { locale } = useI18n();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
-  const copy = locale === "ko"
-    ? {
-        title: "라이브 실행",
-        subtitle: "전체 실행 상세 페이지와 같은 transcript UI로 스트리밍됩니다.",
-        stopping: "중지 중…",
-        stop: "중지",
-        openRun: "실행 열기",
-        waitingParsing: "트랜스크립트 파싱 대기 중...",
-        waitingOutput: "실행 출력 대기 중...",
-      }
-    : locale === "ja"
-      ? {
-          title: "ライブ実行",
-          subtitle: "フル実行詳細ページと同じ transcript UI でストリーミングされます。",
-          stopping: "停止中…",
-          stop: "停止",
-          openRun: "実行を開く",
-          waitingParsing: "トランスクリプト解析を待機中...",
-          waitingOutput: "実行出力を待機中...",
-        }
-      : {
-          title: "Live Runs",
-          subtitle: "Streamed with the same transcript UI used on the full run detail page.",
-          stopping: "Stopping…",
-          stop: "Stop",
-          openRun: "Open run",
-          waitingParsing: "Waiting for transcript parsing...",
-          waitingOutput: "Waiting for run output...",
-        };
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
@@ -121,10 +92,10 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
     <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/80 shadow-[0_18px_50px_rgba(6,182,212,0.08)]">
       <div className="border-b border-border/60 bg-cyan-500/[0.04] px-4 py-3">
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">
-          {copy.title}
+          {t("liveWidget.title")}
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          {copy.subtitle}
+          {t("liveWidget.subtitle")}
         </div>
       </div>
 
@@ -159,14 +130,14 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                       className="inline-flex items-center gap-1 rounded-full border border-red-500/20 bg-red-500/[0.06] px-2.5 py-1 text-[11px] font-medium text-red-700 transition-colors hover:bg-red-500/[0.12] dark:text-red-300 disabled:opacity-50"
                     >
                       <Square className="h-2.5 w-2.5" fill="currentColor" />
-                      {cancellingRunIds.has(run.id) ? copy.stopping : copy.stop}
+                      {cancellingRunIds.has(run.id) ? t("liveWidget.stopping") : t("liveWidget.stop")}
                     </button>
                   )}
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.id}`}
                     className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 text-[11px] font-medium text-cyan-700 transition-colors hover:border-cyan-500/30 hover:text-cyan-600 dark:text-cyan-300"
                   >
-                    {copy.openRun}
+                    {t("liveWidget.openRun")}
                     <ExternalLink className="h-3 w-3" />
                   </Link>
                 </div>
@@ -179,7 +150,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                   limit={8}
                   streaming={isActive}
                   collapseStdout
-                  emptyMessage={hasOutputForRun(run.id) ? copy.waitingParsing : copy.waitingOutput}
+                  emptyMessage={hasOutputForRun(run.id) ? t("liveWidget.waitingParsing") : t("liveWidget.waitingOutput")}
                 />
               </div>
             </section>

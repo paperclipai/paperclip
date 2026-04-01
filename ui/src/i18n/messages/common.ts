@@ -11,6 +11,7 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
     common: {
       loading: "Loading…",
       save: "Save",
+      edit: "Edit",
       cancel: "Cancel",
       close: "Close",
       copy: "Copy",
@@ -89,6 +90,7 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
     common: {
       loading: "불러오는 중…",
       save: "저장",
+      edit: "편집",
       cancel: "취소",
       close: "닫기",
       copy: "복사",
@@ -167,6 +169,7 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
     common: {
       loading: "読み込み中…",
       save: "保存",
+      edit: "編集",
       cancel: "キャンセル",
       close: "閉じる",
       copy: "コピー",
