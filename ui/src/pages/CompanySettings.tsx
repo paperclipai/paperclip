@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useMeAccess } from "../hooks/useMeAccess";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload, UserPlus, Key, Shield } from "lucide-react";
+import { MessagingSetup } from "../components/MessagingSetup";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { InviteUserDialog } from "../components/InviteUserDialog";
 import { ApiKeyOnboardingBanner } from "../components/ApiKeyOnboardingBanner";
@@ -493,6 +494,9 @@ export function CompanySettings() {
           )}
         </div>
       </div>
+
+      {/* Messaging Bridges */}
+      <MessagingSetup companyId={selectedCompanyId!} />
 
       {/* Import / Export */}
       <div className="space-y-4">

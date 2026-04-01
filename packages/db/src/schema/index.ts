@@ -63,3 +63,4 @@ export { playbookRuns, playbookRunSteps } from "./playbook_runs.js";
 export { knowledgePages, knowledgePageRevisions } from "./knowledge_pages.js";
 export { userInvites } from "./user_invites.js";
 export { companySubscriptions } from "./subscriptions.js";
+export { messagingBridges } from "./messaging_bridges.js";

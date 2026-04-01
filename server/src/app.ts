@@ -37,6 +37,7 @@ import { aiGenerateRoutes } from "./routes/ai-generate.js";
 import { privacyRoutes, startRetentionScheduler } from "./routes/privacy.js";
 import { goalStatsRoutes } from "./routes/goal-stats.js";
 import { aiGoalBreakdownRoutes } from "./routes/ai-goal-breakdown.js";
+import { messagingRoutes, emailWebhookRoutes } from "./routes/messaging.js";
 // Plugin system disabled — not needed for V1 productization
 // import { pluginRoutes } from "./routes/plugins.js";
 // import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -174,6 +175,7 @@ export async function createApp(
   api.use(privacyRoutes(db));
   api.use(goalStatsRoutes(db));
   api.use(aiGoalBreakdownRoutes(db));
+  api.use(messagingRoutes(db));
 
   // Start daily data retention cleanup
   startRetentionScheduler(db);
@@ -195,6 +197,8 @@ export async function createApp(
   );
   // Setup routes are public (no auth required — user isn't logged in yet)
   app.use("/api", setupRoutes(db));
+  // Email webhook is public (called by Mailgun/SendGrid — no auth)
+  app.use("/api", emailWebhookRoutes(db));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
