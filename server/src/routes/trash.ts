@@ -35,37 +35,49 @@ export function trashRoutes(db: Db, storage: StorageService) {
 
     const entityType = typeof req.query.entityType === "string" ? req.query.entityType : undefined;
 
-    const result: Record<string, unknown[]> = {};
+    const items: { entityType: string; entityId: string; name: string; deletedAt: Date | null }[] = [];
 
     if (!entityType || entityType === "issue") {
-      result.issues = await db
+      const rows = await db
         .select()
         .from(issues)
         .where(and(eq(issues.companyId, companyId), isNotNull(issues.hiddenAt)));
+      for (const row of rows) {
+        items.push({ entityType: "issue", entityId: row.id, name: row.title, deletedAt: row.hiddenAt });
+      }
     }
 
     if (!entityType || entityType === "agent") {
-      result.agents = await db
+      const rows = await db
         .select()
         .from(agents)
         .where(and(eq(agents.companyId, companyId), isNotNull(agents.deletedAt)));
+      for (const row of rows) {
+        items.push({ entityType: "agent", entityId: row.id, name: row.name, deletedAt: row.deletedAt });
+      }
     }
 
     if (!entityType || entityType === "project") {
-      result.projects = await db
+      const rows = await db
         .select()
         .from(projects)
         .where(and(eq(projects.companyId, companyId), isNotNull(projects.deletedAt)));
+      for (const row of rows) {
+        items.push({ entityType: "project", entityId: row.id, name: row.name, deletedAt: row.deletedAt });
+      }
     }
 
     if (!entityType || entityType === "goal") {
-      result.goals = await db
+      const rows = await db
         .select()
         .from(goals)
         .where(and(eq(goals.companyId, companyId), isNotNull(goals.deletedAt)));
+      for (const row of rows) {
+        items.push({ entityType: "goal", entityId: row.id, name: row.title, deletedAt: row.deletedAt });
+      }
     }
 
-    res.json(result);
+    res.json(items);
   });
 
   // Restore a trashed item
@@ -79,65 +91,56 @@ export function trashRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    let restored: unknown = null;
     let companyId: string | null = null;
 
+    // Look up entity first to get companyId, then assert access before mutating
     switch (entityType) {
       case "issue": {
-        const issue = await issueSvc.restore(entityId);
-        if (!issue) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        companyId = issue.companyId;
-        restored = issue;
+        const existing = await issueSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
+        companyId = existing.companyId;
         break;
       }
       case "agent": {
-        const agent = await agentSvc.restore(entityId);
-        if (!agent) {
-          res.status(404).json({ error: "Agent not found" });
-          return;
-        }
-        companyId = agent.companyId;
-        restored = agent;
+        const existing = await agentSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Agent not found" }); return; }
+        companyId = existing.companyId;
         break;
       }
       case "project": {
-        const project = await projectSvc.restore(entityId);
-        if (!project) {
-          res.status(404).json({ error: "Project not found" });
-          return;
-        }
-        companyId = project.companyId;
-        restored = project;
+        const existing = await projectSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Project not found" }); return; }
+        companyId = existing.companyId;
         break;
       }
       case "goal": {
-        const goal = await goalSvc.restore(entityId);
-        if (!goal) {
-          res.status(404).json({ error: "Goal not found" });
-          return;
-        }
-        companyId = goal.companyId;
-        restored = goal;
+        const existing = await goalSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Goal not found" }); return; }
+        companyId = existing.companyId;
         break;
       }
     }
 
-    if (companyId) {
-      assertCompanyAccess(req, companyId);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: `${entityType}.restored`,
-        entityType,
-        entityId,
-      });
+    assertCompanyAccess(req, companyId!);
+
+    let restored: unknown = null;
+    switch (entityType) {
+      case "issue": restored = await issueSvc.restore(entityId); break;
+      case "agent": restored = await agentSvc.restore(entityId); break;
+      case "project": restored = await projectSvc.restore(entityId); break;
+      case "goal": restored = await goalSvc.restore(entityId); break;
     }
+
+    await logActivity(db, {
+      companyId: companyId!,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: `${entityType}.restored`,
+      entityType,
+      entityId,
+    });
 
     res.json(restored);
   });
@@ -155,15 +158,40 @@ export function trashRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     let companyId: string | null = null;
 
+    // Look up entity first to get companyId, then assert access before mutating
+    switch (entityType) {
+      case "issue": {
+        const existing = await issueSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Issue not found" }); return; }
+        companyId = existing.companyId;
+        break;
+      }
+      case "agent": {
+        const existing = await agentSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Agent not found" }); return; }
+        companyId = existing.companyId;
+        break;
+      }
+      case "project": {
+        const existing = await projectSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Project not found" }); return; }
+        companyId = existing.companyId;
+        break;
+      }
+      case "goal": {
+        const existing = await goalSvc.getById(entityId);
+        if (!existing) { res.status(404).json({ error: "Goal not found" }); return; }
+        companyId = existing.companyId;
+        break;
+      }
+    }
+
+    assertCompanyAccess(req, companyId!);
+
     switch (entityType) {
       case "issue": {
         const attachments = await issueSvc.listAttachments(entityId);
-        const issue = await issueSvc.remove(entityId);
-        if (!issue) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        companyId = issue.companyId;
+        await issueSvc.remove(entityId);
         for (const attachment of attachments) {
           try {
             await storage.deleteObject(attachment.companyId, attachment.objectKey);
@@ -173,48 +201,21 @@ export function trashRoutes(db: Db, storage: StorageService) {
         }
         break;
       }
-      case "agent": {
-        const agent = await agentSvc.remove(entityId);
-        if (!agent) {
-          res.status(404).json({ error: "Agent not found" });
-          return;
-        }
-        companyId = agent.companyId;
-        break;
-      }
-      case "project": {
-        const project = await projectSvc.remove(entityId);
-        if (!project) {
-          res.status(404).json({ error: "Project not found" });
-          return;
-        }
-        companyId = project.companyId;
-        break;
-      }
-      case "goal": {
-        const goal = await goalSvc.remove(entityId);
-        if (!goal) {
-          res.status(404).json({ error: "Goal not found" });
-          return;
-        }
-        companyId = goal.companyId;
-        break;
-      }
+      case "agent": await agentSvc.remove(entityId); break;
+      case "project": await projectSvc.remove(entityId); break;
+      case "goal": await goalSvc.remove(entityId); break;
     }
 
-    if (companyId) {
-      assertCompanyAccess(req, companyId);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: `${entityType}.permanently_deleted`,
-        entityType,
-        entityId,
-      });
-    }
+    await logActivity(db, {
+      companyId: companyId!,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: `${entityType}.permanently_deleted`,
+      entityType,
+      entityId,
+    });
 
     res.json({ ok: true });
   });
