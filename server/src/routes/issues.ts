@@ -157,7 +157,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   async function assertQAGate(
     issueSvc: ReturnType<typeof issueService>,
     req: Request,
-    issue: { id: string; executionWorkspaceId: string | null },
+    issue: { id: string; executionWorkspaceId: string | null; assigneeAgentId: string | null },
     targetStatus: string,
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
@@ -166,12 +166,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const comments = await issueSvc.listComments(issue.id, { order: "asc" });
     const hasQAPass = comments.some(
-      c => (c.authorAgentId || c.authorUserId) && QA_PASS_PATTERN.test(c.body),
+      c =>
+        (c.authorAgentId || c.authorUserId) &&
+        c.authorAgentId !== issue.assigneeAgentId &&
+        QA_PASS_PATTERN.test(c.body),
     );
     if (!hasQAPass) {
       return {
         gate: "done_requires_qa_pass",
-        reason: "Cannot mark done without QA approval. A comment containing 'QA: PASS' from a reviewer is required.",
+        reason: "Cannot mark done without QA approval. A comment containing 'QA: PASS' from a different reviewer is required. The assigned agent cannot approve their own work.",
       };
     }
     return null;

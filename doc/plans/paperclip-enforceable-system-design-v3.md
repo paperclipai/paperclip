@@ -4,7 +4,7 @@
 
 ## Status
 
-Superseded in part — the Review Entry Guard (#1) and Release Guard (#3) are now implemented as **core service gates** in `server/src/routes/issues.ts` (`assertDeliveryGate()`), not as plugins.
+Superseded in part — the Review Entry Guard (#1) and Release Guard (#3) are now implemented as **core service gates** in `server/src/routes/issues.ts` (`assertDeliveryGate()` and `assertQAGate()`), not as plugins. Both disabled QA gate plugins have been removed.
 
 ## Rationale
 
@@ -19,12 +19,24 @@ Core service gates in the route handler are the correct approach for hard enforc
 
 ## Gate Rules
 
+### Delivery Gate (`assertDeliveryGate`)
+
 | Transition | Requirement |
 |------------|-------------|
 | → `in_review` | At least one work product of type `branch`, `commit`, or `pull_request` |
 | → `done` | A `pull_request` work product with status `active`, `ready_for_review`, `approved`, or `merged` |
 
-**Escape hatches:**
+### QA Gate (`assertQAGate`)
+
+| Transition | Requirement |
+|------------|-------------|
+| → `done` | A comment matching `/\bqa[\s:]+pass(ed)?\b/i` from an authenticated author who is NOT the issue assignee |
+
+Gate ordering: delivery gate fires first, then QA gate. This ensures "push your code" errors appear before "get QA approval" errors.
+
+**Self-QA prevention:** The assigned agent's own `QA: PASS` comments are ignored. A different agent or board user must approve.
+
+**Escape hatches (both gates):**
 - Issues without `executionWorkspaceId` skip all gates (non-code issues)
 - Board actors always bypass (only agents are gated)
 

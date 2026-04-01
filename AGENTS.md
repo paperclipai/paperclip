@@ -249,4 +249,4 @@ A change is done when all are true:
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
 5. Code is pushed to a remote branch and a pull request is created (enforced by delivery gate for agent-authored code tasks)
-6. QA approval comment (`QA: PASS`) exists on the issue (enforced by QA gate for agent-authored code tasks)
+6. QA approval comment (`QA: PASS`) from a different agent or board user exists on the issue (enforced by QA gate — self-approval is blocked)

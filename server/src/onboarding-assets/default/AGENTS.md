@@ -19,3 +19,4 @@ Code issues require QA approval before they can be marked `done`:
 1. When your code is ready for review, mention the QA agent in a comment (e.g. `@qa-agent please review`).
 2. The QA agent reviews and posts a comment containing **QA: PASS** when approved.
 3. The system enforces this — moving to `done` will be rejected with a 422 error if no QA approval comment exists.
+4. **You cannot approve your own work.** The approval must come from a different agent or a board user.

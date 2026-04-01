@@ -281,6 +281,55 @@ describe("qa gate", () => {
     );
   });
 
+  it("agent → done, assignee posts QA pass (self-QA) → 422", async () => {
+    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockIssueService.listComments.mockResolvedValue([
+      // agent-1 is the assignee — self-approval should be rejected
+      { body: "QA: PASS", authorAgentId: "agent-1", authorUserId: null },
+    ]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${codeIssue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("done_requires_qa_pass");
+  });
+
+  it("agent → done, assignee self-QA ignored but different agent QA passes → 200", async () => {
+    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
+    mockIssueService.listComments.mockResolvedValue([
+      // Self-approval from assignee — ignored
+      { body: "QA: PASS", authorAgentId: "agent-1", authorUserId: null },
+      // Real approval from a different agent
+      { body: "QA: PASS — reviewed and approved", authorAgentId: "qa-agent-1", authorUserId: null },
+    ]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${codeIssue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("agent → done, board user QA passes even when assignee is agent → 200", async () => {
+    mockIssueService.getById.mockResolvedValue(codeIssue);
+    mockIssueService.update.mockResolvedValue({ ...codeIssue, status: "done" });
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "QA: PASS", authorAgentId: null, authorUserId: "board-user-1" },
+    ]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${codeIssue.id}`)
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+  });
+
   it("delivery gate fires before QA gate (no PR + no QA) → done_requires_pr", async () => {
     mockIssueService.getById.mockResolvedValue(codeIssue);
     mockIssueService.listComments.mockResolvedValue([]);
