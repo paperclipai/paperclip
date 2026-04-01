@@ -4,8 +4,9 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles } from "lucide-react";
+import { Hammer } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
 
@@ -75,7 +76,7 @@ export function AuthPage() {
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="flex items-center gap-2 mb-8">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            <Hammer className="h-4 w-4 text-blue-500" aria-hidden="true" />
             <span className="text-sm font-medium">Ironworks</span>
           </div>
 
@@ -105,10 +106,9 @@ export function AuthPage() {
             {mode === "sign_up" && (
               <div>
                 <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
-                <input
+                <Input
                   id="name"
                   name="name"
-                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   autoComplete="name"
@@ -118,11 +118,11 @@ export function AuthPage() {
             )}
             <div>
               <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
-              <input
+              <Input
                 id="email"
                 name="email"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="email"
+                inputMode="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 autoComplete="email"
@@ -131,10 +131,9 @@ export function AuthPage() {
             </div>
             <div>
               <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
-              <input
+              <Input
                 id="password"
                 name="password"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
@@ -171,7 +170,7 @@ export function AuthPage() {
                 </span>
               </label>
             )}
-            {error && <p className="text-xs text-destructive">{error}</p>}
+            {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
             <Button
               type="submit"
               disabled={mutation.isPending}

@@ -186,6 +186,7 @@ export function ToggleWithNumber({
           {numberPrefix && <span>{numberPrefix}</span>}
           <input
             type="number"
+            inputMode="numeric"
             className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}
@@ -375,6 +376,7 @@ export function DraftNumberInput({
   return (
     <input
       type="number"
+      inputMode="numeric"
       className={className}
       value={draft}
       onChange={(e) => {

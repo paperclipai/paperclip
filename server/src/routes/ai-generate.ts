@@ -5,6 +5,11 @@ import { eq } from "drizzle-orm";
 import { assertCompanyAccess } from "./authz.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  sanitizeAiInput,
+  validatePlaybookOutput,
+  type GeneratedPlaybook,
+} from "../lib/ai-security.js";
 
 /**
  * AI generation endpoints for playbooks, routines, etc.
@@ -19,10 +24,12 @@ export function aiGenerateRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
-    const { prompt } = req.body as { prompt?: string };
-    if (!prompt || prompt.trim().length < 10) {
+    const { prompt: rawPrompt } = req.body as { prompt?: string };
+    if (!rawPrompt || rawPrompt.trim().length < 10) {
       throw badRequest("Prompt must be at least 10 characters");
     }
+    // SEC-LLM-001: sanitize before interpolating into LLM prompt
+    const prompt = sanitizeAiInput(rawPrompt, "prompt");
 
     // Get company agents for role matching
     const companyAgents = await db
@@ -50,21 +57,6 @@ export function aiGenerateRoutes(db: Db) {
   });
 
   return router;
-}
-
-interface GeneratedPlaybook {
-  name: string;
-  description: string;
-  body: string;
-  category: string;
-  steps: Array<{
-    stepOrder: number;
-    title: string;
-    instructions: string;
-    assigneeRole: string;
-    dependsOn: number[];
-    requiresApproval: boolean;
-  }>;
 }
 
 async function generateWithAnthropic(
@@ -134,7 +126,8 @@ Rules:
     throw new Error("No JSON found in Anthropic response");
   }
 
-  return JSON.parse(jsonMatch[0]) as GeneratedPlaybook;
+  // SEC-LLM-002: validate schema and strip unexpected fields before returning
+  return validatePlaybookOutput(JSON.parse(jsonMatch[0]));
 }
 
 /**
@@ -144,7 +137,7 @@ function generateFromTemplate(prompt: string, availableRoles: string[]): Generat
   const lowerPrompt = prompt.toLowerCase();
 
   // Detect category
-  let category = "custom";
+  let category: GeneratedPlaybook["category"] = "custom";
   if (lowerPrompt.includes("security") || lowerPrompt.includes("audit")) category = "security";
   else if (lowerPrompt.includes("onboard") || lowerPrompt.includes("client")) category = "onboarding";
   else if (lowerPrompt.includes("launch") || lowerPrompt.includes("release") || lowerPrompt.includes("deploy")) category = "engineering";

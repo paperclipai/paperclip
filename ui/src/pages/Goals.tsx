@@ -277,7 +277,7 @@ export function Goals() {
           </div>
           <div className="flex items-center gap-1.5">
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as GoalStatusFilter)}>
-              <SelectTrigger className="h-8 w-[120px] text-xs">
+              <SelectTrigger className="h-8 w-auto min-w-[120px] text-xs">
                 <Filter className="h-3 w-3 mr-1" />
                 <SelectValue />
               </SelectTrigger>
@@ -290,7 +290,7 @@ export function Goals() {
               </SelectContent>
             </Select>
             <Select value={sortField} onValueChange={(v) => setSortField(v as GoalSortField)}>
-              <SelectTrigger className="h-8 w-[120px] text-xs">
+              <SelectTrigger className="h-8 w-auto min-w-[120px] text-xs">
                 <ArrowUpDown className="h-3 w-3 mr-1" />
                 <SelectValue />
               </SelectTrigger>

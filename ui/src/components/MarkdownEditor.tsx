@@ -564,7 +564,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       {mentionActive && filteredMentions.length > 0 &&
         createPortal(
           <div
-            className="fixed z-[9999] min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            className="fixed z-[100] min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{ top: mentionState.viewportTop + 4, left: mentionState.viewportLeft }}
           >
             {filteredMentions.map((option, i) => (

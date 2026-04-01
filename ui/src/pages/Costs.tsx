@@ -105,7 +105,7 @@ function MetricTile({
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
+          <div className="mt-1 text-sm leading-5 text-muted-foreground">{subtitle}</div>
         </div>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
           <Icon className="h-4 w-4 text-muted-foreground" />
@@ -746,7 +746,7 @@ export function Costs() {
                         <div className="text-3xl font-semibold tabular-nums">
                           {formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
+                        <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                             ? `of ${formatCents(spendData.summary.budgetCents)} monthly budget`
                             : "No budget cap configured"}
@@ -756,7 +756,7 @@ export function Costs() {
                         <div className="text-xl font-semibold tabular-nums">
                           {formatTokens(inferenceTokenTotal)}
                         </div>
-                        <div className="text-xs text-muted-foreground">tokens used</div>
+                        <div className="text-sm text-muted-foreground">tokens used</div>
                       </div>
                     </div>
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
@@ -774,22 +774,22 @@ export function Costs() {
                             style={{ width: `${Math.min(100, spendData.summary.utilizationPercent)}%` }}
                           />
                         </div>
-                        <div className="text-xs text-muted-foreground">
+                        <div className="text-sm text-muted-foreground">
                           {spendData.summary.utilizationPercent}% of monthly budget consumed
                         </div>
                       </div>
                     ) : null}
                     {equivalentSpend && equivalentSpend.subscriptionEquivalentCents > 0 && (
                       <div className="pt-2 border-t border-border space-y-1.5">
-                        <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center justify-between text-sm">
                           <span className="text-muted-foreground">API spend (billed)</span>
                           <span className="font-mono font-medium">{formatCents(equivalentSpend.actualSpendCents)}</span>
                         </div>
-                        <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center justify-between text-sm">
                           <span className="text-muted-foreground">Subscription value (covered)</span>
                           <span className="font-mono font-medium text-blue-500">{formatCents(equivalentSpend.subscriptionEquivalentCents)}</span>
                         </div>
-                        <div className="flex items-center justify-between text-xs pt-1 border-t border-border/50">
+                        <div className="flex items-center justify-between text-sm pt-1 border-t border-border/50">
                           <span className="font-medium">Total compute value</span>
                           <span className="font-mono font-semibold">{formatCents(equivalentSpend.totalEquivalentCents)}</span>
                         </div>
@@ -840,7 +840,7 @@ export function Costs() {
                         {topFinanceEvents.slice(0, 5).map((event) => (
                           <div key={event.id} className="flex items-center justify-between text-sm border-b border-border pb-2 last:border-0">
                             <div className="min-w-0">
-                              <div className="text-xs font-medium truncate">{event.description ?? event.eventKind}</div>
+                              <div className="text-sm font-medium truncate">{event.description ?? event.eventKind}</div>
                               <div className="text-[10px] text-muted-foreground">{event.biller}</div>
                             </div>
                             <span className={cn(
@@ -890,11 +890,11 @@ export function Costs() {
                               </div>
                               <div className="text-right text-sm tabular-nums">
                                 <div className="font-medium">{formatCents(row.costCents)}</div>
-                                <div className="text-xs text-muted-foreground">
+                                <div className="text-sm text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
                                 {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
-                                  <div className="text-xs text-muted-foreground">
+                                  <div className="text-sm text-muted-foreground">
                                     {row.apiRunCount > 0 ? `${row.apiRunCount} api` : "0 api"}
                                     {" · "}
                                     {row.subscriptionRunCount > 0

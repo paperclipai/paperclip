@@ -4,7 +4,7 @@ import { useParams, useNavigate, Link } from "@/lib/router";
 import { userInvitesApi } from "../api/userInvites";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Sparkles } from "lucide-react";
+import { Hammer } from "lucide-react";
 
 export function UserInviteAcceptPage() {
   const { token } = useParams<{ token: string }>();
@@ -77,7 +77,7 @@ export function UserInviteAcceptPage() {
     <div className="fixed inset-0 flex items-center justify-center bg-background">
       <div className="w-full max-w-md px-8 py-12">
         <div className="flex items-center gap-2 mb-8">
-          <Sparkles className="h-4 w-4 text-muted-foreground" />
+          <Hammer className="h-4 w-4 text-blue-500" aria-hidden="true" />
           <span className="text-sm font-medium">Ironworks</span>
         </div>
 
@@ -120,7 +120,7 @@ export function UserInviteAcceptPage() {
             </label>
             <input
               id="invite-name"
-              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoComplete="name"
@@ -137,7 +137,7 @@ export function UserInviteAcceptPage() {
             </label>
             <input
               id="invite-password"
-              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

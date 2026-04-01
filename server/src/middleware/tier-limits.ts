@@ -130,6 +130,44 @@ export async function checkProjectLimit(
   return null;
 }
 
+/**
+ * Returns a middleware that blocks playbook runs when the company has
+ * reached its monthly plan limit.
+ */
+export function enforcePlaybookRunLimit(db: Db) {
+  const billing = billingService(db);
+
+  return async (req: Request, _res: Response, next: NextFunction) => {
+    const companyId = req.params.companyId as string | undefined;
+    if (!companyId) {
+      next();
+      return;
+    }
+
+    try {
+      const sub = await billing.getOrCreateSubscription(companyId);
+      const plan = PLAN_DEFINITIONS[sub.planTier];
+      if (plan.playbookRuns === -1) {
+        next();
+        return;
+      }
+
+      const count = await billing.getPlaybookRunCount(companyId);
+      if (count >= plan.playbookRuns) {
+        throw tierLimitError(
+          `Playbook run limit reached: ${plan.playbookRuns} runs/month allowed on ${plan.label}. Upgrade for unlimited runs.`,
+          `${plan.playbookRuns} playbook runs/month`,
+          sub.planTier,
+        );
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
 export async function checkStorageLimit(
   db: Db,
   companyId: string,

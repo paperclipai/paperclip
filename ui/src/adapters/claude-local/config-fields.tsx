@@ -116,6 +116,7 @@ export function ClaudeLocalAdvancedFields({
         {isCreate ? (
           <input
             type="number"
+            inputMode="numeric"
             className={inputClass}
             value={values!.maxTurnsPerRun}
             onChange={(e) => set!({ maxTurnsPerRun: Number(e.target.value) })}

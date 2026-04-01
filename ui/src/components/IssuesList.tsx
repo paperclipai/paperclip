@@ -1040,7 +1040,7 @@ export function IssuesList({
                       </Popover>
                     </>
                   )}
-                  trailingMeta={formatDate(issue.createdAt)}
+                  trailingMeta={<span className="hidden md:inline">{formatDate(issue.createdAt)}</span>}
                 />
               ))}
             </CollapsibleContent>

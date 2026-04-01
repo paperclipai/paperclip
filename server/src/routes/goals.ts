@@ -68,7 +68,7 @@ export function goalRoutes(db: Db) {
       action: "goal.updated",
       entityType: "goal",
       entityId: goal.id,
-      details: req.body,
+      details: { title: goal.title, status: goal.status },
     });
 
     res.json(goal);

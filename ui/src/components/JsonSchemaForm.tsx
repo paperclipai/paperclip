@@ -567,6 +567,7 @@ const NumberField = React.memo(({
   >
     <Input
       type="number"
+      inputMode={type === "integer" ? "numeric" : "decimal"}
       step={type === "integer" ? "1" : "any"}
       value={value !== undefined ? String(value) : ""}
       onChange={(e) => {

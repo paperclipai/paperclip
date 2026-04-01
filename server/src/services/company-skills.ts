@@ -1074,6 +1074,13 @@ async function readUrlSkillImports(
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {
+    // SEC-INJ-001: Validate URL before fetching to prevent SSRF
+    const parsedUrl = new URL(url);
+    const hostname = parsedUrl.hostname;
+    // Block private/reserved IPs and localhost
+    if (/^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|0\.|169\.254\.|localhost|::1|\[::1\])/.test(hostname)) {
+      throw unprocessable("URL resolves to a private or reserved address");
+    }
     const markdown = await fetchText(url);
     const parsedMarkdown = parseFrontmatterMarkdown(markdown);
     const urlObj = new URL(url);

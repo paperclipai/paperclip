@@ -147,6 +147,7 @@ export function NewFinanceEventDialog({
               <label className="text-xs font-medium text-muted-foreground">Amount (USD)</label>
               <Input
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 min="0"
                 value={amount}

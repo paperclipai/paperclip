@@ -355,7 +355,7 @@ export function Layout() {
               {isInstanceAdmin && (
                 <>
                   <span className="text-border">|</span>
-                  <Button variant="ghost" size="icon-xs" className="text-muted-foreground" asChild>
+                  <Button variant="ghost" size="icon-sm" className="text-muted-foreground" asChild>
                     <Link
                       to={instanceSettingsTarget}
                       aria-label="Settings"
@@ -369,7 +369,7 @@ export function Layout() {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-xs"
+                size="icon-sm"
                 className="text-muted-foreground"
                 onClick={toggleTheme}
                 aria-label={`Switch to ${nextTheme} mode`}

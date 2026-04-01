@@ -385,7 +385,7 @@ export function Dashboard() {
                   <p className="text-sm font-medium text-red-50">
                     {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
                   </p>
-                  <p className="text-xs text-red-100/70">
+                  <p className="text-sm text-red-100/70">
                     {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
                   </p>
                 </div>
@@ -430,7 +430,7 @@ export function Dashboard() {
           {needsAttention && (
             <div className="rounded-xl border border-red-500/20 bg-red-500/[0.04] p-4 space-y-2">
               <h3 className="text-sm font-semibold uppercase tracking-wide flex items-center gap-2 text-red-400">
-                <AlertTriangle className="h-4 w-4" />
+                <AlertTriangle className="h-4 w-4" aria-hidden="true" />
                 Attention Required
               </h3>
               <div className="space-y-1.5">
@@ -441,8 +441,8 @@ export function Dashboard() {
                     className="flex items-center justify-between gap-2 rounded-lg border border-red-500/15 bg-red-500/[0.04] px-3 py-2 text-sm no-underline text-inherit hover:bg-red-500/10 transition-colors"
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
-                      <span className="font-mono text-xs text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Blocked"><span className="sr-only">Blocked</span></span>
+                      <span className="font-mono text-sm text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                       <span className="truncate">{issue.title}</span>
                     </div>
                     <span className="text-xs text-red-400 shrink-0">Blocked</span>
@@ -455,7 +455,7 @@ export function Dashboard() {
                     className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.04] px-3 py-2 text-sm no-underline text-inherit hover:bg-amber-500/10 transition-colors"
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" title="Failed"><span className="sr-only">Failed</span></span>
                       <span className="truncate">Run failed — {agentMap.get(run.agentId)?.name ?? "Agent"}</span>
                     </div>
                     <span className="text-xs text-amber-400 shrink-0">View run</span>
@@ -471,10 +471,10 @@ export function Dashboard() {
             <div className="rounded-xl border border-border p-4 space-y-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Today's Spend</h4>
               <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold">{formatCents(todaySpendCents)}</span>
-                <span className="text-xs text-muted-foreground">today</span>
+                <span className="text-2xl font-bold tabular-nums">{formatCents(todaySpendCents)}</span>
+                <span className="text-sm text-muted-foreground">today</span>
               </div>
-              <div className="space-y-1.5 text-xs text-muted-foreground">
+              <div className="space-y-1.5 text-sm text-muted-foreground tabular-nums">
                 <div className="flex justify-between">
                   <span>7-day avg</span>
                   <span>{formatCents(dailyAvgCents)}/day</span>
@@ -516,7 +516,7 @@ export function Dashboard() {
                       <span className="text-right">Time</span>
                     </div>
                     {agentEfficiency.map((a) => (
-                      <div key={a.agentId} className="grid grid-cols-[24px_1fr_50px_45px] gap-1 text-xs py-0.5 items-center">
+                      <div key={a.agentId} className="grid grid-cols-[24px_1fr_50px_45px] gap-1 text-sm py-0.5 items-center">
                         <span className={cn(
                           "inline-flex items-center justify-center h-5 w-5 rounded text-[10px] font-bold",
                           a.rating === "A" ? "text-emerald-400 bg-emerald-500/10" :
@@ -537,7 +537,7 @@ export function Dashboard() {
                       </div>
                     ))}
                   </div>
-                  <div className="border-t border-border/50 pt-2 space-y-1 text-xs text-muted-foreground">
+                  <div className="border-t border-border/50 pt-2 space-y-1 text-sm text-muted-foreground">
                     <div className="flex justify-between">
                       <span>Team avg</span>
                       <span>{teamAvgCostPerTask !== null ? `${formatCents(Math.round(teamAvgCostPerTask))}/task` : "—"}</span>
@@ -561,7 +561,7 @@ export function Dashboard() {
                   <div className="space-y-2.5">
                     {projectActivity.slice(0, 5).map((p) => (
                       <div key={p.id} className="space-y-1">
-                        <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center justify-between text-sm">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
                             <span className="truncate">{p.name}</span>
@@ -577,7 +577,7 @@ export function Dashboard() {
                       </div>
                     ))}
                   </div>
-                  <div className="border-t border-border/50 pt-2 text-xs text-muted-foreground">
+                  <div className="border-t border-border/50 pt-2 text-sm text-muted-foreground">
                     {totalProjectIssues} issues across {projectActivity.length} projects
                   </div>
                 </>
@@ -601,7 +601,7 @@ export function Dashboard() {
                     <Link key={goal.goalId} to={`/goals/${goal.goalId}`} className="block space-y-1.5 no-underline text-inherit hover:opacity-80 transition-opacity">
                       <div className="flex items-center justify-between text-sm">
                         <span className="truncate font-medium">{goal.title}</span>
-                        <span className="text-xs text-muted-foreground shrink-0 ml-2">{goal.progressPercent}%</span>
+                        <span className="text-sm text-muted-foreground shrink-0 ml-2">{goal.progressPercent}%</span>
                       </div>
                       <div className="h-2 bg-muted rounded-full overflow-hidden">
                         <div

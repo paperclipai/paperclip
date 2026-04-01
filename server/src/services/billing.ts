@@ -15,7 +15,8 @@
 import { eq } from "drizzle-orm";
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Db } from "@ironworksai/db";
-import { companySubscriptions, projects, companies, libraryFiles } from "@ironworksai/db";
+import { companySubscriptions, projects, companies, libraryFiles, playbookRuns } from "@ironworksai/db";
+import { gte, and } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -165,6 +166,46 @@ function productIdToTier(productId: string): PlanTier {
 }
 
 // ---------------------------------------------------------------------------
+// Webhook idempotency guard (SEC-LOGIC-001)
+// In-memory Map with 24-hour TTL. Prevents duplicate Polar events from
+// re-activating cancelled subscriptions or racing on tier changes.
+// A production deployment should persist this to the database instead.
+// ---------------------------------------------------------------------------
+
+interface IdempotencyEntry {
+  processedAt: number; // Date.now() ms
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+const processedWebhookEvents = new Map<string, IdempotencyEntry>();
+
+function pruneExpiredIdempotencyEntries(): void {
+  const now = Date.now();
+  for (const [key, entry] of processedWebhookEvents) {
+    if (now - entry.processedAt > IDEMPOTENCY_TTL_MS) {
+      processedWebhookEvents.delete(key);
+    }
+  }
+}
+
+function isEventAlreadyProcessed(eventId: string): boolean {
+  const entry = processedWebhookEvents.get(eventId);
+  if (!entry) return false;
+  // Treat expired entries as unprocessed (prune will clean them up)
+  if (Date.now() - entry.processedAt > IDEMPOTENCY_TTL_MS) {
+    processedWebhookEvents.delete(eventId);
+    return false;
+  }
+  return true;
+}
+
+function markEventProcessed(eventId: string): void {
+  pruneExpiredIdempotencyEntries();
+  processedWebhookEvents.set(eventId, { processedAt: Date.now() });
+}
+
+// ---------------------------------------------------------------------------
 // Service factory
 // ---------------------------------------------------------------------------
 
@@ -250,6 +291,15 @@ export function billingService(db: Db) {
   }
 
   async function handleWebhook(event: PolarWebhookEvent): Promise<void> {
+    // SEC-LOGIC-001: Idempotency guard — skip events we have already processed.
+    const eventId = event.data.id as string | undefined;
+    if (eventId) {
+      if (isEventAlreadyProcessed(eventId)) {
+        logger.debug({ eventId, eventType: event.type }, "Skipping duplicate Polar webhook event");
+        return;
+      }
+    }
+
     switch (event.type) {
       case "checkout.created": {
         // A checkout was created — we can track it but no subscription yet
@@ -316,13 +366,41 @@ export function billingService(db: Db) {
         break;
       }
 
-      case "subscription.canceled":
-      case "subscription.revoked": {
+      case "subscription.canceled": {
+        // SEC-LOGIC-002: Honor currentPeriodEnd — keep status active with
+        // cancelAtPeriodEnd flag so the customer retains access until the
+        // billing period they already paid for expires. The hard revocation
+        // happens on subscription.revoked (Polar fires this at period end).
         const data = event.data as Record<string, unknown>;
         const metadata = (data.metadata ?? {}) as Record<string, string>;
         const companyId = metadata.ironworksCompanyId;
         if (!companyId) {
-          logger.warn(`${event.type} missing ironworksCompanyId metadata`);
+          logger.warn("subscription.canceled missing ironworksCompanyId metadata");
+          return;
+        }
+        await db
+          .update(companySubscriptions)
+          .set({
+            status: "active",
+            cancelAtPeriodEnd: true,
+            currentPeriodEnd: data.current_period_end
+              ? new Date(data.current_period_end as string)
+              : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySubscriptions.companyId, companyId));
+        logger.info({ companyId }, "Subscription marked cancel-at-period-end via Polar");
+        break;
+      }
+
+      case "subscription.revoked": {
+        // Hard revocation: period has ended or subscription was force-terminated.
+        // Strip access immediately.
+        const data = event.data as Record<string, unknown>;
+        const metadata = (data.metadata ?? {}) as Record<string, string>;
+        const companyId = metadata.ironworksCompanyId;
+        if (!companyId) {
+          logger.warn("subscription.revoked missing ironworksCompanyId metadata");
           return;
         }
         await db
@@ -333,12 +411,18 @@ export function billingService(db: Db) {
             updatedAt: new Date(),
           })
           .where(eq(companySubscriptions.companyId, companyId));
-        logger.info({ companyId }, `Subscription ${event.type} via Polar`);
+        logger.info({ companyId }, "Subscription revoked via Polar — access removed");
         break;
       }
 
       default:
         logger.debug({ eventType: event.type }, "Unhandled Polar webhook event");
+    }
+
+    // SEC-LOGIC-001: Mark the event as successfully processed so re-deliveries
+    // from Polar are safely ignored within the 24-hour TTL window.
+    if (eventId) {
+      markEventProcessed(eventId);
     }
   }
 
@@ -362,6 +446,20 @@ export function billingService(db: Db) {
     return rows.reduce<number>((sum, f) => sum + (f.sizeBytes ?? 0), 0);
   }
 
+  async function getPlaybookRunCount(companyId: string): Promise<number> {
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const rows = await db
+      .select()
+      .from(playbookRuns)
+      .where(and(
+        eq(playbookRuns.companyId, companyId),
+        gte(playbookRuns.createdAt, startOfMonth),
+      ));
+    return rows.length;
+  }
+
   async function getCompanyCount(userId: string): Promise<number> {
     // For now return 1 — multi-company counting requires membership table query
     // which depends on the auth mode. Placeholder for enterprise tier check.
@@ -376,6 +474,7 @@ export function billingService(db: Db) {
     createCustomerPortalSession,
     handleWebhook,
     getProjectCount,
+    getPlaybookRunCount,
     getStorageUsageBytes,
     getCompanyCount,
   };

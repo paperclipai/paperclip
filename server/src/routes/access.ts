@@ -2082,6 +2082,11 @@ export function accessRoutes(
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       throw badRequest("url must use http or https");
     }
+    // SEC-INJ-002: Block SSRF — reject private/reserved IPs
+    const hostname = target.hostname;
+    if (/^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|0\.|169\.254\.|localhost|::1|\[::1\])/.test(hostname)) {
+      throw badRequest("URL resolves to a private or reserved address");
+    }
 
     const parsedTimeoutMs =
       typeof req.query.timeoutMs === "string"

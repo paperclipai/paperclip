@@ -123,9 +123,9 @@ For questions about this Acceptable Use Policy, contact us at:
 
 export function AcceptableUsePolicy() {
   return (
-    <div className="min-h-screen bg-background">
-      <ScrollArea className="h-screen">
-        <div className="max-w-3xl mx-auto px-6 py-12">
+    <div className="min-h-[100dvh] bg-background">
+      <ScrollArea className="h-[100dvh]">
+        <div className="max-w-2xl mx-auto px-6 py-12">
           <div className="flex items-center gap-2 mb-6">
             <ShieldAlert className="h-5 w-5 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">IronWorks by Steel Motion LLC</span>

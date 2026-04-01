@@ -4,8 +4,9 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles, AlertCircle, Loader2, CheckCircle } from "lucide-react";
+import { Hammer, AlertCircle, Loader2, CheckCircle } from "lucide-react";
 
 interface SetupResponse {
   companyId: string;
@@ -150,7 +151,7 @@ export function SetupPage() {
       <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
         <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
           <div className="flex items-center gap-2 mb-8">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            <Hammer className="h-4 w-4 text-blue-500" aria-hidden="true" />
             <span className="text-sm font-medium">Ironworks</span>
           </div>
 
@@ -176,9 +177,8 @@ export function SetupPage() {
               <label htmlFor="companyName" className="text-xs text-muted-foreground mb-1 block">
                 Company Name
               </label>
-              <input
+              <Input
                 id="companyName"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 value={companyName}
                 onChange={(e) => setCompanyName(e.target.value)}
                 placeholder="Acme Corp"
@@ -191,9 +191,8 @@ export function SetupPage() {
               <label htmlFor="userName" className="text-xs text-muted-foreground mb-1 block">
                 Your Name
               </label>
-              <input
+              <Input
                 id="userName"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 value={userName}
                 onChange={(e) => setUserName(e.target.value)}
                 placeholder="Jane Smith"
@@ -206,10 +205,10 @@ export function SetupPage() {
               <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">
                 Email
               </label>
-              <input
+              <Input
                 id="email"
                 type="email"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                inputMode="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="jane@acme.com"
@@ -221,10 +220,9 @@ export function SetupPage() {
               <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">
                 Password
               </label>
-              <input
+              <Input
                 id="password"
                 type="password"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Minimum 8 characters"
@@ -237,10 +235,9 @@ export function SetupPage() {
               <label htmlFor="confirmPassword" className="text-xs text-muted-foreground mb-1 block">
                 Confirm Password
               </label>
-              <input
+              <Input
                 id="confirmPassword"
                 type="password"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="Repeat your password"
@@ -278,7 +275,7 @@ export function SetupPage() {
             </label>
 
             {(error || validationError) && (
-              <p className="text-xs text-destructive">
+              <p role="alert" className="text-xs text-destructive">
                 {error ?? validationError}
               </p>
             )}

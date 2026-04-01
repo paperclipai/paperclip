@@ -269,7 +269,7 @@ export function AgentPerformance() {
         </div>
         <div>
           <p className="text-sm font-medium">Team Average</p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {rows.filter((r) => r.tasksDone > 0).length} active agents · {rows.reduce((s, r) => s + r.tasksDone, 0)} tasks completed · {formatCents(rows.reduce((s, r) => s + r.totalSpendCents, 0))} total spend
           </p>
         </div>
@@ -284,18 +284,18 @@ export function AgentPerformance() {
       ) : (
         <div className="rounded-xl border border-border overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[600px] text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/30">
                   <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Agent</th>
                   <SortHeader field="rating" label="Rating" current={sortField} dir={sortDir} onToggle={toggleSort} align="center" />
                   <SortHeader field="tasksDone" label="Done" current={sortField} dir={sortDir} onToggle={toggleSort} align="center" />
-                  <SortHeader field="throughput" label="Tasks/Day" current={sortField} dir={sortDir} onToggle={toggleSort} />
-                  <SortHeader field="avgCloseH" label="Avg Time" current={sortField} dir={sortDir} onToggle={toggleSort} />
-                  <SortHeader field="costPerTask" label="$/Task" current={sortField} dir={sortDir} onToggle={toggleSort} />
-                  <SortHeader field="totalSpendCents" label="Total Spend" current={sortField} dir={sortDir} onToggle={toggleSort} />
-                  <SortHeader field="completionRate" label="Completion" current={sortField} dir={sortDir} onToggle={toggleSort} />
-                  <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider w-20">Action</th>
+                  <SortHeader field="throughput" label="Tasks/Day" current={sortField} dir={sortDir} onToggle={toggleSort} className="hidden md:table-cell" />
+                  <SortHeader field="avgCloseH" label="Avg Time" current={sortField} dir={sortDir} onToggle={toggleSort} className="hidden md:table-cell" />
+                  <SortHeader field="costPerTask" label="$/Task" current={sortField} dir={sortDir} onToggle={toggleSort} className="hidden md:table-cell" />
+                  <SortHeader field="totalSpendCents" label="Total Spend" current={sortField} dir={sortDir} onToggle={toggleSort} className="hidden md:table-cell" />
+                  <SortHeader field="completionRate" label="Completion" current={sortField} dir={sortDir} onToggle={toggleSort} className="hidden md:table-cell" />
+                  <th className="hidden md:table-cell px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider w-20">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -317,19 +317,19 @@ export function AgentPerformance() {
                         <span className="text-muted-foreground ml-1">+{row.tasksInProgress}</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                    <td className="hidden md:table-cell px-4 py-3 text-right tabular-nums text-muted-foreground">
                       {row.throughput > 0 ? row.throughput.toFixed(1) : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                    <td className="hidden md:table-cell px-4 py-3 text-right tabular-nums text-muted-foreground">
                       {row.avgCloseH !== null ? `${row.avgCloseH.toFixed(1)}h` : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                    <td className="hidden md:table-cell px-4 py-3 text-right tabular-nums text-muted-foreground">
                       {row.costPerTask !== null ? formatCents(Math.round(row.costPerTask)) : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td className="hidden md:table-cell px-4 py-3 text-right tabular-nums">
                       {formatCents(row.totalSpendCents)}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="hidden md:table-cell px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
                           <div
@@ -340,10 +340,10 @@ export function AgentPerformance() {
                             style={{ width: `${row.completionRate}%` }}
                           />
                         </div>
-                        <span className="text-xs text-muted-foreground tabular-nums w-8 text-right">{row.completionRate}%</span>
+                        <span className="text-sm text-muted-foreground tabular-nums w-8 text-right">{row.completionRate}%</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="hidden md:table-cell px-4 py-3 text-right">
                       {(row.rating === "D" || row.rating === "F") && row.tasksDone > 0 ? (
                         <button
                           className="text-[10px] text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors"
@@ -370,7 +370,7 @@ export function AgentPerformance() {
           {/* Workload Distribution */}
           <div className="rounded-xl border border-border p-4 space-y-3">
             <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Workload Distribution</h4>
-            <p className="text-xs text-muted-foreground">Active tasks per agent — identify overloaded or idle team members.</p>
+            <p className="text-sm text-muted-foreground">Active tasks per agent — identify overloaded or idle team members.</p>
             <div className="space-y-2.5">
               {(() => {
                 const maxActive = Math.max(...rows.map((r) => r.tasksInProgress + (issues ?? []).filter((i) => i.assigneeAgentId === r.agentId && i.status === "todo").length), 1);
@@ -383,7 +383,7 @@ export function AgentPerformance() {
                   .sort((a, b) => b.active - a.active)
                   .map((r) => (
                     <div key={r.agentId} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center justify-between text-sm">
                         <span className="truncate">{r.name}</span>
                         <span className="text-muted-foreground shrink-0">
                           {r.tasksInProgress} active · {r.todo} queued
@@ -416,7 +416,7 @@ export function AgentPerformance() {
           {/* Agent Pipeline */}
           <div className="rounded-xl border border-border p-4 space-y-3">
             <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Agent Pipeline</h4>
-            <p className="text-xs text-muted-foreground">Task funnel per agent — from backlog to done.</p>
+            <p className="text-sm text-muted-foreground">Task funnel per agent — from backlog to done.</p>
             <div className="space-y-2">
               {rows.filter((r) => r.tasksDone > 0 || r.tasksInProgress > 0).map((r) => {
                 const backlog = (issues ?? []).filter((i) => i.assigneeAgentId === r.agentId && i.status === "backlog").length;
@@ -428,7 +428,7 @@ export function AgentPerformance() {
                 if (total === 0) return null;
                 return (
                   <div key={r.agentId} className="space-y-1">
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between text-sm">
                       <span className="truncate">{r.name}</span>
                       <span className="text-muted-foreground">{total} total</span>
                     </div>
@@ -507,7 +507,7 @@ export function AgentPerformance() {
             </div>
 
             {selectedProject && (
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: selectedProject.color ?? "#6366f1" }} />
                 <span>{projectIssues.length} total issues</span>
                 <span>·</span>
@@ -524,18 +524,18 @@ export function AgentPerformance() {
             )}
 
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[600px] text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/30">
                     <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Agent</th>
                     <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Done</th>
                     <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Active</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Review</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Todo</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Blocked</th>
-                    <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Total</th>
-                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Avg Time</th>
-                    <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Completion</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Review</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Todo</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Blocked</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">Total</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Avg Time</th>
+                    <th className="hidden md:table-cell px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">Completion</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -550,22 +550,22 @@ export function AgentPerformance() {
                       <td className="px-4 py-2.5 text-center tabular-nums">
                         {r.active > 0 ? <span className="text-blue-400">{r.active}</span> : <span className="text-muted-foreground/40">0</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-center tabular-nums">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-center tabular-nums">
                         {r.inReview > 0 ? <span className="text-violet-400">{r.inReview}</span> : <span className="text-muted-foreground/40">0</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-center tabular-nums">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-center tabular-nums">
                         {r.todo > 0 ? <span className="text-amber-400">{r.todo}</span> : <span className="text-muted-foreground/40">0</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-center tabular-nums">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-center tabular-nums">
                         {r.blocked > 0 ? <span className="text-red-400">{r.blocked}</span> : <span className="text-muted-foreground/40">0</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-center tabular-nums font-medium">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-center tabular-nums font-medium">
                         {r.total > 0 ? r.total : <span className="text-muted-foreground/40">0</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-right tabular-nums text-muted-foreground">
                         {r.avgCloseH !== null ? `${r.avgCloseH.toFixed(1)}h` : "—"}
                       </td>
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="hidden md:table-cell px-4 py-2.5 text-right">
                         {r.completionRate !== null ? (
                           <div className="flex items-center justify-end gap-2">
                             <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
@@ -577,7 +577,7 @@ export function AgentPerformance() {
                                 style={{ width: `${r.completionRate}%` }}
                               />
                             </div>
-                            <span className="text-xs text-muted-foreground tabular-nums w-7 text-right">{r.completionRate}%</span>
+                            <span className="text-sm text-muted-foreground tabular-nums w-7 text-right">{r.completionRate}%</span>
                           </div>
                         ) : (
                           <span className="text-muted-foreground/40">—</span>
@@ -760,6 +760,7 @@ function SortHeader({
   dir,
   onToggle,
   align = "right",
+  className,
 }: {
   field: SortField;
   label: string;
@@ -767,9 +768,10 @@ function SortHeader({
   dir: "asc" | "desc";
   onToggle: (field: SortField) => void;
   align?: "left" | "center" | "right";
+  className?: string;
 }) {
   return (
-    <th className={cn("px-4 py-3", align === "center" ? "text-center" : align === "left" ? "text-left" : "text-right")}>
+    <th className={cn("px-4 py-3", align === "center" ? "text-center" : align === "left" ? "text-left" : "text-right", className)}>
       <button
         className={cn(
           "text-xs font-medium uppercase tracking-wider transition-colors",

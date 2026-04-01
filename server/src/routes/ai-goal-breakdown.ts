@@ -5,6 +5,11 @@ import { agents } from "@ironworksai/db";
 import { assertCompanyAccess } from "./authz.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  sanitizeAiInput,
+  validateGoalBreakdownOutput,
+  type GoalBreakdownResult,
+} from "../lib/ai-security.js";
 
 const AVAILABLE_ROLES = [
   "ceo",
@@ -27,10 +32,6 @@ interface GeneratedIssue {
   order: number;
 }
 
-interface GoalBreakdownResult {
-  issues: GeneratedIssue[];
-}
-
 /**
  * AI-assisted goal breakdown endpoints.
  * Generates structured issues from a high-level goal using Anthropic API
@@ -45,15 +46,21 @@ export function aiGoalBreakdownRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const { goalTitle, goalDescription, projectId } = req.body as {
+      const { goalTitle: rawGoalTitle, goalDescription: rawGoalDescription, projectId } = req.body as {
         goalTitle?: string;
         goalDescription?: string;
         projectId?: string;
       };
 
-      if (!goalTitle || goalTitle.trim().length === 0) {
+      if (!rawGoalTitle || rawGoalTitle.trim().length === 0) {
         throw badRequest("goalTitle is required");
       }
+
+      // SEC-LLM-001: sanitize user inputs before interpolating into LLM prompts
+      const goalTitle = sanitizeAiInput(rawGoalTitle, "goalTitle");
+      const goalDescription = rawGoalDescription != null
+        ? sanitizeAiInput(rawGoalDescription, "goalDescription")
+        : undefined;
 
       // Load company agents to determine available roles
       const companyAgents = await db
@@ -165,7 +172,8 @@ Rules:
     throw new Error("No JSON found in Anthropic response");
   }
 
-  return JSON.parse(jsonMatch[0]) as GoalBreakdownResult;
+  // SEC-LLM-002: validate schema and strip unexpected fields before returning
+  return validateGoalBreakdownOutput(JSON.parse(jsonMatch[0]));
 }
 
 /**

@@ -118,7 +118,8 @@ export function InviteUserDialog({
             <input
               id="invite-email"
               type="email"
-              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+              inputMode="email"
+              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
               placeholder="user@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}

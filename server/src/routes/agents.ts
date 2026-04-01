@@ -1705,7 +1705,17 @@ export function agentRoutes(db: Db) {
       return;
     }
 
-    const patchData = { ...(req.body as Record<string, unknown>) };
+    // SEC-AUTH-001: Allowlist mutable fields to prevent mass assignment
+    const ALLOWED_PATCH_FIELDS = new Set([
+      "name", "role", "title", "icon", "reportsTo", "capabilities",
+      "adapterType", "adapterConfig", "runtimeConfig", "replaceAdapterConfig",
+      "budgetMonthlyCents", "status", "soulMd", "agentsMd",
+    ]);
+    const rawBody = req.body as Record<string, unknown>;
+    const patchData: Record<string, unknown> = {};
+    for (const key of Object.keys(rawBody)) {
+      if (ALLOWED_PATCH_FIELDS.has(key)) patchData[key] = rawBody[key];
+    }
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     if (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")) {

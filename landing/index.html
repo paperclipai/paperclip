@@ -40,6 +40,7 @@
     .feature-icon { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: #1e1e1e; border: 1px solid #282828; }
     @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
     .float { animation: float 6s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .float { animation: none; } }
   </style>
 
   <script type="application/ld+json">
@@ -80,7 +81,20 @@
       </div>
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
-        <a href="#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors">Get Started</a>
+        <a href="#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
+        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="mobile-nav" class="hidden md:hidden border-t border-white/[0.06] bg-surface-0/95 backdrop-blur-xl">
+      <div class="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-3 text-sm">
+        <a href="#features" class="text-zinc-400 hover:text-white py-2 transition-colors">Features</a>
+        <a href="#pricing" class="text-zinc-400 hover:text-white py-2 transition-colors">Pricing</a>
+        <a href="#security" class="text-zinc-400 hover:text-white py-2 transition-colors">Security</a>
+        <a href="/docs" class="text-zinc-400 hover:text-white py-2 transition-colors">Docs</a>
+        <a href="/auth" class="text-zinc-400 hover:text-white py-2 transition-colors">Log in</a>
+        <a href="#pricing" class="bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-4 py-3 rounded-lg text-center transition-colors">Get Started</a>
       </div>
     </div>
   </nav>
@@ -98,7 +112,7 @@
           Deploy a full AI team in minutes. CEO, CTO, engineers, marketers, HR, finance. They work autonomously, report to you, and cost a fraction of traditional hiring. You bring the API keys, we bring the platform.
         </p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium px-6 py-3 rounded-lg transition-colors text-base">
+          <a href="#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors text-base">
             Start Building Your Team
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
@@ -248,7 +262,7 @@
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email + Telegram + Slack + Discord</li>
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email support</li>
           </ul>
-          <a href="/setup" class="w-full text-center bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-lg transition-colors">Get Started</a>
+          <a href="/setup" class="w-full text-center bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Get Started</a>
         </div>
 
         <!-- Business -->
@@ -311,7 +325,7 @@
     <div class="max-w-6xl mx-auto px-6 text-center">
       <h2 class="text-3xl md:text-4xl font-bold tracking-tight mb-4">Ready to build your AI team?</h2>
       <p class="text-zinc-400 text-lg mb-8 max-w-xl mx-auto">Deploy a full AI workforce in minutes. Start with a Starter plan and scale as you grow.</p>
-      <a href="#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium px-8 py-4 rounded-lg transition-colors text-lg">
+      <a href="#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-8 py-4 rounded-lg transition-colors text-lg">
         Get Started Now
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
       </a>
@@ -343,7 +357,7 @@
         </div>
       </div>
       <div class="mt-8 pt-8 border-t border-white/[0.06] text-xs text-zinc-600">
-        2026 Steel Motion LLC. All rights reserved.
+        &copy; 2026 Steel Motion LLC. All rights reserved.
       </div>
     </div>
   </footer>

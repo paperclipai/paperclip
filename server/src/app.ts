@@ -94,6 +94,20 @@ export async function createApp(
 ) {
   const app = express();
 
+  // ── Security Headers (no external dependency) ──
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    if (opts.uiMode !== "vite-dev") {
+      res.setHeader("Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com; frame-src 'none'; object-src 'none'; base-uri 'self'");
+    }
+    next();
+  });
+
   // ── HTTP Compression ──
   // Use Node.js built-in zlib for gzip/deflate compression on API responses.
   app.use((req, res, next) => {
@@ -202,8 +216,8 @@ export async function createApp(
   api.get("/companies/:id/goals", cacheControl(60));
   api.get("/companies/:id/issues", cacheControl(15));
   api.get("/companies/:id/activity", cacheControl(10));
-  api.get("/companies/:id/costs/*", cacheControl(60));
-  api.get("/companies/:id/knowledge/*", cacheControl(120));
+  api.get("/companies/:id/costs/*path", cacheControl(60));
+  api.get("/companies/:id/knowledge/*path", cacheControl(120));
 
   api.use(
     "/health",

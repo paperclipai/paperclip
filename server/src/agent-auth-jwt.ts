@@ -28,6 +28,9 @@ function parseNumber(value: string | undefined, fallback: number) {
 function jwtConfig() {
   const secret = process.env.IRONWORKS_AGENT_JWT_SECRET;
   if (!secret) return null;
+  if (secret.length < 32) {
+    console.warn("[security] IRONWORKS_AGENT_JWT_SECRET is shorter than 32 characters — weak HS256 security");
+  }
 
   return {
     secret,

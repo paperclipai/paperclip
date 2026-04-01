@@ -197,7 +197,7 @@ export function ApiKeyOnboardingBanner() {
           <div className="mt-3 flex gap-2">
             <input
               type="password"
-              className="flex-1 rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+              className="flex-1 rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
               placeholder={PROVIDERS.find((p) => p.key === activeProvider)?.placeholder}
               value={keyValue}
               onChange={(e) => {

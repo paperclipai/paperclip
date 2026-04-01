@@ -173,6 +173,7 @@ export function NewBudgetDialog({
             </label>
             <Input
               type="number"
+              inputMode="numeric"
               step="1"
               min="0"
               value={amount}
@@ -189,6 +190,7 @@ export function NewBudgetDialog({
             </label>
             <Input
               type="number"
+              inputMode="numeric"
               min="50"
               max="99"
               value={warnPercent}

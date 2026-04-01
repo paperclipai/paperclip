@@ -53,3 +53,5 @@ tests/release-smoke/playwright-report/
 .claude/worktrees/
 .knowledge/
 .redteam-reports/
+.design-reports/
+.security-reports/
