@@ -994,6 +994,23 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Kill all tracked child processes (adapter runs) before exiting
+      // to prevent orphaned "Lost in-memory process handle" errors on restart.
+      const { runningProcesses } = await import("./adapters/index.js");
+      if (runningProcesses.size > 0) {
+        logger.info({ signal, count: runningProcesses.size }, "Killing tracked child processes before shutdown");
+        for (const [runId, entry] of runningProcesses) {
+          try {
+            entry.child.kill("SIGTERM");
+          } catch {
+            // already dead
+          }
+          runningProcesses.delete(runId);
+        }
+        // Brief grace for SIGTERM before we exit
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
