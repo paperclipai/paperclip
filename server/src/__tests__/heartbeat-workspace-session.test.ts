@@ -1464,13 +1464,13 @@ describe("parseSessionCompactionPolicy", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
-      maxRawInputTokens: 0,
+      maxRawInputTokens: 150_000,
       maxSessionAgeHours: 0,
     });
     expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
-      maxRawInputTokens: 0,
+      maxRawInputTokens: 150_000,
       maxSessionAgeHours: 0,
     });
   });
