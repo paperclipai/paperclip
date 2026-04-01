@@ -294,22 +294,29 @@ export function NewIssueDialog() {
   const [isFileDragOver, setIsFileDragOver] = useState(false);
   const [relatedIssues, setRelatedIssues] = useState<Array<{ id: string; identifier: string; title: string }>>([]);
   const [relatedSearch, setRelatedSearch] = useState("");
+  const [debouncedRelatedSearch, setDebouncedRelatedSearch] = useState("");
   const [relatedOpen, setRelatedOpen] = useState(false);
+  const relatedDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
 
-  // Related issues search
-  const { data: relatedSearchResults } = useQuery({
-    queryKey: queryKeys.issues.search(effectiveCompanyId ?? "", relatedSearch),
-    queryFn: () => issuesApi.list(effectiveCompanyId!, { q: relatedSearch }),
-    enabled: Boolean(effectiveCompanyId && relatedSearch.length >= 2 && relatedOpen),
+  // Related issues search (debounced)
+  useEffect(() => {
+    if (relatedDebounceRef.current) clearTimeout(relatedDebounceRef.current);
+    relatedDebounceRef.current = setTimeout(() => setDebouncedRelatedSearch(relatedSearch), 300);
+    return () => { if (relatedDebounceRef.current) clearTimeout(relatedDebounceRef.current); };
+  }, [relatedSearch]);
+  const { data: relatedSearchResults, isFetching: relatedFetching } = useQuery({
+    queryKey: queryKeys.issues.search(effectiveCompanyId ?? "", debouncedRelatedSearch),
+    queryFn: () => issuesApi.list(effectiveCompanyId!, { q: debouncedRelatedSearch }),
+    enabled: Boolean(effectiveCompanyId && debouncedRelatedSearch.length >= 2 && relatedOpen),
   });
   const filteredRelatedResults = useMemo(
     () => (relatedSearchResults ?? [])
-      .filter((issue) => !relatedIssues.some((r) => r.id === issue.id))
+      .filter((issue) => !relatedIssues.some((r) => r.id === issue.id) && issue.identifier)
       .slice(0, 10),
     [relatedSearchResults, relatedIssues],
   );
@@ -628,6 +635,7 @@ export function NewIssueDialog() {
     setIsFileDragOver(false);
     setRelatedIssues([]);
     setRelatedSearch("");
+    setDebouncedRelatedSearch("");
     setRelatedOpen(false);
     setCompanyOpen(false);
     executionWorkspaceDefaultProjectId.current = null;
@@ -1462,7 +1470,9 @@ export function NewIssueDialog() {
               {/* Search results */}
               {relatedSearch.length >= 2 && (
                 <div className="max-h-48 overflow-y-auto">
-                  {filteredRelatedResults.length === 0 ? (
+                  {relatedFetching ? (
+                    <p className="text-xs text-muted-foreground px-1 py-2">Searching…</p>
+                  ) : filteredRelatedResults.length === 0 ? (
                     <p className="text-xs text-muted-foreground px-1 py-2">No matching issues</p>
                   ) : (
                     filteredRelatedResults.map((issue) => (
@@ -1471,10 +1481,10 @@ export function NewIssueDialog() {
                         className="flex items-start gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left"
                         disabled={relatedIssues.length >= 5}
                         onClick={() => {
-                          if (relatedIssues.length < 5) {
+                          if (relatedIssues.length < 5 && issue.identifier) {
                             setRelatedIssues((prev) => [...prev, {
                               id: issue.id,
-                              identifier: issue.identifier ?? issue.id.slice(0, 8),
+                              identifier: issue.identifier!,
                               title: issue.title,
                             }]);
                             setRelatedSearch("");
