@@ -242,6 +242,12 @@ export {
   type ResolveCliAuthChallenge,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
+  createUserInviteSchema,
+  acceptUserInviteSchema,
+  updateMemberRoleSchema,
+  type CreateUserInvite,
+  type AcceptUserInvite,
+  type UpdateMemberRole,
 } from "./access.js";
 
 export {

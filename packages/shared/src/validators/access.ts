@@ -4,6 +4,7 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
+  MEMBERSHIP_ROLES,
   PERMISSION_KEYS,
 } from "../constants.js";
 
@@ -90,3 +91,26 @@ export const updateUserCompanyAccessSchema = z.object({
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
+
+export const createUserInviteSchema = z.object({
+  email: z.string().email().max(320),
+  role: z.enum(MEMBERSHIP_ROLES).default("member"),
+});
+
+export type CreateUserInvite = z.infer<typeof createUserInviteSchema>;
+
+export const acceptUserInviteSchema = z.object({
+  name: z.string().min(1).max(120),
+  password: z.string().min(8).max(256),
+  tosAccepted: z.boolean().refine((val) => val === true, {
+    message: "You must accept the Terms of Service and Acceptable Use Policy",
+  }),
+});
+
+export type AcceptUserInvite = z.infer<typeof acceptUserInviteSchema>;
+
+export const updateMemberRoleSchema = z.object({
+  role: z.enum(MEMBERSHIP_ROLES),
+});
+
+export type UpdateMemberRole = z.infer<typeof updateMemberRoleSchema>;

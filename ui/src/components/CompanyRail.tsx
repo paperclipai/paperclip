@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Hammer, Plus } from "lucide-react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   DndContext,
   closestCenter,
@@ -22,6 +22,7 @@ import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
+import { billingApi, type PlanTier } from "../api/billing";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
   Tooltip,
@@ -30,6 +31,21 @@ import {
 } from "@/components/ui/tooltip";
 import type { Company } from "@ironworksai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
+import { TierLimitModal } from "./TierLimitModal";
+
+const TIER_COMPANY_LIMITS: Record<PlanTier, number> = {
+  trial: 1,
+  starter: 1,
+  growth: 2,
+  business: 5,
+};
+
+const TIER_UPGRADE_TARGETS: Record<PlanTier, PlanTier | null> = {
+  trial: "growth",
+  starter: "growth",
+  growth: "business",
+  business: null,
+};
 
 const ORDER_STORAGE_KEY = "ironworks.companyOrder";
 
@@ -157,6 +173,10 @@ export function CompanyRail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
   const navigate = useNavigate();
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
+  const [limitModalMessage, setLimitModalMessage] = useState("");
+  const [limitModalLimit, setLimitModalLimit] = useState("");
+  const [limitModalPlan, setLimitModalPlan] = useState("");
   const location = useLocation();
   const isInstanceRoute = location.pathname.startsWith("/instance/");
   const highlightedCompanyId = isInstanceRoute ? null : selectedCompanyId;
@@ -242,6 +262,48 @@ export function CompanyRail() {
     return result;
   }, [sidebarCompanies, orderedIds]);
 
+  // Fetch subscription for the selected company to determine tier limits
+  const { data: subscriptionData } = useQuery({
+    queryKey: queryKeys.billing.subscription(selectedCompanyId ?? ""),
+    queryFn: () => billingApi.getSubscription(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+
+  const handleAddCompany = useCallback(() => {
+    const companyCount = sidebarCompanies.length;
+    const currentTier: PlanTier = (subscriptionData?.subscription?.planTier as PlanTier) ?? "trial";
+    const limit = TIER_COMPANY_LIMITS[currentTier];
+
+    if (companyCount < limit) {
+      openOnboarding();
+      return;
+    }
+
+    // At or over limit -- show appropriate modal
+    if (currentTier === "business") {
+      setLimitModalMessage(
+        "You've reached the maximum of 5 companies. Contact us at support@steelmotionllc.com for a custom plan.",
+      );
+      setLimitModalLimit("5 companies");
+      setLimitModalPlan("Business");
+      setLimitModalOpen(true);
+      return;
+    }
+
+    const upgradeTo = TIER_UPGRADE_TARGETS[currentTier];
+    const upgradeLabel = upgradeTo
+      ? upgradeTo.charAt(0).toUpperCase() + upgradeTo.slice(1)
+      : "a higher plan";
+
+    setLimitModalMessage(
+      `Upgrade to ${upgradeLabel} to add more companies.`,
+    );
+    setLimitModalLimit(`${limit} company${limit === 1 ? "" : " companies"}`);
+    setLimitModalPlan(currentTier.charAt(0).toUpperCase() + currentTier.slice(1));
+    setLimitModalOpen(true);
+  }, [sidebarCompanies.length, subscriptionData, openOnboarding]);
+
   // Require 8px of movement before starting a drag to avoid interfering with clicks
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -305,13 +367,11 @@ export function CompanyRail() {
 
       {/* Separator before add button */}
       <div className="w-8 h-px bg-border mx-auto shrink-0" />
-
-      {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <button
-              onClick={() => openOnboarding()}
+              onClick={handleAddCompany}
               className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
               aria-label="Add company"
             >
@@ -323,6 +383,14 @@ export function CompanyRail() {
           </TooltipContent>
         </Tooltip>
       </div>
+
+      <TierLimitModal
+        open={limitModalOpen}
+        onOpenChange={setLimitModalOpen}
+        message={limitModalMessage}
+        limit={limitModalLimit}
+        currentPlan={limitModalPlan}
+      />
     </div>
   );
 }

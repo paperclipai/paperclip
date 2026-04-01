@@ -14,6 +14,7 @@ import type { Db } from "@ironworksai/db";
 import {
   agentApiKeys,
   authUsers,
+  companyMemberships,
   invites,
   joinRequests
 } from "@ironworksai/db";
@@ -23,13 +24,17 @@ import {
   claimJoinRequestApiKeySchema,
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
+  createUserInviteSchema,
+  acceptUserInviteSchema,
+  updateMemberRoleSchema,
   listJoinRequestsQuerySchema,
   resolveCliAuthChallengeSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
-  PERMISSION_KEYS
+  PERMISSION_KEYS,
+  ROLE_PERMISSIONS,
 } from "@ironworksai/shared";
-import type { DeploymentExposure, DeploymentMode } from "@ironworksai/shared";
+import type { DeploymentExposure, DeploymentMode, MembershipRole, PermissionKey } from "@ironworksai/shared";
 import {
   forbidden,
   conflict,
@@ -43,10 +48,12 @@ import {
   accessService,
   agentService,
   boardAuthService,
+  budgetService,
   deduplicateAgentName,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
+import { userInviteService } from "../services/user-invites.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
   claimBoardOwnership,
@@ -2882,6 +2889,255 @@ export function accessRoutes(
       res.json(memberships);
     }
   );
+
+  // ── User Invite Flow (Phase 2) ──
+  const userInvites = userInviteService(db);
+  const budgets = budgetService(db);
+
+  router.post(
+    "/companies/:companyId/user-invites",
+    validate(createUserInviteSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertCompanyPermission(req, companyId, "users:invite");
+
+      const { invite, token } = await userInvites.create({
+        companyId,
+        email: req.body.email,
+        role: req.body.role ?? "member",
+        invitedByUserId: req.actor.userId ?? null,
+      });
+
+      const baseUrl = requestBaseUrl(req);
+      const inviteUrl = `${baseUrl}/user-invite/${token}`;
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "user_invite.created",
+        entityType: "user_invite",
+        entityId: invite.id,
+        details: {
+          email: invite.email,
+          role: invite.role,
+          expiresAt: invite.expiresAt.toISOString(),
+        },
+      });
+
+      res.status(201).json({
+        id: invite.id,
+        email: invite.email,
+        role: invite.role,
+        inviteUrl,
+        expiresAt: invite.expiresAt.toISOString(),
+      });
+    },
+  );
+
+  router.get("/companies/:companyId/user-invites", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    await assertCompanyPermission(req, companyId, "users:invite");
+    const list = await userInvites.listForCompany(companyId);
+    res.json(list);
+  });
+
+  router.get("/user-invites/:token", async (req, res) => {
+    const token = (req.params.token as string).trim();
+    if (!token) throw notFound("Invite not found");
+    const invite = await userInvites.getByToken(token);
+    if (!invite) throw notFound("Invite not found or expired");
+    res.json({
+      id: invite.id,
+      companyId: invite.companyId,
+      email: invite.email,
+      role: invite.role,
+      expiresAt: invite.expiresAt.toISOString(),
+    });
+  });
+
+  router.post(
+    "/user-invites/:token/accept",
+    validate(acceptUserInviteSchema),
+    async (req, res) => {
+      const token = (req.params.token as string).trim();
+      if (!token) throw notFound("Invite not found");
+
+      // Create a simple signUp wrapper to create the user via direct DB insert
+      // since we don't have a direct reference to the Better Auth instance here.
+      // The user will set their password when they sign in for the first time via
+      // Better Auth's built-in email/password flow.
+      const signUpWrapper = {
+        signUpEmail: async (data: { name: string; email: string; password: string }) => {
+          const existing = await db
+            .select({ id: authUsers.id })
+            .from(authUsers)
+            .where(eq(authUsers.email, data.email))
+            .then((rows) => rows[0] ?? null);
+
+          if (existing) return { id: existing.id };
+
+          const userId = randomBytes(16).toString("hex");
+          const now = new Date();
+          const newUser = await db
+            .insert(authUsers)
+            .values({
+              id: userId,
+              name: data.name,
+              email: data.email,
+              emailVerified: true,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+
+          return { id: newUser.id };
+        },
+      };
+
+      const result = await userInvites.accept(token, {
+        name: req.body.name,
+        password: req.body.password,
+        tosAccepted: req.body.tosAccepted,
+      }, signUpWrapper);
+
+      // Ensure default budget policy exists for the company
+      const existingPolicies = await budgets.listPolicies(result.companyId);
+      const hasCompanyMonthly = existingPolicies.some(
+        (p) => p.scopeType === "company" && p.scopeId === result.companyId && p.windowKind === "calendar_month_utc",
+      );
+      if (!hasCompanyMonthly) {
+        await budgets.upsertPolicy(result.companyId, {
+          scopeType: "company",
+          scopeId: result.companyId,
+          amount: 50000, // $500 in cents
+          windowKind: "calendar_month_utc",
+          warnPercent: 80,
+          hardStopEnabled: true,
+          notifyEnabled: true,
+        }, null);
+      }
+
+      await logActivity(db, {
+        companyId: result.companyId,
+        actorType: "user",
+        actorId: result.userId,
+        action: "user_invite.accepted",
+        entityType: "user_invite",
+        entityId: result.userId,
+        details: { companyId: result.companyId },
+      });
+
+      res.json({
+        accepted: true,
+        userId: result.userId,
+        companyId: result.companyId,
+      });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/user-invites/:inviteId/revoke",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const inviteId = req.params.inviteId as string;
+      assertCompanyAccess(req, companyId);
+      await assertCompanyPermission(req, companyId, "users:invite");
+
+      const revoked = await userInvites.revoke(inviteId, companyId);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "user_invite.revoked",
+        entityType: "user_invite",
+        entityId: revoked.id,
+        details: { email: revoked.email },
+      });
+
+      res.json({ revoked: true });
+    },
+  );
+
+  // ── Member Role Management (Phase 3) ──
+  router.patch(
+    "/companies/:companyId/members/:memberId/role",
+    validate(updateMemberRoleSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      assertCompanyAccess(req, companyId);
+
+      // Only owners can change roles
+      const actorMembership = req.actor.userId
+        ? await access.getMembership(companyId, "user", req.actor.userId)
+        : null;
+
+      const isAdmin = req.actor.source === "local_implicit" || (await access.isInstanceAdmin(req.actor.userId));
+      if (!isAdmin && actorMembership?.membershipRole !== "owner") {
+        throw forbidden("Only company owners can change member roles");
+      }
+
+      const member = await db
+        .select()
+        .from(companyMemberships)
+        .where(and(eq(companyMemberships.id, memberId), eq(companyMemberships.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!member) throw notFound("Member not found");
+
+      const newRole = req.body.role as MembershipRole;
+
+      // Update the role
+      await db
+        .update(companyMemberships)
+        .set({ membershipRole: newRole, updatedAt: new Date() })
+        .where(eq(companyMemberships.id, member.id));
+
+      // Sync permission grants based on role
+      const rolePermissions = ROLE_PERMISSIONS[newRole] ?? [];
+      await access.setPrincipalGrants(
+        companyId,
+        member.principalType as "user" | "agent",
+        member.principalId,
+        rolePermissions.map((pk) => ({ permissionKey: pk as PermissionKey })),
+        req.actor.userId ?? null,
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "member.role_changed",
+        entityType: "company_membership",
+        entityId: member.id,
+        details: { newRole, principalId: member.principalId },
+      });
+
+      res.json({ ...member, membershipRole: newRole });
+    },
+  );
+
+  // ── Health endpoint additions: isInstanceAdmin flag ──
+  router.get("/me/access", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.json({ isInstanceAdmin: false, memberships: [] });
+      return;
+    }
+    const isAdmin = await access.isInstanceAdmin(req.actor.userId);
+    const memberships = await access.listUserCompanyAccess(req.actor.userId);
+    res.json({
+      isInstanceAdmin: isAdmin,
+      memberships: memberships.map((m) => ({
+        companyId: m.companyId,
+        role: m.membershipRole ?? "member",
+        status: m.status,
+      })),
+    });
+  });
 
   return router;
 }

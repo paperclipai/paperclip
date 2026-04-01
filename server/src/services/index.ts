@@ -1,3 +1,4 @@
+export { billingService, verifyPolarWebhookSignature, PLAN_DEFINITIONS, type PlanTier, type SubscriptionStatus, type PlanDefinition, type SubscriptionRecord } from "./billing.js";
 export { companyService } from "./companies.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
@@ -20,6 +21,7 @@ export { heartbeatService } from "./heartbeat.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { accessService } from "./access.js";
+export { userInviteService } from "./user-invites.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
 export { companyPortabilityService } from "./company-portability.js";

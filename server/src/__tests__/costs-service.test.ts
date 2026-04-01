@@ -81,6 +81,19 @@ vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
+  companyPortabilityService: () => ({}),
+  instanceSettingsService: () => ({}),
+  companySkillService: () => ({}),
+  workProductService: () => ({}),
+  workspaceOperationService: () => ({}),
+  executionWorkspaceService: () => ({}),
+  issueApprovalService: () => ({}),
+  secretService: () => ({}),
+  sidebarBadgeService: () => ({}),
+  dashboardService: () => ({}),
+  goalService: () => ({}),
+  routineService: () => ({}),
+  playbookService: () => ({ seedDefaults: vi.fn() }),
 }));
 
 vi.mock("../services/quota-windows.js", () => ({

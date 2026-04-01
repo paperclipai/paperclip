@@ -1,0 +1,141 @@
+import { MarkdownBody } from "../components/MarkdownBody";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { ShieldAlert } from "lucide-react";
+
+const ACCEPTABLE_USE_POLICY = `
+# Acceptable Use Policy
+
+**Version:** v0.1 — pending legal review
+**Effective Date:** April 1, 2026
+**Last Updated:** April 1, 2026
+
+This Acceptable Use Policy ("AUP") governs your use of the IronWorks platform ("Service") operated by Steel Motion LLC ("Steel Motion," "we," "us," "our"). This AUP is incorporated into and forms part of our [Terms of Service](/terms).
+
+By using the Service, you agree to comply with this AUP. Violation of this AUP may result in immediate suspension or termination of your account.
+
+## 1. Permitted Use
+
+You may use the Service for lawful business operations, including but not limited to:
+
+- Deploying and managing AI agents for legitimate business tasks
+- Automating business workflows and processes
+- Managing projects, issues, and organizational tasks
+- Generating content and work product for lawful purposes
+- Collaborating with team members through the platform
+
+## 2. Prohibited Uses
+
+You may not use the Service, or allow your AI agents to be used, for any of the following purposes:
+
+### 2.1 Illegal Activity
+- Any activity that violates applicable local, state, national, or international laws or regulations
+- Facilitating or promoting illegal transactions or activities
+- Money laundering, terrorist financing, or sanctions violations
+
+### 2.2 Harmful Content
+- Generating, distributing, or storing content that exploits, abuses, or endangers minors in any way
+- Creating or distributing content that promotes violence, self-harm, or terrorism
+- Producing non-consensual intimate imagery or deepfakes of real individuals
+- Generating content designed to harass, threaten, stalk, or intimidate others
+
+### 2.3 Fraud and Deception
+- Impersonating individuals, organizations, or AI systems without disclosure
+- Creating fraudulent documents, credentials, or identities
+- Conducting phishing, social engineering, or other deceptive schemes
+- Generating misleading content intended to manipulate financial markets
+
+### 2.4 Intellectual Property Violations
+- Systematically infringing on copyrights, trademarks, or patents
+- Circumventing digital rights management or access controls
+- Reproducing or distributing proprietary content without authorization
+
+### 2.5 Security Violations
+- Developing, distributing, or deploying malware, viruses, ransomware, or other malicious software
+- Attempting to gain unauthorized access to any system, network, or account
+- Conducting distributed denial-of-service (DDoS) attacks or other network attacks
+- Probing, scanning, or testing the vulnerability of any system without authorization
+- Scraping, crawling, or harvesting data from third-party services in violation of their terms
+
+### 2.6 Spam and Unsolicited Communications
+- Sending unsolicited bulk messages, emails, or communications
+- Generating spam content or automated marketing messages without recipient consent
+- Creating fake reviews, ratings, or testimonials
+
+### 2.7 Resource Abuse
+- Cryptocurrency mining or other computational resource exploitation
+- Intentionally overloading or degrading the Service's infrastructure
+- Using the Service to circumvent rate limits or usage restrictions on third-party services
+- Creating agents designed to consume excessive resources without legitimate business purpose
+
+## 3. Content Responsibility
+
+### 3.1 Client Responsibility
+You are solely responsible for ALL content created, generated, stored, or distributed by your AI agents through the Service. This includes content generated autonomously by your agents without direct human oversight.
+
+### 3.2 No Pre-Screening
+Steel Motion does NOT pre-screen, moderate, review, or endorse any content created by your AI agents. We are a platform provider, not a content publisher.
+
+### 3.3 Agent Configuration
+You are responsible for properly configuring your AI agents with appropriate guardrails, instructions, and limitations to prevent the generation of prohibited content.
+
+### 3.4 Monitoring
+You are responsible for monitoring your agents' output and taking corrective action if agents produce content that violates this AUP.
+
+## 4. Enforcement
+
+### 4.1 Right to Suspend
+Steel Motion reserves the right to immediately suspend or restrict access to your account if we reasonably believe you are violating this AUP. We will attempt to notify you of the reason for suspension, but immediate suspension may occur without prior notice for severe violations.
+
+### 4.2 Right to Remove Content
+We reserve the right to remove or disable access to any content that violates this AUP, without prior notice.
+
+### 4.3 Investigation
+We may investigate suspected violations of this AUP. You agree to cooperate with any investigation and provide requested information.
+
+### 4.4 Termination
+Repeated or severe violations of this AUP may result in permanent termination of your account, as described in our [Terms of Service](/terms).
+
+## 5. Reporting Violations
+
+If you become aware of any use of the Service that violates this AUP, please report it to us:
+
+- **Email:** legal@steelmotionllc.com
+- **Subject line:** "AUP Violation Report"
+
+Please include as much detail as possible, including the nature of the violation and any relevant evidence. We will review all reports and take appropriate action.
+
+## 6. Changes to This Policy
+
+Steel Motion may update this AUP at any time. We will provide notice of material changes through the Service or by email. Your continued use of the Service after changes take effect constitutes acceptance of the updated AUP.
+
+## 7. Contact
+
+For questions about this Acceptable Use Policy, contact us at:
+
+- **Email:** legal@steelmotionllc.com
+- **Company:** Steel Motion LLC
+- **Website:** ironworksapp.ai
+
+---
+
+*This Acceptable Use Policy applies to the IronWorks platform operated by Steel Motion LLC.*
+`;
+
+export function AcceptableUsePolicy() {
+  return (
+    <div className="min-h-screen bg-background">
+      <ScrollArea className="h-screen">
+        <div className="max-w-3xl mx-auto px-6 py-12">
+          <div className="flex items-center gap-2 mb-6">
+            <ShieldAlert className="h-5 w-5 text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">IronWorks by Steel Motion LLC</span>
+          </div>
+          <MarkdownBody>{ACCEPTABLE_USE_POLICY}</MarkdownBody>
+          <div className="mt-12 pt-6 border-t border-border text-xs text-muted-foreground">
+            <p>Steel Motion LLC. All rights reserved.</p>
+          </div>
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}

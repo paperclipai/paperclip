@@ -86,6 +86,11 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  meAccess: ["me", "access"] as const,
+  userInvites: {
+    list: (companyId: string) => ["user-invites", companyId] as const,
+    detail: (token: string) => ["user-invites", "detail", token] as const,
+  },
   instance: {
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
@@ -139,6 +144,9 @@ export const queryKeys = {
       ["library", companyId, "file", filePath] as const,
     search: (companyId: string, query: string) =>
       ["library", companyId, "search", query] as const,
+  },
+  billing: {
+    subscription: (companyId: string) => ["billing", "subscription", companyId] as const,
   },
   plugins: {
     all: ["plugins"] as const,

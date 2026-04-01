@@ -18,6 +18,7 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [tosAccepted, setTosAccepted] = useState(false);
 
   const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
   const { data: session, isLoading: isSessionLoading } = useQuery({
@@ -58,7 +59,7 @@ export function AuthPage() {
   const canSubmit =
     email.trim().length > 0 &&
     password.trim().length > 0 &&
-    (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
+    (mode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8 && tosAccepted));
 
   if (isSessionLoading) {
     return (
@@ -140,6 +141,36 @@ export function AuthPage() {
                 autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
               />
             </div>
+            {mode === "sign_up" && (
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tosAccepted}
+                  onChange={(e) => setTosAccepted(e.target.checked)}
+                  className="mt-1 rounded border-border"
+                />
+                <span className="text-xs text-muted-foreground">
+                  I agree to the{" "}
+                  <a
+                    href="/terms"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline text-foreground"
+                  >
+                    Terms of Service
+                  </a>{" "}
+                  and{" "}
+                  <a
+                    href="/aup"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline text-foreground"
+                  >
+                    Acceptable Use Policy
+                  </a>
+                </span>
+              </label>
+            )}
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button
               type="submit"

@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -7,15 +7,22 @@ import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { secretsApi } from "../api/secrets";
+import { memberApi } from "../api/userInvites";
 import { queryKeys } from "../lib/queryKeys";
+import { useMeAccess } from "../hooks/useMeAccess";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, UserPlus, Key, Shield } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { InviteUserDialog } from "../components/InviteUserDialog";
+import { ApiKeyOnboardingBanner } from "../components/ApiKeyOnboardingBanner";
 import {
   Field,
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import type { MembershipRole, CompanySecret } from "@ironworksai/shared";
+import { MEMBERSHIP_ROLES } from "@ironworksai/shared";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -48,6 +55,29 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
+
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
+  const { isInstanceAdmin, getRoleForCompany } = useMeAccess();
+  const myRole = selectedCompanyId ? getRoleForCompany(selectedCompanyId) : "member";
+  const canManageMembers = myRole === "owner" || myRole === "admin" || isInstanceAdmin;
+
+  const membersQuery = useQuery({
+    queryKey: ["access", "members", selectedCompanyId],
+    queryFn: () => accessApi.listJoinRequests(selectedCompanyId!, "approved"),
+    enabled: !!selectedCompanyId && canManageMembers,
+  });
+
+  const secretsQuery = useQuery({
+    queryKey: queryKeys.secrets.list(selectedCompanyId ?? ""),
+    queryFn: () => secretsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const configuredKeys = new Set(
+    (secretsQuery.data ?? [])
+      .filter((s: CompanySecret) => s.name === "ANTHROPIC_API_KEY" || s.name === "OPENAI_API_KEY")
+      .map((s: CompanySecret) => s.name),
+  );
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -544,6 +574,56 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Team & Invites */}
+      {canManageMembers && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Team Members
+            </div>
+            <Button size="sm" variant="outline" onClick={() => setInviteDialogOpen(true)}>
+              <UserPlus className="h-3.5 w-3.5 mr-1.5" />
+              Invite User
+            </Button>
+          </div>
+          <div className="rounded-md border border-border divide-y divide-border">
+            {(membersQuery.data ?? []).length === 0 && (
+              <div className="px-4 py-3 text-xs text-muted-foreground">
+                No team members yet. Invite users to get started.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* API Keys */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+          <Key className="h-3.5 w-3.5" />
+          LLM API Keys
+        </div>
+        <ApiKeyOnboardingBanner />
+        {configuredKeys.size > 0 && (
+          <div className="rounded-md border border-border px-4 py-3">
+            <div className="flex gap-2">
+              {["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].map((keyName) => (
+                <span
+                  key={keyName}
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs ${
+                    configuredKeys.has(keyName)
+                      ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {configuredKeys.has(keyName) && <Check className="h-3 w-3" />}
+                  {keyName === "ANTHROPIC_API_KEY" ? "Anthropic" : "OpenAI"}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Privacy & Data Link */}
       <div className="py-6 border-t border-border">
         <Link
@@ -555,6 +635,8 @@ export function CompanySettings() {
           <span className="text-xs text-muted-foreground ml-1">— Data export, erasure, retention policies</span>
         </Link>
       </div>
+
+      <InviteUserDialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen} />
     </div>
   );
 }

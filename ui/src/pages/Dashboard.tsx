@@ -24,6 +24,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@ironworksai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { computeAgentPerformance } from "./AgentPerformance";
+import { WelcomeBanner } from "../components/WelcomeBanner";
+import { ApiKeyOnboardingBanner } from "../components/ApiKeyOnboardingBanner";
 
 /* ── Activity noise filter + aggregation ── */
 
@@ -350,6 +352,8 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <WelcomeBanner />
+      <ApiKeyOnboardingBanner />
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (

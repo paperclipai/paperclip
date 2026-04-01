@@ -365,6 +365,28 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
+export const MEMBERSHIP_ROLES = ["owner", "admin", "member", "viewer"] as const;
+export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
+
+/**
+ * Mapping from membership role to allowed permission keys.
+ * owner/admin get all permissions; member gets a subset; viewer gets none.
+ */
+export const ROLE_PERMISSIONS: Record<MembershipRole, readonly PermissionKey[]> = {
+  owner: PERMISSION_KEYS,
+  admin: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "tasks:assign_scope", "joins:approve"],
+  member: ["agents:create", "tasks:assign"],
+  viewer: [],
+} as const;
+
+/** Actions that each role is allowed to perform (UI-level role checks). */
+export const ROLE_ACTIONS = {
+  owner: ["manage_billing", "invite_users", "manage_roles", "create_issues", "edit_kb", "comment", "view_all"],
+  admin: ["invite_users", "manage_roles", "create_issues", "edit_kb", "comment", "view_all"],
+  member: ["create_issues", "edit_kb", "comment", "view_all"],
+  viewer: ["comment", "view_all"],
+} as const satisfies Record<MembershipRole, readonly string[]>;
+
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
 // ---------------------------------------------------------------------------

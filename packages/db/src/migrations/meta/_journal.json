@@ -379,6 +379,27 @@
       "when": 1775095200000,
       "tag": "0053_knowledge_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775098800000,
+      "tag": "0054_user_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1775181600000,
+      "tag": "0055_company_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1775268000000,
+      "tag": "0056_trial_ends_at",
+      "breakpoints": true
     }
   ]
 }

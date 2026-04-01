@@ -32,6 +32,11 @@ import { Playbooks } from "./pages/Playbooks";
 import { CookieConsentBanner } from "./components/CookieConsent";
 import { PrivacySettings } from "./pages/PrivacySettings";
 import { PrivacyPolicy } from "./pages/PrivacyPolicy";
+import { TermsOfService } from "./pages/TermsOfService";
+import { AcceptableUsePolicy } from "./pages/AcceptableUsePolicy";
+import { DataProcessingAgreement } from "./pages/DataProcessingAgreement";
+import { ServiceLevelAgreement } from "./pages/ServiceLevelAgreement";
+import { LegalIndex } from "./pages/LegalIndex";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
@@ -48,6 +53,7 @@ import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
+import { UserInviteAcceptPage } from "./pages/UserInviteAccept";
 import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
@@ -315,10 +321,16 @@ export function App() {
     <>
       <Routes>
         <Route path="privacy" element={<PrivacyPolicy />} />
+        <Route path="terms" element={<TermsOfService />} />
+        <Route path="aup" element={<AcceptableUsePolicy />} />
+        <Route path="dpa" element={<DataProcessingAgreement />} />
+        <Route path="sla" element={<ServiceLevelAgreement />} />
+        <Route path="legal" element={<LegalIndex />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route path="user-invite/:token" element={<UserInviteAcceptPage />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />

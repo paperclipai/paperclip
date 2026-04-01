@@ -30,6 +30,21 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   logActivity: vi.fn(),
+  instanceSettingsService: () => ({}),
+  companySkillService: () => ({}),
+  workProductService: () => ({}),
+  workspaceOperationService: () => ({}),
+  executionWorkspaceService: () => ({}),
+  issueApprovalService: () => ({}),
+  secretService: () => ({}),
+  sidebarBadgeService: () => ({}),
+  dashboardService: () => ({}),
+  heartbeatService: () => ({}),
+  goalService: () => ({}),
+  financeService: () => ({}),
+  costService: () => ({}),
+  routineService: () => ({}),
+  playbookService: () => ({ seedDefaults: vi.fn() }),
 }));
 
 describe("company routes malformed issue path guard", () => {
