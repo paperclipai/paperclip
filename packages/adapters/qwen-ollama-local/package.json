@@ -40,6 +40,6 @@
   },
   "devDependencies": {
     "typescript": "^5.7.3",
-    "@types/node": "^20.0.0"
+    "@types/node": "^24.6.0"
   }
 }
