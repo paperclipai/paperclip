@@ -35,7 +35,8 @@
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
-    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
+    "check:i18n": "node scripts/check-ui-localization.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

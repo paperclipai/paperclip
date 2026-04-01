@@ -1,88 +1,104 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
+import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import { formatMessage } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return new Intl.NumberFormat(getRuntimeLocale(), {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100);
 }
 
-export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+export function formatDate(date: Date | string | number): string {
+  return new Intl.DateTimeFormat(getRuntimeLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
-  });
+  }).format(new Date(date));
 }
 
-export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+export function formatDateTime(date: Date | string | number): string {
+  return new Intl.DateTimeFormat(getRuntimeLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  });
+  }).format(new Date(date));
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string | number): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  const formatter = new Intl.RelativeTimeFormat(getRuntimeLocale(), {
+    numeric: "auto",
+    style: "short",
+  });
+  if (diffSec < 60) return formatter.format(0, "second");
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return formatter.format(-diffMin, "minute");
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return formatter.format(-diffHr, "hour");
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return formatter.format(-diffDay, "day");
   return formatDate(date);
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+  return new Intl.NumberFormat(getRuntimeLocale(), {
+    notation: n >= 1_000 ? "compact" : "standard",
+    compactDisplay: "short",
+    maximumFractionDigits: n >= 1_000 ? 1 : 0,
+  }).format(n);
 }
 
 /** Map a raw provider slug to a display-friendly name. */
 export function providerDisplayName(provider: string): string {
-  const map: Record<string, string> = {
-    anthropic: "Anthropic",
-    openai: "OpenAI",
-    openrouter: "OpenRouter",
-    chatgpt: "ChatGPT",
-    google: "Google",
-    cursor: "Cursor",
-    jetbrains: "JetBrains AI",
-  };
-  return map[provider.toLowerCase()] ?? provider;
+  const locale = getRuntimeLocale();
+  const key = {
+    anthropic: "display.provider.anthropic",
+    openai: "display.provider.openai",
+    openrouter: "display.provider.openrouter",
+    chatgpt: "display.provider.chatgpt",
+    google: "display.provider.google",
+    cursor: "display.provider.cursor",
+    jetbrains: "display.provider.jetbrains",
+  }[provider.toLowerCase()];
+  return key ? formatMessage(locale, key) : provider;
 }
 
 export function billingTypeDisplayName(billingType: BillingType): string {
-  const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
-  };
-  return map[billingType];
+  const locale = getRuntimeLocale();
+  const key = {
+    metered_api: "display.billingType.metered_api",
+    subscription_included: "display.billingType.subscription_included",
+    subscription_overage: "display.billingType.subscription_overage",
+    credits: "display.billingType.credits",
+    fixed: "display.billingType.fixed",
+    unknown: "display.billingType.unknown",
+  }[billingType];
+  return key ? formatMessage(locale, key) : billingType;
 }
 
 export function quotaSourceDisplayName(source: string): string {
-  const map: Record<string, string> = {
-    "anthropic-oauth": "Anthropic OAuth",
-    "claude-cli": "Claude CLI",
-    "codex-rpc": "Codex app server",
-    "codex-wham": "ChatGPT WHAM",
-  };
-  return map[source] ?? source;
+  const locale = getRuntimeLocale();
+  const key = {
+    "anthropic-oauth": "display.quotaSource.anthropicOauth",
+    "claude-cli": "display.quotaSource.claudeCli",
+    "codex-rpc": "display.quotaSource.codexRpc",
+    "codex-wham": "display.quotaSource.codexWham",
+  }[source];
+  return key ? formatMessage(locale, key) : source;
 }
 
 function coerceBillingType(value: unknown): BillingType | null {
@@ -118,27 +134,15 @@ export function visibleRunCostUsd(
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
-  const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
-  };
-  return map[eventKind];
+  const locale = getRuntimeLocale();
+  const key = `display.financeEventKind.${eventKind}`;
+  const value = formatMessage(locale, key);
+  return value === key ? eventKind : value;
 }
 
 export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
+  const locale = getRuntimeLocale();
+  return formatMessage(locale, direction === "credit" ? "display.financeDirection.credit" : "display.financeDirection.debit");
 }
 
 /** Build an issue URL using the human-readable identifier when available. */
@@ -156,12 +160,9 @@ export function agentUrl(agent: { id: string; urlKey?: string | null; name?: str
   return `/agents/${agentRouteRef(agent)}`;
 }
 
-/** Build a project route reference, falling back to UUID when the derived key is ambiguous. */
+/** Build a project route reference using the short URL key when available. */
 export function projectRouteRef(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
-  // Guard for rolling deploys or legacy data where the server returned a bare slug without UUID suffix.
-  if (key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name)) return project.id;
-  return key;
+  return project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
 }
 
 /** Build a project URL using the short URL key when available. */

@@ -1,6 +1,24 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+export const SEAT_TYPES = ["ceo", "exec", "manager", "individual", "functional"] as const;
+export type SeatType = (typeof SEAT_TYPES)[number];
+
+export const SEAT_STATUSES = ["active", "paused", "archived"] as const;
+export type SeatStatus = (typeof SEAT_STATUSES)[number];
+
+export const SEAT_OPERATING_MODES = ["vacant", "assisted", "shadowed"] as const;
+export type SeatOperatingMode = (typeof SEAT_OPERATING_MODES)[number];
+
+export const SEAT_PAUSE_REASONS = ["budget_enforcement", "manual_admin", "maintenance"] as const;
+export type SeatPauseReason = (typeof SEAT_PAUSE_REASONS)[number];
+
+export const SEAT_OCCUPANT_TYPES = ["agent", "user"] as const;
+export type SeatOccupantType = (typeof SEAT_OCCUPANT_TYPES)[number];
+
+export const SEAT_OCCUPANCY_ROLES = ["primary_agent", "human_operator", "shadow_agent"] as const;
+export type SeatOccupancyRole = (typeof SEAT_OCCUPANCY_ROLES)[number];
+
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
@@ -26,7 +44,6 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
-  "gemini_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -264,7 +281,7 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "seat"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
 export const BUDGET_METRICS = ["billed_cents"] as const;

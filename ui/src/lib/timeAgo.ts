@@ -1,3 +1,5 @@
+import { getRuntimeLocale } from "../i18n/runtime";
+
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -8,24 +10,28 @@ export function timeAgo(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const seconds = Math.round((now - then) / 1000);
+  const formatter = new Intl.RelativeTimeFormat(getRuntimeLocale(), {
+    numeric: "auto",
+    style: "short",
+  });
 
-  if (seconds < MINUTE) return "just now";
+  if (seconds < MINUTE) return formatter.format(0, "second");
   if (seconds < HOUR) {
     const m = Math.floor(seconds / MINUTE);
-    return `${m}m ago`;
+    return formatter.format(-m, "minute");
   }
   if (seconds < DAY) {
     const h = Math.floor(seconds / HOUR);
-    return `${h}h ago`;
+    return formatter.format(-h, "hour");
   }
   if (seconds < WEEK) {
     const d = Math.floor(seconds / DAY);
-    return `${d}d ago`;
+    return formatter.format(-d, "day");
   }
   if (seconds < MONTH) {
     const w = Math.floor(seconds / WEEK);
-    return `${w}w ago`;
+    return formatter.format(-w, "week");
   }
   const mo = Math.floor(seconds / MONTH);
-  return `${mo}mo ago`;
+  return formatter.format(-mo, "month");
 }

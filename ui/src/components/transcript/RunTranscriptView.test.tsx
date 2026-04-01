@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TranscriptEntry } from "../../adapters";
 import { ThemeProvider } from "../../context/ThemeContext";
+import { I18nProvider } from "../../i18n";
 import { RunTranscriptView, normalizeTranscript } from "./RunTranscriptView";
 
 describe("RunTranscriptView", () => {
@@ -34,23 +35,25 @@ describe("RunTranscriptView", () => {
 
   it("renders assistant and thinking content as markdown in compact mode", () => {
     const html = renderToStaticMarkup(
-      <ThemeProvider>
-        <RunTranscriptView
-          density="compact"
-          entries={[
-            {
-              kind: "assistant",
-              ts: "2026-03-12T00:00:00.000Z",
-              text: "Hello **world**",
-            },
-            {
-              kind: "thinking",
-              ts: "2026-03-12T00:00:01.000Z",
-              text: "- first\n- second",
-            },
-          ]}
-        />
-      </ThemeProvider>,
+      <I18nProvider>
+        <ThemeProvider>
+          <RunTranscriptView
+            density="compact"
+            entries={[
+              {
+                kind: "assistant",
+                ts: "2026-03-12T00:00:00.000Z",
+                text: "Hello **world**",
+              },
+              {
+                kind: "thinking",
+                ts: "2026-03-12T00:00:01.000Z",
+                text: "- first\n- second",
+              },
+            ]}
+          />
+        </ThemeProvider>
+      </I18nProvider>,
     );
 
     expect(html).toContain("<strong>world</strong>");

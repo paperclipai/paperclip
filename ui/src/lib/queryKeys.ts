@@ -89,6 +89,9 @@ export const queryKeys = {
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
   },
+  seats: {
+    detail: (companyId: string, seatId: string) => ["seats", companyId, "detail", seatId] as const,
+  },
   auth: {
     session: ["auth", "session"] as const,
   },

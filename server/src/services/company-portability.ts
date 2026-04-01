@@ -3,7 +3,9 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { seats, seatOccupancies, backfillSeatModel, assertNoSeatCycle } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -32,6 +34,10 @@ import {
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_STATUSES,
+  SEAT_OPERATING_MODES,
+  SEAT_PAUSE_REASONS,
+  SEAT_STATUSES,
+  SEAT_TYPES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
@@ -58,6 +64,8 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { applySeatPauseInfo, getSeatPauseInfo } from "./seat-pause.js";
+import { seatService } from "./seats.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -118,6 +126,110 @@ let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
 function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
   return options?.mode ?? "board_full";
+}
+
+type PortableSeatManifestEntry = NonNullable<CompanyPortabilityAgentManifestEntry["seat"]>;
+
+type SeatRow = typeof seats.$inferSelect;
+
+async function listPortableSeatRows(
+  db: Db,
+  companyId: string,
+): Promise<SeatRow[]> {
+  if (!db || typeof (db as { select?: unknown }).select !== "function") return [];
+  return await (db as Db)
+    .select()
+    .from(seats)
+    .where(eq(seats.companyId, companyId))
+    .then((result) => result as SeatRow[]);
+}
+
+function buildPortableSeatByAgentSlug(input: {
+  agents: Array<Record<string, unknown>>;
+  seatRows: SeatRow[];
+  occupancyRows?: Array<{
+    seatId: string;
+    occupantType: string;
+    occupantId: string;
+    occupancyRole: string;
+    status: string;
+  }>;
+}): Map<string, PortableSeatManifestEntry> {
+  const slugBySeatId = new Map(input.seatRows.map((seat) => [seat.id, seat.slug]));
+  const seatById = new Map(input.seatRows.map((seat) => [seat.id, seat]));
+  const seatByDefaultAgentId = new Map(
+    input.seatRows
+      .filter((seat) => Boolean(seat.defaultAgentId))
+      .map((seat) => [seat.defaultAgentId!, seat] as const),
+  );
+
+  function toPortableSeatEntry(seat: SeatRow): PortableSeatManifestEntry {
+    const occupancyRows = input.occupancyRows?.filter((row) => row.seatId === seat.id && row.status === "active") ?? [];
+    const activePrimary = occupancyRows.find((row) => row.occupantType === "agent" && row.occupancyRole === "primary_agent") ?? null;
+    const activeHuman = occupancyRows.find((row) => row.occupantType === "user" && row.occupancyRole === "human_operator") ?? null;
+    const activeShadow = occupancyRows.find((row) => row.occupantType === "agent" && row.occupancyRole === "shadow_agent") ?? null;
+    const primaryAgentSlug = activePrimary
+      ? input.agents
+        .map((agent) => {
+          const record = agent as Record<string, unknown>;
+          return asString(record.id) === activePrimary.occupantId
+            ? (normalizeAgentUrlKey(asString(record.name) ?? "") ?? asString(record.id) ?? null)
+            : null;
+        })
+        .find((value): value is string => Boolean(value)) ?? null
+      : null;
+    const shadowAgentSlug = activeShadow
+      ? input.agents
+        .map((agent) => {
+          const record = agent as Record<string, unknown>;
+          return asString(record.id) === activeShadow.occupantId
+            ? (normalizeAgentUrlKey(asString(record.name) ?? "") ?? asString(record.id) ?? null)
+            : null;
+        })
+        .find((value): value is string => Boolean(value)) ?? null
+      : null;
+    const pauseInfo = getSeatPauseInfo({
+      status: seat.status,
+      metadata: seat.metadata,
+    });
+    return {
+      slug: seat.slug,
+      name: seat.name,
+      title: seat.title ?? null,
+      seatType: SEAT_TYPES.includes(seat.seatType as (typeof SEAT_TYPES)[number])
+        ? (seat.seatType as (typeof SEAT_TYPES)[number])
+        : "individual",
+      status: SEAT_STATUSES.includes(seat.status as (typeof SEAT_STATUSES)[number])
+        ? (seat.status as (typeof SEAT_STATUSES)[number])
+        : null,
+      pauseReason: pauseInfo.pauseReason,
+      pauseReasons: pauseInfo.pauseReasons,
+      operatingMode: SEAT_OPERATING_MODES.includes(seat.operatingMode as (typeof SEAT_OPERATING_MODES)[number])
+        ? (seat.operatingMode as (typeof SEAT_OPERATING_MODES)[number])
+        : null,
+      parentSeatSlug: seat.parentSeatId ? (slugBySeatId.get(seat.parentSeatId) ?? null) : null,
+      occupancy: activePrimary || activeHuman || activeShadow
+        ? {
+          primaryAgentSlug,
+          humanUserId: activeHuman?.occupantId ?? null,
+          shadowAgentSlug,
+        }
+        : null,
+    };
+  }
+
+  const map = new Map<string, PortableSeatManifestEntry>();
+  for (const agent of input.agents) {
+    const agentSlug = normalizeAgentUrlKey(asString(agent.name) ?? "") ?? asString(agent.id) ?? "";
+    const seatId = asString((agent as Record<string, unknown>).seatId);
+    const match = (seatId ? seatById.get(seatId) : null)
+      ?? seatByDefaultAgentId.get(asString((agent as Record<string, unknown>).id) ?? "")
+      ?? null;
+    if (match) {
+      map.set(agentSlug, toPortableSeatEntry(match));
+    }
+  }
+  return map;
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
@@ -2335,6 +2447,7 @@ function buildManifestFromPackageFiles(
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
+    const extensionSeat = isPlainRecord(extension.seat) ? extension.seat : null;
     const extensionMetadata = isPlainRecord(extension.metadata) ? extension.metadata : null;
     const adapterConfig = isPlainRecord(extensionAdapter?.config)
       ? extensionAdapter.config
@@ -2360,6 +2473,41 @@ function buildManifestFromPackageFiles(
         typeof extension.budgetMonthlyCents === "number" && Number.isFinite(extension.budgetMonthlyCents)
           ? Math.max(0, Math.floor(extension.budgetMonthlyCents))
           : 0,
+      seat: extensionSeat
+        ? {
+          slug: asString(extensionSeat.slug) ?? slug,
+          name: asString(extensionSeat.name) ?? (asString(frontmatter.name) ?? title ?? slug),
+          title: asString(extensionSeat.title),
+          seatType: SEAT_TYPES.includes(asString(extensionSeat.seatType) as (typeof SEAT_TYPES)[number])
+            ? (asString(extensionSeat.seatType) as (typeof SEAT_TYPES)[number])
+            : "individual",
+          status: SEAT_STATUSES.includes(asString(extensionSeat.status) as (typeof SEAT_STATUSES)[number])
+            ? (asString(extensionSeat.status) as (typeof SEAT_STATUSES)[number])
+            : null,
+          pauseReason: SEAT_PAUSE_REASONS.includes(asString(extensionSeat.pauseReason) as (typeof SEAT_PAUSE_REASONS)[number])
+            ? (asString(extensionSeat.pauseReason) as (typeof SEAT_PAUSE_REASONS)[number])
+            : null,
+          pauseReasons: Array.isArray(extensionSeat.pauseReasons)
+            ? extensionSeat.pauseReasons.filter(
+              (reason): reason is (typeof SEAT_PAUSE_REASONS)[number] =>
+                SEAT_PAUSE_REASONS.includes(reason as (typeof SEAT_PAUSE_REASONS)[number]),
+            )
+            : [],
+          operatingMode: SEAT_OPERATING_MODES.includes(
+            asString(extensionSeat.operatingMode) as (typeof SEAT_OPERATING_MODES)[number],
+          )
+            ? (asString(extensionSeat.operatingMode) as (typeof SEAT_OPERATING_MODES)[number])
+            : null,
+          parentSeatSlug: asString(extensionSeat.parentSeatSlug),
+          occupancy: isPlainRecord(extensionSeat.occupancy)
+            ? {
+              primaryAgentSlug: asString(extensionSeat.occupancy.primaryAgentSlug),
+              humanUserId: asString(extensionSeat.occupancy.humanUserId),
+              shadowAgentSlug: asString(extensionSeat.occupancy.shadowAgentSlug),
+            }
+            : null,
+        }
+        : null,
       metadata: extensionMetadata,
     });
 
@@ -2783,6 +2931,24 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const agentRows = Array.from(selectedAgents.values())
       .sort((left, right) => left.name.localeCompare(right.name));
+    const seatRows = await listPortableSeatRows(db, companyId);
+    const occupancyRows = seatRows.length > 0
+      ? await (db as Db)
+        .select({
+          seatId: seatOccupancies.seatId,
+          occupantType: seatOccupancies.occupantType,
+          occupantId: seatOccupancies.occupantId,
+          occupancyRole: seatOccupancies.occupancyRole,
+          status: seatOccupancies.status,
+        })
+        .from(seatOccupancies)
+        .where(inArray(seatOccupancies.seatId, seatRows.map((seat) => seat.id)))
+      : [];
+    const portableSeatByAgentSlug = buildPortableSeatByAgentSlug({
+      agents: agentRows as Array<Record<string, unknown>>,
+      seatRows,
+      occupancyRows,
+    });
 
     const usedSlugs = new Set<string>();
     const idToSlug = new Map<string, string>();
@@ -2795,6 +2961,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
+    const seatsSvc = seatService(db);
     const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
     const allRoutines = include.issues ? await routinesSvc.list(companyId) : [];
@@ -3076,6 +3243,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           role: agent.role !== "agent" ? agent.role : undefined,
           icon: agent.icon ?? null,
           capabilities: agent.capabilities ?? null,
+          seat: portableSeatByAgentSlug.get(slug) ?? undefined,
           adapter: {
             type: agent.adapterType,
             config: portableAdapterConfig,
@@ -3708,6 +3876,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const sourceManifest = plan.source.manifest;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
+    const seatsSvc = seatService(db);
 
     let targetCompany: { id: string; name: string } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
@@ -3991,6 +4160,141 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           await agents.update(agentId, { reportsTo: managerId });
         } catch {
           warnings.push(`Could not assign manager ${managerSlug} for imported agent ${manifestAgent.slug}.`);
+        }
+      }
+
+      if (
+        plan.selectedAgents.some((agent) => agent.seat) &&
+        db &&
+        typeof (db as { select?: unknown }).select === "function" &&
+        typeof (db as { update?: unknown }).update === "function"
+      ) {
+        const supportsSeatBackfill =
+          typeof (db as { insert?: unknown }).insert === "function" &&
+          typeof (db as { transaction?: unknown }).transaction === "function";
+
+        if (supportsSeatBackfill) {
+          await backfillSeatModel(db, { companyId: targetCompany.id });
+        }
+
+        const seatRows = await (db as Db)
+          .select()
+          .from(seats)
+          .where(eq(seats.companyId, targetCompany.id))
+          .then((rows) => rows as SeatRow[]);
+        const seatByDefaultAgentId = new Map(
+          seatRows
+            .filter((seat) => Boolean(seat.defaultAgentId))
+            .map((seat) => [seat.defaultAgentId!, seat] as const),
+        );
+
+        for (const manifestAgent of plan.selectedAgents) {
+          if (!manifestAgent.seat) continue;
+          const agentId = importedSlugToAgentId.get(manifestAgent.slug);
+          if (!agentId) continue;
+          const seat = seatByDefaultAgentId.get(agentId);
+          if (!seat) continue;
+          await (db as Db)
+            .update(seats)
+            .set({
+              slug: manifestAgent.seat.slug,
+              name: manifestAgent.seat.name,
+              title: manifestAgent.seat.title ?? null,
+              seatType: manifestAgent.seat.seatType,
+              status: manifestAgent.seat.status ?? seat.status,
+              metadata: applySeatPauseInfo({
+                metadata: seat.metadata,
+                status: manifestAgent.seat.status ?? seat.status,
+                pauseReason: manifestAgent.seat.pauseReason ?? null,
+                pauseReasons: manifestAgent.seat.pauseReasons,
+              }),
+              operatingMode: manifestAgent.seat.operatingMode ?? seat.operatingMode,
+              updatedAt: new Date(),
+            })
+            .where(eq(seats.id, seat.id));
+        }
+
+        const refreshedSeatRows = await (db as Db)
+          .select()
+          .from(seats)
+          .where(eq(seats.companyId, targetCompany.id))
+          .then((rows) => rows as SeatRow[]);
+        const seatIdBySlug = new Map(refreshedSeatRows.map((seat) => [seat.slug, seat.id]));
+        const parentSeatIdBySeatId = new Map(refreshedSeatRows.map((seat) => [seat.id, seat.parentSeatId ?? null]));
+        const seatByDefaultAgentIdRefreshed = new Map(
+          refreshedSeatRows
+            .filter((seat) => Boolean(seat.defaultAgentId))
+            .map((seat) => [seat.defaultAgentId!, seat] as const),
+        );
+
+        for (const manifestAgent of plan.selectedAgents) {
+          if (!manifestAgent.seat?.parentSeatSlug) continue;
+          const agentId = importedSlugToAgentId.get(manifestAgent.slug);
+          if (!agentId) continue;
+          const seat = seatByDefaultAgentIdRefreshed.get(agentId);
+          const parentSeatId = seatIdBySlug.get(manifestAgent.seat.parentSeatSlug) ?? null;
+          if (!seat || !parentSeatId || parentSeatId === seat.id) continue;
+          try {
+            assertNoSeatCycle({
+              seatId: seat.id,
+              proposedParentSeatId: parentSeatId,
+              parentSeatIdBySeatId,
+            });
+          } catch (error) {
+            warnings.push(
+              `Skipped parent seat link ${manifestAgent.seat.parentSeatSlug} for imported seat ${manifestAgent.seat.slug} because it would create a cycle: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            continue;
+          }
+          await (db as Db)
+            .update(seats)
+            .set({ parentSeatId, updatedAt: new Date() })
+            .where(eq(seats.id, seat.id));
+          parentSeatIdBySeatId.set(seat.id, parentSeatId);
+        }
+
+        for (const manifestAgent of plan.selectedAgents) {
+          const primaryAgentSlug = manifestAgent.seat?.occupancy?.primaryAgentSlug ?? null;
+          if (!primaryAgentSlug) continue;
+          const ownerAgentId = importedSlugToAgentId.get(manifestAgent.slug);
+          const primaryAgentId = importedSlugToAgentId.get(primaryAgentSlug) ?? existingSlugToAgentId.get(primaryAgentSlug) ?? null;
+          if (!ownerAgentId || !primaryAgentId) continue;
+          const seat = seatByDefaultAgentIdRefreshed.get(ownerAgentId);
+          if (!seat) continue;
+          try {
+            await seatsSvc.reassignPrimaryAgent(targetCompany.id, seat.id, primaryAgentId);
+          } catch (err) {
+            warnings.push(`Could not assign primary agent ${primaryAgentSlug} to imported seat ${manifestAgent.seat?.slug ?? seat.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
+        for (const manifestAgent of plan.selectedAgents) {
+          const humanUserId = manifestAgent.seat?.occupancy?.humanUserId ?? null;
+          if (!humanUserId) continue;
+          const agentId = importedSlugToAgentId.get(manifestAgent.slug);
+          if (!agentId) continue;
+          const seat = seatByDefaultAgentIdRefreshed.get(agentId);
+          if (!seat) continue;
+          try {
+            await seatsSvc.attachHuman(targetCompany.id, seat.id, humanUserId);
+          } catch (err) {
+            warnings.push(`Could not attach human occupant ${humanUserId} to imported seat ${manifestAgent.seat?.slug ?? seat.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
+        for (const manifestAgent of plan.selectedAgents) {
+          const shadowAgentSlug = manifestAgent.seat?.occupancy?.shadowAgentSlug ?? null;
+          if (!shadowAgentSlug) continue;
+          const ownerAgentId = importedSlugToAgentId.get(manifestAgent.slug);
+          const shadowAgentId = importedSlugToAgentId.get(shadowAgentSlug) ?? existingSlugToAgentId.get(shadowAgentSlug) ?? null;
+          if (!ownerAgentId || !shadowAgentId) continue;
+          const seat = seatByDefaultAgentIdRefreshed.get(ownerAgentId);
+          if (!seat) continue;
+          try {
+            await seatsSvc.attachShadowAgent(targetCompany.id, seat.id, shadowAgentId);
+          } catch (err) {
+            warnings.push(`Could not attach shadow agent ${shadowAgentSlug} to imported seat ${manifestAgent.seat?.slug ?? seat.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
     }

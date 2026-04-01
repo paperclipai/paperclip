@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
+import { SeatAttributionBreakdown } from "./SeatAttributionBreakdown";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
 
 interface BillerSpendCardProps {
@@ -42,6 +43,22 @@ export function BillerSpendCard({
       map.set(entry.billingType, (map.get(entry.billingType) ?? 0) + entry.costCents);
     }
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [providerRows]);
+
+  const attributionBreakdown = useMemo(() => {
+    let issueOwnerSeatCostCents = 0;
+    let agentSeatCostCents = 0;
+    let unattributedCostCents = 0;
+    for (const entry of providerRows) {
+      issueOwnerSeatCostCents += entry.issueOwnerSeatCostCents;
+      agentSeatCostCents += entry.agentSeatCostCents;
+      unattributedCostCents += entry.unattributedCostCents;
+    }
+    return {
+      issueOwnerSeatCostCents,
+      agentSeatCostCents,
+      unattributedCostCents,
+    };
   }, [providerRows]);
 
   const providerBudgetShare =
@@ -137,6 +154,17 @@ export function BillerSpendCard({
                 ))}
               </div>
             </div>
+          </>
+        )}
+
+        {row.costCents > 0 && (
+          <>
+            <div className="border-t border-border" />
+            <SeatAttributionBreakdown
+              issueOwnerSeatCostCents={attributionBreakdown.issueOwnerSeatCostCents}
+              agentSeatCostCents={attributionBreakdown.agentSeatCostCents}
+              unattributedCostCents={attributionBreakdown.unattributedCostCents}
+            />
           </>
         )}
       </CardContent>

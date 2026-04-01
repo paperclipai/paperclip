@@ -1,3 +1,6 @@
+import { formatMessage } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
+
 type IssueDetailSource = "issues" | "inbox";
 
 type IssueDetailBreadcrumb = {
@@ -36,8 +39,9 @@ function readIssueDetailSourceFromSearch(search?: string): IssueDetailSource | n
 }
 
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
-  if (source === "inbox") return { label: "Inbox", href: "/inbox" };
-  return { label: "Issues", href: "/issues" };
+  const locale = getRuntimeLocale();
+  if (source === "inbox") return { label: formatMessage(locale, "issueDetailBreadcrumb.inbox"), href: "/inbox" };
+  return { label: formatMessage(locale, "issueDetailBreadcrumb.issues"), href: "/issues" };
 }
 
 export function createIssueDetailLocationState(

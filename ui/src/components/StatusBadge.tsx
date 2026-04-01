@@ -1,4 +1,5 @@
 import { cn } from "../lib/utils";
+import { localizedStatusLabel } from "../lib/displayLabels";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 
 export function StatusBadge({ status }: { status: string }) {
@@ -9,7 +10,7 @@ export function StatusBadge({ status }: { status: string }) {
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {status.replace("_", " ")}
+      {localizedStatusLabel(status)}
     </span>
   );
 }

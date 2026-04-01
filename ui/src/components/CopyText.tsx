@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n";
 
 interface CopyTextProps {
   text: string;
@@ -10,23 +11,25 @@ interface CopyTextProps {
   copiedLabel?: string;
 }
 
-export function CopyText({ text, children, className, copiedLabel = "Copied!" }: CopyTextProps) {
+export function CopyText({ text, children, className, copiedLabel }: CopyTextProps) {
+  const { t } = useI18n();
+  const resolvedCopiedLabel = copiedLabel ?? t("common.copied");
   const [visible, setVisible] = useState(false);
-  const [label, setLabel] = useState(copiedLabel);
+  const [label, setLabel] = useState(resolvedCopiedLabel);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const handleClick = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(text);
-      setLabel(copiedLabel);
+      setLabel(resolvedCopiedLabel);
     } catch {
-      setLabel("Copy failed");
+      setLabel(t("common.copyFailed"));
     }
     clearTimeout(timerRef.current);
     setVisible(true);
     timerRef.current = setTimeout(() => setVisible(false), 1500);
-  }, [copiedLabel, text]);
+  }, [resolvedCopiedLabel, t, text]);
 
   return (
     <span className="relative inline-flex">

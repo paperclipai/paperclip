@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
+import { I18nProvider } from "../i18n";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: React.ComponentProps<"a">) => (
@@ -75,7 +76,11 @@ describe("IssueRow", () => {
     const issue = createIssue();
 
     act(() => {
-      root.render(<IssueRow issue={issue} selected />);
+      root.render(
+        <I18nProvider>
+          <IssueRow issue={issue} selected />
+        </I18nProvider>,
+      );
     });
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
@@ -92,7 +97,11 @@ describe("IssueRow", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(<IssueRow issue={createIssue()} selected unreadState="visible" />);
+      root.render(
+        <I18nProvider>
+          <IssueRow issue={createIssue()} selected unreadState="visible" />
+        </I18nProvider>,
+      );
     });
 
     const markReadButton = container.querySelector('button[aria-label="Mark as read"]');

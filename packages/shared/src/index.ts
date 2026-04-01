@@ -1,5 +1,11 @@
 export {
   COMPANY_STATUSES,
+  SEAT_TYPES,
+  SEAT_STATUSES,
+  SEAT_OPERATING_MODES,
+  SEAT_PAUSE_REASONS,
+  SEAT_OCCUPANT_TYPES,
+  SEAT_OCCUPANCY_ROLES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
   AUTH_BASE_URL_MODES,
@@ -70,6 +76,12 @@ export {
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
   type CompanyStatus,
+  type SeatType,
+  type SeatStatus,
+  type SeatOperatingMode,
+  type SeatPauseReason,
+  type SeatOccupantType,
+  type SeatOccupancyRole,
   type DeploymentMode,
   type DeploymentExposure,
   type AuthBaseUrlMode,
@@ -559,7 +571,7 @@ export {
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
-export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";
+export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";
 export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,

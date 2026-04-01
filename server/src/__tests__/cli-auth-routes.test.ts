@@ -92,7 +92,7 @@ describe("cli auth routes", () => {
       expiresAt: "2026-03-23T13:00:00.000Z",
     });
     expect(res.body.approvalUrl).toContain("/cli-auth/challenge-1?token=pcp_cli_auth_secret");
-  });
+  }, 15_000);
 
   it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({

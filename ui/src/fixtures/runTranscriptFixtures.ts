@@ -12,12 +12,12 @@ export interface RunTranscriptFixtureMeta {
 }
 
 export const runTranscriptFixtureMeta: RunTranscriptFixtureMeta = {
-  sourceRunId: "65a79d5d-5f85-4392-a5cc-8fb48beb9e71",
-  fixtureLabel: "Sanitized development fixture",
-  agentName: "CodexCoder",
-  agentId: "codexcoder-fixture",
-  issueIdentifier: "PAP-473",
-  issueTitle: "Humanize run transcripts across run detail and live surfaces",
+  sourceRunId: "run_fixture_01",
+  fixtureLabel: "Sanitized transcript fixture",
+  agentName: "Transcript Agent",
+  agentId: "transcript-agent",
+  issueIdentifier: "DEMO-473",
+  issueTitle: "Transcript rendering fixture",
   startedAt: "2026-03-11T15:21:05.948Z",
   finishedAt: null,
 };
@@ -28,13 +28,13 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "stderr",
     ts: "2026-03-11T15:21:05.594Z",
-    text: "[paperclip] Skipping saved session resume for task \"PAP-473\" because wake reason is issue_assigned.",
+    text: "[paperclip] Skipping saved session resume for task \"DEMO-473\" because wake reason is issue_assigned.",
   },
   {
     kind: "init",
     ts: "2026-03-11T15:21:05.948Z",
     model: "codex",
-    sessionId: "sess_fixture_01",
+    sessionId: "sess_demo_01",
   },
   {
     kind: "system",
@@ -194,7 +194,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     name: "command_execution",
     toolUseId: "item_7",
     input: {
-      command: "git commit -m \"Humanize run transcripts across run detail and live surfaces\"",
+      command: "git commit -m \"Normalize transcript surfaces for demo\"",
       cwd: "/workspace/paperclip",
     },
   },
@@ -202,7 +202,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:24:53.104Z",
     toolUseId: "item_7",
-    content: "command: git commit ...\nstatus: completed\nexit_code: 0\n\n87b8e21 Humanize run transcripts across run detail and live surfaces",
+    content: "command: git commit ...\nstatus: completed\nexit_code: 0\n\n87b8e21 Normalize transcript surfaces for demo",
     isError: false,
   },
   {

@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
+import { SeatAttributionBreakdown } from "./SeatAttributionBreakdown";
 import {
   billingTypeDisplayName,
   formatCents,
@@ -53,11 +54,15 @@ export function ProviderQuotaCard({
   // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
+    let issueOwnerSeatCostCents = 0, agentSeatCostCents = 0, unattributedCostCents = 0;
     let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
     for (const r of rows) {
       inputTokens += r.inputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
+      issueOwnerSeatCostCents += r.issueOwnerSeatCostCents;
+      agentSeatCostCents += r.agentSeatCostCents;
+      unattributedCostCents += r.unattributedCostCents;
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
       subInputTokens += r.subscriptionInputTokens;
@@ -72,6 +77,9 @@ export function ProviderQuotaCard({
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
+      issueOwnerSeatCostCents,
+      agentSeatCostCents,
+      unattributedCostCents,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
       totalSubInputTokens: subInputTokens,
@@ -86,6 +94,9 @@ export function ProviderQuotaCard({
     totalOutputTokens,
     totalTokens,
     totalCostCents,
+    issueOwnerSeatCostCents,
+    agentSeatCostCents,
+    unattributedCostCents,
     totalApiRuns,
     totalSubRuns,
     totalSubInputTokens,
@@ -301,6 +312,17 @@ export function ProviderQuotaCard({
                 );
               })}
             </div>
+          </>
+        )}
+
+        {totalCostCents > 0 && (
+          <>
+            <div className="border-t border-border" />
+            <SeatAttributionBreakdown
+              issueOwnerSeatCostCents={issueOwnerSeatCostCents}
+              agentSeatCostCents={agentSeatCostCents}
+              unattributedCostCents={unattributedCostCents}
+            />
           </>
         )}
 

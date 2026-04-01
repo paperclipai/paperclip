@@ -2,6 +2,7 @@ export { api } from "./client";
 export { authApi } from "./auth";
 export { healthApi } from "./health";
 export { accessApi } from "./access";
+export { seatsApi } from "./seats";
 export { companiesApi } from "./companies";
 export { agentsApi } from "./agents";
 export { projectsApi } from "./projects";

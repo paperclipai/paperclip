@@ -10,8 +10,25 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { Download, Network, Upload } from "lucide-react";
+import { Download, ExternalLink, Network, Upload, UserMinus, UserPlus } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { orgNodeBadges } from "../lib/org-node-display";
+import { formatDelegatedPermissions } from "../lib/seat-permissions";
+import { formatSeatPauseReason, formatSeatPauseReasons } from "../lib/seat-pause";
+import { orgNodeCanManageSeat, primarySeatAction } from "../lib/seat-actions";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { useSeatManagement } from "../hooks/useSeatManagement";
+import { SeatAttachDialog } from "../components/SeatAttachDialog";
+import { SeatPauseDialog } from "../components/SeatPauseDialog";
+import { SeatPermissionsDialog } from "../components/SeatPermissionsDialog";
+import { useI18n } from "../i18n";
+import { useAdapterLabels } from "../components/agent-config-primitives";
 
 // Layout constants
 const CARD_W = 200;
@@ -24,9 +41,12 @@ const PADDING = 60;
 
 interface LayoutNode {
   id: string;
+  seatId: string | null;
   name: string;
-  role: string;
-  status: string;
+  role: OrgNode["role"];
+  seatType: OrgNode["seatType"];
+  operatingMode: OrgNode["operatingMode"];
+  status: OrgNode["status"];
   x: number;
   y: number;
   children: LayoutNode[];
@@ -61,8 +81,11 @@ function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
 
   return {
     id: node.id,
+    seatId: node.seatId,
     name: node.name,
     role: node.role,
+    seatType: node.seatType,
+    operatingMode: node.operatingMode,
     status: node.status,
     x: x + (totalW - CARD_W) / 2,
     y,
@@ -116,18 +139,6 @@ function collectEdges(nodes: LayoutNode[]): Array<{ parent: LayoutNode; child: L
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
-const adapterLabels: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "Codex",
-  gemini_local: "Gemini",
-  opencode_local: "OpenCode",
-  cursor: "Cursor",
-  hermes_local: "Hermes",
-  openclaw_gateway: "OpenClaw Gateway",
-  process: "Process",
-  http: "HTTP",
-};
-
 const statusDotColor: Record<string, string> = {
   running: "#22d3ee",
   active: "#4ade80",
@@ -141,9 +152,43 @@ const defaultDotColor = "#a3a3a3";
 // ── Main component ──────────────────────────────────────────────────────
 
 export function OrgChart() {
+  const { t } = useI18n();
+  const adapterLabels = useAdapterLabels();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  const {
+    attachDialogNode,
+    attachHuman,
+    attachUserId,
+    attachableMembers,
+    detachHuman,
+    isLoadingCompanyMembers,
+    mutationPendingSeatId,
+    openAttachDialog,
+    openPauseDialog,
+    openPermissionsDialog,
+    pauseDialogNode,
+    pauseSeat,
+    permissionsDialogNode,
+    resumeSeat,
+    selectedPermissions,
+    selectedPauseReason,
+    selectedSeatDetail,
+    selectedSeatNode,
+    setAttachDialogNode,
+    setAttachUserId,
+    setPauseDialogNode,
+    setPermissionsDialogNode,
+    setSelectedPermissions,
+    setSelectedPauseReason,
+    setSelectedSeatNode,
+    submitAttach,
+    submitPause,
+    submitPermissions,
+    submitResume,
+    updateSeatPermissions,
+  } = useSeatManagement(selectedCompanyId);
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -162,10 +207,14 @@ export function OrgChart() {
     for (const a of agents ?? []) m.set(a.id, a);
     return m;
   }, [agents]);
+  const selectedDisplayAgent = useMemo(
+    () => (selectedSeatNode ? agentMap.get(selectedSeatNode.id) ?? null : null),
+    [agentMap, selectedSeatNode],
+  );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("orgChart.title") }]);
+  }, [setBreadcrumbs, t]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -257,7 +306,7 @@ export function OrgChart() {
   }, [zoom, pan]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={t("orgChart.selectCompany")} />;
   }
 
   if (isLoading) {
@@ -265,7 +314,7 @@ export function OrgChart() {
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("orgChart.noHierarchy")} />;
   }
 
   return (
@@ -274,13 +323,13 @@ export function OrgChart() {
       <Link to="/company/import">
         <Button variant="outline" size="sm">
           <Upload className="mr-1.5 h-3.5 w-3.5" />
-          Import company
+          {t("orgChart.importCompany")}
         </Button>
       </Link>
       <Link to="/company/export">
         <Button variant="outline" size="sm">
           <Download className="mr-1.5 h-3.5 w-3.5" />
-          Export company
+          {t("orgChart.exportCompany")}
         </Button>
       </Link>
     </div>
@@ -309,7 +358,8 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom in"
+          aria-label={t("orgChart.zoomIn")}
+          title={t("orgChart.zoomIn")}
         >
           +
         </button>
@@ -326,7 +376,8 @@ export function OrgChart() {
             }
             setZoom(newZoom);
           }}
-          aria-label="Zoom out"
+          aria-label={t("orgChart.zoomOut")}
+          title={t("orgChart.zoomOut")}
         >
           &minus;
         </button>
@@ -344,10 +395,10 @@ export function OrgChart() {
             setZoom(fitZoom);
             setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
           }}
-          title="Fit to screen"
-          aria-label="Fit chart to screen"
+          title={t("orgChart.fitToScreen")}
+          aria-label={t("orgChart.fitToScreen")}
         >
-          Fit
+          {t("orgChart.fit")}
         </button>
       </div>
 
@@ -391,6 +442,20 @@ export function OrgChart() {
         {allNodes.map((node) => {
           const agent = agentMap.get(node.id);
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+          const orgNode: OrgNode = {
+            id: node.id,
+            seatId: node.seatId,
+            name: node.name,
+            role: node.role,
+            seatType: node.seatType,
+            operatingMode: node.operatingMode,
+            status: node.status,
+            reports: [],
+          };
+          const badges = orgNodeBadges(orgNode);
+          const canManageSeat = orgNodeCanManageSeat(orgNode);
+          const primaryAction = primarySeatAction(orgNode);
+          const actionPending = mutationPendingSeatId === node.seatId;
 
           return (
             <div
@@ -403,7 +468,13 @@ export function OrgChart() {
                 width: CARD_W,
                 minHeight: CARD_H,
               }}
-              onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+              onClick={() => {
+                if (!node.seatId) {
+                  navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+                  return;
+                }
+                setSelectedSeatNode(orgNode);
+              }}
             >
               <div className="flex items-center px-4 py-3 gap-3">
                 {/* Agent icon + status dot */}
@@ -424,6 +495,18 @@ export function OrgChart() {
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
+                  {badges.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {badges.map((badge) => (
+                        <span
+                          key={badge.key}
+                          className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground"
+                        >
+                          {badge.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
@@ -431,11 +514,192 @@ export function OrgChart() {
                   )}
                 </div>
               </div>
+              {canManageSeat && (
+                <div className="flex items-center justify-between border-t border-border/60 px-3 py-2">
+                  <button
+                    type="button"
+                    className="text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedSeatNode(orgNode);
+                    }}
+                  >
+                    Details
+                  </button>
+                  <div className="flex items-center gap-1">
+                    {primaryAction && (
+                      <button
+                        type="button"
+                        className="rounded-md border border-border px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+                        disabled={actionPending}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (primaryAction === "attach") {
+                            openAttachDialog(orgNode);
+                            return;
+                          }
+                          if (orgNode.seatId) {
+                            detachHuman.mutate(orgNode.seatId);
+                          }
+                        }}
+                      >
+                        {primaryAction === "attach"
+                          ? <UserPlus className="mr-1 inline h-3 w-3" />
+                          : <UserMinus className="mr-1 inline h-3 w-3" />}
+                        {actionPending ? "Working" : primaryAction}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="rounded-md border border-border px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openPermissionsDialog(orgNode);
+                      }}
+                    >
+                      Perms
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
     </div>
+    <Sheet open={Boolean(selectedSeatNode)} onOpenChange={(open) => !open && setSelectedSeatNode(null)}>
+      <SheetContent side="right" className="overflow-y-auto sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>{selectedSeatDetail?.name ?? selectedSeatNode?.name ?? t("orgChart.seatDetail")}</SheetTitle>
+          <SheetDescription>
+            {selectedSeatDetail?.name
+              ? `${selectedSeatDetail.name} seat status and delegated permissions`
+              : t("orgChart.inspectSeatState")}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="mt-6 space-y-4 text-sm">
+          {!selectedSeatDetail ? (
+            <p className="text-muted-foreground">{t("orgChart.loadingSeatDetails")}</p>
+          ) : (
+            <>
+              <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2">
+                <dt className="text-muted-foreground">{t("common.slug")}</dt>
+                <dd className="truncate">{selectedSeatDetail.slug}</dd>
+                <dt className="text-muted-foreground">{t("common.seatType")}</dt>
+                <dd>{selectedSeatDetail.seatType}</dd>
+                <dt className="text-muted-foreground">{t("common.mode")}</dt>
+                <dd>{selectedSeatDetail.operatingMode}</dd>
+                <dt className="text-muted-foreground">{t("common.status")}</dt>
+                <dd>{selectedSeatDetail.status}</dd>
+                <dt className="text-muted-foreground">{t("common.pauseReason")}</dt>
+                <dd>{formatSeatPauseReason(selectedSeatDetail.pauseReason) || t("common.none")}</dd>
+                <dt className="text-muted-foreground">{t("common.pauseStack")}</dt>
+                <dd>{formatSeatPauseReasons(selectedSeatDetail.pauseReasons)}</dd>
+                <dt className="text-muted-foreground">{t("common.human")}</dt>
+                <dd>{selectedSeatDetail.currentHumanUserId || t("common.none")}</dd>
+                <dt className="text-muted-foreground">{t("common.defaultAgent")}</dt>
+                <dd className="truncate">{selectedSeatDetail.defaultAgentId || t("common.none")}</dd>
+                <dt className="text-muted-foreground">{t("common.delegated")}</dt>
+                <dd>{formatDelegatedPermissions(selectedSeatDetail.delegatedPermissions) || t("common.none")}</dd>
+              </dl>
+              <div className="flex flex-wrap gap-2 pt-2">
+                {selectedSeatNode?.seatId ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openPauseDialog(selectedSeatNode, selectedSeatDetail.pauseReason === "maintenance" ? "maintenance" : "manual_admin")}
+                  >
+                    {t("common.pause")}
+                  </Button>
+                ) : null}
+                {selectedSeatNode?.seatId && selectedSeatDetail.pauseReasons.some((reason) => reason !== "budget_enforcement") ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => submitResume(selectedSeatNode.seatId!, null)}
+                  >
+                    {t("common.resumeOperatorPause")}
+                  </Button>
+                ) : null}
+                {selectedSeatNode && primarySeatAction(selectedSeatNode) === "attach" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openAttachDialog(selectedSeatNode)}
+                  >
+                    <UserPlus className="mr-1.5 h-3.5 w-3.5" />
+                    {t("common.attach")}
+                  </Button>
+                ) : null}
+                {selectedSeatNode?.seatId && primarySeatAction(selectedSeatNode) === "detach" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => detachHuman.mutate(selectedSeatNode.seatId!)}
+                  >
+                    <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                    {t("common.detach")}
+                  </Button>
+                ) : null}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => selectedSeatNode && openPermissionsDialog(selectedSeatNode, selectedSeatDetail.delegatedPermissions)}
+                >
+                  {t("common.editPermissions")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (selectedDisplayAgent) {
+                      navigate(agentUrl(selectedDisplayAgent));
+                      return;
+                    }
+                    if (selectedSeatDetail.defaultAgentId) {
+                      navigate(`/agents/${selectedSeatDetail.defaultAgentId}`);
+                    }
+                  }}
+                  disabled={!selectedDisplayAgent && !selectedSeatDetail.defaultAgentId}
+                >
+                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                  {t("orgChart.openAgent")}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+    <SeatAttachDialog
+      open={Boolean(attachDialogNode)}
+      seatName={attachDialogNode?.name}
+      userId={attachUserId}
+      memberOptions={attachableMembers}
+      isLoadingMembers={isLoadingCompanyMembers}
+      isPending={attachHuman.isPending}
+      onOpenChange={(open) => !open && setAttachDialogNode(null)}
+      onUserIdChange={setAttachUserId}
+      onSubmit={submitAttach}
+    />
+    <SeatPauseDialog
+      open={Boolean(pauseDialogNode)}
+      seatName={pauseDialogNode?.name}
+      pauseReason={selectedPauseReason}
+      isPending={pauseSeat.isPending || resumeSeat.isPending}
+      onOpenChange={(open) => !open && setPauseDialogNode(null)}
+      onPauseReasonChange={setSelectedPauseReason}
+      onSubmit={submitPause}
+    />
+    <SeatPermissionsDialog
+      open={Boolean(permissionsDialogNode)}
+      seatName={permissionsDialogNode?.name}
+      selectedPermissions={selectedPermissions}
+      isPending={updateSeatPermissions.isPending}
+      onOpenChange={(open) => !open && setPermissionsDialogNode(null)}
+      onSelectedPermissionsChange={setSelectedPermissions}
+      onSubmit={submitPermissions}
+    />
     </div>
   );
 }

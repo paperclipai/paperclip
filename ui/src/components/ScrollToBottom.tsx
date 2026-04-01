@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown } from "lucide-react";
+import { useI18n } from "../i18n";
 
 function resolveScrollTarget() {
   const mainContent = document.getElementById("main-content");
@@ -32,6 +33,7 @@ function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
  */
 export function ScrollToBottom() {
+  const { t } = useI18n();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -71,7 +73,7 @@ export function ScrollToBottom() {
     <button
       onClick={scroll}
       className="fixed bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))] right-6 z-40 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background shadow-md hover:bg-accent transition-colors md:bottom-6"
-      aria-label="Scroll to bottom"
+      aria-label={t("common.scrollToBottom")}
     >
       <ArrowDown className="h-4 w-4" />
     </button>

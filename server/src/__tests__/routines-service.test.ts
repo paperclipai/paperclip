@@ -14,6 +14,7 @@ import {
   routineRuns,
   routines,
   routineTriggers,
+  seats,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(seats);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -251,6 +253,165 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.status).toBe("issue_created");
     expect(wakeupResolved).toBe(true);
+  });
+
+  it("sets assigneeSeatId from assigneeAgentId on routine create and update", async () => {
+    const companyId = randomUUID();
+    const agentOneId = randomUUID();
+    const agentTwoId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: agentOneId,
+        companyId,
+        name: "Agent One",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentTwoId,
+        companyId,
+        name: "Agent Two",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Routines",
+      status: "in_progress",
+    });
+
+    const [seatOne, seatTwo] = await db.insert(seats).values([
+      {
+        companyId,
+        slug: "agent-one",
+        name: "Seat One",
+        seatType: "individual",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentOneId,
+      },
+      {
+        companyId,
+        slug: "agent-two",
+        name: "Seat Two",
+        seatType: "individual",
+        status: "active",
+        operatingMode: "vacant",
+        defaultAgentId: agentTwoId,
+      },
+    ]).returning();
+
+    await db.update(agents).set({ seatId: seatOne.id, seatRole: "primary_agent" }).where(eq(agents.id, agentOneId));
+    await db.update(agents).set({ seatId: seatTwo.id, seatRole: "primary_agent" }).where(eq(agents.id, agentTwoId));
+
+    const svc = routineService(db, {
+      heartbeat: { wakeup: async () => null },
+    });
+
+    const created = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "dual-write routine",
+        description: "routine dual-write",
+        assigneeAgentId: agentOneId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    expect(created.assigneeSeatId).toBe(seatOne.id);
+
+    const updated = await svc.update(
+      created.id,
+      { assigneeAgentId: agentTwoId },
+      {},
+    );
+    expect(updated?.assigneeSeatId).toBe(seatTwo.id);
+  });
+
+  it("rejects routine dual-write when assigneeAgentId belongs to another company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const foreignAgentId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Elsewhere",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Routines",
+      status: "in_progress",
+    });
+
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: otherCompanyId,
+      name: "Foreign Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      routineService(db).create(
+        companyId,
+        {
+          projectId,
+          goalId: null,
+          parentIssueId: null,
+          title: "cross-company",
+          description: null,
+          assigneeAgentId: foreignAgentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+        },
+        {},
+      ),
+    ).rejects.toThrow("Assignee must belong to same company");
   });
 
   it("coalesces only when the existing routine issue has a live execution run", async () => {
