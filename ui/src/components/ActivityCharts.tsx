@@ -1,5 +1,6 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { useI18n } from "../i18n";
+import { localizedStatusLabel } from "../lib/displayLabels";
 
 /* ---- Utilities ---- */
 
@@ -170,16 +171,6 @@ const statusColors: Record<string, string> = {
   backlog: "#64748b",
 };
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
-
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
   const { t } = useI18n();
   const days = getLast14Days();
@@ -225,13 +216,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
       <DateLabels days={days} />
       <ChartLegend items={statusOrder.map((s) => ({
         color: statusColors[s] ?? "#6b7280",
-        label: s === "in_progress"
-          ? t("activityCharts.statuses.inProgress")
-          : s === "in_review"
-            ? t("activityCharts.statuses.inReview")
-            : s in statusLabels
-              ? t(`activityCharts.statuses.${s}`)
-              : s,
+        label: localizedStatusLabel(s),
       }))} />
     </div>
   );

@@ -79,6 +79,17 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       projectPausedByBudget: "Project paused by budget",
       agentPausedByBudget: "Agent paused by budget",
     },
+    liveUpdates: {
+      runStarted: "{{name}} run started",
+      runSucceeded: "{{name}} run succeeded",
+      runFailed: "{{name}} run failed",
+      runTimedOut: "{{name}} run timed out",
+      runCancelled: "{{name}} run cancelled",
+      triggerPrefix: "Trigger: {{detail}}",
+      viewRun: "View run",
+      agentStarted: "{{name}} started",
+      agentErrored: "{{name}} errored"
+    },
   },
   ko: {
     language: {
@@ -158,6 +169,17 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
       projectPausedByBudget: "예산으로 일시중지된 프로젝트",
       agentPausedByBudget: "예산으로 일시중지된 에이전트",
     },
+    liveUpdates: {
+      runStarted: "{{name}} 실행 시작",
+      runSucceeded: "{{name}} 실행 성공",
+      runFailed: "{{name}} 실행 실패",
+      runTimedOut: "{{name}} 실행 시간 초과",
+      runCancelled: "{{name}} 실행 취소",
+      triggerPrefix: "트리거: {{detail}}",
+      viewRun: "실행 보기",
+      agentStarted: "{{name}} 시작됨",
+      agentErrored: "{{name}} 오류 발생"
+    },
   },
   ja: {
     language: {
@@ -236,6 +258,17 @@ export const commonMessages: Record<ActiveLocale, MessageTree> = {
     sidebar: {
       projectPausedByBudget: "予算で停止中のプロジェクト",
       agentPausedByBudget: "予算で停止中のエージェント",
+    },
+    liveUpdates: {
+      runStarted: "{{name}} の実行を開始",
+      runSucceeded: "{{name}} の実行が成功",
+      runFailed: "{{name}} の実行が失敗",
+      runTimedOut: "{{name}} の実行がタイムアウト",
+      runCancelled: "{{name}} の実行をキャンセル",
+      triggerPrefix: "トリガー: {{detail}}",
+      viewRun: "実行を見る",
+      agentStarted: "{{name}} が開始",
+      agentErrored: "{{name}} がエラー"
     },
   },
 };

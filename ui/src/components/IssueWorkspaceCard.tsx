@@ -7,6 +7,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
+import { localizedStatusLabel } from "../lib/displayLabels";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 import { useI18n } from "../i18n";
@@ -148,7 +149,7 @@ function statusBadge(status: string) {
   };
   return (
     <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", colors[status] ?? colors.idle)}>
-      {status.replace(/_/g, " ")}
+      {localizedStatusLabel(status)}
     </span>
   );
 }

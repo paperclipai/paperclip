@@ -10,6 +10,8 @@ import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
+import { formatMessage } from "../i18n";
+import { getRuntimeLocale } from "../i18n/runtime";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -404,8 +406,8 @@ function buildAgentStatusToast(
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
   const title =
     status === "running"
-      ? `${name} started`
-      : `${name} errored`;
+      ? formatMessage(getRuntimeLocale(), "liveUpdates.agentStarted", { name })
+      : formatMessage(getRuntimeLocale(), "liveUpdates.agentErrored", { name });
 
   const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
   const agent = agents?.find((a) => a.id === agentId);
@@ -415,7 +417,7 @@ function buildAgentStatusToast(
     title,
     body,
     tone,
-    action: { label: "View agent", href: `/agents/${agentId}` },
+    action: { label: formatMessage(getRuntimeLocale(), "common.agents"), href: `/agents/${agentId}` },
     dedupeKey: `agent-status:${agentId}:${status}`,
   };
 }
@@ -433,18 +435,17 @@ function buildRunStatusToast(
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
   const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";
-  const statusLabel =
-    status === "succeeded" ? "succeeded"
-      : status === "failed" ? "failed"
-        : status === "timed_out" ? "timed out"
-          : "cancelled";
-  const title = `${name} run ${statusLabel}`;
+  const title =
+    status === "succeeded" ? formatMessage(getRuntimeLocale(), "liveUpdates.runSucceeded", { name })
+      : status === "failed" ? formatMessage(getRuntimeLocale(), "liveUpdates.runFailed", { name })
+        : status === "timed_out" ? formatMessage(getRuntimeLocale(), "liveUpdates.runTimedOut", { name })
+          : formatMessage(getRuntimeLocale(), "liveUpdates.runCancelled", { name });
 
   let body: string | undefined;
   if (error) {
     body = truncate(error, 100);
   } else if (triggerDetail) {
-    body = `Trigger: ${triggerDetail}`;
+    body = formatMessage(getRuntimeLocale(), "liveUpdates.triggerPrefix", { detail: triggerDetail });
   }
 
   return {
@@ -452,7 +453,7 @@ function buildRunStatusToast(
     body,
     tone,
     ttlMs: status === "succeeded" ? 5000 : 7000,
-    action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
+    action: { label: formatMessage(getRuntimeLocale(), "liveUpdates.viewRun"), href: `/agents/${agentId}/runs/${runId}` },
     dedupeKey: `run-status:${runId}:${status}`,
   };
 }
