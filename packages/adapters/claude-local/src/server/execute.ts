@@ -723,6 +723,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
+      // Kill the entire process group if orphaned grandchild processes
+      // (e.g. a background HTTP server) prevent the claude process from
+      // exiting after emitting its final result. See #2426.
+      postStdoutCloseGraceSec: 30,
       onSpawn,
       onLog,
     });

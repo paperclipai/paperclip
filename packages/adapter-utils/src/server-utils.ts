@@ -755,6 +755,14 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    /**
+     * Grace period (in seconds) after the child's stdout closes before
+     * force-killing the entire process group. This handles cases where the
+     * child process has finished its work but orphaned grandchild processes
+     * (e.g. a background HTTP server spawned by an agent) prevent the `close`
+     * event from firing. When set to 0 (default), no process group kill occurs.
+     */
+    postStdoutCloseGraceSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
@@ -788,6 +796,7 @@ export async function runChildProcess(
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,
+          detached: (opts.postStdoutCloseGraceSec ?? 0) > 0,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
@@ -823,6 +832,36 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        // When stdout closes (child finished writing output) but the process
+        // group hasn't exited yet, start a grace timer. If orphaned grandchild
+        // processes (e.g. a background HTTP server) prevent the `close` event
+        // from firing, this timer force-kills the entire process group so the
+        // run doesn't hang indefinitely.
+        let postStdoutCloseTimer: ReturnType<typeof setTimeout> | null = null;
+        const postStdoutGraceSec = opts.postStdoutCloseGraceSec ?? 0;
+        if (postStdoutGraceSec > 0 && typeof child.pid === "number" && child.pid > 0) {
+          child.stdout?.on("end", () => {
+            postStdoutCloseTimer = setTimeout(() => {
+              if (child.killed || child.exitCode !== null) return;
+              try {
+                // Negative PID sends signal to entire process group
+                process.kill(-child.pid!, "SIGTERM");
+              } catch {
+                // Process may have already exited between the check and the kill
+              }
+              // If SIGTERM doesn't work, escalate to SIGKILL after grace period
+              setTimeout(() => {
+                if (child.killed || child.exitCode !== null) return;
+                try {
+                  process.kill(-child.pid!, "SIGKILL");
+                } catch {
+                  // Already dead
+                }
+              }, Math.max(1, opts.graceSec) * 1000);
+            }, postStdoutGraceSec * 1000);
+          });
+        }
+
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
@@ -853,6 +892,7 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          if (postStdoutCloseTimer) clearTimeout(postStdoutCloseTimer);
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({
