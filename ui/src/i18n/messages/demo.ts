@@ -3,6 +3,16 @@ import type { ActiveLocale } from "../types";
 type DemoTable = Record<string, Record<ActiveLocale, string>>;
 
 const designGuideTable: DemoTable = {
+  "Automation": { en: "Automation", ko: "자동화", ja: "自動化" },
+  "On demand": { en: "On demand", ko: "수동 실행", ja: "オンデマンド" },
+  "Assignment": { en: "Assignment", ko: "할당", ja: "割り当て" },
+  "Timer": { en: "Timer", ko: "타이머", ja: "タイマー" },
+  "Cancelled": { en: "Cancelled", ko: "취소됨", ja: "キャンセル済み" },
+  "Blocked": { en: "Blocked", ko: "차단됨", ja: "ブロック中" },
+  "Error": { en: "Error", ko: "오류", ja: "エラー" },
+  "Archived": { en: "Archived", ko: "보관됨", ja: "アーカイブ済み" },
+  "Paused": { en: "Paused", ko: "일시중지", ja: "一時停止" },
+  "Running": { en: "Running", ko: "실행 중", ja: "実行中" },
   "Paperclip App": { en: "Paperclip App", ko: "Paperclip 앱", ja: "Paperclip アプリ" },
   "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.": { en: "This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.", ko: "편집 가능한 설명입니다. 클릭하면 편집할 수 있고, textarea는 레이아웃이 흔들리지 않도록 자동으로 높이를 맞춥니다.", ja: "編集可能な説明です。クリックして編集でき、textarea はレイアウトが崩れないよう自動で高さを調整します。" },
   "Editable Title": { en: "Editable Title", ko: "편집 가능한 제목", ja: "編集可能なタイトル" },
@@ -270,6 +280,7 @@ const designGuideTable: DemoTable = {
 };
 
 const runTranscriptUxLabTable: DemoTable = {
+  "Source run": { en: "Source run", ko: "원본 실행", ja: "ソース実行" },
   "Comfortable": { en: "Comfortable", ko: "여유형", ja: "ゆったり" },
   "Compact": { en: "Compact", ko: "압축형", ja: "コンパクト" },
   "Compact live transcript stream for the issue detail page.": { en: "Compact live transcript stream for the issue detail page.", ko: "이슈 상세 페이지용 compact live transcript 스트림입니다.", ja: "issue 詳細ページ向けの compact live transcript ストリームです。" },

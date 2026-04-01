@@ -62,6 +62,7 @@ function useLabCopy() {
     liveNow: tr("Live now"),
     finishedAgo: tr("Finished 2m ago"),
     controls: tr("Controls"),
+    sourceRun: tr("Source run"),
     showSettled: tr("Show settled state"),
     showStreaming: tr("Show streaming state"),
     nice: tr("Nice"),
@@ -298,7 +299,7 @@ export function RunTranscriptUxLab() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
-                  Source run {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
+                  {copy.sourceRun} {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
                 </Badge>
                 <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
                   {runTranscriptFixtureMeta.issueIdentifier}

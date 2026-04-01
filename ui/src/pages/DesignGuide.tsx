@@ -239,6 +239,32 @@ export function DesignGuide() {
   const [inlineDesc, setInlineDesc] = useState(
     tr("This is an editable description. Click to edit it — the textarea auto-sizes to fit the content without layout shift.")
   );
+  const statusTokenLabel = (value: string) => ({
+    backlog: tr("Backlog"),
+    todo: tr("Todo"),
+    in_progress: tr("In Progress"),
+    in_review: tr("In Review"),
+    done: tr("Done"),
+    cancelled: tr("Cancelled"),
+    blocked: tr("Blocked"),
+    running: tr("Running"),
+    active: tr("Active"),
+    paused: tr("Paused"),
+    error: tr("Error"),
+    archived: tr("Archived"),
+  } as Record<string, string>)[value] ?? value;
+  const priorityTokenLabel = (value: string) => ({
+    critical: tr("Critical"),
+    high: tr("High"),
+    medium: tr("Medium"),
+    low: tr("Low"),
+  } as Record<string, string>)[value] ?? value;
+  const invocationTokenLabel = (value: string) => ({
+    timer: tr("Timer"),
+    assignment: tr("Assignment"),
+    on_demand: tr("On demand"),
+    automation: tr("Automation"),
+  } as Record<string, string>)[value] ?? value;
   const samplePropertyDate = formatDate("2025-01-15T00:00:00Z");
   const sampleCommentDate = formatDate("2025-01-15T00:00:00Z");
   const sampleReplyDate = formatDate("2025-01-16T00:00:00Z");
@@ -472,14 +498,14 @@ export function DesignGuide() {
               (s) => (
                 <div key={s} className="flex items-center gap-1.5">
                   <StatusIcon status={s} />
-                  <span className="text-xs text-muted-foreground">{s}</span>
+                  <span className="text-xs text-muted-foreground">{statusTokenLabel(s)}</span>
                 </div>
               )
             )}
           </div>
           <div className="flex items-center gap-2 mt-2">
             <StatusIcon status={status} onChange={setStatus} />
-            <span className="text-sm">{tr("Click the icon to change status")} ({tr("current")}: {status})</span>
+            <span className="text-sm">{tr("Click the icon to change status")} ({tr("current")}: {statusTokenLabel(status)})</span>
           </div>
         </SubSection>
 
@@ -488,13 +514,13 @@ export function DesignGuide() {
             {["critical", "high", "medium", "low"].map((p) => (
               <div key={p} className="flex items-center gap-1.5">
                 <PriorityIcon priority={p} />
-                <span className="text-xs text-muted-foreground">{p}</span>
+                <span className="text-xs text-muted-foreground">{priorityTokenLabel(p)}</span>
               </div>
             ))}
           </div>
           <div className="flex items-center gap-2 mt-2">
             <PriorityIcon priority={priority} onChange={setPriority} />
-            <span className="text-sm">{tr("Click the icon to change")} ({tr("current")}: {priority})</span>
+            <span className="text-sm">{tr("Click the icon to change")} ({tr("current")}: {priorityTokenLabel(priority)})</span>
           </div>
         </SubSection>
 
@@ -505,7 +531,7 @@ export function DesignGuide() {
                 <span className="relative flex h-2.5 w-2.5">
                   <span className={`inline-flex h-full w-full rounded-full ${agentStatusDot[label] ?? agentStatusDotDefault}`} />
                 </span>
-                <span className="text-xs text-muted-foreground">{label}</span>
+                <span className="text-xs text-muted-foreground">{statusTokenLabel(label)}</span>
               </div>
             ))}
           </div>
@@ -520,7 +546,7 @@ export function DesignGuide() {
               ["automation", "bg-muted text-muted-foreground"],
             ].map(([label, cls]) => (
               <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
-                {label}
+                {invocationTokenLabel(label)}
               </span>
             ))}
           </div>

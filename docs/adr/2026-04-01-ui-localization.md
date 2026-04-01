@@ -75,7 +75,7 @@ Covered in the sweep:
 - the latest cleanup pass moved transcript UX lab and design-guide locale tables out of TSX into catalog data under `ui/src/i18n/messages/demo.ts`, removing the remaining direct per-locale branching from current UI sources
 
 Remaining follow-up is intentionally narrower:
-- residual demo/sample literals, placeholder-only fixture text, and locale-sensitive sample data in internal reference screens
+- residual demo/reference tokens such as model identifiers, icon names, and fixture-only placeholders in internal reference screens
 - adding guardrails so newly introduced user-facing strings do not bypass the i18n layer
 - a lightweight guardrail now exists via `pnpm check:i18n`, and `@paperclipai/ui` runs it in `pretypecheck` to block the old transitional locale-branch patterns from coming back
 
