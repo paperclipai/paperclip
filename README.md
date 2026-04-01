@@ -23,6 +23,22 @@
 
 <br/>
 
+## Lucitra Fork
+
+This is [Lucitra's](https://lucitra.ai) fork of Paperclip. We use Paperclip as the orchestration layer for our AI agent teams and contribute improvements back upstream where possible.
+
+**What this fork adds:**
+
+- **Linear integration** — OAuth, bidirectional sync (issues, projects, labels, cycles), webhook handler, deletion sync
+- **Project status filters** — filter chips on the Projects page, sidebar hides completed/cancelled
+- **Plugin auto-install** — bundled plugins install on startup (`@lucitra/paperclip-plugin-linear`, `@lucitra/paperclip-plugin-chat`)
+
+All changes are additive — we don't modify Paperclip's core architecture. Upstream updates merge cleanly.
+
+**Upstream:** [paperclipai/paperclip](https://github.com/paperclipai/paperclip)
+
+---
+
 ## What is Paperclip?
 
 # Open-source orchestration for zero-human companies
