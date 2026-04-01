@@ -30,6 +30,7 @@ import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import { resolveBilledCost, type BilledCostResolution } from "./cost-estimation.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -370,12 +371,6 @@ function normalizeLedgerBillingType(value: unknown): BillingType {
 
 function resolveLedgerBiller(result: AdapterExecutionResult): string {
   return readNonEmptyString(result.biller) ?? readNonEmptyString(result.provider) ?? "unknown";
-}
-
-function normalizeBilledCostCents(costUsd: number | null | undefined, billingType: BillingType): number {
-  if (billingType === "subscription_included") return 0;
-  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
-  return Math.max(0, Math.round(costUsd * 100));
 }
 
 async function resolveLedgerScopeForRun(
@@ -1960,6 +1955,7 @@ export function heartbeatService(db: Db) {
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    costResolution?: BilledCostResolution | null,
   ) {
     await ensureRuntimeState(agent);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
@@ -1967,7 +1963,15 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const resolvedCost = costResolution ?? resolveBilledCost({
+      providerCostUsd: result.costUsd,
+      provider: result.provider,
+      biller: result.biller,
+      model: result.model,
+      billingType,
+      usage,
+    });
+    const additionalCostCents = resolvedCost.costCents;
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -2730,6 +2734,18 @@ export function heartbeatService(db: Db) {
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+      const resolvedBiller = resolveLedgerBiller(adapterResult);
+      const resolvedBillingType = normalizeLedgerBillingType(adapterResult.billingType);
+      const costResolution = resolveBilledCost({
+        providerCostUsd: adapterResult.costUsd,
+        provider: adapterResult.provider,
+        biller: resolvedBiller,
+        model: adapterResult.model,
+        billingType: resolvedBillingType,
+        usage: normalizedUsage,
+        rawUsage,
+        previousRawUsage: sessionUsageResolution.previousRawUsage,
+      });
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
@@ -2776,10 +2792,16 @@ export function heartbeatService(db: Db) {
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
-              biller: resolveLedgerBiller(adapterResult),
+              biller: resolvedBiller,
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
-              billingType: normalizeLedgerBillingType(adapterResult.billingType),
+              ...(costResolution.estimated && costResolution.costUsd != null
+                ? {
+                    estimatedCostUsd: costResolution.costUsd,
+                    estimatedCostSource: costResolution.source,
+                  }
+                : {}),
+              billingType: resolvedBillingType,
             } as Record<string, unknown>)
           : null;
 
@@ -2835,7 +2857,7 @@ export function heartbeatService(db: Db) {
       if (finalizedRun) {
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
-        }, normalizedUsage);
+        }, normalizedUsage, costResolution);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
