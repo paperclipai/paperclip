@@ -1297,14 +1297,34 @@ export function heartbeatService(db: Db) {
         if (now.getTime() - refTime < staleThresholdMs) continue;
       }
 
+      // Build enriched error message with contextual detail
+      const parts: string[] = [];
+      if (run.startedAt) {
+        const elapsedMs = now.getTime() - new Date(run.startedAt).getTime();
+        const elapsedMin = Math.round(elapsedMs / 60_000);
+        parts.push(`ran ${elapsedMin}m`);
+      } else {
+        parts.push("never started");
+      }
+      const agent = await getAgent(run.agentId);
+      const maxTurns = agent?.adapterConfig?.maxTurnsPerRun;
+      if (maxTurns && Number(maxTurns) > 0) {
+        parts.push(`turn limit: ${maxTurns}`);
+      } else {
+        parts.push("no turn limit configured");
+      }
+      parts.push(`status was ${run.status}`);
+      const detail = parts.join(", ");
+      const errorMsg = `Process lost (${detail}) -- server may have restarted`;
+
       await setRunStatus(run.id, "failed", {
-        error: "Process lost -- server may have restarted",
+        error: errorMsg,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: "Process lost -- server may have restarted",
+        error: errorMsg,
       });
       const updatedRun = await getRun(run.id);
       if (updatedRun) {
@@ -1312,7 +1332,7 @@ export function heartbeatService(db: Db) {
           eventType: "lifecycle",
           stream: "system",
           level: "error",
-          message: "Process lost -- server may have restarted",
+          message: errorMsg,
         });
         await releaseIssueExecutionAndPromote(updatedRun);
       }
