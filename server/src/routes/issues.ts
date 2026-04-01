@@ -117,6 +117,36 @@ export function issueRoutes(db: Db, storage: StorageService) {
     throw unauthorized();
   }
 
+  // Agent status transition enforcement — agents follow a forward-only workflow.
+  // Board actors bypass this entirely.
+  const AGENT_ALLOWED_TRANSITIONS: Record<string, Set<string>> = {
+    backlog:     new Set(["todo", "in_progress", "cancelled"]),
+    todo:        new Set(["in_progress", "backlog", "cancelled"]),
+    in_progress: new Set(["in_review", "done", "blocked", "cancelled"]),
+    in_review:   new Set(["in_progress", "done", "cancelled"]),
+    blocked:     new Set(["in_progress", "todo", "cancelled"]),
+    done:        new Set([]),
+    cancelled:   new Set([]),
+  };
+
+  function assertAgentTransition(
+    req: Request,
+    fromStatus: string,
+    toStatus: string,
+  ): { gate: string; reason: string } | null {
+    if (req.actor.type !== "agent") return null;
+    if (fromStatus === toStatus) return null;
+
+    const allowed = AGENT_ALLOWED_TRANSITIONS[fromStatus];
+    if (allowed && !allowed.has(toStatus)) {
+      return {
+        gate: "invalid_agent_transition",
+        reason: `Agents cannot move issues from '${fromStatus}' to '${toStatus}'. Terminal statuses (done, cancelled) cannot be changed by agents.`,
+      };
+    }
+    return null;
+  }
+
   const CODE_DELIVERY_TYPES = new Set(["branch", "commit", "pull_request"]);
   const PR_VALID_STATUSES = new Set(["active", "ready_for_review", "approved", "merged"]);
 
@@ -915,8 +945,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    // Delivery gate: agents must push code before transitioning code issues
+    // Status transition gates (agent-only — board always bypasses)
     if (req.body.status && req.body.status !== existing.status) {
+      // Transition graph: agents follow forward-only workflow
+      const transitionResult = assertAgentTransition(req, existing.status, req.body.status);
+      if (transitionResult) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.transition_blocked",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { gate: transitionResult.gate, reason: transitionResult.reason, fromStatus: existing.status, targetStatus: req.body.status },
+        });
+        res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
+        return;
+      }
+
+      // Delivery gate: agents must push code before transitioning code issues
       const gateResult = await assertDeliveryGate(workProductsSvc, req, existing, req.body.status);
       if (gateResult) {
         const actor = getActorInfo(req);
@@ -962,6 +1012,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
     if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
+      if (req.actor.type === "agent") {
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.transition_blocked",
+          entityType: "issue",
+          entityId: existing.id,
+          details: { gate: "invalid_agent_transition", reason: "Agents cannot reopen terminal issues.", fromStatus: existing.status, targetStatus: "todo" },
+        });
+        res.status(422).json({ error: "Agents cannot reopen terminal issues. Only board users can reopen done or cancelled issues.", gate: "invalid_agent_transition" });
+        return;
+      }
       updateFields.status = "todo";
     }
     let issue;
@@ -1353,6 +1418,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     let currentIssue = issue;
 
     if (reopenRequested && isClosed) {
+      if (req.actor.type === "agent") {
+        res.status(422).json({ error: "Agents cannot reopen terminal issues. Only board users can reopen done or cancelled issues.", gate: "invalid_agent_transition" });
+        return;
+      }
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
