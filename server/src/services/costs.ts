@@ -1,8 +1,9 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, issues, projects, subscriptionPlans } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { subscriptionPlanService } from "./subscription-plans.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -45,6 +46,7 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  const subPlans = subscriptionPlanService(db);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
@@ -122,11 +124,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           ? (spendCents / company.budgetMonthlyCents) * 100
           : 0;
 
+      const totalSubscriptionCents = await subPlans.totalMonthlyCostCents(companyId);
+      const effectiveSpendCents = spendCents + totalSubscriptionCents;
+
       return {
         companyId,
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        effectiveSpendCents,
       };
     },
 
@@ -135,7 +141,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      return db
+      const rows = await db
         .select({
           agentId: costEvents.agentId,
           agentName: agents.name,
@@ -160,6 +166,16 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(costEvents.agentId, agents.name, agents.status)
         .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+      const { start: monthStart, end: monthEnd } = currentUtcMonthWindow();
+      return Promise.all(
+        rows.map(async (row) => {
+          const subCost = await subPlans.agentEffectiveCostCents(
+            companyId, row.agentId, monthStart, monthEnd,
+          );
+          return { ...row, effectiveCostCents: row.costCents + subCost };
+        }),
+      );
     },
 
     byProvider: async (companyId: string, range?: CostDateRange) => {

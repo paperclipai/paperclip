@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -8,6 +8,7 @@ import {
   companies,
   costEvents,
   projects,
+  subscriptionPlans,
 } from "@paperclipai/db";
 import type {
   BudgetIncident,
@@ -143,7 +144,7 @@ async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
-  if (policy.metric !== "billed_cents") return 0;
+  if (policy.metric !== "billed_cents" && policy.metric !== "effective_cents") return 0;
 
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
@@ -161,7 +162,62 @@ async function computeObservedAmount(
     .from(costEvents)
     .where(and(...conditions));
 
-  return Number(row?.total ?? 0);
+  let billedTotal = Number(row?.total ?? 0);
+
+  if (policy.metric === "effective_cents") {
+    const subscriptionCost = await computeSubscriptionCostForScope(db, policy, start, end);
+    billedTotal += subscriptionCost;
+  }
+
+  return billedTotal;
+}
+
+async function computeSubscriptionCostForScope(
+  db: Db,
+  policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId">,
+  windowStart: Date,
+  windowEnd: Date,
+): Promise<number> {
+  const planConditions = [
+    eq(subscriptionPlans.companyId, policy.companyId),
+    eq(subscriptionPlans.isActive, true),
+    lte(subscriptionPlans.effectiveFrom, windowEnd),
+    or(
+      isNull(subscriptionPlans.effectiveUntil),
+      gte(subscriptionPlans.effectiveUntil, windowStart),
+    ),
+  ];
+
+  if (policy.scopeType === "agent") {
+    planConditions.push(
+      or(
+        eq(subscriptionPlans.agentId, policy.scopeId),
+        isNull(subscriptionPlans.agentId),
+      )!,
+    );
+  }
+
+  const plans = await db
+    .select()
+    .from(subscriptionPlans)
+    .where(and(...planConditions));
+
+  if (plans.length === 0) return 0;
+
+  const daysInWindow = Math.max(1, (windowEnd.getTime() - windowStart.getTime()) / (24 * 60 * 60 * 1000));
+  let total = 0;
+
+  for (const plan of plans) {
+    const planStart = plan.effectiveFrom > windowStart ? plan.effectiveFrom : windowStart;
+    const planEnd = plan.effectiveUntil && plan.effectiveUntil < windowEnd ? plan.effectiveUntil : windowEnd;
+    const activeDays = Math.max(0, (planEnd.getTime() - planStart.getTime()) / (24 * 60 * 60 * 1000));
+    const perSeatShare = plan.agentId
+      ? plan.monthlyCostCents
+      : Math.round(plan.monthlyCostCents / Math.max(1, plan.seatCount));
+    total += Math.round((perSeatShare * activeDays) / daysInWindow);
+  }
+
+  return total;
 }
 
 function buildApprovalPayload(input: {
@@ -664,7 +720,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       });
 
       for (const policy of relevantPolicies) {
-        if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
+        if ((policy.metric !== "billed_cents" && policy.metric !== "effective_cents") || policy.amount <= 0) continue;
         const observedAmount = await computeObservedAmount(db, policy);
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
 

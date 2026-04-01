@@ -17,6 +17,7 @@ export interface CostEvent {
   cachedInputTokens: number;
   outputTokens: number;
   costCents: number;
+  amortizedCostCents: number | null;
   occurredAt: Date;
   createdAt: Date;
 }
@@ -26,6 +27,7 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  effectiveSpendCents: number;
 }
 
 export interface CostByAgent {
@@ -33,6 +35,7 @@ export interface CostByAgent {
   agentName: string | null;
   agentStatus: string | null;
   costCents: number;
+  effectiveCostCents: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

@@ -606,6 +606,23 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Sync subscription plan finance events once per 6 hours (idempotent).
+    const { syncSubscriptionFinanceEvents } = await import("./services/subscription-finance-sync.js");
+    void syncSubscriptionFinanceEvents(db).catch((err) => {
+      logger.error({ err }, "startup subscription finance sync failed");
+    });
+    setInterval(() => {
+      void syncSubscriptionFinanceEvents(db)
+        .then((result) => {
+          if (result.created > 0) {
+            logger.info({ ...result }, "subscription finance sync created events");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "subscription finance sync failed");
+        });
+    }, 6 * 60 * 60 * 1000);
   }
   
   if (config.databaseBackupEnabled) {

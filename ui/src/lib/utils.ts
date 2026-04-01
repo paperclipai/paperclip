@@ -113,7 +113,13 @@ export function visibleRunCostUsd(
   result: Record<string, unknown> | null = null,
 ): number {
   const billingType = coerceBillingType(usage?.billingType) ?? coerceBillingType(result?.billingType);
-  if (billingType === "subscription_included") return 0;
+  if (billingType === "subscription_included") {
+    const amortized = usage?.amortizedCostCents ?? result?.amortizedCostCents;
+    if (typeof amortized === "number" && Number.isFinite(amortized) && amortized > 0) {
+      return amortized / 100;
+    }
+    return 0;
+  }
   return readRunCostUsd(usage) || readRunCostUsd(result);
 }
 
@@ -121,6 +127,7 @@ export function financeEventKindDisplayName(eventKind: FinanceEventKind): string
   const map: Record<FinanceEventKind, string> = {
     inference_charge: "Inference charge",
     platform_fee: "Platform fee",
+    subscription_fee: "Subscription fee",
     credit_purchase: "Credit purchase",
     credit_refund: "Credit refund",
     credit_expiry: "Credit expiry",

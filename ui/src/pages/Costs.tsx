@@ -9,9 +9,9 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, CreditCard, DollarSign, Plus, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
-import { costsApi } from "../api/costs";
+import { costsApi, subscriptionPlansApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -24,6 +24,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
+import { SubscriptionPlanCard } from "../components/SubscriptionPlanCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
@@ -31,6 +32,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
@@ -228,6 +231,62 @@ export function Costs() {
       budgetsApi.resolveIncident(companyId, input.incidentId, input),
     onSuccess: invalidateBudgetViews,
   });
+
+  const { data: subPlans } = useQuery({
+    queryKey: queryKeys.subscriptionPlans(companyId),
+    queryFn: () => subscriptionPlansApi.list(companyId),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: subPlanTotal } = useQuery({
+    queryKey: queryKeys.subscriptionPlansTotal(companyId),
+    queryFn: () => subscriptionPlansApi.total(companyId),
+    enabled: !!selectedCompanyId,
+  });
+
+  const invalidateSubPlans = () => {
+    if (!selectedCompanyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.subscriptionPlans(selectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.subscriptionPlansTotal(selectedCompanyId) });
+  };
+
+  const subPlanCreateMutation = useMutation({
+    mutationFn: (input: { provider: string; biller: string; monthlyCostCents: number; agentId?: string | null; seatCount?: number }) =>
+      subscriptionPlansApi.create(companyId, input),
+    onSuccess: invalidateSubPlans,
+  });
+
+  const subPlanUpdateMutation = useMutation({
+    mutationFn: (input: { planId: string; data: { monthlyCostCents?: number; isActive?: boolean } }) =>
+      subscriptionPlansApi.update(companyId, input.planId, input.data),
+    onSuccess: invalidateSubPlans,
+  });
+
+  const subPlanDeleteMutation = useMutation({
+    mutationFn: (planId: string) => subscriptionPlansApi.delete(companyId, planId),
+    onSuccess: invalidateSubPlans,
+  });
+
+  const [showAddPlan, setShowAddPlan] = useState(false);
+  const [newPlanProvider, setNewPlanProvider] = useState("");
+  const [newPlanBiller, setNewPlanBiller] = useState("");
+  const [newPlanCost, setNewPlanCost] = useState("");
+
+  const handleAddPlan = () => {
+    const cents = Math.round(Number(newPlanCost) * 100);
+    if (!newPlanProvider || !newPlanBiller || !Number.isFinite(cents) || cents <= 0) return;
+    subPlanCreateMutation.mutate(
+      { provider: newPlanProvider, biller: newPlanBiller || newPlanProvider, monthlyCostCents: cents },
+      {
+        onSuccess: () => {
+          setShowAddPlan(false);
+          setNewPlanProvider("");
+          setNewPlanBiller("");
+          setNewPlanCost("");
+        },
+      },
+    );
+  };
 
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
@@ -579,12 +638,21 @@ export function Costs() {
             </div>
           ) : null}
 
-          <div className="grid gap-3 lg:grid-cols-4">
+          <div className="grid gap-3 lg:grid-cols-5">
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
+            />
+            <MetricTile
+              label="Effective spend"
+              value={formatCents(spendData?.summary.effectiveSpendCents ?? spendData?.summary.spendCents ?? 0)}
+              subtitle={subPlanTotal?.totalMonthlyCostCents
+                ? `Includes ${formatCents(subPlanTotal.totalMonthlyCostCents)}/mo subscriptions`
+                : "Metered + subscription costs"
+              }
+              icon={CreditCard}
             />
             <MetricTile
               label="Budget"
@@ -746,6 +814,11 @@ export function Costs() {
                               </div>
                               <div className="text-right text-sm tabular-nums">
                                 <div className="font-medium">{formatCents(row.costCents)}</div>
+                                {row.effectiveCostCents > row.costCents ? (
+                                  <div className="text-xs font-medium text-amber-500">
+                                    eff. {formatCents(row.effectiveCostCents)}
+                                  </div>
+                                ) : null}
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -940,6 +1013,92 @@ export function Costs() {
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
                       No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control.
+                    </CardContent>
+                  </Card>
+                ) : null}
+              </div>
+
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold">Subscription plans</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Track fixed monthly subscription costs for agents using subscription-based providers.
+                      {subPlanTotal?.totalMonthlyCostCents ? ` Total: ${formatCents(subPlanTotal.totalMonthlyCostCents)}/mo.` : ""}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setShowAddPlan(true)} disabled={showAddPlan}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add plan
+                  </Button>
+                </div>
+
+                {showAddPlan && (
+                  <Card className="border-border/70">
+                    <CardContent className="space-y-3 px-5 py-4">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <Label className="text-xs">Provider</Label>
+                          <Input
+                            placeholder="e.g. anthropic"
+                            value={newPlanProvider}
+                            onChange={(e) => {
+                              setNewPlanProvider(e.target.value);
+                              if (!newPlanBiller) setNewPlanBiller(e.target.value);
+                            }}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Biller</Label>
+                          <Input
+                            placeholder="e.g. anthropic"
+                            value={newPlanBiller}
+                            onChange={(e) => setNewPlanBiller(e.target.value)}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Monthly cost (USD)</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder="200.00"
+                            value={newPlanCost}
+                            onChange={(e) => setNewPlanCost(e.target.value)}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={handleAddPlan} disabled={subPlanCreateMutation.isPending}>
+                          Create plan
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setShowAddPlan(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {(subPlans ?? []).length > 0 ? (
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    {(subPlans ?? []).map((plan) => (
+                      <SubscriptionPlanCard
+                        key={plan.id}
+                        plan={plan}
+                        onUpdate={(planId, data) => subPlanUpdateMutation.mutate({ planId, data })}
+                        onDelete={(planId) => subPlanDeleteMutation.mutate(planId)}
+                        isMutating={subPlanUpdateMutation.isPending || subPlanDeleteMutation.isPending}
+                      />
+                    ))}
+                  </div>
+                ) : !showAddPlan ? (
+                  <Card>
+                    <CardContent className="px-5 py-8 text-sm text-muted-foreground">
+                      No subscription plans configured. Add one to track fixed monthly costs for subscription-based agents.
                     </CardContent>
                   </Card>
                 ) : null}

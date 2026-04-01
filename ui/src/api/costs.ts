@@ -11,6 +11,7 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  SubscriptionPlan,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -47,6 +48,30 @@ export const costsApi = {
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
+};
+
+export const subscriptionPlansApi = {
+  list: (companyId: string) =>
+    api.get<SubscriptionPlan[]>(`/companies/${companyId}/subscription-plans`),
+  create: (companyId: string, data: {
+    agentId?: string | null;
+    provider: string;
+    biller: string;
+    monthlyCostCents: number;
+    seatCount?: number;
+    effectiveFrom?: string;
+    effectiveUntil?: string | null;
+  }) => api.post<SubscriptionPlan>(`/companies/${companyId}/subscription-plans`, data),
+  update: (companyId: string, planId: string, data: {
+    monthlyCostCents?: number;
+    seatCount?: number;
+    effectiveUntil?: string | null;
+    isActive?: boolean;
+  }) => api.patch<SubscriptionPlan>(`/companies/${companyId}/subscription-plans/${planId}`, data),
+  delete: (companyId: string, planId: string) =>
+    api.delete(`/companies/${companyId}/subscription-plans/${planId}`),
+  total: (companyId: string) =>
+    api.get<{ totalMonthlyCostCents: number }>(`/companies/${companyId}/subscription-plans/total`),
 };
 
 function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {

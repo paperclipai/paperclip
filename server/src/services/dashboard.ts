@@ -3,9 +3,11 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import { subscriptionPlanService } from "./subscription-plans.js";
 
 export function dashboardService(db: Db) {
   const budgets = budgetService(db);
+  const subPlans = subscriptionPlanService(db);
   return {
     summary: async (companyId: string) => {
       const company = await db
@@ -81,6 +83,7 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / company.budgetMonthlyCents) * 100
           : 0;
       const budgetOverview = await budgets.overview(companyId);
+      const totalSubCost = await subPlans.totalMonthlyCostCents(companyId);
 
       return {
         companyId,
@@ -93,6 +96,7 @@ export function dashboardService(db: Db) {
         tasks: taskCounts,
         costs: {
           monthSpendCents,
+          monthEffectiveSpendCents: monthSpendCents + totalSubCost,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },

@@ -257,14 +257,16 @@ export function Dashboard() {
             />
             <MetricCard
               icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
+              value={formatCents(data.costs.monthEffectiveSpendCents ?? data.costs.monthSpendCents)}
               label="Month Spend"
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {data.costs.monthEffectiveSpendCents > data.costs.monthSpendCents
+                    ? `${formatCents(data.costs.monthSpendCents)} metered + ${formatCents(data.costs.monthEffectiveSpendCents - data.costs.monthSpendCents)} subscriptions`
+                    : data.costs.monthBudgetCents > 0
+                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                      : "Unlimited budget"}
                 </span>
               }
             />

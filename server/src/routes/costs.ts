@@ -3,6 +3,8 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  createSubscriptionPlanSchema,
+  updateSubscriptionPlanSchema,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -12,6 +14,7 @@ import {
   budgetService,
   costService,
   financeService,
+  subscriptionPlanService,
   companyService,
   agentService,
   heartbeatService,
@@ -30,6 +33,7 @@ export function costRoutes(db: Db) {
   const costs = costService(db, budgetHooks);
   const finance = financeService(db);
   const budgets = budgetService(db, budgetHooks);
+  const subPlans = subscriptionPlanService(db);
   const companies = companyService(db);
   const agents = agentService(db);
 
@@ -290,13 +294,7 @@ export function costRoutes(db: Db) {
     }
 
     assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== agentId) {
-        res.status(403).json({ error: "Agent can only change its own budget" });
-        return;
-      }
-    }
+    assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!updated) {
@@ -328,6 +326,108 @@ export function costRoutes(db: Db) {
     );
 
     res.json(updated);
+  });
+
+  // ── Subscription Plans ──────────────────────────────────────────────
+
+  router.get("/companies/:companyId/subscription-plans", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const plans = await subPlans.list(companyId);
+    res.json(plans);
+  });
+
+  router.post(
+    "/companies/:companyId/subscription-plans",
+    validate(createSubscriptionPlanSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+
+      const plan = await subPlans.create(companyId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "subscription_plan.created",
+        entityType: "subscription_plan",
+        entityId: plan.id,
+        details: {
+          provider: plan.provider,
+          biller: plan.biller,
+          monthlyCostCents: plan.monthlyCostCents,
+        },
+      });
+
+      res.status(201).json(plan);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/subscription-plans/:planId",
+    validate(updateSubscriptionPlanSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const planId = req.params.planId as string;
+      assertCompanyAccess(req, companyId);
+      assertBoard(req);
+
+      const plan = await subPlans.update(companyId, planId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "subscription_plan.updated",
+        entityType: "subscription_plan",
+        entityId: plan.id,
+        details: {
+          monthlyCostCents: plan.monthlyCostCents,
+          isActive: plan.isActive,
+        },
+      });
+
+      res.json(plan);
+    },
+  );
+
+  router.delete("/companies/:companyId/subscription-plans/:planId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const planId = req.params.planId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const plan = await subPlans.delete(companyId, planId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "subscription_plan.deleted",
+      entityType: "subscription_plan",
+      entityId: plan.id,
+      details: {
+        provider: plan.provider,
+        biller: plan.biller,
+      },
+    });
+
+    res.json({ ok: true });
+  });
+
+  router.get("/companies/:companyId/subscription-plans/total", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const totalMonthlyCostCents = await subPlans.totalMonthlyCostCents(companyId);
+    res.json({ totalMonthlyCostCents });
   });
 
   return router;

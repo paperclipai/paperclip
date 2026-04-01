@@ -14,6 +14,7 @@ export interface DashboardSummary {
   };
   costs: {
     monthSpendCents: number;
+    monthEffectiveSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
   };

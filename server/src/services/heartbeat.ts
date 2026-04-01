@@ -25,6 +25,7 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { subscriptionPlanService } from "./subscription-plans.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
@@ -1990,6 +1991,17 @@ export function heartbeatService(db: Db) {
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
+      let amortizedCostCents: number | null = null;
+      if (billingType === "subscription_included") {
+        const subPlanSvc = subscriptionPlanService(db);
+        const plan = await subPlanSvc.findActivePlan(agent.companyId, agent.id, provider);
+        if (plan) {
+          const now = new Date();
+          const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getUTCDate();
+          amortizedCostCents = Math.round(plan.monthlyCostCents / daysInMonth / Math.max(1, plan.seatCount));
+        }
+      }
+
       const costs = costService(db, budgetHooks);
       await costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
@@ -2004,6 +2016,7 @@ export function heartbeatService(db: Db) {
         cachedInputTokens,
         outputTokens,
         costCents: additionalCostCents,
+        amortizedCostCents,
         occurredAt: new Date(),
       });
     }
