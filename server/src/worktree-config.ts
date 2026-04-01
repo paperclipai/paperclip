@@ -77,7 +77,12 @@ function parseEnvFile(contents: string): Record<string, string> {
 
 function readEnvEntries(envPath: string): Record<string, string> {
   if (!fs.existsSync(envPath)) return {};
-  return parseEnvFile(fs.readFileSync(envPath, "utf8"));
+  try {
+    return parseEnvFile(fs.readFileSync(envPath, "utf8"));
+  } catch {
+    console.warn(`Warning: unable to read env file at ${envPath} (permission denied)`);
+    return {};
+  }
 }
 
 function formatEnvEntries(entries: Record<string, string>): string {

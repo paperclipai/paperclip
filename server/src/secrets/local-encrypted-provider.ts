@@ -52,7 +52,13 @@ function loadOrCreateMasterKey(): Buffer {
 
   const keyPath = resolveMasterKeyFilePath();
   if (existsSync(keyPath)) {
-    const raw = readFileSync(keyPath, "utf8");
+    let raw: string;
+    try {
+      raw = readFileSync(keyPath, "utf8");
+    } catch (err: unknown) {
+      const code = err && typeof err === "object" && "code" in err ? (err as { code?: string }).code : undefined;
+      throw badRequest(`Cannot read master key at ${keyPath}: ${code === "EACCES" ? "permission denied" : String(err)}`);
+    }
     const decoded = decodeMasterKey(raw);
     if (!decoded) {
       throw badRequest(`Invalid secrets master key at ${keyPath}`);
