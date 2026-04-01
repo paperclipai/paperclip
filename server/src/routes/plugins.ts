@@ -147,6 +147,14 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-decision-surface",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-feedback-collection",
+    pluginKey: "paperclip.feedback-collection",
+    displayName: "Feedback Collection",
+    description: "Ingests Jira, Bitbucket, and Slack feedback payloads into normalized Paperclip issues via tool calls or webhooks.",
+    localPath: "packages/plugins/examples/plugin-feedback-collection",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
