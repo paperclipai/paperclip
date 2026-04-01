@@ -411,8 +411,21 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
           }),
         );
         repairedConfig = true;
+      } else {
+        // DEBUG: Log why repair wasn't triggered
+        if (process.env.DEBUG_PAPERCLIP_WORKTREE) {
+          console.log("[worktree-config] No repair triggered:");
+          console.log("  needsWorktreeConfigRepair:", needsWorktreeConfigRepair(parsed, context));
+          console.log("  hasSiblingPortCollision:", hasSiblingPortCollision);
+          console.log("  instanceRoot:", context.instanceRoot);
+          console.log("  configPath:", context.configPath);
+        }
       }
-    } catch {
+    } catch (error) {
+      // Log errors for debugging
+      if (process.env.DEBUG_PAPERCLIP_WORKTREE) {
+        console.error("[worktree-config] Repair failed:", error);
+      }
       // Leave invalid configs to the normal startup validation path.
     }
   }

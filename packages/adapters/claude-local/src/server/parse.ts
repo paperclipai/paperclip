@@ -190,3 +190,89 @@ export function isClaudeContextWindowError(parsed: Record<string, unknown> | nul
     /reached\s+its\s+context\s+window\s+limit|context.window.limit|context.limit.reached|context.length.exceeded|token.limit|maximum.context/i.test(msg),
   );
 }
+
+/**
+ * Stuck session variants detected in corrupted session JSONL files.
+ * See issue #2358 for details.
+ */
+export type StuckSessionVariant =
+  | "stop_sequence_synthetic"
+  | "incomplete_tool_use"
+  | "unknown";
+
+export interface StuckSessionInfo {
+  isStuck: boolean;
+  variant: StuckSessionVariant;
+  lastEntry: Record<string, unknown> | null;
+}
+
+/**
+ * Detect if a session JSONL file is stuck in a corrupted state.
+ *
+ * Two variants are known to cause immediate exit on resume:
+ *
+ * Variant A — Synthetic stop_sequence with 0 tokens:
+ * The last JSONL entry is an assistant message with stop_reason="stop_sequence"
+ * and output_tokens=0. This synthetic marker renders the session unresumable.
+ *
+ * Variant B — Incomplete tool_use with no tool_result:
+ * The last JSONL entry is an assistant message with stop_reason=null,
+ * stop_sequence=null, a tool_use content block, and near-zero output tokens.
+ * The corresponding tool_result is missing.
+ *
+ * @param lastLineContent - The last line of the session JSONL file (raw JSON string)
+ * @returns StuckSessionInfo indicating if the session is stuck and which variant
+ */
+export function detectStuckSession(lastLineContent: string): StuckSessionInfo {
+  const parsed = parseJson(lastLineContent);
+  if (!parsed) {
+    return { isStuck: false, variant: "unknown", lastEntry: null };
+  }
+
+  const event = parseObject(parsed);
+  const type = asString(event.type, "");
+  if (type !== "assistant") {
+    return { isStuck: false, variant: "unknown", lastEntry: null };
+  }
+
+  const message = parseObject(event.message);
+  const role = asString(message.role, "");
+  if (role !== "assistant") {
+    return { isStuck: false, variant: "unknown", lastEntry: null };
+  }
+
+  const stopReason = asString(message.stop_reason, "");
+  const stopSeq = message.stop_sequence;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const contentTypes = content
+    .map((block) => typeof block === "object" && block !== null ? asString(block.type, "") : "")
+    .filter(Boolean);
+
+  const usageObj = parseObject(message.usage);
+  const outputTokens = asNumber(usageObj.output_tokens, 0);
+
+  // Variant A: synthetic stop_sequence with 0 tokens
+  if (stopReason === "stop_sequence" && outputTokens === 0) {
+    return {
+      isStuck: true,
+      variant: "stop_sequence_synthetic",
+      lastEntry: event,
+    };
+  }
+
+  // Variant B: null stop_reason + null stop_sequence + pending tool_use + near-zero tokens
+  const hasToolUse = contentTypes.includes("tool_use");
+  const nearZeroTokens = outputTokens <= 5;
+  const isNullStop = stopReason === "" || stopReason === "null";
+  const isNullSeq = stopSeq === null || stopSeq === "" || stopSeq === "null";
+
+  if (isNullStop && isNullSeq && hasToolUse && nearZeroTokens) {
+    return {
+      isStuck: true,
+      variant: "incomplete_tool_use",
+      lastEntry: event,
+    };
+  }
+
+  return { isStuck: false, variant: "unknown", lastEntry: event };
+}

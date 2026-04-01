@@ -29,6 +29,9 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
   isClaudeContextWindowError,
+  detectStuckSession,
+  type StuckSessionInfo,
+  type StuckSessionVariant,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
@@ -94,6 +97,241 @@ function buildLoginResult(input: {
     stderr: input.proc.stderr,
     loginUrl: input.loginUrl,
   };
+}
+
+/**
+ * Find the session JSONL file path for a given session ID.
+ * Claude stores sessions in ~/.claude/projects/<workspace>/<session-id>.jsonl
+ * where <workspace> is derived from the cwd.
+ */
+async function findSessionFilePath(sessionId: string, cwd: string): Promise<string | null> {
+  try {
+    const homeDir = process.env.HOME ?? os.homedir();
+    if (!homeDir) return null;
+
+    // The workspace path in Claude is derived from the cwd
+    // Claude uses a hash of the absolute path as the workspace directory name
+    const crypto = await import("node:crypto");
+    const workspaceHash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 32);
+
+    const sessionDir = path.join(homeDir, ".claude", "projects", workspaceHash);
+    const sessionFile = path.join(sessionDir, `${sessionId}.jsonl`);
+
+    // Check if the session file exists
+    try {
+      await fs.access(sessionFile);
+      return sessionFile;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find the session-env directory path for a given session ID.
+ * This is a sibling directory to the JSONL file.
+ */
+async function findSessionEnvDir(sessionId: string, cwd: string): Promise<string | null> {
+  try {
+    const homeDir = process.env.HOME ?? os.homedir();
+    if (!homeDir) return null;
+
+    const crypto = await import("node:crypto");
+    const workspaceHash = crypto.createHash("sha256").update(cwd).digest("hex").slice(0, 32);
+
+    const sessionDir = path.join(homeDir, ".claude", "projects", workspaceHash);
+    const sessionEnvDir = path.join(sessionDir, sessionId);
+
+    try {
+      const stat = await fs.stat(sessionEnvDir);
+      if (stat.isDirectory()) {
+        return sessionEnvDir;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the last line of a file efficiently without loading the entire file.
+ */
+async function readLastLine(filePath: string): Promise<string> {
+  const file = await fs.open(filePath, "r");
+  try {
+    const { size } = await file.stat();
+    if (size === 0) return "";
+
+    const bufferSize = Math.min(4096, size);
+    const buffer = Buffer.allocUnsafe(bufferSize);
+
+    let position = size;
+    let lastLineEnd = -1;
+    let secondLastLineEnd = -1;
+
+    // Read backwards in chunks to find the last two newlines
+    while (position > 0 && secondLastLineEnd === -1) {
+      const readSize = Math.min(bufferSize, position);
+      position -= readSize;
+
+      const { bytesRead } = await file.read(buffer, 0, readSize, position);
+
+      // Scan from end of buffer
+      for (let i = bytesRead - 1; i >= 0; i--) {
+        const byte = buffer[i];
+        if (byte === 0x0A) { // \n
+          if (lastLineEnd === -1) {
+            lastLineEnd = position + i;
+          } else {
+            secondLastLineEnd = position + i;
+            break;
+          }
+        }
+      }
+    }
+
+    if (lastLineEnd === -1) {
+      // No newlines, return entire file
+      await file.read(buffer, 0, size, 0);
+      return buffer.toString("utf-8", 0, size).trim();
+    }
+
+    // Read from secondLastLineEnd + 1 to lastLineEnd
+    const readStart = secondLastLineEnd === -1 ? 0 : secondLastLineEnd + 1;
+    const readLength = lastLineEnd - readStart;
+
+    if (readLength <= 0) return "";
+
+    const lineBuffer = Buffer.allocUnsafe(readLength);
+    await file.read(lineBuffer, 0, readLength, readStart);
+    return lineBuffer.toString("utf-8").trim();
+  } finally {
+    await file.close();
+  }
+}
+
+/**
+ * Check if a session is stuck (corrupted) and return info about the stuck state.
+ */
+async function checkSessionStuck(sessionId: string, cwd: string): Promise<StuckSessionInfo> {
+  const sessionFile = await findSessionFilePath(sessionId, cwd);
+  if (!sessionFile) {
+    return { isStuck: false, variant: "unknown", lastEntry: null };
+  }
+
+  try {
+    const lastLine = await readLastLine(sessionFile);
+    return detectStuckSession(lastLine);
+  } catch {
+    return { isStuck: false, variant: "unknown", lastEntry: null };
+  }
+}
+
+/**
+ * Recovery result after attempting to recover a stuck session.
+ */
+interface SessionRecoveryResult {
+  recovered: boolean;
+  variant: StuckSessionVariant;
+  renamedTo: string | null;
+  sessionEnvCleared: boolean;
+  error?: string;
+}
+
+/**
+ * Recover a stuck session by renaming the corrupted file and clearing session-env.
+ *
+ * @param sessionId - The stuck session ID
+ * @param cwd - The working directory used for the session
+ * @param onLog - Optional logging callback
+ * @returns Recovery result with details
+ */
+async function recoverStuckSession(
+  sessionId: string,
+  cwd: string,
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+): Promise<SessionRecoveryResult> {
+  const log = onLog ?? (async () => {});
+
+  try {
+    const sessionFile = await findSessionFilePath(sessionId, cwd);
+    if (!sessionFile) {
+      return {
+        recovered: false,
+        variant: "unknown",
+        renamedTo: null,
+        sessionEnvCleared: false,
+        error: "Session file not found",
+      };
+    }
+
+    // Check if the session is actually stuck
+    const stuckInfo = await checkSessionStuck(sessionId, cwd);
+    if (!stuckInfo.isStuck) {
+      return {
+        recovered: false,
+        variant: "unknown",
+        renamedTo: null,
+        sessionEnvCleared: false,
+        error: "Session is not stuck",
+      };
+    }
+
+    // Generate timestamp for rename
+    const timestamp = Date.now();
+    const renamedPath = `${sessionFile}.stuck-${timestamp}`;
+
+    // Rename the stuck session file
+    await fs.rename(sessionFile, renamedPath);
+
+    // Clear the session-env directory if present
+    let sessionEnvCleared = false;
+    const sessionEnvDir = await findSessionEnvDir(sessionId, cwd);
+    if (sessionEnvDir) {
+      try {
+        await fs.rm(sessionEnvDir, { recursive: true, force: true });
+        sessionEnvCleared = true;
+      } catch {
+        // Non-fatal: log but don't fail the recovery
+        await log(
+          "stderr",
+          `[paperclip] Warning: could not clear session-env directory: ${sessionEnvDir}\n`,
+        );
+      }
+    }
+
+    // Log the recovery
+    const variantName = stuckInfo.variant === "stop_sequence_synthetic" ? "stop_sequence_synthetic" : "incomplete_tool_use";
+    await log(
+      "stdout",
+      `[paperclip] Recovered stuck session "${sessionId}" (variant: ${variantName}). Renamed to ${path.basename(renamedPath)}${sessionEnvCleared ? ", session-env cleared" : ""}.\n`,
+    );
+
+    return {
+      recovered: true,
+      variant: stuckInfo.variant,
+      renamedTo: renamedPath,
+      sessionEnvCleared,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    await log(
+      "stderr",
+      `[paperclip] Error recovering stuck session: ${error}\n`,
+    );
+    return {
+      recovered: false,
+      variant: "unknown",
+      renamedTo: null,
+      sessionEnvCleared: false,
+      error,
+    };
+  }
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -382,7 +620,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
-  const sessionId = canResumeSession ? runtimeSessionId : null;
+  let sessionId = canResumeSession ? runtimeSessionId : null;
+
+  // Auto-recover stuck sessions before attempting resume
+  // See issue #2358: https://github.com/paperclipai/paperclip/issues/2358
+  let sessionWasRecovered = false;
+  if (sessionId) {
+    const stuckInfo = await checkSessionStuck(sessionId, cwd);
+    if (stuckInfo.isStuck) {
+      const recovery = await recoverStuckSession(sessionId, cwd, onLog);
+      if (recovery.recovered) {
+        sessionWasRecovered = true;
+        sessionId = null; // Don't resume a recovered session
+      }
+    }
+  }
   if (runtimeSessionId && !canResumeSession) {
     await onLog(
       "stdout",
@@ -612,7 +864,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return toAdapterResult(initial, {
+      fallbackSessionId: runtimeSessionId || runtime.sessionId,
+      clearSessionOnMissingSession: sessionWasRecovered,
+    });
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }

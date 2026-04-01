@@ -6,6 +6,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
   isClaudeContextWindowError,
+  detectStuckSession,
 } from "./parse.js";
 
 describe("parseClaudeStreamJson", () => {
@@ -210,5 +211,306 @@ describe("describeClaudeFailure", () => {
       errors: ["Error from API"],
     });
     expect(result).toBe("Claude run failed: subtype=error: Error from API");
+  });
+});
+
+describe("detectStuckSession", () => {
+  describe("Variant A - stop_sequence_synthetic", () => {
+    it("detects stop_sequence with 0 output tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "stop_sequence",
+          stop_sequence: null,
+          content: [{ type: "text", text: "<synthetic>" }],
+          usage: { output_tokens: 0 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(true);
+      expect(result.variant).toBe("stop_sequence_synthetic");
+    });
+
+    it("does not trigger when stop_sequence has output tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "Normal completion" }],
+          usage: { output_tokens: 150 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("does not trigger when output_tokens is non-zero", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "stop_sequence",
+          usage: { output_tokens: 10 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+  });
+
+  describe("Variant B - incomplete_tool_use", () => {
+    it("detects null stop_reason with tool_use and near-zero tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          stop_sequence: null,
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+          usage: { output_tokens: 3 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(true);
+      expect(result.variant).toBe("incomplete_tool_use");
+    });
+
+    it("detects empty string stop_reason with tool_use and near-zero tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "",
+          stop_sequence: "",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+          usage: { output_tokens: 5 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(true);
+      expect(result.variant).toBe("incomplete_tool_use");
+    });
+
+    it("detects string 'null' stop_reason with tool_use and near-zero tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "null",
+          stop_sequence: "null",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+          usage: { output_tokens: 2 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(true);
+      expect(result.variant).toBe("incomplete_tool_use");
+    });
+
+    it("does not trigger when tool_use has meaningful output tokens", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          stop_sequence: null,
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+          usage: { output_tokens: 100 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("does not trigger when stop_reason is present", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+          usage: { output_tokens: 3 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("does not trigger when no tool_use content exists", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          stop_sequence: null,
+          content: [{ type: "text", text: "Some text" }],
+          usage: { output_tokens: 3 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+  });
+
+  describe("Edge cases", () => {
+    it("handles malformed JSON", () => {
+      const result = detectStuckSession("not valid json");
+      expect(result.isStuck).toBe(false);
+      expect(result.variant).toBe("unknown");
+    });
+
+    it("handles empty string", () => {
+      const result = detectStuckSession("");
+      expect(result.isStuck).toBe(false);
+      expect(result.variant).toBe("unknown");
+    });
+
+    it("handles non-assistant event type", () => {
+      const lastLine = JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "session_123",
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("handles assistant event with non-assistant role", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "User message" }],
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("handles missing usage field (defaults to stuck - tool_use with null stop)", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          stop_sequence: null,
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+          ],
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      // When usage is missing, output_tokens defaults to 0, and with tool_use + null stop, this is stuck
+      expect(result.isStuck).toBe(true);
+      expect(result.variant).toBe("incomplete_tool_use");
+    });
+
+    it("handles missing content array", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          stop_sequence: null,
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+  });
+
+  describe("Normal completion - not stuck", () => {
+    it("recognizes normal end_turn completion", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "Task completed" }],
+          usage: { output_tokens: 150 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("recognizes max_turns completion", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "max_turns",
+          content: [{ type: "text", text: "Reached max turns" }],
+          usage: { output_tokens: 200 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
+
+    it("recognizes normal tool_use completion with result", () => {
+      const lastLine = JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_123",
+              name: "Bash",
+              input: { command: "echo hello" },
+            },
+            { type: "text", text: "Done" },
+          ],
+          usage: { output_tokens: 50 },
+        },
+      });
+      const result = detectStuckSession(lastLine);
+      expect(result.isStuck).toBe(false);
+    });
   });
 });
