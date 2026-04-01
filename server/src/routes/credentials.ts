@@ -156,6 +156,61 @@ export function credentialRoutes(db: Db) {
     res.json({ ok: true });
   });
 
+  // ── Reveal credential value (audit-logged, rate-limited) ──────────────
+
+  // In-memory sliding-window rate limit: max 10 reveals per minute per user
+  const revealTimestamps = new Map<string, number[]>();
+
+  router.get("/credentials/:id/reveal", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Credential not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    // Only board users may reveal credentials
+    if (req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(existing.companyId, req.actor.userId, "credentials:manage");
+        if (!allowed) throw forbidden("Missing permission: credentials:manage");
+      }
+    } else {
+      throw forbidden("Board access required");
+    }
+
+    // Rate limit: 10 reveals per minute per user
+    const rateLimitKey = req.actor.userId ?? "board";
+    const now = Date.now();
+    const windowMs = 60_000;
+    const maxReveals = 10;
+    const timestamps = revealTimestamps.get(rateLimitKey) ?? [];
+    const recent = timestamps.filter((t) => now - t < windowMs);
+    if (recent.length >= maxReveals) {
+      res.status(429).json({ error: "Too many credential reveals. Try again later." });
+      return;
+    }
+    recent.push(now);
+    revealTimestamps.set(rateLimitKey, recent);
+
+    // getById already returns all columns including `credential`
+    const full = existing;
+
+    // Audit log
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "credential.revealed",
+      entityType: "credential",
+      entityId: id,
+      details: { name: existing.name, type: existing.type },
+    });
+
+    res.json({ credential: full.credential });
+  });
+
   // ── Claude OAuth login flow ────────────────────────────────────────────
 
   // Start a Claude login session (runs `claude login` server-side)

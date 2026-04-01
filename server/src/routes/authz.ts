@@ -102,9 +102,15 @@ export async function requireProjectPermission(
     return;
   }
 
-  // Agents bypass project-level checks — they're already gated by company-level
-  // permissions (issues:manage, tasks:assign, etc.). Project access control
-  // is for human users only.
+  // Agents bypass project-level checks — they're gated by company-level
+  // permissions (issues:manage, tasks:assign, etc.) and multi-tenant isolation
+  // is enforced via assertCompanyAccess above (agent key is scoped to one
+  // company). Project access control is for human users only.
+  //
+  // TODO(phase-2): Once all agents are assigned to projects via project_agents,
+  // check access.isAgentAssignedToProject(projectId, agentId) here and remove
+  // the blanket bypass. For now, backward-compat requires agents to reach any
+  // project within their company.
   if (req.actor.type === "agent") {
     return;
   }
@@ -173,8 +179,12 @@ export async function requireProjectAccess(
     return;
   }
 
-  // Agents bypass project access checks — company membership is sufficient.
-  // Project-level visibility control is for human users only.
+  // Agents bypass project access checks — company membership is sufficient
+  // (enforced by assertCompanyAccess above). Project-level visibility control
+  // is for human users only.
+  //
+  // TODO(phase-2): Scope to project_agents assignment once all agents are
+  // assigned to projects. See requireProjectPermission TODO.
   if (req.actor.type === "agent") {
     return;
   }

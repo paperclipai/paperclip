@@ -23,6 +23,7 @@ export const ROLE_PRESETS: RolePreset[] = [
       "goals:manage",
       "secrets:manage",
       "credentials:manage",
+      "credentials:view",
       "company:settings",
       "company:export",
       "approvals:review",

@@ -432,12 +432,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await assertCanAssignTasks(req, companyId);
     }
 
+    // Snapshot assigner's permission tier for agent execution policy
+    let assignerPolicyTier: string | null = null;
+    if (req.actor.type === "board" && req.actor.userId) {
+      const membership = await access.getMembership(companyId, "user", req.actor.userId);
+      assignerPolicyTier = (membership as any)?.membershipRole ?? "restricted";
+    } else if (req.actor.type === "agent") {
+      // Agent-created issues: inherit tier from parent issue if exists, else null (most restrictive)
+      if (req.body.parentId) {
+        const parent = await svc.getById(req.body.parentId);
+        assignerPolicyTier = (parent as any)?.assignerPolicyTier ?? null;
+      }
+    }
+
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+      assignerPolicyTier,
+    } as any);
 
     await logActivity(db, {
       companyId,
@@ -503,6 +517,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
+
+    // Re-snapshot assigner tier when assignee changes
+    if (assigneeWillChange && req.actor.type === "board" && req.actor.userId) {
+      const membership = await access.getMembership(existing.companyId, "user", req.actor.userId);
+      updateFields.assignerPolicyTier = (membership as any)?.membershipRole ?? "restricted";
+    }
+
     let issue;
     try {
       issue = await svc.update(id, updateFields);

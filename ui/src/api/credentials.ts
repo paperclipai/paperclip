@@ -26,6 +26,9 @@ export const credentialsApi = {
 
   remove: (id: string) => api.delete<{ ok: true }>(`/credentials/${id}`),
 
+  reveal: (id: string) =>
+    api.get<{ credential: Record<string, unknown> }>(`/credentials/${id}/reveal`),
+
   // Claude OAuth login flow
   startClaudeLogin: (
     companyId: string,

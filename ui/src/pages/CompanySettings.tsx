@@ -7,7 +7,7 @@ import { accessApi } from "../api/access";
 import { credentialsApi } from "../api/credentials";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X, Users, Shield, UserPlus, Copy, Clock, ChevronDown, ChevronRight } from "lucide-react";
+import { Settings, Check, Send, KeyRound, Trash2, Star, Pencil, X, Users, Shield, UserPlus, Copy, Clock, ChevronDown, ChevronRight, Eye, EyeOff } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -475,6 +475,7 @@ const PERMISSION_LABELS: Record<PermissionKey, string> = {
   "goals:manage": "Manage goals",
   "secrets:manage": "Manage secrets",
   "credentials:manage": "Manage credentials",
+  "credentials:view": "View credentials",
   "company:settings": "Company settings",
   "company:export": "Export & import",
   "approvals:review": "Review approvals",
@@ -492,6 +493,7 @@ const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   "goals:manage": "Create, update, and delete goals.",
   "secrets:manage": "Manage company secrets and environment variables.",
   "credentials:manage": "Manage provider credentials (API keys, OAuth).",
+  "credentials:view": "Reveal raw credential values (API keys, tokens).",
   "company:settings": "Modify company settings and configuration.",
   "company:export": "Export and import company data.",
   "approvals:review": "Review and resolve approval requests.",
@@ -994,6 +996,10 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   // Delete confirmation
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Reveal credential value
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [revealedValue, setRevealedValue] = useState<string | null>(null);
+
   // Claude login flow state
   const [loginSessionId, setLoginSessionId] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
@@ -1006,6 +1012,27 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setAddType("claude_oauth");
     setAddToken("");
     setAddIsDefault(false);
+  };
+
+  const handleReveal = async (id: string) => {
+    if (revealedId === id) {
+      setRevealedId(null);
+      setRevealedValue(null);
+      return;
+    }
+    try {
+      const result = await credentialsApi.reveal(id);
+      const value = result.credential?.accessToken ?? result.credential?.apiKey ?? JSON.stringify(result.credential);
+      setRevealedId(id);
+      setRevealedValue(String(value));
+      // Auto-hide after 10 seconds
+      setTimeout(() => {
+        setRevealedId(null);
+        setRevealedValue(null);
+      }, 10000);
+    } catch {
+      // Permission denied or error
+    }
   };
 
   const startEdit = (cred: ProviderCredential) => {
@@ -1238,6 +1265,15 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                         size="sm"
                         variant="ghost"
                         className="h-7 w-7 p-0"
+                        onClick={() => handleReveal(cred.id)}
+                        title={revealedId === cred.id ? "Hide credential" : "Reveal credential"}
+                      >
+                        {revealedId === cred.id ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0"
                         onClick={() => startEdit(cred)}
                         title="Edit credential"
                       >
@@ -1275,6 +1311,21 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                         </Button>
                       )}
                     </div>
+                  </div>
+                )}
+                {revealedId === cred.id && revealedValue && (
+                  <div className="mt-1 flex items-center gap-2 rounded bg-muted/50 px-2 py-1.5">
+                    <code className="text-xs font-mono text-foreground break-all flex-1">{revealedValue}</code>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 w-6 p-0 shrink-0"
+                      onClick={() => {
+                        navigator.clipboard.writeText(revealedValue);
+                      }}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
                   </div>
                 )}
               </div>
