@@ -276,6 +276,7 @@ export function NewIssueDialog() {
   const { pushToast } = useToast();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [parentId, setParentId] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
@@ -508,9 +509,10 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
-    if (newIssueDefaults.title) {
-      setTitle(newIssueDefaults.title);
+    if (newIssueDefaults.title || newIssueDefaults.parentId) {
+      setTitle(newIssueDefaults.title ?? "");
       setDescription(newIssueDefaults.description ?? "");
+      setParentId(newIssueDefaults.parentId ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -529,6 +531,7 @@ export function NewIssueDialog() {
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
       setTitle(draft.title);
       setDescription(draft.description);
+      setParentId(""); // parentId is only seeded from explicit dialog defaults, never from a restored draft
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
       setAssigneeValue(
@@ -550,6 +553,7 @@ export function NewIssueDialog() {
     } else {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      setParentId(newIssueDefaults.parentId ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
@@ -594,6 +598,7 @@ export function NewIssueDialog() {
   function reset() {
     setTitle("");
     setDescription("");
+    setParentId("");
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
@@ -616,6 +621,7 @@ export function NewIssueDialog() {
   function handleCompanyChange(companyId: string) {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
+    setParentId("");
     setAssigneeValue("");
     setProjectId("");
     setProjectWorkspaceId("");
@@ -658,6 +664,7 @@ export function NewIssueDialog() {
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
+      ...(parentId ? { parentId } : {}),
       title: title.trim(),
       description: description.trim() || undefined,
       status,
@@ -813,6 +820,7 @@ export function NewIssueDialog() {
   const savedDraft = loadDraft();
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
+  const isSubIssue = parentId.length > 0;
   const createIssueErrorMessage =
     createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
@@ -953,7 +961,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{isSubIssue ? "New sub-issue" : "New issue"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1464,7 +1472,13 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
+                <span>
+                  {createIssue.isPending
+                    ? "Creating..."
+                    : isSubIssue
+                      ? "Create sub-issue"
+                      : "Create Issue"}
+                </span>
               </span>
             </Button>
           </div>
