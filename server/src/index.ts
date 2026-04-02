@@ -89,7 +89,10 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
   }
 
   // Auto-upgrade bundled plugins if a newer version is available on npm
-  try {
+  // Set PAPERCLIP_AUTO_UPGRADE_PLUGINS=false to disable
+  if (process.env.PAPERCLIP_AUTO_UPGRADE_PLUGINS === "false") {
+    logger.info("auto-upgrade disabled via PAPERCLIP_AUTO_UPGRADE_PLUGINS=false");
+  } else try {
     const listRes3 = await fetch(`${baseUrl}/api/plugins`);
     if (listRes3.ok) {
       const allPlugins = (await listRes3.json()) as Array<{
