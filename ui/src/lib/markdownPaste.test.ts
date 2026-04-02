@@ -10,8 +10,8 @@ describe("markdownPaste", () => {
     expect(looksLikeMarkdownPaste("# Title\n\n- item 1\n- item 2")).toBe(true);
   });
 
-  it("treats plain multi-line text as markdown paste to preserve paragraphs", () => {
-    expect(looksLikeMarkdownPaste("first paragraph\nsecond paragraph")).toBe(true);
+  it("leaves plain multi-line text on the native paste path", () => {
+    expect(looksLikeMarkdownPaste("first paragraph\nsecond paragraph")).toBe(false);
   });
 
   it("leaves single-line plain text on the native paste path", () => {
