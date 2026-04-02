@@ -24,6 +24,7 @@ import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { logActivity } from "./activity-log.js";
 import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -1504,6 +1505,33 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      // Emit plugin events for run lifecycle transitions
+      const pluginAction =
+        status === "succeeded"  ? "agent.run.finished" :
+        status === "failed"     ? "agent.run.failed" :
+        status === "timed_out"  ? "agent.run.failed" :
+        status === "cancelled"  ? "agent.run.cancelled" :
+        null;
+      if (pluginAction) {
+        void logActivity(db, {
+          companyId: updated.companyId,
+          actorType: "system",
+          actorId: "heartbeat-service",
+          action: pluginAction,
+          entityType: "heartbeat_run",
+          entityId: updated.id,
+          agentId: updated.agentId,
+          runId: updated.id,
+          details: {
+            agentId: updated.agentId,
+            status: updated.status,
+            invocationSource: updated.invocationSource,
+            error: updated.error ?? null,
+            errorCode: updated.errorCode ?? null,
+          },
+        });
+      }
     }
 
     return updated;
@@ -1789,6 +1817,23 @@ export function heartbeatService(db: Db) {
         errorCode: claimed.errorCode ?? null,
         startedAt: claimed.startedAt ? new Date(claimed.startedAt).toISOString() : null,
         finishedAt: claimed.finishedAt ? new Date(claimed.finishedAt).toISOString() : null,
+      },
+    });
+
+    // Emit agent.run.started plugin event
+    void logActivity(db, {
+      companyId: claimed.companyId,
+      actorType: "system",
+      actorId: "heartbeat-service",
+      action: "agent.run.started",
+      entityType: "heartbeat_run",
+      entityId: claimed.id,
+      agentId: claimed.agentId,
+      runId: claimed.id,
+      details: {
+        agentId: claimed.agentId,
+        status: claimed.status,
+        invocationSource: claimed.invocationSource,
       },
     });
 
