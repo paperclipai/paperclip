@@ -25,6 +25,7 @@ export const costEvents = pgTable(
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     costCents: integer("cost_cents").notNull(),
+    shadowCostCents: integer("shadow_cost_cents").notNull().default(0),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -48,6 +49,11 @@ export const costEvents = pgTable(
     companyHeartbeatRunIdx: index("cost_events_company_heartbeat_run_idx").on(
       table.companyId,
       table.heartbeatRunId,
+    ),
+    companyIssueOccurredIdx: index("cost_events_company_issue_occurred_idx").on(
+      table.companyId,
+      table.issueId,
+      table.occurredAt,
     ),
   }),
 );
