@@ -46,6 +46,36 @@ export async function assertBoardOrCeoAgent(req: Request, db: Db) {
   throw forbidden("Board or CEO agent access required");
 }
 
+export async function assertManagerOf(req: Request, db: Db, targetAgentId: string) {
+  if (req.actor.type === "board") return;
+  if (!req.actor.agentId) throw forbidden("Agent authentication required");
+
+  if (req.actor.agentId === targetAgentId) return;
+
+  const actorRow = await db
+    .select({ role: agents.role })
+    .from(agents)
+    .where(eq(agents.id, req.actor.agentId))
+    .then((rows) => rows[0] ?? null);
+  if (actorRow?.role === "ceo") return;
+
+  const visited = new Set<string>([targetAgentId]);
+  let currentId: string | null = targetAgentId;
+  while (currentId && !visited.has(currentId) && currentId !== req.actor.agentId) {
+    visited.add(currentId);
+    const manager: { reportsTo: string | null } | null = await db
+      .select({ reportsTo: agents.reportsTo })
+      .from(agents)
+      .where(eq(agents.id, currentId))
+      .then((rows) => rows[0] ?? null);
+    if (!manager) break;
+    if (manager.reportsTo === req.actor.agentId) return;
+    currentId = manager.reportsTo;
+  }
+
+  throw forbidden("You are not a manager of this agent");
+}
+
 export function getActorInfo(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();
