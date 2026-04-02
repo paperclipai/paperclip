@@ -38,6 +38,11 @@ type QueueRow = {
   proofUrl: string | null;
 };
 
+function spacingSortKey(row: QueueRow): string {
+  // Prefer explicit schedule; otherwise fall back to approval time for queue ordering.
+  return row.scheduledFor ?? row.approvedAt ?? "9999-12-31T23:59:59.999Z";
+}
+
 type QueueFilter = "all" | "waiting" | "scheduled" | "published" | "unpicked";
 
 function inFilter(row: QueueRow, filter: QueueFilter): boolean {
@@ -99,6 +104,19 @@ export function PublishingQueue() {
       return `${row.issueKey} ${row.title} ${row.channel} ${row.status}`.toLowerCase().includes(q);
     });
   }, [rows, filter, search]);
+
+  const spacingSlotMap = useMemo(() => {
+    const queue = rows
+      .filter((r) => r.status !== "published")
+      .slice()
+      .sort((a, b) => spacingSortKey(a).localeCompare(spacingSortKey(b)));
+
+    const map = new Map<string, string>();
+    queue.forEach((row, idx) => {
+      map.set(row.id, `Slot ${idx + 1}`);
+    });
+    return map;
+  }, [rows]);
 
   const counts = useMemo(() => ({
     all: rows.length,
@@ -165,6 +183,7 @@ export function PublishingQueue() {
               <th className="text-left p-2">Title</th>
               <th className="text-left p-2">Channel</th>
               <th className="text-left p-2">Status</th>
+              <th className="text-left p-2">Spacing slot</th>
               <th className="text-left p-2">Approved</th>
               <th className="text-left p-2">Picked up</th>
               <th className="text-left p-2">Scheduled</th>
@@ -187,6 +206,9 @@ export function PublishingQueue() {
                     {row.status}
                   </span>
                 </td>
+                <td className="p-2 text-xs text-muted-foreground">
+                  {row.status === "published" ? "—" : (spacingSlotMap.get(row.id) ?? "—")}
+                </td>
                 <td className="p-2 text-xs text-muted-foreground">{row.approvedAt ?? "—"}</td>
                 <td className="p-2 text-xs text-muted-foreground">{row.pickedUpAt ?? "—"}</td>
                 <td className="p-2 text-xs text-muted-foreground">{row.scheduledFor ?? "—"}</td>
@@ -196,7 +218,7 @@ export function PublishingQueue() {
             ))}
             {filteredRows.length === 0 && (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-sm text-muted-foreground">No rows match this filter yet.</td>
+                <td colSpan={10} className="p-6 text-center text-sm text-muted-foreground">No rows match this filter yet.</td>
               </tr>
             )}
           </tbody>
