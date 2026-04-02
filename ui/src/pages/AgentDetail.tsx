@@ -1653,6 +1653,7 @@ function PromptsTab({
     agent.adapterType === "claude_local" ||
     agent.adapterType === "codex_local" ||
     agent.adapterType === "opencode_local" ||
+    agent.adapterType === "openrouter_local" ||
     agent.adapterType === "pi_local" ||
     agent.adapterType === "hermes_local" ||
     agent.adapterType === "cursor";
