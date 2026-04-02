@@ -1024,6 +1024,37 @@ export function agentRoutes(db: Db) {
     res.json(rows);
   });
 
+  router.get("/agents/:id/inbox-lite", async (req, res) => {
+    const id = await normalizeAgentReference(req, req.params.id as string);
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, agent);
+
+    const issuesSvc = issueService(db);
+    const rows = await issuesSvc.list(agent.companyId, {
+      assigneeAgentId: agent.id,
+      status: "todo,in_progress,blocked",
+    });
+
+    res.json(
+      rows.map((issue) => ({
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        projectId: issue.projectId,
+        goalId: issue.goalId,
+        parentId: issue.parentId,
+        updatedAt: issue.updatedAt,
+        activeRun: issue.activeRun,
+      })),
+    );
+  });
+
   router.get("/agents/:id", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
