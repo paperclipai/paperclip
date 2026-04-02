@@ -274,6 +274,54 @@ describe("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
+  it("includes routine executions in the agent inbox-lite view", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-911",
+        title: "Routine heartbeat",
+        status: "in_progress",
+        priority: "critical",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: "2026-04-02T02:22:06.418Z",
+        activeRun: null,
+      },
+    ]);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox-lite");
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+      includeRoutineExecutions: true,
+    });
+    expect(res.body).toEqual([
+      {
+        id: "issue-1",
+        identifier: "PAP-911",
+        title: "Routine heartbeat",
+        status: "in_progress",
+        priority: "critical",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: "2026-04-02T02:22:06.418Z",
+        activeRun: null,
+      },
+    ]);
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -301,6 +349,7 @@ describe("agent permission routes", () => {
       touchedByUserId: "board-user",
       inboxArchivedByUserId: "board-user",
       status: INBOX_MINE_ISSUE_STATUS_FILTER,
+      includeRoutineExecutions: true,
     });
     expect(res.body).toEqual([
       {

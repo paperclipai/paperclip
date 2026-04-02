@@ -295,9 +295,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const assigneeAgentId = req.query.assigneeAgentId as string | undefined;
+    const includeRoutineExecutionsExplicit =
+      req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1";
+    const includeRoutineExecutionsImplicit =
+      req.query.includeRoutineExecutions === undefined &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      assigneeAgentId === req.actor.agentId;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -309,8 +318,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
-      includeRoutineExecutions:
-        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      includeRoutineExecutions: includeRoutineExecutionsExplicit || includeRoutineExecutionsImplicit,
       q: req.query.q as string | undefined,
     });
     res.json(result);
