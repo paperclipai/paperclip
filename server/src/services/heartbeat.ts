@@ -396,6 +396,28 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+// Estimate cost from token usage when adapter doesn't report dollar cost (e.g. subscription plans).
+// Prices are per 1M tokens in USD. Cached input tokens priced at ~12.5% of input.
+const TOKEN_PRICING: Record<string, { input: number; cachedInput: number; output: number }> = {
+  "claude-opus-4-6":   { input: 15.0,  cachedInput: 1.875, output: 75.0 },
+  "claude-sonnet-4-6": { input: 3.0,   cachedInput: 0.375, output: 15.0 },
+  "gpt-5.3-codex":     { input: 2.0,   cachedInput: 0.5,   output: 10.0 },
+};
+const DEFAULT_PRICING = { input: 5.0, cachedInput: 0.625, output: 25.0 };
+
+function estimateCostCentsFromTokens(
+  model: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  const p = TOKEN_PRICING[model] ?? DEFAULT_PRICING;
+  const usd =
+    (inputTokens * p.input + cachedInputTokens * p.cachedInput + outputTokens * p.output) /
+    1_000_000;
+  return Math.max(0, Math.round(usd * 100));
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -2122,8 +2144,14 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    let additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    // Estimate cost from tokens when billed cost is zero (e.g. subscription plans)
+    if (additionalCostCents === 0 && hasTokenUsage) {
+      additionalCostCents = estimateCostCentsFromTokens(
+        result.model ?? "unknown", inputTokens, cachedInputTokens, outputTokens,
+      );
+    }
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
