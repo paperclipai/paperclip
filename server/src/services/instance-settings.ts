@@ -19,12 +19,14 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
+      keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     };
   }
   return {
     censorUsernameInLogs: false,
+    keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   };
 }

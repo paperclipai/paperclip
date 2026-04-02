@@ -1,6 +1,6 @@
 {
-  "id": "603dedb4-41eb-4b0e-a0f3-d86f67ed2240",
-  "prevId": "685fdfd9-6d11-440d-b468-fac28279fa46",
+  "id": "685fdfd9-6d11-440d-b468-fac28279fa46",
+  "prevId": "a0553dd4-5278-406f-bef7-b06597f92cf2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1058,27 +1058,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_agent_idempotency_key_idx": {
-          "name": "agent_wakeup_requests_agent_idempotency_key_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}

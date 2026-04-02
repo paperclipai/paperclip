@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -427,6 +428,160 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       archivedIssueId,
       resurfacedIssueId,
     ]));
+  });
+
+  it("resurfaces archived issue when status/updatedAt changes after archiving", async () => {
+    const companyId = randomUUID();
+    const userId = "user-1";
+    const otherUserId = "user-2";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with old comment then status change",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: userId,
+      createdAt: new Date("2026-03-26T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+    });
+
+    // Old external comment before archiving
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: otherUserId,
+      body: "Old comment before archive",
+      createdAt: new Date("2026-03-26T11:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+    });
+
+    // Archive after seeing the comment
+    await svc.archiveInbox(
+      companyId,
+      issueId,
+      userId,
+      new Date("2026-03-26T12:00:00.000Z"),
+    );
+
+    // Verify it's archived
+    const afterArchive = await svc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+    });
+    expect(afterArchive.map((i) => i.id)).not.toContain(issueId);
+
+    // Status/work update changes updatedAt (no new comment)
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+
+    // Should resurface because updatedAt > archivedAt
+    const afterUpdate = await svc.list(companyId, {
+      touchedByUserId: userId,
+      inboxArchivedByUserId: userId,
+    });
+    expect(afterUpdate.map((i) => i.id)).toContain(issueId);
+  });
+
+  it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
+    const companyId = randomUUID();
+    const olderIssueId = randomUUID();
+    const commentIssueId = randomUUID();
+    const activityIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: olderIssueId,
+        companyId,
+        title: "Older issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: commentIssueId,
+        companyId,
+        title: "Comment activity issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+      {
+        id: activityIssueId,
+        companyId,
+        title: "Logged activity issue",
+        status: "todo",
+        priority: "medium",
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: commentIssueId,
+      body: "New comment without touching issue.updatedAt",
+      createdAt: new Date("2026-03-26T11:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T11:00:00.000Z"),
+    });
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.document_updated",
+        entityType: "issue",
+        entityId: activityIssueId,
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: olderIssueId,
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {});
+
+    expect(result.map((issue) => issue.id)).toEqual([
+      activityIssueId,
+      commentIssueId,
+      olderIssueId,
+    ]);
+    expect(result.find((issue) => issue.id === activityIssueId)?.lastActivityAt?.toISOString()).toBe(
+      "2026-03-26T12:00:00.000Z",
+    );
+    expect(result.find((issue) => issue.id === commentIssueId)?.lastActivityAt?.toISOString()).toBe(
+      "2026-03-26T11:00:00.000Z",
+    );
+    expect(result.find((issue) => issue.id === olderIssueId)?.lastActivityAt?.toISOString()).toBe(
+      "2026-03-26T10:00:00.000Z",
+    );
   });
 });
 
