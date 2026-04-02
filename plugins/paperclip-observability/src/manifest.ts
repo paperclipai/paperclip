@@ -68,6 +68,13 @@ const manifest: PaperclipPluginManifestV1 = {
           "Collect counters and histograms for agents, tokens, and costs.",
         default: DEFAULT_CONFIG.enableMetrics,
       },
+      enableLogs: {
+        type: "boolean",
+        title: "Enable Logs",
+        description:
+          "Export structured logs via the OTel Logs API to the configured OTLP endpoint.",
+        default: DEFAULT_CONFIG.enableLogs,
+      },
       resourceAttributes: {
         type: "object",
         title: "Resource Attributes",

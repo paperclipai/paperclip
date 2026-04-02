@@ -220,6 +220,7 @@ const plugin: PaperclipPlugin = definePlugin({
         endpoint: config.otlpEndpoint,
         tracing: config.enableTracing,
         metrics: config.enableMetrics,
+        logs: config.enableLogs,
       });
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -638,14 +639,14 @@ const plugin: PaperclipPlugin = definePlugin({
         });
 
         await ctx.activity.log({
-          companyId: "",
+          companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
           message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
         });
       },
     );
 
     await ctx.activity.log({
-      companyId: "",
+      companyId: "615e9564-65df-4465-9b19-a5afb73446c6",
       message:
         "Observability plugin initialised and subscribed to domain events",
     });
@@ -655,6 +656,7 @@ const plugin: PaperclipPlugin = definePlugin({
     const otelSdkInitialized = otel != null;
     const tracingEnabled = resolvedConfig?.enableTracing ?? false;
     const metricsEnabled = resolvedConfig?.enableMetrics ?? false;
+    const logsEnabled = resolvedConfig?.enableLogs ?? false;
     const otlpEndpoint = resolvedConfig?.otlpEndpoint ?? null;
 
     // DB reachability probe
@@ -674,6 +676,7 @@ const plugin: PaperclipPlugin = definePlugin({
       otelSdkInitialized,
       tracingEnabled,
       metricsEnabled,
+      logsEnabled,
       otlpEndpoint,
       dbReachable,
       lastError,
