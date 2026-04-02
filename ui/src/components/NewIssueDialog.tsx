@@ -83,11 +83,17 @@ type StagedIssueFile = {
   title?: string | null;
 };
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "ruflo_claude_local", "codex_local", "opencode_local"]);
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
+  ruflo_claude_local: [
     { value: "", label: "Default" },
     { value: "low", label: "Low" },
     { value: "medium", label: "Medium" },
@@ -130,13 +136,13 @@ function buildAssigneeAdapterOverrides(input: {
       adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
     } else if (adapterType === "opencode_local") {
       adapterConfig.variant = input.thinkingEffortOverride;
-    } else if (adapterType === "claude_local") {
+    } else if (adapterType === "claude_local" || adapterType === "ruflo_claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
     } else if (adapterType === "opencode_local") {
       adapterConfig.variant = input.thinkingEffortOverride;
     }
   }
-  if (adapterType === "claude_local" && input.chrome) {
+  if ((adapterType === "claude_local" || adapterType === "ruflo_claude_local") && input.chrome) {
     adapterConfig.chrome = true;
   }
 
@@ -578,6 +584,8 @@ export function NewIssueDialog() {
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
+          : assigneeAdapterType === "ruflo_claude_local"
+            ? ISSUE_THINKING_EFFORT_OPTIONS.ruflo_claude_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
@@ -773,7 +781,7 @@ export function NewIssueDialog() {
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
   const assigneeOptionsTitle =
-    assigneeAdapterType === "claude_local"
+    assigneeAdapterType === "claude_local" || assigneeAdapterType === "ruflo_claude_local"
       ? "Claude options"
       : assigneeAdapterType === "codex_local"
         ? "Codex options"
@@ -785,7 +793,9 @@ export function NewIssueDialog() {
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+      : assigneeAdapterType === "ruflo_claude_local"
+        ? ISSUE_THINKING_EFFORT_OPTIONS.ruflo_claude_local
+        : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
@@ -1204,7 +1214,7 @@ export function NewIssueDialog() {
                     ))}
                   </div>
                 </div>
-                {assigneeAdapterType === "claude_local" && (
+                {(assigneeAdapterType === "claude_local" || assigneeAdapterType === "ruflo_claude_local") && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
                     <button

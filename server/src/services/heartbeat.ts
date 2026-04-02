@@ -71,6 +71,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
+  "ruflo_claude_local",
   "codex_local",
   "cursor",
   "gemini_local",

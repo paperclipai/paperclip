@@ -1651,6 +1651,7 @@ function PromptsTab({
 
   const isLocal =
     agent.adapterType === "claude_local" ||
+    agent.adapterType === "ruflo_claude_local" ||
     agent.adapterType === "codex_local" ||
     agent.adapterType === "opencode_local" ||
     agent.adapterType === "pi_local" ||
@@ -3116,7 +3117,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
+            {run.errorCode === "claude_auth_required" && (adapterType === "claude_local" || adapterType === "ruflo_claude_local") && (
               <div className="space-y-2">
                 <Button
                   variant="outline"

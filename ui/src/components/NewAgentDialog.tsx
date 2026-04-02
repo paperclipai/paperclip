@@ -25,6 +25,7 @@ import { HermesIcon } from "./HermesIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
+  | "ruflo_claude_local"
   | "codex_local"
   | "gemini_local"
   | "opencode_local"
@@ -45,6 +46,13 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "Claude Code",
     icon: Sparkles,
     desc: "Local Claude agent",
+    recommended: true,
+  },
+  {
+    value: "ruflo_claude_local",
+    label: "Claude + Ruflo",
+    icon: Sparkles,
+    desc: "Claude Code with required Ruflo MCP",
     recommended: true,
   },
   {

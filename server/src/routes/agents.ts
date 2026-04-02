@@ -51,6 +51,7 @@ import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { runRufloClaudeLogin } from "@paperclipai/adapter-ruflo-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -66,6 +67,7 @@ import {
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
+    ruflo_claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
@@ -533,7 +535,7 @@ export function agentRoutes(db: Db) {
   }
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
-    return adapterType !== "claude_local";
+    return adapterType !== "claude_local" && adapterType !== "ruflo_claude_local";
   }
 
   async function buildRuntimeSkillConfig(
@@ -2072,14 +2074,15 @@ export function agentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, agent.companyId);
-    if (agent.adapterType !== "claude_local") {
-      res.status(400).json({ error: "Login is only supported for claude_local agents" });
+    if (agent.adapterType !== "claude_local" && agent.adapterType !== "ruflo_claude_local") {
+      res.status(400).json({ error: "Login is only supported for claude_local and ruflo_claude_local agents" });
       return;
     }
 
     const config = asRecord(agent.adapterConfig) ?? {};
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
-    const result = await runClaudeLogin({
+    const loginRunner = agent.adapterType === "ruflo_claude_local" ? runRufloClaudeLogin : runClaudeLogin;
+    const result = await loginRunner({
       runId: `claude-login-${randomUUID()}`,
       agent: {
         id: agent.id,

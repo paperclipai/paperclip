@@ -59,6 +59,7 @@ export const help: Record<string, string> = {
 
 export const adapterLabels: Record<string, string> = {
   claude_local: "Claude (local)",
+  ruflo_claude_local: "Claude + Ruflo (local)",
   codex_local: "Codex (local)",
   gemini_local: "Gemini CLI (local)",
   opencode_local: "OpenCode (local)",

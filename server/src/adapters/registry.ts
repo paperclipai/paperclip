@@ -10,6 +10,18 @@ import {
 } from "@paperclipai/adapter-claude-local/server";
 import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@paperclipai/adapter-claude-local";
 import {
+  execute as rufloClaudeExecute,
+  listClaudeSkills as listRufloClaudeSkills,
+  syncClaudeSkills as syncRufloClaudeSkills,
+  testEnvironment as rufloClaudeTestEnvironment,
+  sessionCodec as rufloClaudeSessionCodec,
+  getQuotaWindows as rufloClaudeGetQuotaWindows,
+} from "@paperclipai/adapter-ruflo-claude-local/server";
+import {
+  agentConfigurationDoc as rufloClaudeAgentConfigurationDoc,
+  models as rufloClaudeModels,
+} from "@paperclipai/adapter-ruflo-claude-local";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -94,6 +106,20 @@ const claudeLocalAdapter: ServerAdapterModule = {
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
+};
+
+const rufloClaudeLocalAdapter: ServerAdapterModule = {
+  type: "ruflo_claude_local",
+  execute: rufloClaudeExecute,
+  testEnvironment: rufloClaudeTestEnvironment,
+  listSkills: listRufloClaudeSkills,
+  syncSkills: syncRufloClaudeSkills,
+  sessionCodec: rufloClaudeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("ruflo_claude_local") ?? undefined,
+  models: rufloClaudeModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: rufloClaudeAgentConfigurationDoc,
+  getQuotaWindows: rufloClaudeGetQuotaWindows,
 };
 
 const codexLocalAdapter: ServerAdapterModule = {
@@ -191,6 +217,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
+    rufloClaudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
