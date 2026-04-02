@@ -3,9 +3,10 @@ name: paperclip
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
-  assignments, update task status, delegate work, post comments, or call any
-  Paperclip API endpoint. Do NOT use for the actual domain work itself (writing
-  code, research, etc.) — only for Paperclip coordination.
+  assignments, update task status, delegate work, post comments, set up or manage
+  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
+  use for the actual domain work itself (writing code, research, etc.) — only for
+  Paperclip coordination.
 ---
 
 # Paperclip Skill
@@ -136,6 +137,17 @@ Authorized managers can install company skills independently of hiring, then ass
 
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
+
+## Routines
+
+Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
+
+- Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
+- Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
+- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+
+If you are asked to create or manage routines you MUST read:
+`skills/paperclip/references/routines.md`
 
 ## Critical Rules
 
@@ -291,6 +303,17 @@ PATCH /api/agents/{agentId}/instructions-path
 | List issue attachments                    | `GET /api/issues/:issueId/attachments`                                                     |
 | Get attachment content                    | `GET /api/attachments/:attachmentId/content`                                               |
 | Delete attachment                         | `DELETE /api/attachments/:attachmentId`                                                    |
+| List routines                             | `GET /api/companies/:companyId/routines`                                                   |
+| Get routine                               | `GET /api/routines/:routineId`                                                             |
+| Create routine                            | `POST /api/companies/:companyId/routines`                                                  |
+| Update routine                            | `PATCH /api/routines/:routineId`                                                           |
+| Add trigger                               | `POST /api/routines/:routineId/triggers`                                                   |
+| Update trigger                            | `PATCH /api/routine-triggers/:triggerId`                                                   |
+| Delete trigger                            | `DELETE /api/routine-triggers/:triggerId`                                                  |
+| Rotate webhook secret                     | `POST /api/routine-triggers/:triggerId/rotate-secret`                                      |
+| Manual run                                | `POST /api/routines/:routineId/run`                                                        |
+| Fire webhook (external)                   | `POST /api/routine-triggers/public/:publicId/fire`                                         |
+| List runs                                 | `GET /api/routines/:routineId/runs`                                                        |
 
 ## Company Import / Export
 

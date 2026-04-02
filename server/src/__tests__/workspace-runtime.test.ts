@@ -51,7 +51,7 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
 
-async function createTempRepo() {
+async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
@@ -59,7 +59,7 @@ async function createTempRepo() {
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
-  await runGit(repoRoot, ["checkout", "-B", "main"]);
+  await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
   return repoRoot;
 }
 
@@ -658,13 +658,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
     // Create a repo with "master" as default branch (not "main")
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-master-"));
-    await runGit(repoRoot, ["init", "-b", "master"]);
-    await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
-    await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
-    await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
-    await runGit(repoRoot, ["add", "README.md"]);
-    await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+    const repoRoot = await createTempRepo("master");
 
     // Set up a bare remote and push master so refs/remotes/origin/master
     // exists locally. Note: refs/remotes/origin/HEAD is NOT set by a manual
@@ -716,13 +710,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     // Create a repo with "master" as default branch
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-symref-"));
-    await runGit(repoRoot, ["init", "-b", "master"]);
-    await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
-    await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
-    await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
-    await runGit(repoRoot, ["add", "README.md"]);
-    await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+    const repoRoot = await createTempRepo("master");
 
     // Set up a bare remote and push
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));

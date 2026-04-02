@@ -36,6 +36,10 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
+  feedbackDataSharingEnabled: z.boolean().default(false),
+  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
+  feedbackDataSharingTermsVersion: z.string().nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({

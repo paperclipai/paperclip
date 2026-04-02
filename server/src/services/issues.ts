@@ -21,7 +21,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractAgentMentionIds, extractProjectMentionIds } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -467,6 +467,28 @@ function withActiveRuns(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
+  async function getIssueByUuid(id: string) {
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [enriched] = await withIssueLabels(db, [row]);
+    return enriched;
+  }
+
+  async function getIssueByIdentifier(identifier: string) {
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.identifier, identifier.toUpperCase()))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [enriched] = await withIssueLabels(db, [row]);
+    return enriched;
+  }
+
   function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
       ...comment,
@@ -883,26 +905,19 @@ export function issueService(db: Db) {
       return row ?? null;
     },
 
-    getById: async (id: string) => {
-      const row = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
-      return enriched;
+    getById: async (raw: string) => {
+      const id = raw.trim();
+      if (/^[A-Z]+-\d+$/i.test(id)) {
+        return getIssueByIdentifier(id);
+      }
+      if (!isUuidLike(id)) {
+        return null;
+      }
+      return getIssueByUuid(id);
     },
 
     getByIdentifier: async (identifier: string) => {
-      const row = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.identifier, identifier.toUpperCase()))
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
-      return enriched;
+      return getIssueByIdentifier(identifier);
     },
 
     create: async (
@@ -1542,7 +1557,11 @@ export function issueService(db: Db) {
           return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
         })),
 
-    addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
+    addComment: async (
+      issueId: string,
+      body: string,
+      actor: { agentId?: string; userId?: string; runId?: string | null },
+    ) => {
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -1562,6 +1581,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          createdByRunId: actor.runId ?? null,
           body: redactedBody,
         })
         .returning();

@@ -131,7 +131,7 @@ function makeAgent(adapterType: string) {
 
 describe("agent skill routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),

@@ -31,6 +31,10 @@ export interface CompanyPortabilityCompanyManifestEntry {
   brandColor: string | null;
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  feedbackDataSharingEnabled: boolean;
+  feedbackDataSharingConsentAt: string | null;
+  feedbackDataSharingConsentByUserId: string | null;
+  feedbackDataSharingTermsVersion: string | null;
 }
 
 export interface CompanyPortabilitySidebarOrder {

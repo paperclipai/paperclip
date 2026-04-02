@@ -2289,7 +2289,7 @@ function buildManifestFromPackageFiles(
   const skillPaths = Array.from(new Set([...referencedSkillPaths, ...discoveredSkillPaths])).sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -2309,6 +2309,18 @@ function buildManifestFromPackageFiles(
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
           : readCompanyApprovalDefault(companyFrontmatter),
+      feedbackDataSharingEnabled:
+        typeof paperclipCompany.feedbackDataSharingEnabled === "boolean"
+          ? paperclipCompany.feedbackDataSharingEnabled
+          : false,
+      feedbackDataSharingConsentAt:
+        typeof paperclipCompany.feedbackDataSharingConsentAt === "string"
+          ? paperclipCompany.feedbackDataSharingConsentAt
+          : null,
+      feedbackDataSharingConsentByUserId:
+        asString(paperclipCompany.feedbackDataSharingConsentByUserId),
+      feedbackDataSharingTermsVersion:
+        asString(paperclipCompany.feedbackDataSharingTermsVersion),
     },
     sidebar: paperclipSidebar,
     agents: [],
@@ -3227,6 +3239,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
+          feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
+          feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
+          feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
+          feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
         }),
         sidebar: stripEmptyValues(sidebarOrder),
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
@@ -3736,6 +3752,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
           : true,
+        feedbackDataSharingEnabled: include.company
+          ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
+          : false,
+        feedbackDataSharingConsentAt: include.company && sourceManifest.company?.feedbackDataSharingConsentAt
+          ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)
+          : null,
+        feedbackDataSharingConsentByUserId: include.company
+          ? (sourceManifest.company?.feedbackDataSharingConsentByUserId ?? null)
+          : null,
+        feedbackDataSharingTermsVersion: include.company
+          ? (sourceManifest.company?.feedbackDataSharingTermsVersion ?? null)
+          : null,
       });
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
@@ -3753,6 +3781,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
+          feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
+          feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
+            ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)
+            : null,
+          feedbackDataSharingConsentByUserId: sourceManifest.company.feedbackDataSharingConsentByUserId,
+          feedbackDataSharingTermsVersion: sourceManifest.company.feedbackDataSharingTermsVersion,
         });
         targetCompany = updated ?? targetCompany;
         companyAction = "updated";

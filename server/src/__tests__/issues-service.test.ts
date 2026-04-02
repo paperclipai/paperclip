@@ -228,6 +228,42 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([matchedIssueId]);
   });
 
+  it("accepts issue identifiers through getById", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 1064,
+      identifier: "PAP-1064",
+      title: "Feedback votes error",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "user-1",
+    });
+
+    const issue = await svc.getById("PAP-1064");
+
+    expect(issue).toEqual(
+      expect.objectContaining({
+        id: issueId,
+        identifier: "PAP-1064",
+      }),
+    );
+  });
+
+  it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
+    await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -357,18 +393,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    await svc.archiveInbox(
-      companyId,
-      archivedIssueId,
-      userId,
-      new Date("2026-03-26T12:30:00.000Z"),
-    );
-    await svc.archiveInbox(
-      companyId,
-      resurfacedIssueId,
-      userId,
-      new Date("2026-03-26T13:00:00.000Z"),
-    );
+    await svc.archiveInbox(companyId, archivedIssueId, userId, new Date("2026-03-26T12:30:00.000Z"));
+    await svc.archiveInbox(companyId, resurfacedIssueId, userId, new Date("2026-03-26T13:00:00.000Z"));
 
     await db.insert(issueComments).values({
       companyId,

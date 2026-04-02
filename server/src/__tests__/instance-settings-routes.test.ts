@@ -35,6 +35,7 @@ describe("instance settings routes", () => {
     vi.clearAllMocks();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -44,6 +45,7 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
+        feedbackDataSharingPreference: "allowed",
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -110,15 +112,22 @@ describe("instance settings routes", () => {
 
     const getRes = await request(app).get("/api/instance/settings/general");
     expect(getRes.status).toBe(200);
-    expect(getRes.body).toEqual({ censorUsernameInLogs: false });
+    expect(getRes.body).toEqual({
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    });
 
     const patchRes = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true });
+      .send({
+        censorUsernameInLogs: true,
+        feedbackDataSharingPreference: "allowed",
+      });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
+      feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
@@ -148,7 +157,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true });
+      .send({ feedbackDataSharingPreference: "not_allowed" });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();

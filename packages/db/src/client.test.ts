@@ -241,4 +241,71 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "replays migration 0047 safely when feedback tables and run columns already exist",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const overjoyedGrootHash = await migrationHash("0047_overjoyed_groot.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${overjoyedGrootHash}'`,
+        );
+
+        const tables = await sql.unsafe<{ table_name: string }[]>(
+          `
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name IN ('feedback_exports', 'feedback_votes')
+            ORDER BY table_name
+          `,
+        );
+        expect(tables.map((row) => row.table_name)).toEqual([
+          "feedback_exports",
+          "feedback_votes",
+        ]);
+
+        const columns = await sql.unsafe<{ table_name: string; column_name: string }[]>(
+          `
+            SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND (
+                (table_name = 'companies' AND column_name IN (
+                  'feedback_data_sharing_enabled',
+                  'feedback_data_sharing_consent_at',
+                  'feedback_data_sharing_consent_by_user_id',
+                  'feedback_data_sharing_terms_version'
+                ))
+                OR (table_name = 'document_revisions' AND column_name = 'created_by_run_id')
+                OR (table_name = 'issue_comments' AND column_name = 'created_by_run_id')
+              )
+            ORDER BY table_name, column_name
+          `,
+        );
+        expect(columns).toHaveLength(6);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0047_overjoyed_groot.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+    },
+    20_000,
+  );
 });
