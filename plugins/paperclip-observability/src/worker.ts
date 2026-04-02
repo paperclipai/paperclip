@@ -43,6 +43,9 @@ let lastError: string | null = null;
 // Active run spans — keyed by runId, kept open until run.finished/failed/cancelled
 const activeRunSpans = new Map<string, Span>();
 
+// Active issue lifecycle spans — keyed by issueId
+const activeIssueSpans = new Map<string, Span>();
+
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
   agentId: string;
@@ -338,7 +341,10 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     });
   }
 
-  // --- LLM child span for cost event ---
+  // --- LLM child span for cost event (ISI-143) ---
+
+  const model = String(p.model ?? "unknown");
+  const spanName = `chat ${model}`;
 
   const llmSpanAttrs = {
     "paperclip.agent.id": String(p.agentId ?? ""),
@@ -348,7 +354,7 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     "paperclip.billing.biller": String(p.biller ?? ""),
     "gen_ai.operation.name": "chat" as const,
     "gen_ai.provider.name": provider,
-    "gen_ai.request.model": String(p.model ?? "unknown"),
+    "gen_ai.request.model": model,
     "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
     "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
     "gen_ai.usage.cache_read.input_tokens": Number(
@@ -356,22 +362,48 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     ),
   };
 
-  // If this cost event belongs to an active run, create as a child span
+  // If this cost event belongs to an active run, create as a child span.
+  // Try in-memory map first, then fall back to plugin state for cross-restart resilience.
   const heartbeatRunId = String(p.heartbeatRunId ?? "");
-  const parentSpan = heartbeatRunId
+  let parentSpan = heartbeatRunId
     ? activeRunSpans.get(heartbeatRunId)
     : undefined;
 
+  let parentCtx = parentSpan
+    ? trace.setSpan(context.active(), parentSpan)
+    : undefined;
+
+  // Fallback: restore parent context from plugin state if not in memory
+  if (!parentCtx && heartbeatRunId && ctx) {
+    const stored = await ctx.state
+      .get({ scopeKind: "instance", stateKey: `span:run:${heartbeatRunId}` })
+      .catch(() => null);
+    if (
+      stored &&
+      typeof stored === "object" &&
+      "traceId" in (stored as Record<string, unknown>) &&
+      "spanId" in (stored as Record<string, unknown>)
+    ) {
+      const s = stored as { traceId: string; spanId: string; traceFlags: number };
+      const restoredSpanCtx = {
+        traceId: s.traceId,
+        spanId: s.spanId,
+        traceFlags: s.traceFlags ?? 1,
+        isRemote: true,
+      };
+      parentCtx = trace.setSpanContext(context.active(), restoredSpanCtx);
+    }
+  }
+
   let span: Span;
-  if (parentSpan) {
-    const parentCtx = trace.setSpan(context.active(), parentSpan);
+  if (parentCtx) {
     span = otel.tracer.startSpan(
-      "gen_ai.chat",
+      spanName,
       { kind: SpanKind.CLIENT, attributes: llmSpanAttrs },
       parentCtx,
     );
   } else {
-    span = otel.tracer.startSpan("gen_ai.chat", {
+    span = otel.tracer.startSpan(spanName, {
       kind: SpanKind.CLIENT,
       attributes: llmSpanAttrs,
     });
@@ -384,21 +416,21 @@ async function handleIssueUpdated(event: PluginEvent<unknown>): Promise<void> {
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+  const status = String(p.status ?? "unknown");
+  const previousStatus = String(p.previousStatus ?? "");
+  const issueId = String(p.id ?? "");
 
   const issueTransitions = otel.meter.createCounter(
     METRIC_NAMES.issueTransitions,
     { description: "Count of issue status transitions" },
   );
   issueTransitions.add(1, {
-    status: String(p.status ?? "unknown"),
+    status,
     project_id: String(p.projectId ?? ""),
   });
 
   // Track issue completions (transition to "done")
-  if (
-    String(p.status ?? "") === "done" &&
-    String(p.previousStatus ?? "") !== "done"
-  ) {
+  if (status === "done" && previousStatus !== "done") {
     const issuesCompleted = otel.meter.createCounter(
       METRIC_NAMES.issuesCompleted,
       { description: "Count of issues completed" },
@@ -406,6 +438,100 @@ async function handleIssueUpdated(event: PluginEvent<unknown>): Promise<void> {
     issuesCompleted.add(1, {
       project_id: String(p.projectId ?? ""),
     });
+  }
+
+  // --- Issue lifecycle spans (ISI-144) ---
+
+  // Start span when issue transitions to in_progress
+  if (status === "in_progress" && previousStatus !== "in_progress" && issueId) {
+    const span = otel.tracer.startSpan("paperclip.issue.execution", {
+      kind: SpanKind.INTERNAL,
+      attributes: {
+        "paperclip.issue.id": issueId,
+        "paperclip.issue.identifier": String(p.identifier ?? ""),
+        "paperclip.issue.title": String(p.title ?? ""),
+        "gen_ai.agent.id": String(p.assigneeAgentId ?? ""),
+        "paperclip.project.id": String(p.projectId ?? ""),
+        "paperclip.goal.id": String(p.goalId ?? ""),
+        "paperclip.issue.priority": String(p.priority ?? "medium"),
+      },
+    });
+
+    activeIssueSpans.set(issueId, span);
+
+    // Persist span context in plugin state for cross-restart resilience
+    if (ctx) {
+      await ctx.state
+        .set(
+          { scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" },
+          {
+            traceId: span.spanContext().traceId,
+            spanId: span.spanContext().spanId,
+            traceFlags: span.spanContext().traceFlags,
+            startTime: Date.now(),
+          },
+        )
+        .catch(() => {});
+    }
+  }
+
+  // End span when issue transitions to done or cancelled
+  if ((status === "done" || status === "cancelled") && issueId) {
+    let span = activeIssueSpans.get(issueId);
+
+    // Fallback: restore from plugin state if not in memory
+    if (!span && ctx) {
+      const stored = await ctx.state
+        .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
+        .catch(() => null);
+      if (
+        stored &&
+        typeof stored === "object" &&
+        "traceId" in (stored as Record<string, unknown>)
+      ) {
+        // Cannot restore an actual Span object from serialized context,
+        // but we can create a finishing span that carries the original trace
+        const s = stored as { traceId: string; spanId: string; traceFlags: number; startTime: number };
+        const restoredCtx = trace.setSpanContext(context.active(), {
+          traceId: s.traceId,
+          spanId: s.spanId,
+          traceFlags: s.traceFlags ?? 1,
+          isRemote: true,
+        });
+        // Create a child span to record the completion event under the same trace
+        span = otel!.tracer.startSpan(
+          "paperclip.issue.execution.end",
+          {
+            kind: SpanKind.INTERNAL,
+            attributes: {
+              "paperclip.issue.id": issueId,
+              "paperclip.issue.identifier": String(p.identifier ?? ""),
+              "paperclip.issue.status": status,
+            },
+          },
+          restoredCtx,
+        );
+      }
+    }
+
+    if (span) {
+      span.setAttribute("paperclip.issue.status", status);
+      if (status === "done") {
+        span.setStatus({ code: SpanStatusCode.OK });
+      } else {
+        span.setStatus({ code: SpanStatusCode.UNSET });
+        span.setAttribute("paperclip.issue.cancelled", true);
+      }
+      span.end();
+      activeIssueSpans.delete(issueId);
+    }
+
+    // Clean up plugin state
+    if (ctx) {
+      await ctx.state
+        .delete({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
+        .catch(() => {});
+    }
   }
 }
 
@@ -986,6 +1112,15 @@ const plugin: PaperclipPlugin = definePlugin({
       ctx?.logger.info("Ended orphaned run span on shutdown", { runId });
     }
     activeRunSpans.clear();
+
+    // End any active issue lifecycle spans before shutdown
+    for (const [issueId, span] of activeIssueSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.issue.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned issue span on shutdown", { issueId });
+    }
+    activeIssueSpans.clear();
 
     if (otel) {
       try {
