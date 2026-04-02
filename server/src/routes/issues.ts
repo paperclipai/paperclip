@@ -1424,6 +1424,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    const forceRequested = req.body?.force === true;
+
+    if (forceRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can force-release a locked issue" });
+        return;
+      }
+      const released = await svc.forceRelease(id);
+      if (!released) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: released.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.force_released",
+        entityType: "issue",
+        entityId: released.id,
+      });
+      res.json(released);
+      return;
+    }
+
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;

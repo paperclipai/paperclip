@@ -1591,6 +1591,37 @@ export function issueService(db: Db) {
       return enriched;
     },
 
+    forceRelease: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existing) return null;
+
+      const patch: Partial<typeof issues.$inferInsert> = {
+        checkoutRunId: null,
+        executionRunId: null,
+        executionLockedAt: null,
+        executionAgentNameKey: null,
+        updatedAt: new Date(),
+      };
+      if (existing.status === "in_progress") {
+        patch.status = "todo";
+      }
+
+      const updated = await db
+        .update(issues)
+        .set(patch)
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 
