@@ -84,6 +84,8 @@ export function dashboardService(db: Db) {
 
       return {
         companyId,
+        companyStatus: company.status,
+        companyPauseReason: company.pauseReason,
         agents: {
           active: agentCounts.active,
           running: agentCounts.running,

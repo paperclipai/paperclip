@@ -234,6 +234,42 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
+    pause: (id: string, reason: "manual" | "budget" = "manual") =>
+      db.transaction(async (tx) => {
+        const now = new Date();
+        const updated = await tx
+          .update(companies)
+          .set({ status: "paused", pauseReason: reason, pausedAt: now, updatedAt: now })
+          .where(eq(companies.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return enrichCompany(hydrated);
+      }),
+
+    resume: (id: string) =>
+      db.transaction(async (tx) => {
+        const now = new Date();
+        const updated = await tx
+          .update(companies)
+          .set({ status: "active", pauseReason: null, pausedAt: null, updatedAt: now })
+          .where(and(eq(companies.id, id), eq(companies.pauseReason, "manual")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return enrichCompany(hydrated);
+      }),
+
     archive: (id: string) =>
       db.transaction(async (tx) => {
         const updated = await tx

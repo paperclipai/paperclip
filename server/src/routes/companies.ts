@@ -16,6 +16,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  heartbeatService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -28,6 +29,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
+  let _heartbeat: ReturnType<typeof heartbeatService> | null = null;
+  function getHeartbeat() {
+    if (!_heartbeat) _heartbeat = heartbeatService(db);
+    return _heartbeat;
+  }
 
   async function assertCanUpdateBranding(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
@@ -302,6 +308,59 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityType: "company",
       entityId: companyId,
       details: req.body,
+    });
+    res.json(company);
+  });
+
+  router.post("/:companyId/pause", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.pause(companyId, "manual");
+    if (!company) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    await getHeartbeat().cancelBudgetScopeWork({
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+    }, "Cancelled due to manual company pause");
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.paused",
+      entityType: "company",
+      entityId: companyId,
+      details: { reason: "manual" },
+    });
+    res.json(company);
+  });
+
+  router.post("/:companyId/resume", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const company = await svc.resume(companyId);
+    if (!company) {
+      const existing = await svc.getById(companyId);
+      if (!existing) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      res.status(409).json({
+        error: "Cannot resume: company is paused by budget enforcement. Adjust the budget to resume.",
+      });
+      return;
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.resumed",
+      entityType: "company",
+      entityId: companyId,
     });
     res.json(company);
   });
