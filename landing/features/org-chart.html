@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Org Chart &amp; Team Packs — IronWorks AI Workforce Structure</title>
-  <meta name="description" content="IronWorks gives your AI workforce a real org chart with reporting chains, delegation rules, and three pre-built team packs — Startup, Agency, and Enterprise.">
-  <meta property="og:title" content="Org Chart &amp; Team Packs — IronWorks AI Workforce Structure">
-  <meta property="og:description" content="CEO delegates to CTO. CTO delegates to engineers. Work flows through a real hierarchy, not a flat pile of chatbots. Three team packs included.">
+  <title>AI Org Chart & Team Packs — IronWorks AI Workforce Structure</title>
+  <meta name="description" content="IronWorks AI org chart: real reporting chains, delegation rules, and three pre-built AI team packs — Startup, Agency, and Enterprise. Structure your AI workforce like a real company.">
+  <meta name="keywords" content="AI org chart, AI team structure, AI workforce hierarchy, AI team packs, AI agent delegation, AI company structure, AI reporting chain">
+  <meta property="og:title" content="IronWorks AI Org Chart & Team Packs — Real AI Workforce Structure">
+  <meta property="og:description" content="AI org chart with real delegation: CEO delegates to CTO, CTO delegates to engineers. Work flows through hierarchy automatically. Three pre-built AI team packs included.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://ironworksapp.ai/features/org-chart.html">
+  <meta property="og:url" content="https://ironworksapp.ai/features/org-chart">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Org Chart &amp; Team Packs — IronWorks AI Workforce Structure">
-  <meta name="twitter:description" content="Real hierarchy for AI agents. CEO, CTO, engineers, marketing, HR, finance — structured like a real company.">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks AI Org Chart & Team Packs — Real AI Hierarchy">
+  <meta name="twitter:description" content="Real AI org chart with delegation. CEO, CTO, engineers, marketing, HR, finance — structured like a real company. Three pre-built team packs.">
   <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/features/org-chart">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/features/org-chart">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/features/org-chart">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -24,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -37,9 +45,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
   <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     .card-glow:hover { box-shadow: 0 0 40px rgba(6, 182, 212, 0.08); }
     .org-node { background: #1e1e1e; border: 1px solid #282828; border-radius: 10px; padding: 10px 14px; text-align: center; }
     .org-connector { width: 1px; height: 16px; background: #3f3f46; margin: 0 auto; }
@@ -50,20 +58,30 @@
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    "name": "IronWorks Org Chart and Team Packs",
-    "description": "Visual org chart for AI agent hierarchies with CEO, CTO, CMO, engineering, HR, and finance roles. Three pre-built team packs for Startup, Agency, and Enterprise deployments.",
-    "url": "https://ironworksapp.ai/features/org-chart.html",
-    "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" }
+    "name": "IronWorks AI Org Chart & Team Packs — AI Workforce Structure",
+    "description": "Visual AI org chart for AI agent hierarchies with CEO, CTO, CMO, engineering, HR, and finance roles. Three pre-built AI team packs for Startup, Agency, and Enterprise deployments.",
+    "url": "https://ironworksapp.ai/features/org-chart",
+    "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" },
+    "breadcrumb": {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+        { "@type": "ListItem", "position": 2, "name": "Features", "item": "https://ironworksapp.ai/features/" },
+        { "@type": "ListItem", "position": 3, "name": "Org Chart & Team Packs", "item": "https://ironworksapp.ai/features/org-chart" }
+      ]
+    }
   }
   </script>
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
           <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
           <path d="m18 15 4-4"/>
           <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
@@ -79,8 +97,8 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
     </div>
@@ -96,8 +114,10 @@
     </div>
   </nav>
 
+  <main id="main-content">
+
   <!-- Hero -->
-  <section class="pt-32 pb-16 md:pt-40 md:pb-20 border-b border-white/[0.06]">
+  <section class="pt-36 pb-20 md:pt-44 md:pb-24 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex items-center gap-3 mb-6">
         <a href="/features/" class="text-sm text-zinc-500 hover:text-zinc-300 transition-colors">Features</a>
@@ -105,8 +125,8 @@
         <span class="text-sm text-zinc-400">Org Chart &amp; Team Packs</span>
       </div>
       <p class="text-sm font-medium text-cyan-400 tracking-wide uppercase mb-4">Team Structure</p>
-      <h1 class="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tighter leading-[0.95] mb-6">
-        <span class="gradient-text">Real hierarchy.</span><br>
+      <h1 class="font-display text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tighter leading-[0.9] mb-8">
+        <span class="gradient-text-hero">Real hierarchy.</span><br>
         <span class="text-white">Not a flat pile of chatbots.</span>
       </h1>
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
@@ -194,7 +214,7 @@
       <!-- Three Team Packs -->
       <div>
         <p class="text-sm font-medium text-cyan-400 tracking-wide uppercase mb-3">Team Packs</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Three configurations. Deploy in minutes.</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Three configurations. Deploy in minutes.</h2>
         <p class="text-zinc-400 leading-relaxed mb-10 max-w-2xl">
           Each team pack is a complete org configuration with pre-named agents, role descriptions, skill sets, reporting chains, and operating instructions loaded into the Knowledge Base. Pick one, customize names if you want, and deploy. Every agent knows their role from the start.
         </p>
@@ -240,7 +260,7 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <div>
           <p class="text-sm font-medium text-cyan-400 tracking-wide uppercase mb-3">Delegation Chains</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Work flows down the chain. Reports flow back up.</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Work flows down the chain. Reports flow back up.</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             When you assign a goal to your CEO agent, it breaks the work into sub-tasks and delegates to the appropriate direct reports. The CTO gets engineering tasks. The CMO gets marketing tasks. Each agent delegates further to their own reports. You only intervene when blockers require human decisions.
           </p>
@@ -313,7 +333,7 @@
         </div>
         <div class="order-1 md:order-2">
           <p class="text-sm font-medium text-cyan-400 tracking-wide uppercase mb-3">Customization</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Every agent is configurable. Nothing is locked in.</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Every agent is configurable. Nothing is locked in.</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             Start with a team pack and adjust as you need. Rename agents, change their LLM provider, adjust their approval authority, update their system prompt, and move them up or down in the hierarchy. Each agent configuration persists until you change it.
           </p>
@@ -333,7 +353,7 @@
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="text-3xl md:text-4xl font-bold tracking-tight mb-4">Your team can be running in under 10 minutes.</h2>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Your team can be running in under 10 minutes.</h2>
         <p class="text-zinc-400 text-lg mb-8">Pick a team pack, add your API keys, and deploy. All three packs are available on every plan.</p>
         <div class="flex flex-col sm:flex-row gap-4">
           <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
@@ -348,8 +368,10 @@
     </div>
   </section>
 
+  </main>
+
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
@@ -360,7 +382,7 @@
               <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
             </svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
@@ -378,5 +400,6 @@
     </div>
   </footer>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>

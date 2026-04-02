@@ -1,0 +1,193 @@
+/* IronWorks Design System — 2026 Refresh
+   Cabinet Grotesk for display/headlines, Geist for body/UI */
+
+/* ===== Typography ===== */
+
+/* Headline font: Cabinet Grotesk — distinctive, geometric, premium */
+h1, h2, h3, .font-display {
+  font-family: 'Cabinet Grotesk', 'Geist', system-ui, sans-serif;
+}
+
+/* Body stays Geist */
+body {
+  font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  background: #0a0a0a;
+  color: #e4e4e7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Text balance on all headlines */
+h1, h2, h3, h4 {
+  text-wrap: balance;
+}
+
+/* Tabular nums on pricing and stats */
+.tabular-nums,
+[data-pricing],
+.stat-number,
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Gradient Text ===== */
+.gradient-text {
+  background: linear-gradient(135deg, #ffffff 0%, #a1a1aa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Hero gradient — more dramatic, blue tint */
+.gradient-text-hero {
+  background: linear-gradient(135deg, #ffffff 0%, #93c5fd 50%, #a1a1aa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ===== Card System ===== */
+.card-glow:hover {
+  box-shadow: 0 0 60px rgba(59, 130, 246, 0.06), 0 0 20px rgba(59, 130, 246, 0.03);
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.3s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.3), 0 0 40px rgba(59, 130, 246, 0.06);
+}
+
+/* Feature icon container */
+.feature-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #1e1e1e;
+  border: 1px solid #282828;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+/* ===== Animations ===== */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+.float { animation: float 6s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .float { animation: none; }
+  .card-hover:hover { transform: none; }
+}
+
+/* ===== Button Polish ===== */
+.btn-primary {
+  transition: background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+}
+.btn-primary:hover {
+  box-shadow: 0 4px 20px rgba(59, 130, 246, 0.25);
+}
+
+.btn-secondary {
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ===== Pricing Toggle ===== */
+.toggle-btn {
+  transition: background 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+              color 0.2s ease,
+              box-shadow 0.2s ease;
+}
+.toggle-btn.active {
+  background: #3b82f6;
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(59, 130, 246, 0.3);
+}
+.toggle-btn:not(.active) {
+  background: transparent;
+  color: #a1a1aa;
+}
+.toggle-btn:not(.active):hover {
+  color: #e4e4e7;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* ===== FAQ Accordion ===== */
+details summary { list-style: none; cursor: pointer; }
+details summary::-webkit-details-marker { display: none; }
+details[open] .chevron { transform: rotate(180deg); }
+.chevron { transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
+details[open] summary .summary-text { color: #fff; }
+
+/* ===== Footer ===== */
+footer {
+  margin-top: 0;
+}
+
+/* ===== Link hover underlines ===== */
+.link-hover {
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.link-hover:hover {
+  color: #e4e4e7;
+}
+
+/* ===== Nav link transitions ===== */
+nav a {
+  transition: color 0.2s ease;
+}
+
+/* ===== Focus Styles — WCAG 2.4.7 / 2.4.11 ===== */
+:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* Remove default outline when focus-visible is used */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ===== Skip-to-content link — WCAG 2.4.1 ===== */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 1rem;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0 0 6px 6px;
+  z-index: 200;
+  text-decoration: none;
+  transition: top 0.1s;
+}
+.skip-link:focus {
+  top: 0;
+}
+
+/* ===== Screen-reader-only utility ===== */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}

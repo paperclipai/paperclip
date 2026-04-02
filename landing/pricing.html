@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pricing — IronWorks</title>
-  <meta name="description" content="Simple, transparent pricing for IronWorks. Unlimited AI agents on every plan. Bring your own API keys and pay your LLM provider directly.">
-  <meta property="og:title" content="Pricing — IronWorks">
-  <meta property="og:description" content="Starter at $79/mo. Growth at $199/mo. Business at $599/mo. Unlimited AI agents on every plan.">
+  <title>IronWorks Pricing — AI Agent Platform Cost & Plans | From $79/mo</title>
+  <meta name="description" content="IronWorks AI workforce pricing: Starter $79/mo, Growth $199/mo, Business $599/mo. Unlimited AI agents on every plan. Bring your own API keys — zero LLM markup. Start today.">
+  <meta name="keywords" content="AI workforce pricing, AI agent platform cost, IronWorks pricing, AI team management pricing, BYOK AI platform, AI agent subscription">
+  <meta property="og:title" content="IronWorks Pricing — AI Agent Platform | From $79/month">
+  <meta property="og:description" content="Starter $79/mo · Growth $199/mo · Business $599/mo. Unlimited AI agents. Bring your own API keys. Zero LLM markup. Compare IronWorks plans.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ironworksapp.ai/pricing">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Pricing — IronWorks">
-  <meta name="twitter:description" content="Unlimited AI agents on every plan. Bring your own API keys.">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks Pricing — From $79/mo, Unlimited AI Agents">
+  <meta name="twitter:description" content="Starter $79/mo · Growth $199/mo · Business $599/mo. Unlimited AI agents, zero LLM markup.">
   <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/pricing">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/pricing">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/pricing">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -24,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -37,48 +45,68 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
   <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .card-glow:hover { box-shadow: 0 0 40px rgba(59, 130, 246, 0.08); }
-    .toggle-btn { transition: background 0.15s, color 0.15s; }
-    .toggle-btn.active { background: #3b82f6; color: #fff; }
-    .toggle-btn:not(.active) { background: transparent; color: #a1a1aa; }
     .check { color: #10b981; }
     .dash { color: #3f3f46; }
-    details summary { list-style: none; cursor: pointer; }
-    details summary::-webkit-details-marker { display: none; }
-    details[open] .chevron { transform: rotate(180deg); }
-    .chevron { transition: transform 0.2s; }
-    details[open] summary .summary-text { color: #fff; }
   </style>
 
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "WebPage",
-    "name": "IronWorks Pricing",
-    "description": "Simple, transparent pricing for the IronWorks AI workforce platform.",
-    "url": "https://ironworksapp.ai/pricing",
-    "mainEntity": {
-      "@type": "SoftwareApplication",
-      "name": "IronWorks",
-      "offers": [
-        { "@type": "Offer", "name": "Starter", "price": "79", "priceCurrency": "USD", "billingDuration": "P1M" },
-        { "@type": "Offer", "name": "Growth", "price": "199", "priceCurrency": "USD", "billingDuration": "P1M" },
-        { "@type": "Offer", "name": "Business", "price": "599", "priceCurrency": "USD", "billingDuration": "P1M" }
-      ]
-    }
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Pricing", "item": "https://ironworksapp.ai/pricing" }
+        ]
+      },
+      {
+        "@type": "WebPage",
+        "name": "IronWorks Pricing — AI Workforce Platform Plans",
+        "description": "Compare IronWorks AI workforce pricing plans. Starter at $79/month, Growth at $199/month, Business at $599/month. Unlimited AI agents on every plan.",
+        "url": "https://ironworksapp.ai/pricing",
+        "breadcrumb": { "@type": "BreadcrumbList", "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Pricing", "item": "https://ironworksapp.ai/pricing" }
+        ]}
+      },
+      {
+        "@type": "Product",
+        "name": "IronWorks Starter",
+        "description": "AI workforce management platform — Starter plan. 5 active projects, 1 company, unlimited AI agents, full feature set.",
+        "brand": { "@type": "Brand", "name": "IronWorks" },
+        "offers": { "@type": "Offer", "price": "79.00", "priceCurrency": "USD", "billingDuration": "P1M", "availability": "https://schema.org/InStock", "url": "https://ironworksapp.ai/setup" }
+      },
+      {
+        "@type": "Product",
+        "name": "IronWorks Growth",
+        "description": "AI workforce management platform — Growth plan. 25 active projects, 2 companies, unlimited AI agents, priority support.",
+        "brand": { "@type": "Brand", "name": "IronWorks" },
+        "offers": { "@type": "Offer", "price": "199.00", "priceCurrency": "USD", "billingDuration": "P1M", "availability": "https://schema.org/InStock", "url": "https://ironworksapp.ai/setup" }
+      },
+      {
+        "@type": "Product",
+        "name": "IronWorks Business",
+        "description": "AI workforce management platform — Business plan. Unlimited projects, 5 companies, API access, client portal, SLA.",
+        "brand": { "@type": "Brand", "name": "IronWorks" },
+        "offers": { "@type": "Offer", "price": "599.00", "priceCurrency": "USD", "billingDuration": "P1M", "availability": "https://schema.org/InStock", "url": "https://ironworksapp.ai/setup" }
+      }
+    ]
   }
   </script>
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
           <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
           <path d="m18 15 4-4"/>
           <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
@@ -87,15 +115,15 @@
       </a>
       <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
         <a href="/#features" class="hover:text-white transition-colors">Features</a>
-        <a href="/pricing" class="text-white transition-colors">Pricing</a>
+        <a href="/pricing" class="text-white transition-colors" aria-current="page">Pricing</a>
         <a href="/security" class="hover:text-white transition-colors">Security</a>
         <a href="/docs" class="hover:text-white transition-colors">Docs</a>
       </div>
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/setup" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
     </div>
@@ -111,103 +139,109 @@
     </div>
   </nav>
 
+  <main id="main-content">
+
   <!-- Hero -->
   <section class="pt-32 pb-16 md:pt-40 md:pb-20">
     <div class="max-w-6xl mx-auto px-6 text-center">
       <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Pricing</p>
-      <h1 class="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tighter mb-5">
+      <h1 class="font-display text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tighter leading-[0.9] mb-6">
         <span class="gradient-text">Simple, transparent</span><br>
         <span class="text-white">pricing.</span>
       </h1>
-      <p class="text-lg text-zinc-400 max-w-xl mx-auto mb-10">
-        Unlimited AI agents on every plan. You bring your own API keys and pay your LLM provider directly. IronWorks charges only for the platform.
+      <p class="text-lg text-zinc-400 max-w-xl mx-auto mb-4">
+        Unlimited AI agents on every plan. You bring your own API keys. IronWorks charges only for the platform.
       </p>
+      <p class="text-sm text-emerald-400 max-w-xl mx-auto mb-10">14-day free trial on every plan. No credit card required.</p>
 
       <!-- Billing toggle -->
       <div class="inline-flex items-center gap-1 bg-surface-1 border border-white/[0.06] rounded-xl p-1 mb-2">
-        <button id="btn-monthly" onclick="setBilling('monthly')" class="toggle-btn active text-sm font-medium px-5 py-2 rounded-lg">Monthly</button>
-        <button id="btn-annual" onclick="setBilling('annual')" class="toggle-btn text-sm font-medium px-5 py-2 rounded-lg">Annual</button>
+        <button id="btn-monthly" class="toggle-btn active text-sm font-medium px-5 py-2 rounded-lg">Monthly</button>
+        <button id="btn-annual" class="toggle-btn text-sm font-medium px-5 py-2 rounded-lg">Annual</button>
       </div>
       <p id="annual-note" class="text-xs text-emerald-400 mt-2 hidden">Save 20% — equivalent to getting over 2 months free</p>
     </div>
   </section>
 
   <!-- Pricing cards -->
-  <section class="pb-16 md:pb-24">
+  <section class="pb-20 md:pb-32">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto">
 
         <!-- Starter -->
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 flex flex-col card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 md:p-10 flex flex-col card-glow card-hover transition-all duration-300">
           <h2 class="text-lg font-semibold mb-1">Starter</h2>
-          <p class="text-zinc-500 text-sm mb-6">For solo founders and small projects</p>
+          <p class="text-zinc-500 text-sm mb-1">Best for: solo founders running one product.</p>
+          <p class="text-zinc-600 text-xs mb-5">1 company, 5 projects, 50 playbook runs/mo</p>
           <div class="flex items-baseline gap-1 mb-1">
-            <span id="starter-price" class="text-4xl font-bold">$79</span>
+            <span id="starter-price" class="text-5xl font-bold tabular-nums">$79</span>
             <span class="text-zinc-500">/month</span>
           </div>
           <p id="starter-annual-note" class="text-xs text-zinc-500 mb-8 hidden">billed annually ($758/yr)</p>
           <ul class="space-y-3 text-sm text-zinc-400 mb-8 flex-1">
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 projects</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 GB storage</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>1 company</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 playbook runs/month</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 knowledge base pages</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email + Telegram messaging</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Startup team pack</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email support</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 projects</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 GB storage</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>1 company</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 playbook runs/month</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 knowledge base pages</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email + Telegram messaging</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Startup team pack</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email support</li>
           </ul>
-          <a href="/setup" class="w-full text-center bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Get Started</a>
+          <a href="/setup" class="w-full text-center bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Start Free Trial</a>
         </div>
 
         <!-- Growth (highlighted) -->
-        <div class="bg-surface-1 border-2 border-blue-500/40 rounded-2xl p-8 flex flex-col relative card-glow transition-all duration-300">
+        <div class="bg-surface-1 border-2 border-blue-500/40 rounded-2xl p-8 md:p-10 flex flex-col relative card-glow card-hover transition-all duration-300">
           <span class="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-xs font-medium px-3 py-1 rounded-full">Most Popular</span>
           <h2 class="text-lg font-semibold mb-1">Growth</h2>
-          <p class="text-zinc-500 text-sm mb-6">For growing teams and agencies</p>
+          <p class="text-zinc-500 text-sm mb-1">Best for: agencies managing 2+ clients.</p>
+          <p class="text-zinc-600 text-xs mb-5">2 companies, 25 projects, unlimited runs</p>
           <div class="flex items-baseline gap-1 mb-1">
-            <span id="growth-price" class="text-4xl font-bold">$199</span>
+            <span id="growth-price" class="text-5xl font-bold tabular-nums">$199</span>
             <span class="text-zinc-500">/month</span>
           </div>
           <p id="growth-annual-note" class="text-xs text-zinc-500 mb-8 hidden">billed annually ($1,910/yr)</p>
           <ul class="space-y-3 text-sm text-zinc-400 mb-8 flex-1">
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>25 projects</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>15 GB storage</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>2 companies</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited playbook runs</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>200 knowledge base pages</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All messaging channels</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Startup + Agency team packs</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email support</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>25 projects</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>15 GB storage</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>2 companies</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited playbook runs</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>200 knowledge base pages</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All messaging channels</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Startup + Agency team packs</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Email support</li>
           </ul>
-          <a href="/setup" class="w-full text-center bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Get Started</a>
+          <a href="/setup" class="w-full text-center bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Start Free Trial</a>
         </div>
 
         <!-- Business -->
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 flex flex-col card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 md:p-10 flex flex-col card-glow card-hover transition-all duration-300">
           <h2 class="text-lg font-semibold mb-1">Business</h2>
-          <p class="text-zinc-500 text-sm mb-6">For agencies managing multiple clients</p>
+          <p class="text-zinc-500 text-sm mb-1">Best for: teams managing 5 business units or clients.</p>
+          <p class="text-zinc-600 text-xs mb-5">5 companies, unlimited projects, priority support</p>
           <div class="flex items-baseline gap-1 mb-1">
-            <span id="business-price" class="text-4xl font-bold">$599</span>
+            <span id="business-price" class="text-5xl font-bold tabular-nums">$599</span>
             <span class="text-zinc-500">/month</span>
           </div>
           <p id="business-annual-note" class="text-xs text-zinc-500 mb-8 hidden">billed annually ($5,750/yr)</p>
           <ul class="space-y-3 text-sm text-zinc-400 mb-8 flex-1">
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited projects</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 GB storage</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 companies</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited playbook runs</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited knowledge base pages</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All messaging channels</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All team packs</li>
-            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Priority email support</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited AI agents</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited users</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited projects</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>50 GB storage</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>5 companies</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited playbook runs</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Unlimited knowledge base pages</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All messaging channels</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>All team packs</li>
+            <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Priority email support</li>
           </ul>
-          <a href="/setup" class="w-full text-center bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Get Started</a>
+          <a href="/setup" class="w-full text-center bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-lg transition-colors">Start Free Trial</a>
         </div>
 
       </div>
@@ -218,13 +252,13 @@
   </section>
 
   <!-- Comparison table -->
-  <section class="py-16 md:py-24 border-t border-white/[0.06]">
+  <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
-      <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-2 text-center">Compare plans</h2>
+      <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-2 text-center">Compare plans</h2>
       <p class="text-zinc-400 text-center mb-12 text-sm">Every feature, side by side.</p>
 
       <div class="overflow-x-auto">
-        <table class="w-full text-sm">
+        <table class="w-full text-sm" aria-label="Feature comparison across Starter, Growth, and Business plans">
           <thead>
             <tr class="border-b border-white/[0.06]">
               <th class="text-left py-4 pr-6 font-medium text-zinc-400 w-1/2">Feature</th>
@@ -298,27 +332,27 @@
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">War Room dashboard</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Agent performance ratings</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Goals and issue tracking</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Org chart</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-300 font-medium text-white pt-8">Messaging</td>
@@ -326,27 +360,27 @@
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Email</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Telegram</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Slack</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg><span class="sr-only">Not included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Discord</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg><span class="sr-only">Not included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-300 font-medium text-white pt-8">Support</td>
@@ -354,15 +388,15 @@
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Email support</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
             <tr>
               <td class="py-4 pr-6 text-zinc-400">Priority support</td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></td>
-              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg><span class="sr-only">Not included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-zinc-700 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg><span class="sr-only">Not included</span></td>
+              <td class="py-4 px-4 text-center"><svg class="w-4 h-4 text-emerald-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg><span class="sr-only">Included</span></td>
             </tr>
           </tbody>
         </table>
@@ -371,10 +405,10 @@
   </section>
 
   <!-- FAQ -->
-  <section class="py-16 md:py-24 border-t border-white/[0.06]">
+  <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-3xl mx-auto px-6">
       <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">FAQ</p>
-      <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-12">Pricing questions</h2>
+      <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-12">Pricing questions</h2>
 
       <div class="space-y-1">
 
@@ -443,30 +477,32 @@
   </section>
 
   <!-- CTA -->
-  <section class="py-16 md:py-24 border-t border-white/[0.06]">
+  <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6 text-center">
-      <h2 class="text-3xl md:text-4xl font-bold tracking-tight mb-4">Ready to build your AI team?</h2>
-      <p class="text-zinc-400 text-lg mb-8 max-w-xl mx-auto">Start with a 14-day free trial on the Growth plan. No credit card required.</p>
-      <a href="/setup" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-8 py-4 rounded-lg transition-colors text-lg">
+      <h2 class="font-display text-3xl md:text-5xl font-bold tracking-tight mb-4">Deploy your AI team today</h2>
+      <p class="text-zinc-400 text-lg mb-8 max-w-xl mx-auto">14-day free trial on the Growth plan. No credit card required. Pick your plan after you see it work.</p>
+      <a href="/setup" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-8 py-4 rounded-xl btn-primary transition-all text-lg">
         Start Free Trial
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
       </a>
     </div>
   </section>
 
+  </main>
+
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
-          <div class="flex items-center gap-2 mb-3">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500">
+          <a href="/" class="flex items-center gap-2 mb-3" aria-label="IronWorks home">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true">
               <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
               <path d="m18 15 4-4"/>
               <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
             </svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
@@ -485,25 +521,39 @@
   </footer>
 
   <script>
-    function setBilling(mode) {
-      const monthly = { starter: '$79', growth: '$199', business: '$599' };
-      const annual  = { starter: '$63', growth: '$159', business: '$479' };
+    (function () {
+      'use strict';
+      var monthly = { starter: '$79', growth: '$199', business: '$599' };
+      var annual  = { starter: '$63', growth: '$159', business: '$479' };
 
-      const prices = mode === 'annual' ? annual : monthly;
-      document.getElementById('starter-price').textContent  = prices.starter;
-      document.getElementById('growth-price').textContent   = prices.growth;
-      document.getElementById('business-price').textContent = prices.business;
+      function setBilling(mode) {
+        var prices = mode === 'annual' ? annual : monthly;
+        document.getElementById('starter-price').textContent  = prices.starter;
+        document.getElementById('growth-price').textContent   = prices.growth;
+        document.getElementById('business-price').textContent = prices.business;
 
-      const showAnnual = mode === 'annual';
-      ['starter-annual-note','growth-annual-note','business-annual-note'].forEach(id => {
-        document.getElementById(id).classList.toggle('hidden', !showAnnual);
+        var showAnnual = mode === 'annual';
+        ['starter-annual-note', 'growth-annual-note', 'business-annual-note'].forEach(function (id) {
+          document.getElementById(id).classList.toggle('hidden', !showAnnual);
+        });
+        document.getElementById('annual-note').classList.toggle('hidden', !showAnnual);
+        document.getElementById('btn-monthly').classList.toggle('active', mode === 'monthly');
+        document.getElementById('btn-annual').classList.toggle('active', mode === 'annual');
+      }
+
+      document.getElementById('btn-monthly').addEventListener('click', function () {
+        setBilling('monthly');
+        document.getElementById('btn-monthly').setAttribute('aria-pressed', 'true');
+        document.getElementById('btn-annual').setAttribute('aria-pressed', 'false');
       });
-      document.getElementById('annual-note').classList.toggle('hidden', !showAnnual);
-
-      document.getElementById('btn-monthly').classList.toggle('active', mode === 'monthly');
-      document.getElementById('btn-annual').classList.toggle('active', mode === 'annual');
-    }
+      document.getElementById('btn-annual').addEventListener('click', function () {
+        setBilling('annual');
+        document.getElementById('btn-monthly').setAttribute('aria-pressed', 'false');
+        document.getElementById('btn-annual').setAttribute('aria-pressed', 'true');
+      });
+    }());
   </script>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>

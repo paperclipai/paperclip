@@ -3,14 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Documentation — IronWorks</title>
-  <meta name="description" content="IronWorks documentation. Learn how to deploy AI agent teams, configure playbooks, manage budgets, and run your AI workforce.">
-  <meta property="og:title" content="Documentation — IronWorks">
-  <meta property="og:description" content="IronWorks documentation. Deploy AI agent teams, configure playbooks, manage budgets, and run your AI workforce.">
+  <title>IronWorks Docs — How to Manage AI Agents & Deploy AI Teams</title>
+  <meta name="description" content="IronWorks documentation: how to manage AI agents, deploy AI team packs, configure playbooks, set up BYOK API keys, and run your AI workforce. Complete guides and references.">
+  <meta name="keywords" content="how to manage AI agents, AI agent documentation, AI workforce guides, deploy AI teams, AI playbook setup, AI team pack guide, IronWorks docs">
+  <meta property="og:title" content="IronWorks Docs — How to Manage AI Agents & Deploy AI Teams">
+  <meta property="og:description" content="Complete IronWorks documentation: deploy AI teams, configure playbooks, set up API keys, manage your AI workforce. Step-by-step guides for every use case.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ironworksapp.ai/docs/">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks Docs — How to Manage AI Agents & Deploy AI Teams">
+  <meta name="twitter:description" content="Complete AI agent documentation: deploy teams, configure playbooks, set up API keys, manage your AI workforce.">
+  <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/docs/">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/docs/">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/docs/">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -19,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -32,26 +45,48 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .card-glow:hover { box-shadow: 0 0 40px rgba(59, 130, 246, 0.08); }
-  </style>
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
+
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://ironworksapp.ai/docs/" }
+        ]
+      },
+      {
+        "@type": "WebPage",
+        "name": "IronWorks Documentation — How to Manage AI Agents",
+        "description": "Complete IronWorks documentation hub. Learn how to deploy AI agent teams, configure playbooks, set up API keys, and run your AI workforce at scale.",
+        "url": "https://ironworksapp.ai/docs/",
+        "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" }
+      }
+    ]
+  }
+  </script>
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
         <span class="text-lg font-semibold tracking-tight">Iron<span class="text-blue-500">W</span>orks</span>
       </a>
       <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
         <a href="/#features" class="hover:text-white transition-colors">Features</a>
         <a href="/#pricing" class="hover:text-white transition-colors">Pricing</a>
         <a href="/#security" class="hover:text-white transition-colors">Security</a>
-        <a href="/docs/" class="text-white transition-colors">Docs</a>
+        <a href="/docs/" class="text-white transition-colors" aria-current="page">Docs</a>
       </div>
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
@@ -60,6 +95,7 @@
     </div>
   </nav>
 
+  <main id="main-content">
   <div class="pt-24 pb-16 max-w-6xl mx-auto px-6">
 
     <!-- Breadcrumbs -->
@@ -69,7 +105,7 @@
       <span class="text-zinc-300">Documentation</span>
     </div>
 
-    <h1 class="text-4xl md:text-5xl font-bold tracking-tight mb-4">
+    <h1 class="font-display text-5xl md:text-6xl font-extrabold tracking-tighter leading-[0.9] mb-6">
       <span class="gradient-text">Documentation</span>
     </h1>
     <p class="text-lg text-zinc-400 max-w-2xl mb-12">
@@ -77,7 +113,7 @@
     </p>
 
     <!-- New to IronWorks callout -->
-    <div class="bg-surface-1 border border-blue-500/20 rounded-xl p-6 mb-12">
+    <div class="bg-surface-1 border border-blue-500/20 rounded-xl p-8 mb-16">
       <h2 class="text-lg font-semibold text-white mb-2">New to IronWorks? Start here.</h2>
       <p class="text-zinc-400 text-sm mb-4">Pick the guide that matches how you plan to use IronWorks.</p>
       <div class="flex flex-wrap gap-3">
@@ -88,18 +124,18 @@
     </div>
 
     <!-- Getting Started -->
-    <section class="mb-12">
-      <h2 class="text-xl font-semibold text-white mb-4">Getting Started</h2>
+    <section class="mb-16">
+      <h2 class="font-display text-xl font-semibold text-white mb-6">Getting Started</h2>
       <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/getting-started-founder.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/getting-started-founder.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Solo Founder Guide</h3>
           <p class="text-sm text-zinc-400">Pick a plan, deploy the Startup pack, set your first goal, and watch your AI team work.</p>
         </a>
-        <a href="/docs/getting-started-agency.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/getting-started-agency.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Agency Guide</h3>
           <p class="text-sm text-zinc-400">Manage AI workforces for multiple clients with tenant isolation and playbook-driven onboarding.</p>
         </a>
-        <a href="/docs/getting-started-technical.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/getting-started-technical.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Developer Guide</h3>
           <p class="text-sm text-zinc-400">API keys, heartbeat system, issue lifecycle, workspace configuration, custom skills.</p>
         </a>
@@ -107,18 +143,18 @@
     </section>
 
     <!-- Core Concepts -->
-    <section class="mb-12">
-      <h2 class="text-xl font-semibold text-white mb-4">Core Concepts</h2>
+    <section class="mb-16">
+      <h2 class="font-display text-xl font-semibold text-white mb-6">Core Concepts</h2>
       <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/agents-and-roles.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/agents-and-roles.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Agents and Roles</h3>
           <p class="text-sm text-zinc-400">9 role templates, default capabilities, org chart delegation, SOUL.md customization.</p>
         </a>
-        <a href="/docs/team-packs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/team-packs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Team Packs</h3>
           <p class="text-sm text-zinc-400">Startup, Agency, and Enterprise packs. Pre-built rosters matched to your use case.</p>
         </a>
-        <a href="/docs/war-room.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/war-room.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">War Room Dashboard</h3>
           <p class="text-sm text-zinc-400">Real-time operational overview: agent status, blocked items, spend metrics, goal progress.</p>
         </a>
@@ -126,18 +162,18 @@
     </section>
 
     <!-- Features -->
-    <section class="mb-12">
-      <h2 class="text-xl font-semibold text-white mb-4">Features</h2>
+    <section class="mb-16">
+      <h2 class="font-display text-xl font-semibold text-white mb-6">Features</h2>
       <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/playbooks-and-routines.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/playbooks-and-routines.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Playbooks and Routines</h3>
           <p class="text-sm text-zinc-400">Multi-step workflows with dependencies. 7 seed playbooks, 5 seed routines, AI-generated custom playbooks.</p>
         </a>
-        <a href="/docs/knowledge-base.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/knowledge-base.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Knowledge Base</h3>
           <p class="text-sm text-zinc-400">Shared company wiki with 9 seed pages, markdown editor, cross-linking, revision history.</p>
         </a>
-        <a href="/docs/messaging-integrations.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/messaging-integrations.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Messaging Integrations</h3>
           <p class="text-sm text-zinc-400">Telegram, email bridge, Slack, and Discord. Talk to your agents where you already work.</p>
         </a>
@@ -145,14 +181,14 @@
     </section>
 
     <!-- Operations and Security -->
-    <section class="mb-12">
-      <h2 class="text-xl font-semibold text-white mb-4">Operations and Security</h2>
+    <section class="mb-16">
+      <h2 class="font-display text-xl font-semibold text-white mb-6">Operations and Security</h2>
       <div class="grid md:grid-cols-2 gap-4">
-        <a href="/docs/api-keys-and-costs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/api-keys-and-costs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">API Keys, Costs, and Budgets</h3>
           <p class="text-sm text-zinc-400">BYOK model explained, API key vs OAuth, budget thresholds, cost tracking per agent and task.</p>
         </a>
-        <a href="/docs/security-and-privacy.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/security-and-privacy.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Security and Privacy</h3>
           <p class="text-sm text-zinc-400">Tenant isolation, AES-256-GCM encryption, prompt injection protection, RBAC, GDPR.</p>
         </a>
@@ -160,10 +196,10 @@
     </section>
 
     <!-- Reference -->
-    <section class="mb-12">
-      <h2 class="text-xl font-semibold text-white mb-4">Reference</h2>
+    <section class="mb-16">
+      <h2 class="font-display text-xl font-semibold text-white mb-6">Reference</h2>
       <div class="grid md:grid-cols-2 gap-4">
-        <a href="/docs/faq.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all hover:border-white/[0.12]">
+        <a href="/docs/faq.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
           <h3 class="font-medium text-white mb-1">Frequently Asked Questions</h3>
           <p class="text-sm text-zinc-400">20+ questions organized by topic. Pricing, agents, security, integrations, and more.</p>
         </a>
@@ -171,16 +207,17 @@
     </section>
 
   </div>
+  </main>
 
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
           <div class="flex items-center gap-2 mb-3">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">

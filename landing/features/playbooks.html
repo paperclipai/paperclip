@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Playbooks — IronWorks Multi-Step AI Workflows</title>
-  <meta name="description" content="IronWorks Playbooks turn repeatable processes into automated multi-step workflows. 7 templates included. Define steps, assign roles, resolve dependencies, and run on demand or on schedule.">
-  <meta property="og:title" content="Playbooks — IronWorks Multi-Step AI Workflows">
-  <meta property="og:description" content="Client onboarding, security audits, product launches, content campaigns. Define the steps once, run them as many times as you need.">
+  <title>IronWorks AI Playbooks — Multi-Step AI Agent Workflow Automation</title>
+  <meta name="description" content="IronWorks AI playbooks: multi-step AI agent workflow automation with dependency resolution. 7 pre-built templates — client onboarding, security audits, content campaigns, and more.">
+  <meta name="keywords" content="AI playbooks, AI workflow automation, AI agent workflows, multi-step AI automation, AI business process automation, AI agent playbooks">
+  <meta property="og:title" content="IronWorks AI Playbooks — Multi-Step AI Agent Workflow Automation">
+  <meta property="og:description" content="AI playbooks for multi-step workflow automation. Client onboarding, security audits, product launches, content campaigns — define once, run as many times as needed.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://ironworksapp.ai/features/playbooks.html">
+  <meta property="og:url" content="https://ironworksapp.ai/features/playbooks">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Playbooks — IronWorks Multi-Step AI Workflows">
-  <meta name="twitter:description" content="Reusable multi-step workflows with dependency resolution. 7 templates included.">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks AI Playbooks — Multi-Step Workflow Automation">
+  <meta name="twitter:description" content="AI agent playbooks with dependency resolution and 7 pre-built templates. Automate any repeatable business process.">
   <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/features/playbooks">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/features/playbooks">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/features/playbooks">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -24,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -37,9 +45,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
   <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
     .card-glow:hover { box-shadow: 0 0 40px rgba(139, 92, 246, 0.08); }
   </style>
 
@@ -47,20 +55,30 @@
   {
     "@context": "https://schema.org",
     "@type": "WebPage",
-    "name": "IronWorks Playbooks",
-    "description": "Reusable multi-step AI workflows with dependency resolution, role assignment, and 7 pre-built templates for common business processes.",
-    "url": "https://ironworksapp.ai/features/playbooks.html",
-    "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" }
+    "name": "IronWorks AI Playbooks — Multi-Step AI Agent Workflow Automation",
+    "description": "Multi-step AI agent workflow automation with dependency resolution, role assignment, and 7 pre-built templates for client onboarding, security audits, content campaigns, and more.",
+    "url": "https://ironworksapp.ai/features/playbooks",
+    "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" },
+    "breadcrumb": {
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+        { "@type": "ListItem", "position": 2, "name": "Features", "item": "https://ironworksapp.ai/features/" },
+        { "@type": "ListItem", "position": 3, "name": "Playbooks", "item": "https://ironworksapp.ai/features/playbooks" }
+      ]
+    }
   }
   </script>
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
           <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
           <path d="m18 15 4-4"/>
           <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
@@ -76,8 +94,8 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
     </div>
@@ -93,8 +111,10 @@
     </div>
   </nav>
 
+  <main id="main-content">
+
   <!-- Hero -->
-  <section class="pt-32 pb-16 md:pt-40 md:pb-20 border-b border-white/[0.06]">
+  <section class="pt-36 pb-20 md:pt-44 md:pb-24 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex items-center gap-3 mb-6">
         <a href="/features/" class="text-sm text-zinc-500 hover:text-zinc-300 transition-colors">Features</a>
@@ -102,8 +122,8 @@
         <span class="text-sm text-zinc-400">Playbooks</span>
       </div>
       <p class="text-sm font-medium text-violet-400 tracking-wide uppercase mb-4">Workflow Automation</p>
-      <h1 class="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tighter leading-[0.95] mb-6">
-        <span class="gradient-text">Write the process once.</span><br>
+      <h1 class="font-display text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tighter leading-[0.9] mb-8">
+        <span class="gradient-text-hero">Write the process once.</span><br>
         <span class="text-white">Run it every time.</span>
       </h1>
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
@@ -198,7 +218,7 @@
       <!-- 7 Templates -->
       <div>
         <p class="text-sm font-medium text-violet-400 tracking-wide uppercase mb-3">7 Included Templates</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Start running common workflows immediately.</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Start running common workflows immediately.</h2>
         <p class="text-zinc-400 leading-relaxed mb-10 max-w-2xl">
           Each template is fully configured with steps, recommended role assignments, and dependency rules. Customize them for your org or run them as-is. You can also build Playbooks from scratch or ask an agent to generate one from a plain-English description.
         </p>
@@ -238,7 +258,7 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <div>
           <p class="text-sm font-medium text-violet-400 tracking-wide uppercase mb-3">Dependency Resolution</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Steps that depend on other steps wait automatically.</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Steps that depend on other steps wait automatically.</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             Every Playbook step can declare dependencies on prior steps. IronWorks' execution engine evaluates these at runtime — a step that requires step 3 to be complete will not start until step 3 is done and marked successful. No polling, no manual handoffs.
           </p>
@@ -309,7 +329,7 @@
         </div>
         <div class="order-1 md:order-2">
           <p class="text-sm font-medium text-violet-400 tracking-wide uppercase mb-3">AI Generation + Scheduling</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Describe the process. IronWorks builds the playbook.</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Describe the process. IronWorks builds the playbook.</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             You can build Playbooks manually step by step, or describe the process in plain English and let an agent generate the structure. Once created, Playbooks can run on demand or on a fixed schedule. All schedules use Central Time.
           </p>
@@ -329,7 +349,7 @@
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="text-3xl md:text-4xl font-bold tracking-tight mb-4">Stop rebuilding the same workflow every time.</h2>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Stop rebuilding the same workflow every time.</h2>
         <p class="text-zinc-400 text-lg mb-8">Playbooks are included on all plans. Starter allows 50 runs per month. Growth and Business are unlimited.</p>
         <div class="flex flex-col sm:flex-row gap-4">
           <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
@@ -344,8 +364,10 @@
     </div>
   </section>
 
+  </main>
+
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
@@ -356,7 +378,7 @@
               <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
             </svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
@@ -374,5 +396,6 @@
     </div>
   </footer>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>

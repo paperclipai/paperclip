@@ -50,14 +50,26 @@ ironworksapp.ai {
     X-Frame-Options "SAMEORIGIN"
     # Prevent MIME sniffing
     X-Content-Type-Options "nosniff"
-    # Enable HTTPS strict transport
+    # Enable HTTPS strict transport (HSTS preload-ready)
     Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     # Referrer policy
     Referrer-Policy "strict-origin-when-cross-origin"
-    # Basic content security
-    X-XSS-Protection "1; mode=block"
+    # Content Security Policy
+    # NOTE: 'unsafe-inline' for scripts is required by the Tailwind CDN config block and
+    # inline onclick handlers. When Tailwind is self-hosted (recommended), tighten to
+    # 'nonce-{nonce}' or a hash. 'unsafe-inline' for styles is required by Tailwind's
+    # runtime injection.
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://api.fontshare.com; font-src 'self' https://fonts.gstatic.com https://cdn.fontshare.com; img-src 'self' data: https://ironworksapp.ai; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    # Permissions policy — disable unused browser features
+    Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+    # Cross-origin policies
+    Cross-Origin-Opener-Policy "same-origin"
+    Cross-Origin-Resource-Policy "same-origin"
     # Remove server header
     -Server
+    # NOTE: X-XSS-Protection intentionally omitted — the header is deprecated, removed from
+    # modern browsers, and can cause security regressions in some configurations. CSP covers
+    # the same threat model.
   }
 
   # Cache static assets aggressively

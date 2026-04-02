@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FAQ — IronWorks</title>
-  <meta name="description" content="Frequently asked questions about IronWorks — the AI workforce orchestration platform. Learn about agents, pricing, security, integrations, and more.">
-  <meta property="og:title" content="FAQ — IronWorks">
-  <meta property="og:description" content="Everything you need to know about IronWorks. Agents, billing, security, integrations, and playbooks explained.">
+  <title>IronWorks FAQ — How Do AI Agents Work? Pricing, Security & More</title>
+  <meta name="description" content="IronWorks frequently asked questions: How do AI agents work? What does BYOK mean? How many agents can I deploy? Pricing, security, team packs, and playbooks answered.">
+  <meta name="keywords" content="how do AI agents work, AI agent platform FAQ, IronWorks questions, BYOK AI platform, AI workforce management FAQ, AI agent pricing questions">
+  <meta property="og:title" content="IronWorks FAQ — How AI Agents Work, Pricing, Security & More">
+  <meta property="og:description" content="Answers to the most common questions about IronWorks: agents, pricing, security, team packs, playbooks, and integrations. Everything in one place.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ironworksapp.ai/faq">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="FAQ — IronWorks">
-  <meta name="twitter:description" content="Everything you need to know about IronWorks.">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks FAQ — How AI Agents Work, Pricing & More">
+  <meta name="twitter:description" content="How do AI agents work? What is BYOK? Answers to every IronWorks question — pricing, security, team packs, and integrations.">
   <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/faq">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/faq">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/faq">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -24,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -37,35 +45,74 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
   <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    details summary { list-style: none; cursor: pointer; }
-    details summary::-webkit-details-marker { display: none; }
-    details[open] .chevron { transform: rotate(180deg); }
-    .chevron { transition: transform 0.2s; }
     details[open] .summary-text { color: #fff; }
   </style>
 
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "mainEntity": [
+    "@graph": [
       {
-        "@type": "Question",
-        "name": "What is IronWorks?",
-        "acceptedAnswer": { "@type": "Answer", "text": "IronWorks is an AI workforce orchestration platform. You deploy a full team of AI agents — CEO, CTO, engineers, marketers, HR, finance — and manage them from a single dashboard. Agents have real roles, operating instructions, and reporting structures." }
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "FAQ", "item": "https://ironworksapp.ai/faq" }
+        ]
       },
       {
-        "@type": "Question",
-        "name": "Do I need my own API keys?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Yes. IronWorks uses the API keys you supply to call LLM providers such as OpenAI, Anthropic, and Google. You pay those providers directly at their published rates. IronWorks does not mark up LLM costs." }
-      },
-      {
-        "@type": "Question",
-        "name": "What are team packs?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Team packs are pre-configured sets of AI agents with defined roles, skills, and operating instructions. The Startup pack includes CEO, CTO, Software Engineer, Product Manager, and Support roles. The Agency pack adds creative, marketing, and client management roles. The Enterprise pack adds finance, legal, HR, and operations roles." }
+        "@type": "FAQPage",
+        "url": "https://ironworksapp.ai/faq",
+        "name": "IronWorks FAQ — AI Workforce Management Questions Answered",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is IronWorks?",
+            "acceptedAnswer": { "@type": "Answer", "text": "IronWorks is an AI workforce management platform. You deploy a full team of AI agents — CEO, CTO, engineers, marketers, HR, finance — and manage them from a single dashboard. Agents have real roles, operating instructions, and reporting structures in an org chart." }
+          },
+          {
+            "@type": "Question",
+            "name": "How do AI agents work in IronWorks?",
+            "acceptedAnswer": { "@type": "Answer", "text": "IronWorks agents run on a heartbeat loop — a periodic cycle where each agent reviews its assigned tasks, open issues, and goals, then decides what to do next. Agents delegate work down the org chart, escalate blockers to managers, and report results in the War Room. They run continuously without needing manual prompts." }
+          },
+          {
+            "@type": "Question",
+            "name": "Do I need my own API keys?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. IronWorks uses a bring-your-own-key (BYOK) model. You connect API keys from OpenAI, Anthropic, Google Gemini, or other supported providers. Your agents consume tokens from your accounts at standard provider rates — IronWorks adds zero markup. Your monthly subscription covers the platform only." }
+          },
+          {
+            "@type": "Question",
+            "name": "What are team packs?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Team packs are pre-configured sets of AI agents with defined roles, skills, and operating instructions. The Startup pack includes CEO, CTO, Software Engineer, Product Manager, and Support roles. The Agency pack adds creative, marketing, and client management roles. The Enterprise pack adds finance, legal, HR, and operations roles." }
+          },
+          {
+            "@type": "Question",
+            "name": "How much does IronWorks cost?",
+            "acceptedAnswer": { "@type": "Answer", "text": "IronWorks starts at $79/month for the Starter plan (5 projects, 1 company, unlimited AI agents). Growth is $199/month (25 projects, 2 companies). Business is $599/month (unlimited projects, 5 companies, API access, client portal). Annual billing saves 20%." }
+          },
+          {
+            "@type": "Question",
+            "name": "How many AI agents can I deploy?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Unlimited on all plans. There is no per-agent fee. You can create as many agents as your org chart requires — engineers, marketers, support staff, executives — without any additional charge beyond your subscription." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is IronWorks secure?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. IronWorks uses tenant isolation at the database level (row-level security), AES-256-GCM encryption at rest, TLS 1.3 in transit, and a BYOK model that minimizes data retention. API keys are stored encrypted and never exposed in plaintext. Full details at ironworksapp.ai/security." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I use IronWorks for client work?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. The Growth plan supports 2 companies and suits small agencies. The Business plan supports 5 companies and includes a client portal feature. Many users run an internal company for their own operations and separate isolated companies for each client engagement." }
+          },
+          {
+            "@type": "Question",
+            "name": "What AI models can agents use?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Any model available through your connected API keys. Common choices include GPT-4o and GPT-4o-mini (OpenAI), Claude Sonnet and Claude Haiku (Anthropic), and Gemini Pro (Google). You configure which model each agent uses, so you can optimize for capability versus cost by role." }
+          }
+        ]
       }
     ]
   }
@@ -73,11 +120,13 @@
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
           <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
           <path d="m18 15 4-4"/>
           <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
@@ -93,8 +142,8 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/setup" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
     </div>
@@ -110,12 +159,14 @@
     </div>
   </nav>
 
+  <main id="main-content">
+
   <!-- Hero -->
   <section class="pt-32 pb-12 md:pt-40 md:pb-16">
     <div class="max-w-3xl mx-auto px-6">
       <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">FAQ</p>
       <h1 class="text-4xl md:text-5xl font-bold tracking-tighter mb-5">
-        <span class="gradient-text">Frequently asked</span><br>
+        <span class="gradient-text-hero">Frequently asked</span><br>
         <span class="text-white">questions.</span>
       </h1>
       <p class="text-lg text-zinc-400">
@@ -360,7 +411,7 @@
   <!-- CTA -->
   <section class="py-16 md:py-24 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6 text-center">
-      <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-4">Still have questions?</h2>
+      <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-4">Still have questions?</h2>
       <p class="text-zinc-400 mb-8">Email us at <a href="mailto:support@ironworksapp.ai" class="text-blue-400 hover:text-blue-300 transition-colors">support@ironworksapp.ai</a> or read the full documentation.</p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
         <a href="/setup" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
@@ -373,19 +424,21 @@
     </div>
   </section>
 
+  </main>
+
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
-          <div class="flex items-center gap-2 mb-3">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500">
+          <a href="/" class="flex items-center gap-2 mb-3" aria-label="IronWorks home">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true">
               <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
               <path d="m18 15 4-4"/>
               <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
             </svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
@@ -403,5 +456,6 @@
     </div>
   </footer>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>

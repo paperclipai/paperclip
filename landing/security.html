@@ -3,19 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Security — IronWorks</title>
-  <meta name="description" content="IronWorks security overview. Tenant isolation, AES-256-GCM encryption, BYOK, data processor model, infrastructure hardening, and compliance roadmap.">
-  <meta property="og:title" content="Security — IronWorks">
-  <meta property="og:description" content="122 isolation tests. AES-256-GCM encryption. BYOK. Your data is yours. IronWorks security explained.">
+  <title>IronWorks Security — Enterprise AI Platform Security & Data Privacy</title>
+  <meta name="description" content="IronWorks enterprise AI security: AES-256-GCM encryption, tenant isolation, BYOK data minimization, TLS 1.3, RBAC, and 2FA. Your AI platform security details explained.">
+  <meta name="keywords" content="AI platform security, enterprise AI security, AI agent data privacy, BYOK security, tenant isolation AI, AI workforce security, IronWorks security">
+  <meta property="og:title" content="IronWorks Security — Enterprise AI Platform Security & Privacy">
+  <meta property="og:description" content="AES-256-GCM encryption · Tenant isolation · BYOK data minimization · TLS 1.3 · RBAC · 2FA. Your AI workforce data stays yours. Full security details inside.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ironworksapp.ai/security">
+  <meta property="og:site_name" content="IronWorks">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Security — IronWorks">
-  <meta name="twitter:description" content="122 isolation tests. AES-256-GCM encryption. BYOK. Your data is yours.">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="IronWorks Security — Enterprise AI Security & Privacy">
+  <meta name="twitter:description" content="AES-256-GCM, tenant isolation, BYOK minimization, TLS 1.3, RBAC, 2FA. IronWorks enterprise AI platform security.">
   <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/security">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/security">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/security">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -24,6 +31,7 @@
         extend: {
           fontFamily: {
             sans: ['Geist', 'system-ui', '-apple-system', 'sans-serif'],
+            display: ['Cabinet Grotesk', 'Geist', 'system-ui', 'sans-serif'],
             mono: ['Geist Mono', 'JetBrains Mono', 'monospace'],
           },
           colors: {
@@ -37,36 +45,45 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Geist', system-ui, sans-serif; background: #0a0a0a; color: #e4e4e7; }
-    .gradient-text { background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .card-glow:hover { box-shadow: 0 0 40px rgba(59, 130, 246, 0.08); }
-    .feature-icon { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: #1e1e1e; border: 1px solid #282828; }
-    .stat-number { font-variant-numeric: tabular-nums; }
-  </style>
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
+
 
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "WebPage",
-    "name": "IronWorks Security",
-    "description": "Comprehensive security overview for the IronWorks AI workforce platform including tenant isolation, encryption, and compliance.",
-    "url": "https://ironworksapp.ai/security",
-    "publisher": {
-      "@type": "Organization",
-      "name": "Steel Motion LLC",
-      "url": "https://steelmotionllc.com"
-    }
-  }
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Security", "item": "https://ironworksapp.ai/security" }
+        ]
+      },
+      {
+        "@type": "WebPage",
+        "name": "IronWorks Security — Enterprise AI Platform Security & Data Privacy",
+        "description": "Comprehensive security overview for the IronWorks AI workforce platform including tenant isolation, AES-256-GCM encryption, BYOK data minimization, and compliance.",
+        "url": "https://ironworksapp.ai/security",
+        "publisher": { "@type": "Organization", "name": "Steel Motion LLC", "url": "https://steelmotionllc.com" },
+        "about": [
+          { "@type": "Thing", "name": "Data Encryption", "description": "AES-256-GCM encryption at rest, TLS 1.3 in transit" },
+          { "@type": "Thing", "name": "Tenant Isolation", "description": "Row-level security ensuring no cross-tenant data access" },
+          { "@type": "Thing", "name": "BYOK Model", "description": "Bring-your-own-key minimizes data retention on IronWorks servers" }
+        ]
+      }
+    ]
   </script>
 </head>
 <body class="antialiased">
 
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
   <!-- Nav -->
-  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl">
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation">
     <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2.5">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
           <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
           <path d="m18 15 4-4"/>
           <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
@@ -76,14 +93,14 @@
       <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
         <a href="/#features" class="hover:text-white transition-colors">Features</a>
         <a href="/pricing" class="hover:text-white transition-colors">Pricing</a>
-        <a href="/security" class="text-white transition-colors">Security</a>
+        <a href="/security" class="text-white transition-colors" aria-current="page">Security</a>
         <a href="/docs" class="hover:text-white transition-colors">Docs</a>
       </div>
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/setup" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button onclick="document.getElementById('mobile-nav').classList.toggle('hidden')" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
     </div>
@@ -99,40 +116,46 @@
     </div>
   </nav>
 
+  <main id="main-content">
+
   <!-- Hero -->
-  <section class="pt-32 pb-16 md:pt-40 md:pb-20">
+  <section class="pt-36 pb-20 md:pt-44 md:pb-24">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-3xl">
         <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Security</p>
-        <h1 class="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tighter mb-6">
-          <span class="gradient-text">Built for businesses</span><br>
-          <span class="text-white">that need to trust their tools.</span>
+        <h1 class="font-display text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tighter leading-[0.9] mb-8">
+          <span class="gradient-text-hero">122 isolation tests.</span><br>
+          <span class="text-white">Zero cross-tenant leaks. Ever.</span>
         </h1>
-        <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl">
-          Your data is yours. Steel Motion hosts the platform, you control the data. Every customer is isolated at the application layer with verifiable, automated security testing.
+        <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-8">
+          Your data is yours. Steel Motion hosts the platform, you control the data. 122 automated tests verify tenant isolation on every deploy. A single failure blocks the release.
         </p>
+        <a href="/setup" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Start Free Trial
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
       </div>
     </div>
   </section>
 
   <!-- Stats -->
-  <section class="pb-16 md:pb-24 border-b border-white/[0.06]">
+  <section class="pb-20 md:pb-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-8">
         <div>
-          <div class="stat-number text-4xl font-bold text-white mb-2">122</div>
+          <div class="stat-number font-display text-5xl font-extrabold text-white mb-2">122</div>
           <div class="text-sm text-zinc-400">Automated isolation tests</div>
         </div>
         <div>
-          <div class="stat-number text-4xl font-bold text-white mb-2">AES-256</div>
+          <div class="stat-number font-display text-5xl font-extrabold text-white mb-2">AES-256</div>
           <div class="text-sm text-zinc-400">Encryption for all secrets</div>
         </div>
         <div>
-          <div class="stat-number text-4xl font-bold text-white mb-2">TLS 1.2+</div>
+          <div class="stat-number font-display text-5xl font-extrabold text-white mb-2">TLS 1.2+</div>
           <div class="text-sm text-zinc-400">All data in transit</div>
         </div>
         <div>
-          <div class="stat-number text-4xl font-bold text-white mb-2">0</div>
+          <div class="stat-number font-display text-5xl font-extrabold text-white mb-2">0</div>
           <div class="text-sm text-zinc-400">LLM keys ever logged</div>
         </div>
       </div>
@@ -140,20 +163,20 @@
   </section>
 
   <!-- Tenant Isolation -->
-  <section id="isolation" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="isolation" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-16 items-start">
         <div>
           <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Tenant Isolation</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Every customer lives in their own silo</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Every customer lives in their own silo</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             IronWorks enforces company-level data isolation at the application layer. Every database query, file access, and API response is scoped to a <code class="bg-surface-2 px-1.5 py-0.5 rounded text-xs font-mono text-zinc-300">company_id</code>. There is no shared context between tenants.
           </p>
           <p class="text-zinc-400 leading-relaxed mb-6">
-            Isolation is not just a design principle — it is tested automatically. The test suite includes 122 HTTP-level tests that attempt cross-tenant access across every major endpoint. These run on every deployment. A single test failure blocks the release.
+            122 HTTP-level tests attempt cross-tenant access on every deploy. A single failure blocks the release. This is not a design principle -- it is a tested guarantee.
           </p>
           <p class="text-zinc-400 leading-relaxed">
-            This means a compromised account at one company cannot access data belonging to any other company, even if it somehow obtained valid credentials from that company.
+            A compromised account at one company cannot access another company's data, even with valid credentials.
           </p>
         </div>
         <div class="space-y-4">
@@ -175,7 +198,7 @@
   </section>
 
   <!-- Encryption -->
-  <section id="encryption" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="encryption" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-16 items-start">
         <div class="order-2 md:order-1 space-y-4">
@@ -194,7 +217,7 @@
         </div>
         <div class="order-1 md:order-2">
           <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Encryption</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Your secrets stay secret</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Your secrets stay secret</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             The most sensitive data IronWorks holds is your LLM API keys. These keys grant access to your provider accounts and could incur unbounded charges if leaked. IronWorks treats them accordingly.
           </p>
@@ -210,52 +233,52 @@
   </section>
 
   <!-- Authentication -->
-  <section id="authentication" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="authentication" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-3xl">
         <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Authentication</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Secure sessions, role-based access</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Secure sessions, role-based access</h2>
         <p class="text-zinc-400 leading-relaxed mb-10">
           IronWorks authentication is powered by Better Auth, a battle-tested authentication library with a strong security track record. Sessions are managed server-side with cryptographically signed tokens and short expiration windows.
         </p>
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z"/></svg>
           </div>
           <h3 class="font-semibold mb-2 text-sm">Password authentication</h3>
           <p class="text-zinc-500 text-sm">Passwords are hashed using bcrypt with a work factor of 12. Plaintext passwords are never stored or logged at any point in the authentication flow.</p>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/></svg>
           </div>
           <h3 class="font-semibold mb-2 text-sm">Session security</h3>
           <p class="text-zinc-500 text-sm">Sessions use HTTP-only, Secure, SameSite=Strict cookies. Session tokens are rotated on privilege changes. Logout invalidates the session server-side immediately.</p>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-violet-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z"/></svg>
           </div>
           <h3 class="font-semibold mb-2 text-sm">Role-based access control</h3>
           <p class="text-zinc-500 text-sm">Users are assigned roles within a company: Owner, Admin, or Member. Each role has a defined permission set. Permission checks are enforced at the API layer, not just the UI.</p>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
           </div>
           <h3 class="font-semibold mb-2 text-sm">Rate limiting and brute-force protection</h3>
           <p class="text-zinc-500 text-sm">Authentication endpoints are rate-limited at the application layer. Repeated failed login attempts trigger a progressive lockout. IP-level blocking is applied for sustained attack patterns.</p>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg>
           </div>
           <h3 class="font-semibold mb-2 text-sm">Full audit trail</h3>
           <p class="text-zinc-500 text-sm">Every significant action is logged: logins, agent config changes, data exports, permission changes, API key additions and deletions. Audit logs are append-only and retained for 90 days.</p>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all duration-300">
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 md:p-8 card-glow card-hover transition-all duration-300">
           <div class="feature-icon mb-4">
             <svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7.864 4.243A7.5 7.5 0 0119.5 10.5c0 2.92-.556 5.709-1.568 8.268M5.742 6.364A7.465 7.465 0 004.5 10.5a7.464 7.464 0 01-1.15 3.993m1.989 3.559A11.209 11.209 0 008.25 10.5a3.75 3.75 0 117.5 0c0 .527-.021 1.049-.064 1.565M12 10.5a14.94 14.94 0 01-3.6 9.75m6.633-4.596a18.666 18.666 0 01-2.485 5.33"/></svg>
           </div>
@@ -267,12 +290,12 @@
   </section>
 
   <!-- Data Processor Model -->
-  <section id="data-model" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="data-model" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-16 items-start">
         <div>
           <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Data Processor Model</p>
-          <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">You are the controller. We are the processor.</h2>
+          <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">You are the controller. We are the processor.</h2>
           <p class="text-zinc-400 leading-relaxed mb-6">
             Steel Motion LLC operates as a data processor under your instructions as the data controller. This is not marketing language — it is the legal framework that governs our relationship with your data and is formalized in our <a href="/dpa" class="text-blue-400 hover:text-blue-300 transition-colors">Data Processing Agreement</a>.
           </p>
@@ -306,11 +329,11 @@
   </section>
 
   <!-- Infrastructure -->
-  <section id="infrastructure" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="infrastructure" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-3xl mb-12">
         <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Infrastructure</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Dedicated infrastructure, not shared cloud</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Dedicated infrastructure, not shared cloud</h2>
         <p class="text-zinc-400 leading-relaxed">
           IronWorks runs on a dedicated virtual dedicated server, not a shared hosting environment. This gives us direct control over the operating system, firewall rules, and security configuration — control that is not available in most managed cloud platforms.
         </p>
@@ -345,11 +368,11 @@
   </section>
 
   <!-- Legal Compliance -->
-  <section id="compliance" class="py-16 md:py-24 border-b border-white/[0.06]">
+  <section id="compliance" class="py-20 md:py-28 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-3xl mb-12">
         <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Legal and Compliance</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Clear agreements, no surprises</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Clear agreements, no surprises</h2>
         <p class="text-zinc-400 leading-relaxed">
           All legal documents governing the IronWorks service are publicly available and written in plain language. There are no hidden clauses granting us rights to your data beyond what is required to operate the service.
         </p>
@@ -400,11 +423,11 @@
   </section>
 
   <!-- SOC 2 Roadmap -->
-  <section id="roadmap" class="py-16 md:py-24">
+  <section id="roadmap" class="py-20 md:py-28">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-3xl">
         <p class="text-sm font-medium text-blue-400 tracking-wide uppercase mb-4">Compliance Roadmap</p>
-        <h2 class="text-2xl md:text-3xl font-bold tracking-tight mb-6">Where we are headed</h2>
+        <h2 class="font-display text-2xl md:text-3xl font-bold tracking-tight mb-6">Where we are headed</h2>
         <p class="text-zinc-400 leading-relaxed mb-8">
           IronWorks is an early-stage platform. We are building the security and compliance program from a strong foundation, not retrofitting it. The following milestones are on our roadmap:
         </p>
@@ -471,19 +494,38 @@
     </div>
   </section>
 
+  <!-- CTA -->
+  <section class="py-24 md:py-32 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6 text-center">
+      <h2 class="text-3xl md:text-4xl font-bold tracking-tight mb-4">Security you can verify, not just trust</h2>
+      <p class="text-zinc-400 text-lg mb-8 max-w-xl mx-auto">122 tenant isolation tests. AES-256-GCM encryption. Zero API keys logged. Try it free for 14 days.</p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="/setup" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-8 py-4 rounded-lg transition-colors text-lg">
+          Start Free Trial
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/docs/security-and-privacy.html" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-8 py-4 rounded-lg transition-colors text-lg">
+          Read Security Docs
+        </a>
+      </div>
+    </div>
+  </section>
+
+  </main>
+
   <!-- Footer -->
-  <footer class="border-t border-white/[0.06] py-12">
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="flex flex-col md:flex-row justify-between gap-8">
         <div>
-          <div class="flex items-center gap-2 mb-3">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500">
+          <a href="/" class="flex items-center gap-2 mb-3" aria-label="IronWorks home">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true">
               <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
               <path d="m18 15 4-4"/>
               <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
             </svg>
             <span class="font-semibold">IronWorks</span>
-          </div>
+          </a>
           <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
         </div>
         <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
@@ -501,5 +543,6 @@
     </div>
   </footer>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>
