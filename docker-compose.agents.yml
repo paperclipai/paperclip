@@ -1,0 +1,51 @@
+# Compose overlay for Claude Code & OpenCode Docker integration.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.agents.yml up -d
+#
+# Or set COMPOSE_FILE in your .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.agents.yml
+#
+# Prerequisites:
+#   1. Run claude-code-docker   (creates claude-bin & claude-config volumes)
+#   2. Run opencode-docker      (creates opencode-bin & opencode-config volumes)
+#   3. Copy .env.agents.example to .env and fill in your volume names + API key
+#
+# The upstream Dockerfile already installs claude-code, codex and opencode-ai
+# globally, so the shared volumes just provide pre-authenticated credentials
+# and (optionally) a pinned binary version.
+
+services:
+  server:
+    environment:
+      # Prepend agent CLI directories so `claude` and `opencode` are on PATH
+      PATH: /claude-bin/bin:/opencode-bin/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Writable config dir — credentials are copied here from the shared
+      # volume on startup by docker-agents-entrypoint.sh
+      CLAUDE_CONFIG_DIR: /paperclip/.claude-config
+      OPENCODE_CONFIG_DIR: /opencode-config
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      # ── Claude Code integration (from claude-code-docker) ────────────
+      - claude-bin:/claude-bin:ro
+      - claude-config:/claude-config-shared:ro
+      # ── OpenCode integration (from opencode-docker) ──────────────────
+      - opencode-bin:/opencode-bin:ro
+      - opencode-config:/opencode-config:ro
+      # ── Wrapper entrypoint that bootstraps Claude config ─────────────
+      - ./docker-agents-entrypoint.sh:/usr/local/bin/docker-agents-entrypoint.sh:ro
+    entrypoint: ["docker-agents-entrypoint.sh"]
+
+volumes:
+  claude-bin:
+    name: "${CLAUDE_BIN_VOLUME:-claude-bin}"
+    external: true
+  claude-config:
+    name: "${CLAUDE_CONFIG_VOLUME:-claude-config}"
+    external: true
+  opencode-bin:
+    name: "${OPENCODE_BIN_VOLUME:-opencode-bin}"
+    external: true
+  opencode-config:
+    name: "${OPENCODE_CONFIG_VOLUME:-opencode-config}"
+    external: true

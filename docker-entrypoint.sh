@@ -22,31 +22,8 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-# Always ensure /paperclip is owned by node — Docker named volumes may
-# be initialised as root even when the UID/GID has not changed.
-chown -R node:node /paperclip
-
-# ── Claude config bootstrap ──────────────────────────────────────────
-# Claude CLI needs a WRITABLE config directory for sessions, analytics,
-# and settings. The shared credentials volume from claude-code-docker is
-# mounted read-only at /claude-config-shared. We copy credentials into a
-# writable directory so Claude can both read creds and write runtime data.
-CLAUDE_WRITABLE="${CLAUDE_CONFIG_DIR:-/paperclip/.claude-config}"
-mkdir -p "$CLAUDE_WRITABLE"
-chown node:node "$CLAUDE_WRITABLE"
-
-if [ -d /claude-config-shared ]; then
-    for f in /claude-config-shared/.credentials.json \
-             /claude-config-shared/settings.json \
-             /claude-config-shared/statsig.json; do
-        if [ -f "$f" ]; then
-            cp -a "$f" "$CLAUDE_WRITABLE/" 2>/dev/null || true
-            chown node:node "$CLAUDE_WRITABLE/$(basename "$f")" 2>/dev/null || true
-        fi
-    done
-    echo "Claude config: copied credentials from shared volume to $CLAUDE_WRITABLE"
-else
-    echo "Claude config: no shared volume at /claude-config-shared (using API key or built-in claude)"
+if [ "$changed" = "1" ]; then
+    chown -R node:node /paperclip
 fi
 
 exec gosu node "$@"

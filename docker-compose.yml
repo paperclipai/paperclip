@@ -27,25 +27,8 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # Make `claude` and `opencode` available as commands anywhere in the container
-      PATH: /claude-bin/bin:/opencode-bin/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      # Writable config dir — credentials are copied here from the shared volume on startup
-      CLAUDE_CONFIG_DIR: /paperclip/.claude-config
-      OPENCODE_CONFIG_DIR: /opencode-config
     volumes:
       - paperclip-data:/paperclip
-      - paperclip-claude-adi6ix_claude-bin:/claude-bin:ro
-      # Mount the credentials volume read-only at a staging path — the entrypoint
-      # copies credentials into the writable CLAUDE_CONFIG_DIR on startup.
-      # Claude CLI needs write access to its config dir for sessions and analytics.
-      - paperclip-claude-adi6ix_claude-config:/claude-config-shared:ro
-      # ── OpenCode integration ─────────────────────────────────────────
-      # Mount the binary volume read-only — your app should never write here
-      - paperclip-opencode-kczeg5_opencode-bin:/opencode-bin:ro
-      # Mount the config volume read-only — opencode reads credentials from here
-      - paperclip-opencode-kczeg5_opencode-config:/opencode-config:ro
-      # ─────────────────────────────────────────────────────────────────
     depends_on:
       db:
         condition: service_healthy
@@ -53,11 +36,3 @@ services:
 volumes:
   pgdata:
   paperclip-data:
-  paperclip-claude-adi6ix_claude-bin:
-    external: true
-  paperclip-claude-adi6ix_claude-config:
-    external: true
-  paperclip-opencode-kczeg5_opencode-bin:
-    external: true
-  paperclip-opencode-kczeg5_opencode-config:
-    external: true
