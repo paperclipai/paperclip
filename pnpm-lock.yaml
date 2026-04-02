@@ -465,6 +465,9 @@ importers:
       '@paperclipai/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
+      '@paperclipai/adapter-dashscope-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/dashscope-local
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
