@@ -1,11 +1,27 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, forwardRef, useImperativeHandle, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: () => null,
+  MarkdownEditor: forwardRef<
+    { focus: () => void },
+    { value: string; onChange: (value: string) => void }
+  >(function MarkdownEditorMock(props, ref) {
+    const taRef = useRef<HTMLTextAreaElement>(null);
+    useImperativeHandle(ref, () => ({
+      focus: () => taRef.current?.focus(),
+    }));
+    return (
+      <textarea
+        ref={taRef}
+        data-testid="multiline-md-mock"
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+    );
+  }),
 }));
 
 import { InlineEditor } from "./InlineEditor";
@@ -100,5 +116,39 @@ describe("InlineEditor", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("multiline nullable clear uses autosave path (shows Saved after blur)", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+
+    act(() => {
+      root.render(<InlineEditor value="hello" multiline nullable onSave={onSave} />);
+    });
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-testid="multiline-md-mock"]');
+    expect(textarea).not.toBeNull();
+
+    act(() => {
+      textarea!.focus();
+    });
+    act(() => {
+      setNativeTextareaValue(textarea!, "");
+    });
+    await act(async () => {
+      outside.focus();
+      await Promise.resolve();
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith("");
+    expect(container.textContent).toContain("Saved");
+
+    act(() => {
+      root.unmount();
+    });
+    outside.remove();
   });
 });

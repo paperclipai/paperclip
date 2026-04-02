@@ -97,6 +97,22 @@ export function InlineEditor({
     }
   }, [draft, multiline, nullable, onSave, value]);
 
+  /** Multiline blur/submit: show autosave indicator when persisting (including nullable clear). */
+  const finalizeMultilineBlurOrSubmit = useCallback(() => {
+    const trimmed = draft.trim();
+    if (trimmed === value) {
+      reset();
+      void commit();
+      return;
+    }
+    if (!trimmed && !nullable) {
+      reset();
+      void commit();
+      return;
+    }
+    void runSave(() => commit());
+  }, [commit, draft, nullable, reset, runSave, value]);
+
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && !multiline) {
       e.preventDefault();
@@ -159,13 +175,7 @@ export function InlineEditor({
             clearTimeout(autosaveDebounceRef.current);
           }
           setMultilineFocused(false);
-          const trimmed = draft.trim();
-          if (!trimmed || trimmed === value) {
-            reset();
-            void commit();
-            return;
-          }
-          void runSave(() => commit());
+          finalizeMultilineBlurOrSubmit();
         }}
         onKeyDown={handleKeyDown}
       >
@@ -180,13 +190,7 @@ export function InlineEditor({
           imageUploadHandler={imageUploadHandler}
           mentions={mentions}
           onSubmit={() => {
-            const trimmed = draft.trim();
-            if (!trimmed || trimmed === value) {
-              reset();
-              void commit();
-              return;
-            }
-            void runSave(() => commit());
+            finalizeMultilineBlurOrSubmit();
           }}
         />
         <div className="flex min-h-4 items-center justify-end pr-1">
