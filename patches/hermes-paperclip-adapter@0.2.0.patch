@@ -1,0 +1,56 @@
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+index 93cddf8243271f5fb3ab101617f9114257e41328..6431a056c7c54598cef838d697aea8ccf8cbb40c 100644
+--- a/dist/server/execute.js
++++ b/dist/server/execute.js
+@@ -41,6 +41,16 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
+ 
+ IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
+ 
++Command safety (mandatory):
++- Never pipe downloaded/remote content into interpreters or shells (no \`curl|python\`, \`curl|bash\`, \`curl|sh\`, \`curl|perl\`, \`wget|*\`).
++- Download to a local file first, then inspect/parse from that file.
++- Prefer \`jq\` for JSON filtering.
++
++Output style (mandatory):
++- Be concise. Keep heartbeat updates short and focused.
++- Do not print full scripts unless explicitly requested.
++- Summarize results in a few lines with key outcomes only.
++
+ Your Paperclip identity:
+   Agent ID: {{agentId}}
+   Company ID: {{companyId}}
+@@ -68,8 +78,9 @@ Title: {{taskTitle}}
+ {{#commentId}}
+ ## Comment on This Issue
+ 
+-Someone commented. Read it:
+-   \`curl -s "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
++Someone commented. Read it safely (no interpreter pipes):
++   \`curl -fsS -o /tmp/paperclip-comment.json "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}"\`
++   \`python3 -m json.tool /tmp/paperclip-comment.json\`
+ 
+ Address the comment, POST a reply if needed, then continue working.
+ {{/commentId}}
+@@ -77,16 +88,18 @@ Address the comment, POST a reply if needed, then continue working.
+ {{#noTask}}
+ ## Heartbeat Wake — Check for Work
+ 
+-1. List ALL open issues assigned to you (todo, backlog, in_progress):
+-   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"status\"]:>12} {i[\"priority\"]:>6} {i[\"title\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
++1. List ALL open issues assigned to you (todo, backlog, in_progress) safely:
++   \`curl -fsS -o /tmp/paperclip-issues.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}"\`
++   \`jq -r '.[] | select(.status != "done" and .status != "cancelled") | "\(.identifier) \(.status) \(.priority) \(.title)"' /tmp/paperclip-issues.json\`
+ 
+ 2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
+    - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
+    - Do the work in the project directory: {{projectName}}
+    - When done, mark complete and post a comment (see Workflow steps 2-4 above)
+ 
+-3. If no issues assigned to you, check for unassigned issues:
+-   \`curl -s "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\"identifier\"]} {i[\"title\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
++3. If no issues assigned to you, check for unassigned issues safely:
++   \`curl -fsS -o /tmp/paperclip-backlog.json "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog"\`
++   \`jq -r '.[] | select((.assigneeAgentId // "") == "") | "\(.identifier) \(.title)"' /tmp/paperclip-backlog.json\`
+    If you find a relevant issue, assign it to yourself:
+    \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
+ 
