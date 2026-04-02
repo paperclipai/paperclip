@@ -62,10 +62,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
-  function withContentPath<T extends { id: string }>(attachment: T) {
+  function withContentPath<T extends { id: string }>(attachment: T, req?: Request) {
+    const contentPath = `/api/attachments/${attachment.id}/content`;
+    const forwardedProto = req?.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    const protocol = forwardedProto || req?.protocol;
+    const host = req?.get("host");
+    const contentUrl = protocol && host ? `${protocol}://${host}${contentPath}` : null;
     return {
       ...attachment,
-      contentPath: `/api/attachments/${attachment.id}/content`,
+      contentPath,
+      contentUrl,
     };
   }
 
@@ -1677,7 +1683,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, issue.companyId);
     const attachments = await svc.listAttachments(issueId);
-    res.json(attachments.map(withContentPath));
+    res.json(attachments.map((attachment) => withContentPath(attachment, req)));
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
@@ -1768,7 +1774,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    res.status(201).json(withContentPath(attachment));
+    res.status(201).json(withContentPath(attachment, req));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
