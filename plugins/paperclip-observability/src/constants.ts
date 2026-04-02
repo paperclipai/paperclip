@@ -33,4 +33,7 @@ export const METRIC_NAMES = {
   companyBudgetUtilization: "paperclip.budget.company.utilization",
   budgetPausedAgents: "paperclip.budget.paused_agents",
   budgetPausedProjects: "paperclip.budget.paused_projects",
+
+  // Health scoring gauges (scheduled job)
+  agentHealthScore: "paperclip.agent.health.score",
 } as const;

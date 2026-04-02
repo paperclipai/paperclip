@@ -30,6 +30,10 @@ import {
   EventTelemetryRouter,
   type TelemetryContext,
 } from "./telemetry/router.js";
+import {
+  computeHealthScore,
+  type HealthScoreResult,
+} from "./health-score.js";
 
 // Metrics handlers
 import {
@@ -114,6 +118,16 @@ interface GovernanceSnapshot {
   pausedProjectCount: number;
 }
 let governanceSnapshots: GovernanceSnapshot[] = [];
+
+interface HealthScoreSnapshot {
+  agentId: string;
+  agentName: string;
+  agentRole: string;
+  companyId: string;
+  score: number;
+  healthStatus: string;
+}
+let healthScoreSnapshots: HealthScoreSnapshot[] = [];
 
 // ---------------------------------------------------------------------------
 // Router setup — register all handlers
@@ -384,6 +398,22 @@ const plugin: PaperclipPlugin = definePlugin({
       }
     });
 
+    const healthScoreGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.agentHealthScore,
+      { description: "Agent health score (0-100)" },
+    );
+    healthScoreGauge.addCallback((obs) => {
+      for (const snap of healthScoreSnapshots) {
+        obs.observe(snap.score, {
+          agent_id: snap.agentId,
+          agent_name: snap.agentName,
+          agent_role: snap.agentRole,
+          company_id: snap.companyId,
+          health_status: snap.healthStatus,
+        });
+      }
+    });
+
     } // end if (otel) — gauge registration
 
     // ----- Register collect-metrics job (refreshes snapshots) -----
@@ -532,9 +562,35 @@ const plugin: PaperclipPlugin = definePlugin({
           companyCount: govSnapshots.length,
         });
 
+        // --- Compute agent health scores ---
+
+        const healthSnapshots: HealthScoreSnapshot[] = [];
+        for (const snap of snapshots) {
+          const result = computeHealthScore({
+            status: snap.status,
+            heartbeatAgeSec: snap.heartbeatAgeSec,
+            budgetMonthlyCents: snap.budgetMonthlyCents,
+            spentMonthlyCents: snap.spentMonthlyCents,
+            runSuccessRate: null, // TODO: compute from recent runs when run history API is available
+          });
+          healthSnapshots.push({
+            agentId: snap.agentId,
+            agentName: snap.agentName,
+            agentRole: snap.agentRole,
+            companyId: snap.companyId,
+            score: result.score,
+            healthStatus: result.healthStatus,
+          });
+        }
+
+        healthScoreSnapshots = healthSnapshots;
+        ctx.logger.info("Health score snapshots updated", {
+          agentCount: healthSnapshots.length,
+        });
+
         await ctx.activity.log({
           companyId: "",
-          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${eventsProcessed} events processed since startup`,
+          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
         });
       },
     );
