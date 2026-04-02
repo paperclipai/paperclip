@@ -1883,26 +1883,50 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+
+      // Hard time limit: if a run has been "running" for over 2 hours, kill it
+      // regardless of whether the process is alive. This prevents zombie runs
+      // from blocking the entire team indefinitely.
+      const HARD_LIMIT_MS = 2 * 60 * 60 * 1000; // 2 hours
+      const runAge = now.getTime() - (run.startedAt ? new Date(run.startedAt).getTime() : new Date(run.createdAt).getTime());
+      const exceededHardLimit = runAge > HARD_LIMIT_MS;
+
       if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
-            });
+        if (exceededHardLimit && run.processPid) {
+          // Kill the entire process group — it's been running too long
+          const pid = run.processPid;
+          try {
+            process.kill(-pid, "SIGTERM");
+            setTimeout(() => {
+              try { process.kill(-pid, "SIGKILL"); } catch { /* already dead */ }
+            }, 15_000);
+          } catch {
+            // Process group may not exist, try single process
+            try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
           }
+          logger.warn({ runId: run.id, pid: run.processPid, ageMs: runAge }, "killed stale process exceeding 2h hard limit");
+          // Fall through to reap below
+        } else {
+          if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+            const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
+            const detachedRun = await setRunStatus(run.id, "running", {
+              error: detachedMessage,
+              errorCode: DETACHED_PROCESS_ERROR_CODE,
+            });
+            if (detachedRun) {
+              await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: detachedMessage,
+                payload: {
+                  processPid: run.processPid,
+                },
+              });
+            }
+          }
+          continue;
         }
-        continue;
       }
 
       const processLostDiagnosticContext = {

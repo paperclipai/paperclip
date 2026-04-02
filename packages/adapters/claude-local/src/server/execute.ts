@@ -34,6 +34,13 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const CLAUDE_FATAL_STDERR_RE =
+  /token[_ ]expired|token has expired|authentication_error|AuthenticationError|invalid_api_key|invalid api key/i;
+
+export function isClaudeFatalStderr(accumulated: string): boolean {
+  return CLAUDE_FATAL_STDERR_RE.test(accumulated);
+}
+
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
@@ -473,6 +480,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
+      isFatalStderr: isClaudeFatalStderr,
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);

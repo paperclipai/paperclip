@@ -10,6 +10,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  fatalStderr: boolean;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -759,6 +760,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     stdin?: string;
+    isFatalStderr?: (accumulatedStderr: string) => boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -806,6 +808,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec });
 
         let timedOut = false;
+        let fatalStderr = false;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -823,12 +826,41 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        // Post-result kill: after receiving a final result from the agent,
+        // kill the entire process group after a grace period instead of waiting
+        // for natural exit (which hangs if the agent left child processes running).
+        let postResultKillTimer: ReturnType<typeof setTimeout> | null = null;
+        const POST_RESULT_GRACE_SEC = 10;
+
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+
+          // Detect final result line — kill process group after grace period
+          if (text.includes('"type":"result"') && text.includes('"subtype":"success"')) {
+            if (!postResultKillTimer && typeof child.pid === "number") {
+              const pid = child.pid;
+              postResultKillTimer = setTimeout(() => {
+                if (!child.killed) {
+                  try {
+                    process.kill(-pid, "SIGTERM");
+                  } catch {
+                    // Process group may already be gone
+                  }
+                  setTimeout(() => {
+                    try {
+                      if (!child.killed) process.kill(-pid, "SIGKILL");
+                    } catch {
+                      // Already dead
+                    }
+                  }, Math.max(1, opts.graceSec) * 1000);
+                }
+              }, POST_RESULT_GRACE_SEC * 1000);
+            }
+          }
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
@@ -837,10 +869,36 @@ export async function runChildProcess(
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+
+          // Detect fatal stderr patterns — kill process immediately
+          if (!fatalStderr && opts.isFatalStderr?.(stderr)) {
+            fatalStderr = true;
+            logChain = logChain
+              .then(() => opts.onLog("stderr", `\n[paperclip] Fatal stderr detected, killing process\n`))
+              .catch((err) => onLogError(err, runId, "failed to log fatal stderr notice"));
+            if (timeout) clearTimeout(timeout);
+            if (postResultKillTimer) clearTimeout(postResultKillTimer);
+            if (typeof child.pid === "number" && !child.killed) {
+              const pid = child.pid;
+              try {
+                process.kill(-pid, "SIGTERM");
+              } catch {
+                // Process group may not exist
+              }
+              setTimeout(() => {
+                try {
+                  if (!child.killed) process.kill(-pid, "SIGKILL");
+                } catch {
+                  // Already dead
+                }
+              }, Math.max(1, opts.graceSec) * 1000);
+            }
+          }
         });
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          if (postResultKillTimer) clearTimeout(postResultKillTimer);
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -853,12 +911,14 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          if (postResultKillTimer) clearTimeout(postResultKillTimer);
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({
               exitCode: code,
               signal,
               timedOut,
+              fatalStderr,
               stdout,
               stderr,
               pid: child.pid ?? null,
