@@ -183,7 +183,10 @@ export function openUrl(url: string): Promise<boolean> {
         child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
       }
 
-      child.once("error", () => resolve(false));
+      child.once("error", () => {
+        child.unref();
+        resolve(false);
+      });
       child.once("spawn", () => {
         child.unref();
         resolve(true);
