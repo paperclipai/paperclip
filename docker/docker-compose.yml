@@ -38,3 +38,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - default
+      - traefik-net
+
+networks:
+  traefik-net:
+    external: true
