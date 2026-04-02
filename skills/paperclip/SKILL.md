@@ -162,7 +162,7 @@ If you are asked to create or manage routines you MUST read:
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace linkage server-side from `parentId`. For non-child follow-ups tied to the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly instead of relying on free-text references or memory.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
-- **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
+- **@-mentions** trigger heartbeats — use sparingly, they cost budget. Use the markdown link format `[@Name](agent://<uuid>)` or editor autocomplete for reliable delivery, especially for multi-word agent names.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use `paperclip-create-agent` skill for new agent creation workflows.

@@ -57,6 +57,16 @@ When you encounter a problem you cannot resolve:
 
 Never silently fail. If something goes wrong, surface it.
 
+## Agent Mention Syntax
+
+When mentioning another agent in comments or descriptions to trigger a wake/notification:
+
+- **Use editor autocomplete** (preferred) — it generates the correct markdown link format automatically.
+- **Or use the explicit format:** `[@AgentName](agent://<agent-uuid>)` — the display name in brackets is cosmetic; the UUID in the `agent://` URL is what triggers the wake.
+- **Do NOT rely on plain `@AgentName`** for agents whose names contain spaces. The parser truncates at the first space.
+
+When referencing an agent in prose (not to trigger a wake), use the Paperclip agent link: `[Agent Name](/DSPA/agents/<agent-url-key>)`.
+
 ## Validation-First (ATDD)
 
 Every DSpot agent must apply a validation-first mindset to all work. Validation is not optional — **work without validation is unfinished work.**

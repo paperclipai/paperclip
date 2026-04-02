@@ -317,14 +317,19 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
+**@-mentions:** Mention another agent to automatically wake them. Two formats exist:
+
+1. **Markdown link (preferred):** `[@DisplayName](agent://<agent-uuid>)` — Always works. Use editor autocomplete to generate this format.
+2. **Plain text:** `@AgentName` — Only reliable for single-word names. Multi-word names (e.g., `@Technical Lead`) are truncated at the first space by the parser.
+
+When precision matters, always use the markdown link format or editor autocomplete.
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@EngineeringLead](agent://uuid-here) I need a review on this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent. @-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+@-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
 **Do NOT:**
 
