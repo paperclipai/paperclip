@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -32,6 +33,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
+import { looksLikeMarkdownPaste, normalizePastedMarkdown } from "../lib/markdownPaste";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -167,6 +169,17 @@ function detectMention(container: HTMLElement): MentionState | null {
   };
 }
 
+function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
+  if (!container) return false;
+  const selection = window.getSelection();
+  const anchorNode = selection?.anchorNode;
+  if (!anchorNode || !container.contains(anchorNode)) return false;
+  const anchorElement = anchorNode.nodeType === Node.ELEMENT_NODE
+    ? anchorNode as HTMLElement
+    : anchorNode.parentElement;
+  return Boolean(anchorElement?.closest("pre, code"));
+}
+
 function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
@@ -199,11 +212,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const editorRef = useRef<MDXEditorMethods | null>(null);
+  const ref = useRef<MDXEditorMethods>(null);
   const latestValueRef = useRef(value);
-  const latestPropValueRef = useRef(value);
-  const pendingExternalValueRef = useRef<string | null>(null);
-  const isFocusedRef = useRef(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -239,7 +249,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
-      editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
   }), []);
 
@@ -266,10 +276,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
-                editorRef.current?.setMarkdown(updated);
+                ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
-                  editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
+                  ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
               }
             }, 100);
@@ -303,29 +313,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
-  const handleEditorRef = useCallback((instance: MDXEditorMethods | null) => {
-    editorRef.current = instance;
-    if (!instance) return;
-
-    const pendingValue = pendingExternalValueRef.current;
-    if (pendingValue !== null && pendingValue !== latestValueRef.current) {
-      instance.setMarkdown(pendingValue);
-      latestValueRef.current = pendingValue;
-    }
-    pendingExternalValueRef.current = null;
-  }, []);
-
-  latestPropValueRef.current = value;
-
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      if (!editorRef.current) {
-        pendingExternalValueRef.current = value;
-        return;
-      }
-      editorRef.current.setMarkdown(value);
+      ref.current?.setMarkdown(value);
       latestValueRef.current = value;
-      pendingExternalValueRef.current = null;
     }
   }, [value]);
 
@@ -416,7 +407,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
-        editorRef.current?.setMarkdown(next);
+        ref.current?.setMarkdown(next);
         onChange(next);
       }
 
@@ -486,6 +477,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard || !ref.current) return;
+    const types = new Set(Array.from(clipboard.types));
+    if (types.has("Files") || types.has("text/html")) return;
+    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+
+    const text = normalizePastedMarkdown(clipboard.getData("text/plain"));
+    if (!looksLikeMarkdownPaste(text)) return;
+
+    event.preventDefault();
+    ref.current.insertMarkdown(text);
+  }, []);
 
   return (
     <div
@@ -563,35 +567,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         dragDepthRef.current = 0;
         setIsDragOver(false);
       }}
-      onFocusCapture={() => {
-        isFocusedRef.current = true;
-      }}
-      onBlurCapture={() => {
-        isFocusedRef.current = false;
-      }}
+      onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={handleEditorRef}
+        ref={ref}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
-          const externalValue = latestPropValueRef.current;
-          if (!isFocusedRef.current) {
-            if (next === externalValue) {
-              latestValueRef.current = externalValue;
-              return;
-            }
-
-            latestValueRef.current = externalValue;
-            if (editorRef.current) {
-              editorRef.current.setMarkdown(externalValue);
-              pendingExternalValueRef.current = null;
-            } else {
-              pendingExternalValueRef.current = externalValue;
-            }
-            return;
-          }
-
           latestValueRef.current = next;
           onChange(next);
         }}
