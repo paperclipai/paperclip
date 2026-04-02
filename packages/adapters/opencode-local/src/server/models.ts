@@ -6,7 +6,7 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { listOllamaModels, resolveOllamaHealthcheckUrl } from "./local-provider.js";
+import { isOllamaModel, listOllamaModels, resolveOllamaHealthcheckUrl } from "./local-provider.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
@@ -195,10 +195,36 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
   }
 
+  const normalizedEnv = normalizeEnv(input.env);
+  if (isOllamaModel(model)) {
+    const healthcheckUrl = resolveOllamaHealthcheckUrl({ model }, normalizedEnv);
+    if (!healthcheckUrl) {
+      throw new Error(
+        "OLLAMA_HOST or adapterConfig.healthcheckUrl is required for ollama/* models.",
+      );
+    }
+    const models = await listOllamaModels({
+      url: healthcheckUrl,
+      timeoutMs: 1500,
+    });
+    if (models.length === 0) {
+      throw new Error(
+        `No Ollama models were discovered from ${healthcheckUrl}. Verify connectivity and that Ollama is serving /api/tags.`,
+      );
+    }
+    if (!models.some((entry) => entry.id === model)) {
+      const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+      throw new Error(
+        `Configured Ollama model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+      );
+    }
+    return models;
+  }
+
   const models = await discoverOpenCodeModelsCached({
     command: input.command,
     cwd: input.cwd,
-    env: input.env,
+    env: normalizedEnv,
   });
 
   if (models.length === 0) {

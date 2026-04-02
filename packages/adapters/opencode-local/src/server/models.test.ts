@@ -56,4 +56,32 @@ describe("openCode models", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("validates ollama/* models against OLLAMA_HOST instead of opencode models", async () => {
+    const originalFetch = globalThis.fetch;
+    process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
+    process.env.OLLAMA_HOST = "http://100.64.0.10:11434";
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          models: [{ name: "qwen3:14b" }],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    try {
+      await expect(
+        ensureOpenCodeModelConfiguredAndAvailable({
+          model: "ollama/qwen3:14b",
+        }),
+      ).resolves.toEqual([
+        { id: "ollama/qwen3:14b", label: "ollama/qwen3:14b" },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
