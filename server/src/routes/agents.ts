@@ -62,6 +62,10 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import {
+  isHeartbeatExecutionWindowActive,
+  parseHeartbeatExecutionWindowPolicy,
+} from "../services/heartbeat-policy.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -356,9 +360,11 @@ export function agentRoutes(db: Db) {
 
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
     const heartbeat = asRecord(asRecord(runtimeConfig)?.heartbeat) ?? {};
+    const executionWindow = parseHeartbeatExecutionWindowPolicy(heartbeat);
     return {
       enabled: parseBooleanLike(heartbeat.enabled) ?? true,
       intervalSec: Math.max(0, parseNumberLike(heartbeat.intervalSec) ?? 0),
+      executionWindow,
     };
   }
 
@@ -892,6 +898,14 @@ export function agentRoutes(db: Db) {
           row.status !== "paused" &&
           row.status !== "terminated" &&
           row.status !== "pending_approval";
+        const timerHeartbeatConfigured = policy.enabled && policy.intervalSec > 0;
+        const executionWindowActive =
+          !policy.executionWindow ||
+          isHeartbeatExecutionWindowActive(policy.executionWindow, new Date());
+        const executionWindowBlocked =
+          timerHeartbeatConfigured &&
+          Boolean(policy.executionWindow) &&
+          !executionWindowActive;
 
         return {
           id: row.id,
@@ -906,7 +920,14 @@ export function agentRoutes(db: Db) {
           adapterType: row.adapterType,
           intervalSec: policy.intervalSec,
           heartbeatEnabled: policy.enabled,
-          schedulerActive: statusEligible && policy.enabled && policy.intervalSec > 0,
+          schedulerActive:
+            statusEligible &&
+            timerHeartbeatConfigured &&
+            !executionWindowBlocked,
+          executionWindowStartTime: policy.executionWindow?.startTime ?? null,
+          executionWindowEndTime: policy.executionWindow?.endTime ?? null,
+          executionWindowTimeZone: policy.executionWindow?.timeZone ?? null,
+          executionWindowBlocked,
           lastHeartbeatAt: row.lastHeartbeatAt,
         };
       })

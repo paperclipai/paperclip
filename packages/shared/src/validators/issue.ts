@@ -52,6 +52,7 @@ export const createIssueSchema = z.object({
     "agent_default",
   ]).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  allowOutsideExecutionWindow: z.boolean().optional(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 

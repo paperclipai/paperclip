@@ -6,6 +6,7 @@ interface NewIssueDefaults {
   projectId?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  allowOutsideExecutionWindow?: boolean;
   title?: string;
   description?: string;
 }

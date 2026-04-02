@@ -156,6 +156,7 @@ describe("optimistic issue comments", () => {
         executionWorkspaceId: null,
         executionWorkspacePreference: null,
         executionWorkspaceSettings: null,
+        allowOutsideExecutionWindow: false,
         startedAt: null,
         completedAt: null,
         cancelledAt: null,
