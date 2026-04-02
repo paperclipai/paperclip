@@ -790,11 +790,17 @@ export async function runChildProcess(
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,
+          detached: true,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        child.unref();
         const startedAt = new Date().toISOString();
 
         if (opts.stdin != null && child.stdin) {
+          child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+            // EPIPE / ECONNRESET when the child dies before we finish writing — non-fatal.
+            onLogError(err, runId, `stdin write error (${err.code})`);
+          });
           child.stdin.write(opts.stdin);
           child.stdin.end();
         }
@@ -817,14 +823,41 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                if (typeof child.pid === "number" && child.pid > 0 && process.platform !== "win32") {
+                  try {
+                    process.kill(-child.pid, "SIGTERM");
+                  } catch {
+                    child.kill("SIGTERM");
+                  }
+                } else {
+                  child.kill("SIGTERM");
+                }
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
+                  if (!child.killed && typeof child.pid === "number" && child.pid > 0) {
+                    if (process.platform !== "win32") {
+                      try {
+                        process.kill(-child.pid, "SIGKILL");
+                      } catch {
+                        child.kill("SIGKILL");
+                      }
+                    } else {
+                      child.kill("SIGKILL");
+                    }
                   }
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
+
+        // Attach error handlers to stdout/stderr BEFORE data handlers.
+        // Without these, an EPIPE or ECONNRESET emitted on a stdio stream
+        // (e.g. when the child process dies unexpectedly) becomes an unhandled
+        // 'error' event that crashes the entire Node.js process.
+        child.stdout?.on("error", (err: NodeJS.ErrnoException) => {
+          onLogError(err, runId, `stdout stream error (${err.code})`);
+        });
+        child.stderr?.on("error", (err: NodeJS.ErrnoException) => {
+          onLogError(err, runId, `stderr stream error (${err.code})`);
+        });
 
         // Post-result kill: after receiving a final result from the agent,
         // kill the entire process group after a grace period instead of waiting
