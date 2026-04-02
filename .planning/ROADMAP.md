@@ -48,7 +48,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Join traefik-net network in compose + update PAPERCLIP_PUBLIC_URL on docker-001
 - [x] 02-02-PLAN.md — Add paperclip router + service to Traefik's dynamic services.yml
-- [ ] 02-03-PLAN.md — Create Technitium A record + human verification of HTTPS dashboard access
+- [x] 02-03-PLAN.md — Create Technitium A record + human verification of HTTPS dashboard access
 
 ### Phase 3: Agent Connectivity
 **Goal**: At least one AI agent connects and is visible and working in the Paperclip dashboard
