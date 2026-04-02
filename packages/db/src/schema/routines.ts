@@ -15,6 +15,7 @@ import { companySecrets } from "./company_secrets.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
+import type { RoutineVariable } from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -31,6 +32,7 @@ export const routines = pgTable(
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
     catchUpPolicy: text("catch_up_policy").notNull().default("skip_missed"),
+    variables: jsonb("variables").$type<RoutineVariable[]>().notNull().default([]),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     updatedByAgentId: uuid("updated_by_agent_id").references(() => agents.id, { onDelete: "set null" }),

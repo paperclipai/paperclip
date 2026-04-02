@@ -204,7 +204,7 @@ async function readTemplateManifest(templateDir: string): Promise<CompanyPortabi
   const raw = await readJsonFile(manifestPath);
   const parsed = portabilityManifestSchema.safeParse(raw);
   if (parsed.success) {
-    return parsed.data;
+    return parsed.data as CompanyPortabilityManifest;
   }
   return normalizeLegacyTemplateManifest(raw, manifestPath);
 }
@@ -271,6 +271,10 @@ function normalizeLegacyTemplateManifest(raw: unknown, manifestPath: string): Co
           logoPath: null,
           requireBoardApprovalForNewAgents:
             parsed.data.company.requireBoardApprovalForNewAgents,
+          feedbackDataSharingEnabled: false,
+          feedbackDataSharingConsentAt: null,
+          feedbackDataSharingConsentByUserId: null,
+          feedbackDataSharingTermsVersion: null,
         }
       : null,
     sidebar: null,

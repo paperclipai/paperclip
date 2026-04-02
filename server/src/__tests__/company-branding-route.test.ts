@@ -34,6 +34,12 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -41,6 +47,7 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
 }));
 
@@ -78,9 +85,7 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
-    mockCompanyService.update.mockReset();
-    mockAgentService.getById.mockReset();
-    mockLogActivity.mockReset();
+    vi.resetAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {
