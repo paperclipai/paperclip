@@ -37,6 +37,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { parseGitHubPrUrl, reconcilePrState } from "../services/github-pr-reconcile.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -587,6 +588,95 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
+  });
+
+  /**
+   * POST /issues/:id/work-products/reconcile
+   * Reconcile pull_request work-products for an issue by fetching
+   * current PR state from GitHub and updating status / reviewState.
+   */
+  router.post("/issues/:id/work-products/reconcile", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+
+    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const prProducts = workProducts.filter((wp) => wp.type === "pull_request" && wp.url);
+
+    if (prProducts.length === 0) {
+      res.json({ reconciled: [], skipped: [], errors: [] });
+      return;
+    }
+
+    const reconciled: Array<{ id: string; title: string; status: string; reviewState: string }> = [];
+    const skipped: Array<{ id: string; title: string; reason: string }> = [];
+    const errors: Array<{ id: string; title: string; error: string }> = [];
+
+    const actor = getActorInfo(req);
+
+    for (const wp of prProducts) {
+      const parsed = parseGitHubPrUrl(wp.url!);
+      if (!parsed) {
+        skipped.push({ id: wp.id, title: wp.title, reason: "Could not parse GitHub PR URL" });
+        continue;
+      }
+
+      try {
+        const state = await reconcilePrState(parsed);
+        if (!state) {
+          errors.push({ id: wp.id, title: wp.title, error: "GitHub API request failed" });
+          continue;
+        }
+
+        // Skip update if nothing changed
+        if (wp.status === state.status && wp.reviewState === state.reviewState) {
+          skipped.push({ id: wp.id, title: wp.title, reason: "Already up to date" });
+          continue;
+        }
+
+        const updated = await workProductsSvc.update(wp.id, {
+          status: state.status,
+          reviewState: state.reviewState,
+        });
+
+        if (updated) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.work_product_updated",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              workProductId: wp.id,
+              changedKeys: ["status", "reviewState"],
+              reconciledFrom: { status: wp.status, reviewState: wp.reviewState },
+              reconciledTo: { status: state.status, reviewState: state.reviewState },
+            },
+          });
+          reconciled.push({
+            id: wp.id,
+            title: wp.title,
+            status: state.status,
+            reviewState: state.reviewState,
+          });
+        }
+      } catch (err) {
+        errors.push({
+          id: wp.id,
+          title: wp.title,
+          error: err instanceof Error ? err.message : "Unknown error",
+        });
+      }
+    }
+
+    res.json({ reconciled, skipped, errors });
   });
 
   router.get("/issues/:id/documents", async (req, res) => {
