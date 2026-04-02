@@ -102,6 +102,7 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", labelKey: "agentConfig.low" },
     { value: "medium", labelKey: "agentConfig.medium" },
     { value: "high", labelKey: "agentConfig.high" },
+    { value: "xhigh", labelKey: "agentConfig.xhigh" },
   ],
   opencode_local: [
     { value: "", labelKey: "agentConfig.default" },
@@ -109,6 +110,7 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "low", labelKey: "agentConfig.low" },
     { value: "medium", labelKey: "agentConfig.medium" },
     { value: "high", labelKey: "agentConfig.high" },
+    { value: "xhigh", labelKey: "agentConfig.xhigh" },
     { value: "max", labelKey: "agentConfig.max" },
   ],
 } as const;

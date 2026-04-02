@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Issue, IssueDocument } from "@penclipai/shared";
+import type { DocumentRevision, Issue, IssueDocument } from "@penclipai/shared";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
@@ -16,6 +16,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -85,6 +88,11 @@ function downloadDocumentFile(key: string, body: string) {
   URL.revokeObjectURL(url);
 }
 
+function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
+  if (!draft || draft.isNew || draft.key !== doc.key) return false;
+  return draft.body !== doc.body || (doc.title ?? "") !== draft.title;
+}
+
 export function IssueDocumentsSection({
   issue,
   canDeleteDocuments,
@@ -109,6 +117,8 @@ export function IssueDocumentsSection({
   const [autosaveDocumentKey, setAutosaveDocumentKey] = useState<string | null>(null);
   const [copiedDocumentKey, setCopiedDocumentKey] = useState<string | null>(null);
   const [highlightDocumentKey, setHighlightDocumentKey] = useState<string | null>(null);
+  const [revisionMenuOpenKey, setRevisionMenuOpenKey] = useState<string | null>(null);
+  const [selectedRevisionIds, setSelectedRevisionIds] = useState<Record<string, string | null>>({});
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedDocumentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasScrolledToHashRef = useRef(false);
@@ -124,10 +134,28 @@ export function IssueDocumentsSection({
     queryFn: () => issuesApi.listDocuments(issue.id),
   });
 
-  const invalidateIssueDocuments = () => {
+  const { data: activeDocumentRevisions, isFetching: isFetchingDocumentRevisions } = useQuery({
+    queryKey: revisionMenuOpenKey
+      ? queryKeys.issues.documentRevisions(issue.id, revisionMenuOpenKey)
+      : ["issues", "document-revisions", issue.id, "__idle__"],
+    queryFn: async () => {
+      if (!revisionMenuOpenKey) return [];
+      return issuesApi.listDocumentRevisions(issue.id, revisionMenuOpenKey);
+    },
+    enabled: Boolean(revisionMenuOpenKey),
+  });
+
+  const invalidateIssueDocuments = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issue.id) });
-  };
+    queryClient.invalidateQueries({
+      predicate: (query) =>
+        Array.isArray(query.queryKey)
+        && query.queryKey[0] === "issues"
+        && query.queryKey[1] === "document-revisions"
+        && query.queryKey[2] === issue.id,
+    });
+  }, [issue.id, queryClient]);
 
   const upsertDocument = useMutation({
     mutationFn: async (nextDraft: DraftState) =>
@@ -148,6 +176,22 @@ export function IssueDocumentsSection({
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : t("Failed to delete document"));
+    },
+  });
+
+  const restoreDocumentRevision = useMutation({
+    mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
+      issuesApi.restoreDocumentRevision(issue.id, key, revisionId),
+    onSuccess: (_document, variables) => {
+      setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
+      setDraft((current) => current?.key === variables.key ? null : current);
+      setDocumentConflict((current) => current?.key === variables.key ? null : current);
+      resetAutosaveState();
+      setError(null);
+      invalidateIssueDocuments();
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : t("Failed to restore document revision"));
     },
   });
 
@@ -393,6 +437,44 @@ export function IssueDocumentsSection({
     }
   }, []);
 
+  const getRevisionActorLabel = useCallback((revision: DocumentRevision) => {
+    if (revision.createdByUserId) return t("Board");
+    if (revision.createdByAgentId) return t("Agent");
+    return t("System");
+  }, [t]);
+
+  const getDocumentRevisions = useCallback((key: string) => {
+    const cached = queryClient.getQueryData<DocumentRevision[]>(queryKeys.issues.documentRevisions(issue.id, key));
+    if (cached) return cached;
+    if (revisionMenuOpenKey === key) return activeDocumentRevisions ?? [];
+    return [];
+  }, [activeDocumentRevisions, issue.id, queryClient, revisionMenuOpenKey]);
+
+  const returnToLatestRevision = useCallback((key: string) => {
+    setSelectedRevisionIds((current) => ({ ...current, [key]: null }));
+    setError(null);
+  }, []);
+
+  const previewRevision = useCallback((doc: IssueDocument, revisionId: string) => {
+    const revisions = getDocumentRevisions(doc.key);
+    const selectedRevision = revisions.find((revision) => revision.id === revisionId);
+    if (!selectedRevision) return;
+    if (selectedRevision.id === doc.latestRevisionId) {
+      returnToLatestRevision(doc.key);
+      return;
+    }
+    if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
+      setError(t("Save or cancel your local changes before viewing an older revision."));
+      return;
+    }
+    resetAutosaveState();
+    setDraft((current) => current?.key === doc.key ? null : current);
+    setDocumentConflict((current) => current?.key === doc.key ? null : current);
+    setFoldedDocumentKeys((current) => current.filter((entry) => entry !== doc.key));
+    setSelectedRevisionIds((current) => ({ ...current, [doc.key]: selectedRevision.id }));
+    setError(null);
+  }, [documentConflict, draft, getDocumentRevisions, resetAutosaveState, returnToLatestRevision, t]);
+
   const handleDraftBlur = async (event: React.FocusEvent<HTMLDivElement>) => {
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
     if (autosaveDebounceRef.current) {
@@ -625,7 +707,19 @@ export function IssueDocumentsSection({
           const activeDraft = draft?.key === doc.key && !draft.isNew ? draft : null;
           const activeConflict = documentConflict?.key === doc.key ? documentConflict : null;
           const isFolded = foldedDocumentKeys.includes(doc.key);
-          const showTitle = !isPlanKey(doc.key) && !!doc.title?.trim() && !titlesMatchKey(doc.title, doc.key);
+          const revisionHistory = getDocumentRevisions(doc.key);
+          const selectedRevisionId = selectedRevisionIds[doc.key] ?? null;
+          const selectedHistoricalRevision = selectedRevisionId
+            ? revisionHistory.find((revision) => revision.id === selectedRevisionId) ?? null
+            : null;
+          const isHistoricalPreview = Boolean(selectedHistoricalRevision);
+          const displayedTitle = selectedHistoricalRevision
+            ? selectedHistoricalRevision.title ?? ""
+            : activeDraft?.title ?? doc.title ?? "";
+          const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? doc.body;
+          const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? doc.latestRevisionNumber;
+          const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? doc.updatedAt;
+          const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
 
           return (
             <div
@@ -653,18 +747,79 @@ export function IssueDocumentsSection({
                     <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
+                    <DropdownMenu
+                      open={revisionMenuOpenKey === doc.key}
+                      onOpenChange={(open) => setRevisionMenuOpenKey(open ? doc.key : null)}
+                    >
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={cn(
+                            "h-auto px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
+                            isHistoricalPreview && "text-amber-300 hover:text-amber-200",
+                          )}
+                        >
+                          {t("rev {{revision}}", {
+                            revision: displayedRevisionNumber,
+                            defaultValue: `rev ${displayedRevisionNumber}`,
+                          })}
+                          <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-72">
+                        <DropdownMenuLabel>{t("Revision history")}</DropdownMenuLabel>
+                        {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && revisionHistory.length === 0 ? (
+                          <DropdownMenuItem disabled>{t("Loading revisions...")}</DropdownMenuItem>
+                        ) : revisionHistory.length > 0 ? (
+                          <DropdownMenuRadioGroup value={selectedRevisionId ?? doc.latestRevisionId ?? ""}>
+                            {revisionHistory.map((revision) => {
+                              const isCurrentRevision = revision.id === doc.latestRevisionId;
+                              return (
+                                <DropdownMenuRadioItem
+                                  key={revision.id}
+                                  value={revision.id}
+                                  onSelect={() => previewRevision(doc, revision.id)}
+                                  className="items-start"
+                                >
+                                  <div className="flex min-w-0 flex-col">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium">
+                                        {t("rev {{revision}}", {
+                                          revision: revision.revisionNumber,
+                                          defaultValue: `rev ${revision.revisionNumber}`,
+                                        })}
+                                      </span>
+                                      {isCurrentRevision ? (
+                                        <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                          {t("Current")}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <span className="text-xs text-muted-foreground">
+                                      {relativeTime(revision.createdAt)} • {getRevisionActorLabel(revision)}
+                                    </span>
+                                  </div>
+                                </DropdownMenuRadioItem>
+                              );
+                            })}
+                          </DropdownMenuRadioGroup>
+                        ) : (
+                          <DropdownMenuItem disabled>{t("No revisions yet")}</DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <a
                       href={`#document-${encodeURIComponent(doc.key)}`}
                       className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
                     >
-                      {t("rev {{revision}} • updated {{time}}", {
-                        revision: doc.latestRevisionNumber,
-                        time: relativeTime(doc.updatedAt),
-                        defaultValue: `rev ${doc.latestRevisionNumber} • updated ${relativeTime(doc.updatedAt)}`,
+                      {t("updated {{time}}", {
+                        time: relativeTime(displayedUpdatedAt),
+                        defaultValue: `updated ${relativeTime(displayedUpdatedAt)}`,
                       })}
                     </a>
                   </div>
-                  {showTitle && <p className="mt-2 text-sm font-medium">{doc.title}</p>}
+                  {showTitle && <p className="mt-2 text-sm font-medium">{displayedTitle}</p>}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <Button
@@ -675,7 +830,7 @@ export function IssueDocumentsSection({
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
                     title={copiedDocumentKey === doc.key ? t("Copied") : t("Copy document")}
-                    onClick={() => void copyDocumentBody(doc.key, activeDraft?.body ?? doc.body)}
+                    onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                   >
                     {copiedDocumentKey === doc.key ? (
                       <Check className="h-3.5 w-3.5" />
@@ -696,7 +851,7 @@ export function IssueDocumentsSection({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onClick={() => downloadDocumentFile(doc.key, activeDraft?.body ?? doc.body)}
+                        onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                       >
                         <Download className="h-3.5 w-3.5" />
                         {t("Download document")}
@@ -719,23 +874,67 @@ export function IssueDocumentsSection({
               {!isFolded ? (
                 <div
                   className="mt-3 space-y-3"
-                  onFocusCapture={() => {
-                    if (!activeDraft) {
-                      beginEdit(doc.key);
-                    }
-                  }}
-                  onBlurCapture={async (event) => {
-                    if (activeDraft) {
-                      await handleDraftBlur(event);
-                    }
-                  }}
-                  onKeyDown={async (event) => {
-                    if (activeDraft) {
-                      await handleDraftKeyDown(event);
-                    }
-                  }}
+                  onFocusCapture={!isHistoricalPreview
+                    ? () => {
+                        if (!activeDraft) {
+                          beginEdit(doc.key);
+                        }
+                      }
+                    : undefined}
+                  onBlurCapture={!isHistoricalPreview
+                    ? async (event) => {
+                        if (activeDraft) {
+                          await handleDraftBlur(event);
+                        }
+                      }
+                    : undefined}
+                  onKeyDown={!isHistoricalPreview
+                    ? async (event) => {
+                        if (activeDraft) {
+                          await handleDraftKeyDown(event);
+                        }
+                      }
+                    : undefined}
                 >
-                  {activeConflict && (
+                  {isHistoricalPreview && selectedHistoricalRevision && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-amber-200">
+                            {t("Viewing revision {{revision}}", {
+                              revision: selectedHistoricalRevision.revisionNumber,
+                              defaultValue: `Viewing revision ${selectedHistoricalRevision.revisionNumber}`,
+                            })}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.")}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => returnToLatestRevision(doc.key)}
+                          >
+                            {t("Return to latest")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => restoreDocumentRevision.mutate({
+                              key: doc.key,
+                              revisionId: selectedHistoricalRevision.id,
+                            })}
+                            disabled={restoreDocumentRevision.isPending}
+                          >
+                            {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
+                              ? t("Restoring...")
+                              : t("Restore this revision")}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {activeConflict && !isHistoricalPreview && (
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
@@ -806,7 +1005,7 @@ export function IssueDocumentsSection({
                       )}
                     </div>
                   )}
-                  {activeDraft && !isPlanKey(doc.key) && (
+                  {activeDraft && !isPlanKey(doc.key) && !isHistoricalPreview && (
                     <Input
                       value={activeDraft.title}
                       onChange={(event) => {
@@ -818,58 +1017,68 @@ export function IssueDocumentsSection({
                   )}
                   <div
                     className={`${documentBodyShellClassName} ${documentBodyPaddingClassName} ${
-                      activeDraft ? "" : "hover:bg-accent/10"
+                      activeDraft || isHistoricalPreview ? "" : "hover:bg-accent/10"
                     }`}
                   >
-                    <MarkdownEditor
-                      value={activeDraft?.body ?? doc.body}
-                      onChange={(body) => {
-                        markDocumentDirty(doc.key);
-                        setDraft((current) => {
-                          if (current && current.key === doc.key && !current.isNew) {
-                            return { ...current, body };
-                          }
-                          return {
-                            key: doc.key,
-                            title: doc.title ?? "",
-                            body,
-                            baseRevisionId: doc.latestRevisionId,
-                            isNew: false,
-                          };
-                        });
-                      }}
-                      placeholder={t("Markdown body")}
-                      bordered={false}
-                      className="bg-transparent"
-                      contentClassName={documentBodyContentClassName}
-                      mentions={mentions}
-                      imageUploadHandler={imageUploadHandler}
-                      onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
-                    />
+                    {isHistoricalPreview ? (
+                      <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
+                        {renderBody(displayedBody, documentBodyContentClassName)}
+                      </div>
+                    ) : (
+                      <MarkdownEditor
+                        value={displayedBody}
+                        onChange={(body) => {
+                          markDocumentDirty(doc.key);
+                          setDraft((current) => {
+                            if (current && current.key === doc.key && !current.isNew) {
+                              return { ...current, body };
+                            }
+                            return {
+                              key: doc.key,
+                              title: doc.title ?? "",
+                              body,
+                              baseRevisionId: doc.latestRevisionId,
+                              isNew: false,
+                            };
+                          });
+                        }}
+                        placeholder={t("Markdown body")}
+                        bordered={false}
+                        className="bg-transparent"
+                        contentClassName={documentBodyContentClassName}
+                        mentions={mentions}
+                        imageUploadHandler={imageUploadHandler}
+                        onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
+                      />
+                    )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
                     <span
                       className={`text-[11px] transition-opacity duration-150 ${
-                        activeConflict
+                        isHistoricalPreview
+                          ? "text-amber-300"
+                          : activeConflict
                           ? "text-amber-300"
                           : autosaveState === "error"
                             ? "text-destructive"
                             : "text-muted-foreground"
-                      } ${activeDraft ? "opacity-100" : "opacity-0"}`}
+                      } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
-                      {activeDraft
-                        ? activeConflict
-                          ? t("Out of date")
-                          : autosaveDocumentKey === doc.key
-                            ? autosaveState === "saving"
-                              ? t("Autosaving...")
-                              : autosaveState === "saved"
-                                ? t("Saved")
-                                : autosaveState === "error"
-                                  ? t("Could not save")
-                                  : ""
-                            : ""
-                        : ""}
+                      {isHistoricalPreview
+                        ? t("Viewing historical revision")
+                        : activeDraft
+                          ? activeConflict
+                            ? t("Out of date")
+                            : autosaveDocumentKey === doc.key
+                              ? autosaveState === "saving"
+                                ? t("Autosaving...")
+                                : autosaveState === "saved"
+                                  ? t("Saved")
+                                  : autosaveState === "error"
+                                    ? t("Could not save")
+                                    : ""
+                              : ""
+                          : ""}
                     </span>
                   </div>
                 </div>

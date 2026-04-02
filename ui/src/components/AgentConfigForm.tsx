@@ -144,6 +144,7 @@ const codexThinkingEffortOptions: ReadonlyArray<ThinkingEffortOption> = [
   { id: "low", labelKey: "agentConfig.low" },
   { id: "medium", labelKey: "agentConfig.medium" },
   { id: "high", labelKey: "agentConfig.high" },
+  { id: "xhigh", labelKey: "agentConfig.xhigh" },
 ];
 
 const openCodeThinkingEffortOptions: ReadonlyArray<ThinkingEffortOption> = [
@@ -152,6 +153,7 @@ const openCodeThinkingEffortOptions: ReadonlyArray<ThinkingEffortOption> = [
   { id: "low", labelKey: "agentConfig.low" },
   { id: "medium", labelKey: "agentConfig.medium" },
   { id: "high", labelKey: "agentConfig.high" },
+  { id: "xhigh", labelKey: "agentConfig.xhigh" },
   { id: "max", labelKey: "agentConfig.max" },
 ];
 
@@ -1175,9 +1177,15 @@ function EnvVarEditor({
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
+  const emittingRef = useRef(false);
 
   // Sync when value identity changes (overlay reset after save)
   useEffect(() => {
+    if (emittingRef.current) {
+      emittingRef.current = false;
+      valueRef.current = value;
+      return;
+    }
     if (value !== valueRef.current) {
       valueRef.current = value;
       setRows(toRows(value));
@@ -1190,12 +1198,16 @@ function EnvVarEditor({
       const k = row.key.trim();
       if (!k) continue;
       if (row.source === "secret") {
-        if (!row.secretId) continue;
-        rec[k] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
+        if (row.secretId) {
+          rec[k] = { type: "secret_ref", secretId: row.secretId, version: "latest" };
+        } else {
+          rec[k] = { type: "plain", value: row.plainValue };
+        }
       } else {
         rec[k] = { type: "plain", value: row.plainValue };
       }
     }
+    emittingRef.current = true;
     onChange(Object.keys(rec).length > 0 ? rec : undefined);
   }
 

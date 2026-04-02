@@ -1,6 +1,11 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { deriveAgentUrlKey, deriveProjectUrlKey } from "@penclipai/shared";
+import {
+  deriveAgentUrlKey,
+  deriveProjectUrlKey,
+  hasNonAsciiContent,
+  normalizeProjectUrlKey,
+} from "@penclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@penclipai/shared";
 import { getCurrentLocale, translateInstant } from "../i18n";
 
@@ -206,7 +211,11 @@ export function agentUrl(agent: { id: string; urlKey?: string | null; name?: str
 
 /** Build a project route reference using the short URL key when available. */
 export function projectRouteRef(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  if (key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name)) {
+    return project.id;
+  }
+  return key;
 }
 
 /** Build a project URL using the short URL key when available. */

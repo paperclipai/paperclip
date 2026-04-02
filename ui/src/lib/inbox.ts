@@ -148,11 +148,7 @@ export function issueLastActivityTimestamp(issue: Issue): number {
   const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
   if (lastExternalCommentAt > 0) return lastExternalCommentAt;
 
-  const updatedAt = normalizeTimestamp(issue.updatedAt);
-  const myLastTouchAt = normalizeTimestamp(issue.myLastTouchAt);
-  if (myLastTouchAt > 0 && updatedAt <= myLastTouchAt) return 0;
-
-  return updatedAt;
+  return normalizeTimestamp(issue.updatedAt);
 }
 
 export function sortIssuesByMostRecentActivity(a: Issue, b: Issue): number {

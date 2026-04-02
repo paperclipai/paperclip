@@ -1055,6 +1055,7 @@
   "agentConfig.maxConcurrentRuns": "Max concurrent runs",
   "agentConfig.medium": "Medium",
   "agentConfig.minimal": "Minimal",
+  "agentConfig.xhigh": "X-High",
   "agentConfig.model": "Model",
   "agentConfig.modelsGroupLabel": "Models",
   "agentConfig.name": "Name",
@@ -2008,5 +2009,17 @@
   "{{minutes}}m {{seconds}}s": "{{minutes}}m {{seconds}}s",
   "{{percent}}% of monthly budget consumed in this range.": "{{percent}}% of monthly budget consumed in this range.",
   "{{start}} to {{end}}": "{{start}} to {{end}}",
-  "{{tokens}} tokens across request-scoped events": "{{tokens}} tokens across request-scoped events"
+  "{{tokens}} tokens across request-scoped events": "{{tokens}} tokens across request-scoped events",
+  "Current": "Current",
+  "Loading revisions...": "Loading revisions...",
+  "No revisions yet": "No revisions yet",
+  "Restore this revision": "Restore this revision",
+  "Restoring...": "Restoring...",
+  "Return to latest": "Return to latest",
+  "Revision history": "Revision history",
+  "Save or cancel your local changes before viewing an older revision.": "Save or cancel your local changes before viewing an older revision.",
+  "This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.": "This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.",
+  "Viewing historical revision": "Viewing historical revision",
+  "Viewing revision {{revision}}": "Viewing revision {{revision}}",
+  "rev {{revision}}": "rev {{revision}}"
 }

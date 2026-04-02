@@ -1202,6 +1202,7 @@
   "agentConfig.maxConcurrentRuns": "最大并发运行数",
   "agentConfig.medium": "中",
   "agentConfig.minimal": "最低",
+  "agentConfig.xhigh": "超高",
   "agentConfig.model": "模型",
   "agentConfig.modelsGroupLabel": "模型",
   "agentConfig.name": "名称",
@@ -2182,5 +2183,17 @@
   "{{tokens}} tokens": "{{tokens}} Token",
   "{{tokens}} tokens across request-scoped events": "这段时间里共消耗 {{tokens}} 个Token",
   "~{{amount}} / wk": "约 {{amount}} / 周",
-  "~{{api}} api / ~{{sub}} sub runs": "约 {{api}} 次 API 运行 / {{sub}} 次订阅运行"
+  "~{{api}} api / ~{{sub}} sub runs": "约 {{api}} 次 API 运行 / {{sub}} 次订阅运行",
+  "Current": "当前",
+  "Loading revisions...": "正在加载修订...",
+  "No revisions yet": "还没有修订记录",
+  "Restore this revision": "恢复此修订",
+  "Restoring...": "恢复中...",
+  "Return to latest": "返回最新版本",
+  "Revision history": "修订历史",
+  "Save or cancel your local changes before viewing an older revision.": "请先保存或取消本地更改，再查看旧版本修订。",
+  "This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.": "这是一个历史版本预览。恢复后会创建新的最新修订，同时保留追加式历史记录。",
+  "Viewing historical revision": "正在查看历史修订",
+  "Viewing revision {{revision}}": "正在查看修订 {{revision}}",
+  "rev {{revision}}": "修订 {{revision}}"
 }

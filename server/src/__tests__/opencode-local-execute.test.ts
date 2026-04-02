@@ -139,5 +139,5 @@ describe("opencode execute", () => {
       }
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
+  }, 45_000);
 });

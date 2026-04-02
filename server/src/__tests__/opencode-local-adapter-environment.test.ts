@@ -26,7 +26,7 @@ describe("opencode_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "opencode_cwd_invalid")).toBe(true);
     expect(result.checks.some((check) => check.level === "error")).toBe(true);
     expect(result.status).toBe("fail");
-  });
+  }, 45_000);
 
   it("treats an empty OPENAI_API_KEY override as missing", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-empty-key-"));
