@@ -30,6 +30,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
+import { IssueWorkProductsSection } from "../components/IssueWorkProductsSection";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -1257,6 +1258,8 @@ export function IssueDetail() {
         project={orderedProjects.find((p) => p.id === issue.projectId) ?? null}
         onUpdate={(data) => updateIssue.mutate(data)}
       />
+
+      <IssueWorkProductsSection issueId={issue.id} />
 
       <Separator />
 
