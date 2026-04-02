@@ -189,10 +189,11 @@ interface AvailableSkill {
   isPaperclipManaged: boolean;
 }
 
+/** Claude Code config directory: ~/.claude by default, or $CLAUDE_HOME when set. */
 function resolveClaudeHomeDir(): string {
   const fromEnv = process.env.CLAUDE_HOME?.trim();
   if (fromEnv && fromEnv.length > 0) return path.resolve(fromEnv);
-  return os.homedir();
+  return path.resolve(path.join(os.homedir(), ".claude"));
 }
 
 function claudeHomeDisplayLabel(resolvedHome: string): string {
@@ -200,7 +201,8 @@ function claudeHomeDisplayLabel(resolvedHome: string): string {
   if (fromEnv && fromEnv.length > 0) return "$CLAUDE_HOME";
   try {
     const home = os.homedir();
-    if (resolvedHome === path.resolve(home)) return "~/.claude";
+    const defaultClaude = path.resolve(path.join(home, ".claude"));
+    if (path.resolve(resolvedHome) === defaultClaude) return "~/.claude";
   } catch { /* skip */ }
   return resolvedHome;
 }
@@ -218,7 +220,6 @@ function normalizeEnabledPluginsValue(value: unknown): string[] {
     return Object.entries(value as Record<string, unknown>)
       .filter(([, v]) => {
         if (v === true || v === 1 || v === "true") return true;
-        if (typeof v === "string" && v.trim().length > 0) return true;
         return false;
       })
       .map(([k]) => k)
