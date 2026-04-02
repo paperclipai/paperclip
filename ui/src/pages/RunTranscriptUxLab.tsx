@@ -55,11 +55,13 @@ function RunDetailPreview({
   streaming,
   density,
   onEvent,
+  onToggleMode,
 }: {
   mode: TranscriptMode;
   streaming: boolean;
   density: TranscriptDensity;
   onEvent: (type: string, message: string) => void;
+  onToggleMode: () => void;
 }) {
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
@@ -73,8 +75,24 @@ function RunDetailPreview({
             {formatDateTime(runTranscriptFixtureMeta.startedAt)}
           </span>
         </div>
-        <div className="mt-2 text-sm font-medium">
-          Transcript ({runTranscriptFixtureEntries.length})
+        <div className="mt-2 flex items-center justify-between">
+          <div className="text-sm font-medium">
+            Transcript ({runTranscriptFixtureEntries.length})
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">View Raw Logs</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn("h-6 w-10 rounded-full p-0 transition-colors", mode === "raw" ? "bg-cyan-500" : "bg-muted")}
+              onClick={() => {
+                onToggleMode();
+                onEvent("toggle_raw_logs", `Toggled raw logs to ${mode === "raw" ? "nice" : "raw"}`);
+              }}
+            >
+              <span className={cn("block h-4 w-4 rounded-full bg-background transition-transform", mode === "raw" ? "translate-x-4" : "translate-x-1")} />
+            </Button>
+          </div>
         </div>
       </div>
       <div className="max-h-[520px] overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(8,145,178,0.08),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.10),transparent_28%)] p-5">
@@ -89,24 +107,27 @@ function RunDetailPreview({
         <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
           <h3 className="text-sm font-semibold text-cyan-700 dark:text-cyan-300">Run Paused: Human Review Required</h3>
           <p className="mt-1 text-xs text-muted-foreground">The agent has completed the draft. Please review the findings and either hand it back or approve it.</p>
-          <div className="mt-4 flex gap-3">
-            <Button size="sm" onClick={() => onEvent("handoff_action_taken", "Approved draft")}>Approve</Button>
-            <Button size="sm" variant="outline" onClick={() => onEvent("handoff_action_taken", "Rejected draft")}>Request Changes</Button>
+          <div className="mt-4 flex flex-col gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">Route back to:</span>
+              <select 
+                className="rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                onChange={(e) => onEvent("handoff_reviewer_selected", `Selected reviewer: ${e.target.value}`)}
+              >
+                <option value="author">Original Author</option>
+                <option value="pm">Product Manager</option>
+                <option value="team">Team Queue</option>
+              </select>
+            </div>
+            <div className="flex gap-3">
+              <Button size="sm" onClick={() => onEvent("handoff_action_taken", "Approved draft")}>Approve</Button>
+              <Button size="sm" variant="outline" onClick={() => onEvent("handoff_action_taken", "Rejected draft")}>Request Changes</Button>
+            </div>
           </div>
         </div>
         <div className="mt-4 flex items-center gap-3">
-          <input
-            type="text"
-            placeholder="Steer the agent (e.g. 'try searching in a different file')"
-            className="flex-1 rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && e.currentTarget.value) {
-                onEvent("steer_attempted", `Steered: ${e.currentTarget.value}`);
-                e.currentTarget.value = "";
-              }
-            }}
-          />
-          <Button size="sm" variant="secondary" onClick={() => onEvent("steer_attempted", "Clicked send on steering input")}>Send</Button>
+          <Button size="sm" variant="secondary" onClick={() => onEvent("run_paused", "User clicked Pause")}>Pause Run</Button>
+          <Button size="sm" variant="destructive" onClick={() => onEvent("run_cancelled", "User clicked Cancel")}>Cancel Run</Button>
         </div>
       </div>
     </div>
@@ -363,7 +384,13 @@ export function RunTranscriptUxLab() {
 
             {selectedSurface === "detail" ? (
               <div className={cn(density === "compact" && "max-w-5xl")}>
-                <RunDetailPreview mode={detailMode} streaming={streaming} density={density} onEvent={handleEvent} />
+                <RunDetailPreview 
+                  mode={detailMode} 
+                  streaming={streaming} 
+                  density={density} 
+                  onEvent={handleEvent} 
+                  onToggleMode={() => setDetailMode(detailMode === "raw" ? "nice" : "raw")} 
+                />
               </div>
             ) : selectedSurface === "live" ? (
               <div className={cn(density === "compact" && "max-w-4xl")}>
