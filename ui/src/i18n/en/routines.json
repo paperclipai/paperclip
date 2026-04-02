@@ -1,0 +1,104 @@
+{
+  "breadcrumb": "Routines",
+  "title": "Routines",
+  "subtitle": "Recurring work definitions that materialize into auditable execution issues.",
+  "createRoutine": "Create routine",
+  "selectCompany": "Select a company to view routines.",
+  "noRoutines": "No routines yet. Use Create routine to define the first recurring workflow.",
+  "failedToLoad": "Failed to load routines",
+  "failedToCreate": "Failed to create routine",
+
+  "composer": {
+    "title": "New routine",
+    "subtitle": "Define the recurring work first. Trigger setup comes next on the detail page.",
+    "titlePlaceholder": "Routine title",
+    "addInstructions": "Add instructions...",
+    "afterCreation": "After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.",
+    "creating": "Creating..."
+  },
+
+  "table": {
+    "name": "Name",
+    "project": "Project",
+    "agent": "Agent",
+    "lastRun": "Last run",
+    "enabled": "Enabled",
+    "unknown": "Unknown",
+    "paused": "paused",
+    "archived": "archived",
+    "never": "Never"
+  },
+
+  "actions": {
+    "edit": "Edit",
+    "runNow": "Run now",
+    "running": "Running...",
+    "pause": "Pause",
+    "enable": "Enable",
+    "archive": "Archive",
+    "restore": "Restore"
+  },
+
+  "advanced": {
+    "title": "Advanced delivery settings",
+    "subtitle": "Keep policy controls secondary to the work definition.",
+    "concurrency": "Concurrency",
+    "catchUp": "Catch-up",
+    "policies": {
+      "coalesce_if_active": "If a run is already active, keep just one follow-up run queued.",
+      "always_enqueue": "Queue every trigger occurrence, even if the routine is already running.",
+      "skip_if_active": "Drop new trigger occurrences while a run is still active.",
+      "skip_missed": "Ignore windows that were missed while the scheduler or routine was paused.",
+      "enqueue_missed_with_cap": "Catch up missed schedule windows in capped batches after recovery."
+    },
+    "descriptions": {
+      "coalesce_if_active": "Keep one follow-up run queued while an active run is still working.",
+      "always_enqueue": "Queue every trigger occurrence, even if several runs stack up.",
+      "skip_if_active": "Drop overlapping trigger occurrences while the routine is already active.",
+      "skip_missed": "Ignore schedule windows that were missed while the routine or scheduler was paused.",
+      "enqueue_missed_with_cap": "Catch up missed schedule windows in capped batches after recovery.",
+      "bearer": "Expect a shared bearer token in the Authorization header.",
+      "hmac_sha256": "Expect an HMAC SHA-256 signature over the request using the shared secret."
+    }
+  },
+
+  "detail": {
+    "titlePlaceholder": "Routine title",
+    "pauseAutomaticTriggers": "Pause automatic triggers",
+    "enableAutomaticTriggers": "Enable automatic triggers",
+    "webhookSecretNotice": "Save this now. Paperclip will not show the secret value again.",
+    "assigneePlaceholder": "Assignee",
+    "noAssignee": "No assignee",
+    "searchAssignees": "Search assignees...",
+    "noAssigneesFound": "No assignees found.",
+    "projectPlaceholder": "Project",
+    "noProject": "No project",
+    "searchProjects": "Search projects...",
+    "noProjectsFound": "No projects found."
+  },
+
+  "toasts": {
+    "created": "Routine created",
+    "createdBody": "Add the first trigger to turn it into a live workflow.",
+    "failedToSave": "Failed to save routine",
+    "failedToSaveBody": "Paperclip could not save the routine.",
+    "routineRunStarted": "Routine run started",
+    "routineSaved": "Routine saved",
+    "routineSavedPaused": "Automation paused.",
+    "routineSavedEnabled": "Automation enabled.",
+    "failedToUpdate": "Failed to update routine",
+    "failedToUpdateBody": "Paperclip could not update the routine.",
+    "webhookTriggerCreated": "Webhook trigger created",
+    "failedToAddTrigger": "Failed to add trigger",
+    "failedToAddTriggerBody": "Paperclip could not create the trigger.",
+    "failedToUpdateTrigger": "Failed to update trigger",
+    "failedToUpdateTriggerBody": "Paperclip could not update the trigger.",
+    "failedToDeleteTrigger": "Failed to delete trigger",
+    "failedToDeleteTriggerBody": "Paperclip could not delete the trigger.",
+    "webhookSecretRotated": "Webhook secret rotated",
+    "failedToRotateWebhook": "Failed to rotate webhook secret",
+    "failedToRotateWebhookBody": "Paperclip could not rotate the webhook secret.",
+    "runFailed": "Routine run failed",
+    "runFailedBody": "Paperclip could not start the routine run."
+  }
+}

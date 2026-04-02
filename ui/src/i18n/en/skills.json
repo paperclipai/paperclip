@@ -1,0 +1,19 @@
+{
+  "breadcrumb": "Skills",
+  "title": "Company Skills",
+  "selectCompany": "Select a company to view skills.",
+  "noSkills": "No skills installed yet.",
+  "addSkill": "Add Skill",
+  "scanProjects": "Scan Projects",
+  "scanning": "Scanning...",
+  "installSkill": "Install Skill",
+  "updateSkill": "Update Skill",
+  "removeSkill": "Remove Skill",
+  "skillDetail": "Skill Detail",
+  "files": "Files",
+  "noFiles": "No files.",
+  "source": "Source",
+  "editBody": "Edit Body",
+  "viewBody": "View Body",
+  "saveChanges": "Save Changes"
+}

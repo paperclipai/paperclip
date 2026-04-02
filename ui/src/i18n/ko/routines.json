@@ -1,0 +1,104 @@
+{
+  "breadcrumb": "루틴",
+  "title": "루틴",
+  "subtitle": "감사 가능한 실행 이슈로 구체화되는 반복 작업 정의입니다.",
+  "createRoutine": "루틴 만들기",
+  "selectCompany": "루틴을 보려면 회사를 선택하세요.",
+  "noRoutines": "아직 루틴이 없습니다. '루틴 만들기'를 사용하여 첫 번째 반복 워크플로를 정의하세요.",
+  "failedToLoad": "루틴 불러오기 실패",
+  "failedToCreate": "루틴 생성 실패",
+
+  "composer": {
+    "title": "새 루틴",
+    "subtitle": "먼저 반복 작업을 정의하세요. 트리거 설정은 상세 페이지에서 이어집니다.",
+    "titlePlaceholder": "루틴 제목",
+    "addInstructions": "지시사항 추가...",
+    "afterCreation": "생성 후 스케줄, 웹훅 또는 내부 실행을 위한 트리거 설정 페이지로 바로 이동합니다.",
+    "creating": "생성 중..."
+  },
+
+  "table": {
+    "name": "이름",
+    "project": "프로젝트",
+    "agent": "에이전트",
+    "lastRun": "마지막 실행",
+    "enabled": "활성화",
+    "unknown": "알 수 없음",
+    "paused": "일시정지됨",
+    "archived": "보관됨",
+    "never": "없음"
+  },
+
+  "actions": {
+    "edit": "편집",
+    "runNow": "지금 실행",
+    "running": "실행 중...",
+    "pause": "일시정지",
+    "enable": "활성화",
+    "archive": "보관",
+    "restore": "복원"
+  },
+
+  "advanced": {
+    "title": "고급 전달 설정",
+    "subtitle": "정책 설정은 작업 정의보다 부차적으로 유지하세요.",
+    "concurrency": "동시성",
+    "catchUp": "따라잡기",
+    "policies": {
+      "coalesce_if_active": "실행이 이미 활성 상태인 경우 후속 실행을 하나만 대기열에 유지합니다.",
+      "always_enqueue": "루틴이 이미 실행 중이더라도 모든 트리거를 대기열에 추가합니다.",
+      "skip_if_active": "실행이 아직 활성 상태인 동안 새 트리거를 건너뜁니다.",
+      "skip_missed": "스케줄러 또는 루틴이 일시정지된 동안 놓친 창을 무시합니다.",
+      "enqueue_missed_with_cap": "복구 후 놓친 스케줄 창을 제한된 배치로 따라잡습니다."
+    },
+    "descriptions": {
+      "coalesce_if_active": "활성 실행이 진행 중인 동안 후속 실행 하나만 대기열에 유지합니다.",
+      "always_enqueue": "여러 실행이 쌓이더라도 모든 트리거를 대기열에 추가합니다.",
+      "skip_if_active": "루틴이 이미 활성 상태인 동안 겹치는 트리거를 삭제합니다.",
+      "skip_missed": "루틴 또는 스케줄러가 일시정지된 동안 놓친 스케줄 창을 무시합니다.",
+      "enqueue_missed_with_cap": "복구 후 놓친 스케줄 창을 제한된 배치로 따라잡습니다.",
+      "bearer": "Authorization 헤더에서 공유 Bearer 토큰을 기대합니다.",
+      "hmac_sha256": "공유 시크릿을 사용하여 요청에 대한 HMAC SHA-256 서명을 기대합니다."
+    }
+  },
+
+  "detail": {
+    "titlePlaceholder": "루틴 제목",
+    "pauseAutomaticTriggers": "자동 트리거 일시정지",
+    "enableAutomaticTriggers": "자동 트리거 활성화",
+    "webhookSecretNotice": "지금 저장하세요. Paperclip은 시크릿 값을 다시 표시하지 않습니다.",
+    "assigneePlaceholder": "담당자",
+    "noAssignee": "담당자 없음",
+    "searchAssignees": "담당자 검색...",
+    "noAssigneesFound": "담당자를 찾을 수 없습니다.",
+    "projectPlaceholder": "프로젝트",
+    "noProject": "프로젝트 없음",
+    "searchProjects": "프로젝트 검색...",
+    "noProjectsFound": "프로젝트를 찾을 수 없습니다."
+  },
+
+  "toasts": {
+    "created": "루틴이 생성되었습니다",
+    "createdBody": "첫 번째 트리거를 추가하여 라이브 워크플로로 전환하세요.",
+    "failedToSave": "루틴 저장 실패",
+    "failedToSaveBody": "Paperclip이 루틴을 저장하지 못했습니다.",
+    "routineRunStarted": "루틴 실행 시작됨",
+    "routineSaved": "루틴 저장됨",
+    "routineSavedPaused": "자동화가 일시정지되었습니다.",
+    "routineSavedEnabled": "자동화가 활성화되었습니다.",
+    "failedToUpdate": "루틴 업데이트 실패",
+    "failedToUpdateBody": "Paperclip이 루틴을 업데이트하지 못했습니다.",
+    "webhookTriggerCreated": "웹훅 트리거가 생성되었습니다",
+    "failedToAddTrigger": "트리거 추가 실패",
+    "failedToAddTriggerBody": "Paperclip이 트리거를 생성하지 못했습니다.",
+    "failedToUpdateTrigger": "트리거 업데이트 실패",
+    "failedToUpdateTriggerBody": "Paperclip이 트리거를 업데이트하지 못했습니다.",
+    "failedToDeleteTrigger": "트리거 삭제 실패",
+    "failedToDeleteTriggerBody": "Paperclip이 트리거를 삭제하지 못했습니다.",
+    "webhookSecretRotated": "웹훅 시크릿이 교체되었습니다",
+    "failedToRotateWebhook": "웹훅 시크릿 교체 실패",
+    "failedToRotateWebhookBody": "Paperclip이 웹훅 시크릿을 교체하지 못했습니다.",
+    "runFailed": "루틴 실행 실패",
+    "runFailedBody": "Paperclip이 루틴 실행을 시작하지 못했습니다."
+  }
+}

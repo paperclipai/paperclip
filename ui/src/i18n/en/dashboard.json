@@ -1,0 +1,69 @@
+{
+  "breadcrumb": "Dashboard",
+  "welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+  "selectCompany": "Create or select a company to view the dashboard.",
+  "noAgents": "You have no agents.",
+  "createOneHere": "Create one here",
+
+  "metrics": {
+    "agentsEnabled": "Agents Enabled",
+    "tasksInProgress": "Tasks In Progress",
+    "monthSpend": "Month Spend",
+    "pendingApprovals": "Pending Approvals",
+    "running": "{{count}} running",
+    "paused": "{{count}} paused",
+    "errors": "{{count}} errors",
+    "open": "{{count}} open",
+    "blocked": "{{count}} blocked",
+    "unlimitedBudget": "Unlimited budget",
+    "budgetPercent": "{{percent}}% of {{budget}} budget",
+    "budgetOverridesAwaiting": "{{count}} budget overrides awaiting board review",
+    "awaitingBoardReview": "Awaiting board review"
+  },
+
+  "incidents": {
+    "activeBudgetIncident": "{{count}} active budget incident",
+    "activeBudgetIncidents": "{{count}} active budget incidents",
+    "agentsPaused": "{{count}} agents paused",
+    "projectsPaused": "{{count}} projects paused",
+    "pendingBudgetApprovals": "{{count}} pending budget approvals",
+    "openBudgets": "Open budgets"
+  },
+
+  "charts": {
+    "runActivity": "Run Activity",
+    "issuesByPriority": "Issues by Priority",
+    "issuesByStatus": "Issues by Status",
+    "successRate": "Success Rate",
+    "last14Days": "Last 14 days",
+    "noRunsYet": "No runs yet",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "other": "Other",
+    "statusLabels": {
+      "todo": "To Do",
+      "in_progress": "In Progress",
+      "in_review": "In Review",
+      "done": "Done",
+      "blocked": "Blocked",
+      "cancelled": "Cancelled",
+      "backlog": "Backlog"
+    },
+    "priorityLabels": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "tooltipRuns": "{{day}}: {{total}} runs",
+    "tooltipIssues": "{{day}}: {{total}} issues",
+    "tooltipRate": "{{day}}: {{rate}}% ({{succeeded}}/{{total}})",
+    "noIssuesYet": "No issues yet"
+  },
+
+  "sections": {
+    "recentActivity": "Recent Activity",
+    "recentTasks": "Recent Tasks",
+    "noTasksYet": "No tasks yet."
+  }
+}

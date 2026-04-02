@@ -14,6 +14,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { useTranslation } from "react-i18next";
 
 type WorkspaceFormState = {
   name: string;
@@ -211,6 +212,7 @@ function WorkspaceLink({
 }
 
 export function ExecutionWorkspaceDetail() {
+  const { t } = useTranslation(["workspaces", "common"]);
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();

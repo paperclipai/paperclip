@@ -1,14 +1,11 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../lib/utils";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface StatusIconProps {
   status: string;
@@ -18,7 +15,13 @@ interface StatusIconProps {
 }
 
 export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+  const { t } = useTranslation(["issues"]);
   const [open, setOpen] = useState(false);
+  const statusLabel = (s: string): string => {
+    const key = `issues:statuses.${s}` as const;
+    const translated = t(key, "");
+    return translated || s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  };
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
 

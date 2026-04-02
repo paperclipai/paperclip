@@ -19,6 +19,7 @@ import { getProjectOrderStorageKey, writeProjectOrder } from "../lib/project-ord
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
+import { useTranslation } from "react-i18next";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { cn } from "../lib/utils";
 import {
@@ -644,6 +645,7 @@ async function readLocalPackageZip(file: File): Promise<{
 // ── Main page ─────────────────────────────────────────────────────────
 
 export function CompanyImport() {
+  const { t } = useTranslation(["settings", "common"]);
   const {
     selectedCompanyId,
     selectedCompany,

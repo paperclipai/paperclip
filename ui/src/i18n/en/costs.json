@@ -1,0 +1,79 @@
+{
+  "breadcrumb": "Costs",
+  "selectCompany": "Select a company to view costs.",
+  "overview": "Overview",
+  "byProvider": "By Provider",
+  "byBiller": "By Biller",
+  "byAgent": "By Agent",
+  "finance": "Finance",
+  "financeLedger": "Finance ledger",
+  "financeLedgerDescription": "Account-level charges that do not map to a single inference request.",
+  "debits": "Debits",
+  "credits": "Credits",
+  "net": "Net",
+  "estimated": "Estimated",
+  "totalEvents": "{{count}} total events in range",
+  "refundsAndCredits": "Refunds, offsets, and credit returns",
+  "debitMinusCredit": "Debit minus credit for the selected period",
+  "estimatedDebits": "Estimated debits that are not yet invoice-authoritative",
+
+  "biller": {
+    "tokenIn": "in",
+    "tokenOut": "out",
+    "providers": "{{count}} provider(s)",
+    "models": "{{count}} model(s)",
+    "periodSpend": "Period spend",
+    "ofAllocation": "{{percent}}% of allocation",
+    "meteredRuns": "{{count}} metered run(s)",
+    "subscriptionRuns": "{{count}} subscription run(s)",
+    "thisWeek": "{{amount}} this week",
+    "billingTypes": "Billing types",
+    "upstreamProviders": "Upstream providers",
+    "tokens": "{{count}} tok"
+  },
+
+  "budget": {
+    "noPolicies": "No budget policies configured yet.",
+    "incidents": "Budget incidents",
+    "noIncidents": "No active budget incidents.",
+    "activeIncidentsSubtitle": "Open soft or hard threshold crossings",
+    "pendingApprovalsSubtitle": "Budget override approvals awaiting board action",
+    "pausedAgentsSubtitle": "Agent heartbeats blocked by budget",
+    "pausedProjectsSubtitle": "Project execution blocked by budget"
+  },
+
+  "budgetPolicy": {
+    "lifetimeBudget": "Lifetime budget",
+    "monthlyBudget": "Monthly UTC budget",
+    "observed": "Observed",
+    "budget": "Budget",
+    "percentOfLimit": "{{percent}}% of limit",
+    "noCapConfigured": "No cap configured",
+    "disabled": "Disabled",
+    "softAlertAt": "Soft alert at {{percent}}%",
+    "pauseReason": " · {{reason}} pause",
+    "remaining": "Remaining",
+    "unlimited": "Unlimited",
+    "paused": "Paused",
+    "warning": "Warning",
+    "hardStop": "Hard stop",
+    "healthy": "Healthy",
+    "pausedProject": "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+    "pausedScope": "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
+    "budgetUsd": "Budget (USD)",
+    "saving": "Saving...",
+    "updateBudget": "Update budget",
+    "setBudget": "Set budget",
+    "invalidAmount": "Enter a valid non-negative dollar amount.",
+    "pausedByBudget": "Paused by budget",
+    "agentPausedByBudget": "Agent paused by budget"
+  },
+
+  "financeBiller": {
+    "eventsSummary": "{{eventCount}} events across {{kindCount}} kinds",
+    "net": "net",
+    "debits": "debits",
+    "credits": "credits",
+    "estimated": "estimated"
+  }
+}

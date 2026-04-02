@@ -3,22 +3,19 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import i18n from "@/i18n";
 
 type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
-const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
+const PRESET_VALUES: SchedulePreset[] = [
+  "every_minute", "every_hour", "every_day", "weekdays", "weekly", "monthly", "custom",
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
-  label: i === 0 ? "12 AM" : i < 12 ? `${i} AM` : i === 12 ? "12 PM" : `${i - 12} PM`,
+  label12: i === 0 ? "12" : i < 12 ? `${i}` : i === 12 ? "12" : `${i - 12}`,
+  ampm: i < 12 ? "am" : "pm",
 }));
 
 const MINUTES = Array.from({ length: 12 }, (_, i) => ({
@@ -26,15 +23,15 @@ const MINUTES = Array.from({ length: 12 }, (_, i) => ({
   label: String(i * 5).padStart(2, "0"),
 }));
 
-const DAYS_OF_WEEK = [
-  { value: "1", label: "Mon" },
-  { value: "2", label: "Tue" },
-  { value: "3", label: "Wed" },
-  { value: "4", label: "Thu" },
-  { value: "5", label: "Fri" },
-  { value: "6", label: "Sat" },
-  { value: "0", label: "Sun" },
-];
+const DAY_KEYS = [
+  { value: "1", key: "mon" },
+  { value: "2", key: "tue" },
+  { value: "3", key: "wed" },
+  { value: "4", key: "thu" },
+  { value: "5", key: "fri" },
+  { value: "6", key: "sat" },
+  { value: "0", key: "sun" },
+] as const;
 
 const DAYS_OF_MONTH = Array.from({ length: 31 }, (_, i) => ({
   value: String(i + 1),
@@ -114,27 +111,30 @@ function buildCron(preset: SchedulePreset, hour: string, minute: string, dayOfWe
 }
 
 function describeSchedule(cron: string): string {
+  const t = i18n.t.bind(i18n);
   const { preset, hour, minute, dayOfWeek, dayOfMonth } = parseCronToPreset(cron);
-  const hourLabel = HOURS.find((h) => h.value === hour)?.label ?? `${hour}`;
-  const timeStr = `${hourLabel.replace(/ (AM|PM)$/, "")}:${minute.padStart(2, "0")} ${hourLabel.match(/(AM|PM)$/)?.[0] ?? ""}`;
+  const hourEntry = HOURS.find((h) => h.value === hour);
+  const ampmLabel = hourEntry ? t(`agents:schedule.amPm.${hourEntry.ampm}`) : "";
+  const timeStr = `${hourEntry?.label12 ?? hour}:${minute.padStart(2, "0")} ${ampmLabel}`;
 
   switch (preset) {
     case "every_minute":
-      return "Every minute";
+      return t("agents:schedule.describe.everyMinute");
     case "every_hour":
-      return `Every hour at :${minute.padStart(2, "0")}`;
+      return t("agents:schedule.describe.everyHourAt", { minute: minute.padStart(2, "0") });
     case "every_day":
-      return `Every day at ${timeStr}`;
+      return t("agents:schedule.describe.everyDayAt", { time: timeStr });
     case "weekdays":
-      return `Weekdays at ${timeStr}`;
+      return t("agents:schedule.describe.weekdaysAt", { time: timeStr });
     case "weekly": {
-      const day = DAYS_OF_WEEK.find((d) => d.value === dayOfWeek)?.label ?? dayOfWeek;
-      return `Every ${day} at ${timeStr}`;
+      const dayKey = DAY_KEYS.find((d) => d.value === dayOfWeek)?.key ?? dayOfWeek;
+      const day = t(`agents:schedule.days.${dayKey}`);
+      return t("agents:schedule.describe.weeklyAt", { day, time: timeStr });
     }
     case "monthly":
-      return `Monthly on the ${dayOfMonth}${ordinalSuffix(Number(dayOfMonth))} at ${timeStr}`;
+      return t("agents:schedule.describe.monthlyAt", { day: dayOfMonth, time: timeStr });
     case "custom":
-      return cron || "No schedule set";
+      return cron || t("agents:schedule.describe.noSchedule");
   }
 }
 
@@ -153,6 +153,7 @@ export function ScheduleEditor({
   value: string;
   onChange: (cron: string) => void;
 }) {
+  const { t } = useTranslation(["agents"]);
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
   const [hour, setHour] = useState(parsed.hour);
@@ -196,12 +197,12 @@ export function ScheduleEditor({
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
         <SelectTrigger className="w-full">
-          <SelectValue placeholder="Choose frequency..." />
+          <SelectValue placeholder={t("agents:schedule.choosePlaceholder")} />
         </SelectTrigger>
         <SelectContent>
-          {PRESETS.map((p) => (
-            <SelectItem key={p.value} value={p.value}>
-              {p.label}
+          {PRESET_VALUES.map((p) => (
+            <SelectItem key={p} value={p}>
+              {t(`agents:schedule.presets.${p}`)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -219,14 +220,14 @@ export function ScheduleEditor({
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Five fields: minute hour day-of-month month day-of-week
+            {t("agents:schedule.cronHelp")}
           </p>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at</span>
+              <span className="text-sm text-muted-foreground">{t("agents:schedule.at")}</span>
               <Select
                 value={hour}
                 onValueChange={(h) => {
@@ -240,7 +241,7 @@ export function ScheduleEditor({
                 <SelectContent>
                   {HOURS.map((h) => (
                     <SelectItem key={h.value} value={h.value}>
-                      {h.label}
+                      {h.label12} {t(`agents:schedule.amPm.${h.ampm}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -269,7 +270,7 @@ export function ScheduleEditor({
 
           {preset === "every_hour" && (
             <>
-              <span className="text-sm text-muted-foreground">at minute</span>
+              <span className="text-sm text-muted-foreground">{t("agents:schedule.atMinute")}</span>
               <Select
                 value={minute}
                 onValueChange={(m) => {
@@ -293,9 +294,9 @@ export function ScheduleEditor({
 
           {preset === "weekly" && (
             <>
-              <span className="text-sm text-muted-foreground">on</span>
+              <span className="text-sm text-muted-foreground">{t("agents:schedule.on")}</span>
               <div className="flex gap-1">
-                {DAYS_OF_WEEK.map((d) => (
+                {DAY_KEYS.map((d) => (
                   <Button
                     key={d.value}
                     type="button"
@@ -307,7 +308,7 @@ export function ScheduleEditor({
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
                     }}
                   >
-                    {d.label}
+                    {t(`agents:schedule.days.${d.key}`)}
                   </Button>
                 ))}
               </div>
@@ -316,7 +317,7 @@ export function ScheduleEditor({
 
           {preset === "monthly" && (
             <>
-              <span className="text-sm text-muted-foreground">on day</span>
+              <span className="text-sm text-muted-foreground">{t("agents:schedule.onDay")}</span>
               <Select
                 value={dayOfMonth}
                 onValueChange={(dom) => {

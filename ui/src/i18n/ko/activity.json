@@ -1,0 +1,60 @@
+{
+  "breadcrumb": "활동",
+  "selectCompany": "활동을 보려면 회사를 선택하세요.",
+  "noActivity": "아직 활동이 없습니다.",
+  "filterByType": "유형별 필터",
+  "allTypes": "모든 유형",
+
+  "verbs": {
+    "issue.created": "생성함",
+    "issue.updated": "업데이트함",
+    "issue.checked_out": "체크아웃함",
+    "issue.released": "릴리즈함",
+    "issue.comment_added": "에 코멘트함",
+    "issue.attachment_added": "에 파일 첨부함",
+    "issue.attachment_removed": "에서 첨부파일 제거함",
+    "issue.document_created": "에 문서 생성함",
+    "issue.document_updated": "의 문서 업데이트함",
+    "issue.document_deleted": "에서 문서 삭제함",
+    "issue.commented": "에 코멘트함",
+    "issue.deleted": "삭제함",
+    "agent.created": "생성함",
+    "agent.updated": "업데이트함",
+    "agent.paused": "일시정지함",
+    "agent.resumed": "재개함",
+    "agent.terminated": "종료함",
+    "agent.key_created": "의 API 키 생성함",
+    "agent.budget_updated": "의 예산 업데이트함",
+    "agent.runtime_session_reset": "의 세션 초기화함",
+    "heartbeat.invoked": "의 하트비트 실행함",
+    "heartbeat.cancelled": "의 하트비트 취소함",
+    "approval.created": "승인 요청함",
+    "approval.approved": "승인함",
+    "approval.rejected": "거절함",
+    "project.created": "생성함",
+    "project.updated": "업데이트함",
+    "project.deleted": "삭제함",
+    "goal.created": "생성함",
+    "goal.updated": "업데이트함",
+    "goal.deleted": "삭제함",
+    "cost.reported": "의 비용 보고함",
+    "cost.recorded": "의 비용 기록함",
+    "company.created": "회사 생성함",
+    "company.updated": "회사 업데이트함",
+    "company.archived": "보관함",
+    "company.budget_updated": "의 예산 업데이트함"
+  },
+
+  "statusChange": {
+    "changedStatusFromTo": "상태를 {{from}}에서 {{to}}(으)로 변경함",
+    "changedStatusTo": "상태를 {{to}}(으)로 변경함",
+    "changedPriorityFromTo": "우선순위를 {{from}}에서 {{to}}(으)로 변경함",
+    "changedPriorityTo": "우선순위를 {{to}}(으)로 변경함"
+  },
+
+  "actors": {
+    "system": "시스템",
+    "board": "이사회",
+    "unknown": "알 수 없음"
+  }
+}

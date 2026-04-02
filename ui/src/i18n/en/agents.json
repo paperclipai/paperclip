@@ -1,0 +1,197 @@
+{
+  "breadcrumb": "Agents",
+  "selectCompany": "Select a company to view agents.",
+  "createFirst": "Create your first agent to get started.",
+  "newAgent": "New Agent",
+  "noMatch": "No agents match the selected filter.",
+  "noOrgHierarchy": "No organizational hierarchy defined.",
+  "showTerminated": "Show terminated",
+  "agentCount": "{{count}} agent",
+  "agentCountPlural": "{{count}} agents",
+
+  "tabs": {
+    "all": "All",
+    "active": "Active",
+    "paused": "Paused",
+    "error": "Error"
+  },
+
+  "newAgentPage": {
+    "title": "New Agent",
+    "subtitle": "Advanced agent configuration",
+    "namePlaceholder": "Agent name",
+    "titlePlaceholder": "Title (e.g. VP of Engineering)",
+    "companySkills": "Company skills",
+    "companySkillsHint": "Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.",
+    "noCompanySkills": "No optional company skills installed yet.",
+    "thisCeo": "This will be the CEO",
+    "createAgent": "Create agent",
+    "failedToCreate": "Failed to create agent"
+  },
+
+  "detail": {
+    "configuration": "Configuration",
+    "overview": "Overview",
+    "runs": "Runs",
+    "issues": "Issues"
+  },
+
+  "properties": {
+    "role": "Role",
+    "adapter": "Adapter",
+    "session": "Session",
+    "lastError": "Last error",
+    "lastHeartbeat": "Last Heartbeat",
+    "reportsTo": "Reports To",
+    "created": "Created"
+  },
+
+  "errors": {
+    "opencodeRequiresModel": "OpenCode requires an explicit model in provider/model format.",
+    "failedToLoadModels": "Failed to load OpenCode models.",
+    "modelsStillLoading": "OpenCode models are still loading. Please wait and try again.",
+    "noModelsDiscovered": "No OpenCode models discovered. Run `opencode models` and authenticate providers.",
+    "modelUnavailable": "Configured OpenCode model is unavailable: {{model}}"
+  },
+
+  "noRecentRuns": "No recent agent runs.",
+  "liveNow": "Live now",
+  "finished": "Finished",
+  "started": "Started",
+  "liveRuns": "Live Runs",
+  "liveRunsDescription": "Streamed with the same transcript UI used on the full run detail page.",
+  "openRun": "Open run",
+  "stop": "Stop",
+  "stopping": "Stopping\u2026",
+  "recommended": "Recommended",
+
+  "actionLabels": {
+    "issueCreated": "created the issue",
+    "issueUpdated": "updated the issue",
+    "issueCheckedOut": "checked out the issue",
+    "issueReleased": "released the issue",
+    "commentAdded": "added a comment",
+    "attachmentAdded": "added an attachment",
+    "attachmentRemoved": "removed an attachment",
+    "documentCreated": "created a document",
+    "documentUpdated": "updated a document",
+    "documentDeleted": "deleted a document",
+    "issueDeleted": "deleted the issue",
+    "agentCreated": "created an agent",
+    "agentUpdated": "updated the agent",
+    "agentPaused": "paused the agent",
+    "agentResumed": "resumed the agent",
+    "agentTerminated": "terminated the agent",
+    "heartbeatInvoked": "invoked a heartbeat",
+    "heartbeatCancelled": "cancelled a heartbeat",
+    "approvalCreated": "requested approval",
+    "approvalApproved": "approved",
+    "approvalRejected": "rejected"
+  },
+
+  "transcript": {
+    "waitingForParsing": "Waiting for transcript parsing...",
+    "waitingForOutput": "Waiting for output...",
+    "noTranscript": "No transcript captured."
+  },
+
+  "adapterLabels": {
+    "claude_local": "Claude (local)",
+    "codex_local": "Codex (local)",
+    "gemini_local": "Gemini CLI (local)",
+    "opencode_local": "OpenCode (local)",
+    "pi_local": "Pi (local)",
+    "openclaw_gateway": "OpenClaw Gateway",
+    "cursor": "Cursor (local)",
+    "hermes_local": "Hermes Agent",
+    "process": "Process",
+    "http": "HTTP"
+  },
+
+  "workspace": {
+    "isolatedWorkspace": "Isolated workspace",
+    "operatorBranch": "Operator branch",
+    "cloudSandbox": "Cloud sandbox",
+    "adapterManaged": "Adapter managed",
+    "workspace": "Workspace",
+    "projectDefault": "Project default",
+    "newIsolatedWorkspace": "New isolated workspace",
+    "existingIsolatedWorkspace": "Existing isolated workspace",
+    "reuseExistingWorkspace": "Reuse existing workspace",
+    "copied": "Copied!",
+    "copy": "Copy",
+    "repo": "Repo:",
+    "cancel": "Cancel",
+    "save": "Save",
+    "edit": "Edit",
+    "freshIsolatedWillBeCreated": "A fresh isolated workspace will be created when this issue runs.",
+    "willReuseExisting": "This issue will reuse an existing workspace when it runs.",
+    "willUseProjectDefault": "This issue will use the project default workspace configuration when it runs.",
+    "reusing": "Reusing:",
+    "viewDetails": "View workspace details \u2192",
+    "chooseExisting": "Choose an existing workspace",
+    "current": "Current:"
+  },
+
+  "form": {
+    "unsavedChanges": "Unsaved changes",
+    "saving": "Saving...",
+    "identity": "Identity",
+    "name": "Name",
+    "title": "Title",
+    "reportsTo": "Reports to",
+    "capabilities": "Capabilities",
+    "chooseManager": "Choose manager…",
+    "thinkingEffort": {
+      "auto": "Auto",
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "X-High",
+      "max": "Max",
+      "plan": "Plan",
+      "ask": "Ask"
+    }
+  },
+
+  "schedule": {
+    "presets": {
+      "every_minute": "Every minute",
+      "every_hour": "Every hour",
+      "every_day": "Every day",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly",
+      "monthly": "Monthly",
+      "custom": "Custom (cron)"
+    },
+    "choosePlaceholder": "Choose frequency...",
+    "cronHelp": "Five fields: minute hour day-of-month month day-of-week",
+    "at": "at",
+    "atMinute": "at minute",
+    "on": "on",
+    "onDay": "on day",
+    "days": {
+      "mon": "Mon",
+      "tue": "Tue",
+      "wed": "Wed",
+      "thu": "Thu",
+      "fri": "Fri",
+      "sat": "Sat",
+      "sun": "Sun"
+    },
+    "describe": {
+      "everyMinute": "Every minute",
+      "everyHourAt": "Every hour at :{{minute}}",
+      "everyDayAt": "Every day at {{time}}",
+      "weekdaysAt": "Weekdays at {{time}}",
+      "weeklyAt": "Every {{day}} at {{time}}",
+      "monthlyAt": "Monthly on the {{day}} at {{time}}",
+      "noSchedule": "No schedule set"
+    },
+    "amPm": {
+      "am": "AM",
+      "pm": "PM"
+    }
+  }
+}

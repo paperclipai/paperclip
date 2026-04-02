@@ -1,0 +1,29 @@
+{
+  "transcript": {
+    "user": "사용자",
+    "streaming": "스트리밍 중",
+    "executingCommand": "명령어 실행 중",
+    "executedCommand": "명령어 실행됨",
+    "executedCommands": "명령어 {{count}}개 실행됨",
+    "commandFailed": "명령어 실패",
+    "usingTool": "{{tool}} 사용 중",
+    "usedTool": "{{tool}} 사용됨",
+    "usedToolCalls": "{{tool}} 사용됨 ({{count}}회)",
+    "tools": "도구 {{count}}개",
+    "running": "실행 중",
+    "completed": "완료",
+    "errored": "오류",
+    "toolFailed": "도구 실패",
+    "waitingForResult": "결과 대기 중",
+    "failedWithCode": "종료 코드 {{code}}로 실패",
+    "failed": "실패",
+    "runFailed": "실행 실패",
+    "input": "입력",
+    "result": "결과",
+    "empty": "<비어있음>",
+    "noTranscript": "아직 트랜스크립트가 없습니다.",
+    "stderrLines": "stderr {{count}}줄",
+    "stderr": "stderr",
+    "stdout": "stdout"
+  }
+}

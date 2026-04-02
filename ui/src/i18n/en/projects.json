@@ -1,0 +1,50 @@
+{
+  "breadcrumb": "Projects",
+  "selectCompany": "Select a company to view projects.",
+  "addProject": "Add Project",
+  "noProjects": "No projects yet.",
+
+  "statuses": {
+    "backlog": "Backlog",
+    "planned": "Planned",
+    "in_progress": "In Progress",
+    "completed": "Completed",
+    "cancelled": "Cancelled"
+  },
+
+  "detail": {
+    "addDescription": "Add a description...",
+    "status": "Status",
+    "targetDate": "Target Date",
+    "overview": "Overview",
+    "issues": "Issues",
+    "workspaces": "Workspaces",
+    "configuration": "Configuration",
+    "budget": "Budget",
+    "pausedByBudget": "Project paused by budget",
+    "pausedByBudgetHardStop": "Paused by budget hard stop"
+  },
+
+  "failedToCreate": "Failed to create project.",
+
+  "newDialog": {
+    "title": "New Project",
+    "namePlaceholder": "Project name",
+    "descriptionPlaceholder": "Add a description...",
+    "status": "Status",
+    "goal": "Goal",
+    "addGoal": "+ Goal",
+    "noGoal": "No goal",
+    "allGoalsSelected": "All goals already selected.",
+    "targetDate": "Target Date",
+    "createProject": "Create Project",
+    "repoUrl": "Repo URL",
+    "repoUrlPlaceholder": "https://github.com/org/repo",
+    "repoUrlHint": "Link a GitHub repository so agents can clone, read, and push code for this project.",
+    "localFolder": "Local folder",
+    "localFolderPlaceholder": "/absolute/path/to/workspace",
+    "localFolderHint": "Set an absolute path on this machine where local agents will read and write files for this project.",
+    "localFolderMustBeAbsolute": "Local folder must be a full absolute path.",
+    "repoMustBeValidGithub": "Repo must use a valid GitHub repo URL."
+  }
+}

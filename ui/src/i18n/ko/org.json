@@ -1,0 +1,11 @@
+{
+  "breadcrumb": "조직도",
+  "selectCompany": "조직도를 보려면 회사를 선택하세요.",
+  "noAgentsInOrg": "조직에 에이전트가 없습니다. 에이전트를 만들어 조직도를 구성하세요.",
+  "noOrgHierarchy": "조직 구조가 정의되지 않았습니다.",
+  "importCompany": "회사 가져오기",
+  "exportCompany": "회사 내보내기",
+  "zoomIn": "확대",
+  "zoomOut": "축소",
+  "fitToScreen": "화면에 맞추기"
+}

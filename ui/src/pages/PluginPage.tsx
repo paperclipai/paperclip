@@ -9,6 +9,7 @@ import { PluginSlotMount } from "@/plugins/slots";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
+import { useTranslation } from "react-i18next";
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -19,6 +20,7 @@ import { NotFoundPage } from "./NotFound";
  * @see doc/plugins/PLUGIN_SPEC.md §24.4 — Company-Context Plugin Page
  */
 export function PluginPage() {
+  const { t } = useTranslation(["plugins", "common"]);
   const { companyPrefix: routeCompanyPrefix, pluginId, pluginRoutePath } = useParams<{
     companyPrefix?: string;
     pluginId?: string;

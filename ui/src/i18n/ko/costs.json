@@ -1,0 +1,105 @@
+{
+  "breadcrumb": "비용",
+  "selectCompany": "비용을 보려면 회사를 선택하세요.",
+  "overview": "개요",
+  "byProvider": "프로바이더별",
+  "byBiller": "청구자별",
+  "byAgent": "에이전트별",
+  "finance": "재무",
+  "financeLedger": "재무 원장",
+  "financeLedgerDescription": "단일 추론 요청에 매핑되지 않는 계정 수준 비용입니다.",
+  "debits": "차변",
+  "credits": "대변",
+  "net": "순액",
+  "estimated": "추정",
+  "totalEvents": "범위 내 {{count}}건의 이벤트",
+  "refundsAndCredits": "환불, 상계 및 크레딧 반환",
+  "debitMinusCredit": "선택한 기간의 차변 빼기 대변",
+  "estimatedDebits": "아직 청구서가 확정되지 않은 추정 차변",
+
+  "metrics": {
+    "totalSpend": "총 지출",
+    "monthSpend": "이번 달 지출",
+    "weekSpend": "이번 주 지출",
+    "todaySpend": "오늘 지출"
+  },
+
+  "tabs": {
+    "overview": "개요",
+    "byProvider": "프로바이더별",
+    "byBiller": "청구자별",
+    "byAgent": "에이전트별",
+    "budgets": "예산",
+    "finance": "재무"
+  },
+
+  "budget": {
+    "noPolicies": "아직 설정된 예산 정책이 없습니다.",
+    "incidents": "예산 사고",
+    "noIncidents": "활성 예산 사고가 없습니다.",
+    "activeIncidentsSubtitle": "소프트 또는 하드 임계값 초과 건",
+    "pendingApprovalsSubtitle": "이사회 조치를 기다리는 예산 초과 승인",
+    "pausedAgentsSubtitle": "예산으로 차단된 에이전트 하트비트",
+    "pausedProjectsSubtitle": "예산으로 차단된 프로젝트 실행"
+  },
+
+  "dateRange": {
+    "today": "오늘",
+    "thisWeek": "이번 주",
+    "thisMonth": "이번 달",
+    "last7Days": "최근 7일",
+    "last30Days": "최근 30일",
+    "last90Days": "최근 90일",
+    "custom": "사용자 지정"
+  },
+
+  "biller": {
+    "tokenIn": "입력",
+    "tokenOut": "출력",
+    "providers": "{{count}}개 프로바이더",
+    "models": "{{count}}개 모델",
+    "periodSpend": "기간 지출",
+    "ofAllocation": "{{percent}}% 할당량",
+    "meteredRuns": "{{count}}개 종량 실행",
+    "subscriptionRuns": "{{count}}개 구독 실행",
+    "thisWeek": "{{amount}} 이번 주",
+    "billingTypes": "청구 유형",
+    "upstreamProviders": "업스트림 프로바이더",
+    "tokens": "{{count}} 토큰"
+  },
+
+  "budgetPolicy": {
+    "lifetimeBudget": "평생 예산",
+    "monthlyBudget": "월별 UTC 예산",
+    "observed": "사용량",
+    "budget": "예산",
+    "percentOfLimit": "{{percent}}% 사용",
+    "noCapConfigured": "상한 미설정",
+    "disabled": "비활성화",
+    "softAlertAt": "{{percent}}%에서 경고",
+    "pauseReason": " · {{reason}} 일시정지",
+    "remaining": "남은 예산",
+    "unlimited": "무제한",
+    "paused": "일시정지",
+    "warning": "경고",
+    "hardStop": "강제 중지",
+    "healthy": "정상",
+    "pausedProject": "예산이 증액되거나 사고가 해제될 때까지 이 프로젝트의 실행이 일시중지됩니다.",
+    "pausedScope": "예산이 증액되거나 사고가 해제될 때까지 이 범위의 하트비트가 일시중지됩니다.",
+    "budgetUsd": "예산 (USD)",
+    "saving": "저장 중...",
+    "updateBudget": "예산 수정",
+    "setBudget": "예산 설정",
+    "invalidAmount": "유효한 음수가 아닌 달러 금액을 입력하세요.",
+    "pausedByBudget": "예산으로 일시정지",
+    "agentPausedByBudget": "에이전트 예산 일시정지"
+  },
+
+  "financeBiller": {
+    "eventsSummary": "{{eventCount}}건의 이벤트, {{kindCount}}개 유형",
+    "net": "순액",
+    "debits": "차변",
+    "credits": "대변",
+    "estimated": "추정"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "breadcrumb": "Approvals",
+  "selectCompanyFirst": "Select a company first.",
+  "pending": "Pending",
+  "all": "All",
+  "noPendingApprovals": "No pending approvals.",
+  "noApprovalsYet": "No approvals yet.",
+  "failedToApprove": "Failed to approve",
+  "failedToReject": "Failed to reject",
+
+  "types": {
+    "hire_agent": "Hire Agent",
+    "approve_ceo_strategy": "CEO Strategy",
+    "budget_override_required": "Budget Override",
+    "humanJoinRequest": "Human join request",
+    "agentJoinRequest": "Agent join request"
+  },
+
+  "detail": {
+    "approvalNotFound": "Approval not found.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "approveFailed": "Approve failed",
+    "rejectFailed": "Reject failed",
+    "revisionFailed": "Revision request failed",
+    "resubmitFailed": "Resubmit failed",
+    "commentFailed": "Comment failed",
+    "deleteFailed": "Delete failed",
+    "seeFullRequest": "See full request",
+    "decisionNote": "Decision note: {{note}}",
+    "linkedIssues": "Linked Issues",
+    "linkedIssuesNote": "Linked issues remain open until the requesting agent follows up and closes them.",
+    "comments": "Comments ({{count}})",
+    "addComment": "Add a comment...",
+    "postComment": "Post comment",
+    "posting": "Posting…",
+    "requestRevision": "Request revision",
+    "markResubmitted": "Mark resubmitted",
+    "deleteDisapprovedAgent": "Delete disapproved agent",
+    "deleteConfirm": "Delete this disapproved agent? This cannot be undone.",
+    "approvalConfirmed": "Approval confirmed",
+    "agentNotified": "Requesting agent was notified to review this approval and linked issues.",
+    "reviewLinkedIssues": "Review linked issues",
+    "reviewLinkedIssue": "Review linked issue",
+    "openHiredAgent": "Open hired agent",
+    "backToApprovals": "Back to approvals",
+    "budgetResolveNote": "Resolve this budget stop from the budget controls on <1>/costs</1>.",
+    "board": "Board"
+  },
+
+  "payload": {
+    "name": "Name",
+    "role": "Role",
+    "title": "Title",
+    "icon": "Icon",
+    "capabilities": "Capabilities",
+    "adapter": "Adapter",
+    "skills": "Skills",
+    "scope": "Scope",
+    "window": "Window",
+    "metric": "Metric",
+    "limit": "Limit",
+    "observed": "Observed"
+  }
+}

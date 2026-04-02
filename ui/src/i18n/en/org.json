@@ -1,0 +1,11 @@
+{
+  "breadcrumb": "Org Chart",
+  "selectCompany": "Select a company to view org chart.",
+  "noAgentsInOrg": "No agents in the organization. Create agents to build your org chart.",
+  "noOrgHierarchy": "No organizational hierarchy defined.",
+  "importCompany": "Import company",
+  "exportCompany": "Export company",
+  "zoomIn": "Zoom in",
+  "zoomOut": "Zoom out",
+  "fitToScreen": "Fit to screen"
+}

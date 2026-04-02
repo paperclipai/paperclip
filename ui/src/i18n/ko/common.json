@@ -1,0 +1,187 @@
+{
+  "brand": "Paperclip",
+  "loading": "로딩 중\u2026",
+  "working": "처리 중\u2026",
+  "saving": "저장 중...",
+  "creating": "생성 중\u2026",
+  "deleting": "삭제 중...",
+  "saved": "저장됨",
+  "copied": "복사됨",
+
+  "buttons": {
+    "save": "저장",
+    "saveChanges": "변경사항 저장",
+    "cancel": "취소",
+    "delete": "삭제",
+    "edit": "편집",
+    "create": "생성",
+    "close": "닫기",
+    "confirm": "확인",
+    "back": "뒤로",
+    "next": "다음",
+    "retry": "재시도",
+    "retrying": "재시도 중\u2026",
+    "approve": "승인",
+    "reject": "거부",
+    "enable": "활성화",
+    "disable": "비활성화",
+    "pause": "일시정지",
+    "resume": "재개",
+    "archive": "보관",
+    "restore": "복원",
+    "export": "내보내기",
+    "import": "가져오기",
+    "clear": "초기화",
+    "copy": "복사",
+    "dismiss": "닫기",
+    "goHome": "홈으로",
+    "openDashboard": "대시보드 열기",
+    "getStarted": "시작하기",
+    "runNow": "지금 실행"
+  },
+
+  "status": {
+    "active": "활성",
+    "paused": "일시정지",
+    "error": "오류",
+    "done": "완료",
+    "running": "실행 중",
+    "idle": "유휴",
+    "pending": "대기 중",
+    "terminated": "종료됨",
+    "blocked": "차단됨",
+    "cancelled": "취소됨",
+    "queued": "대기열",
+    "on": "켜짐",
+    "off": "꺼짐",
+    "archived": "보관됨",
+    "live": "실시간",
+    "approved": "승인됨",
+    "rejected": "거부됨",
+    "expired": "만료됨",
+    "revision_requested": "수정 요청됨",
+    "succeeded": "성공",
+    "failed": "실패",
+    "timed_out": "시간 초과"
+  },
+
+  "priority": {
+    "critical": "긴급",
+    "high": "높음",
+    "medium": "보통",
+    "low": "낮음"
+  },
+
+  "empty": {
+    "noResults": "결과 없음",
+    "noData": "데이터 없음"
+  },
+
+  "time": {
+    "never": "없음",
+    "lastNDays": "최근 {{n}}일"
+  },
+
+  "timeAgo": {
+    "justNow": "방금",
+    "minutesAgo": "{{m}}분 전",
+    "hoursAgo": "{{h}}시간 전",
+    "daysAgo": "{{d}}일 전",
+    "weeksAgo": "{{w}}주 전",
+    "monthsAgo": "{{mo}}개월 전"
+  },
+
+  "statusValues": {
+    "todo": "할 일",
+    "in_progress": "진행중",
+    "in_review": "검토중",
+    "done": "완료",
+    "blocked": "차단됨",
+    "cancelled": "취소됨",
+    "backlog": "백로그"
+  },
+
+  "priorityValues": {
+    "critical": "긴급",
+    "high": "높음",
+    "medium": "보통",
+    "low": "낮음"
+  },
+
+  "errors": {
+    "failedToSave": "저장 실패",
+    "failedToLoad": "불러오기 실패",
+    "failedToLoadAppState": "앱 상태를 불러오지 못했습니다",
+    "authenticationFailed": "인증 실패",
+    "fillRequiredFields": "모든 필수 항목을 입력해 주세요.",
+    "unknownError": "알 수 없는 오류",
+    "instanceSetupRequired": "인스턴스 설정이 필요합니다",
+    "noAdminYet": "아직 인스턴스 관리자가 없습니다.",
+    "bootstrapInviteActive": "부트스트랩 초대가 이미 활성화되어 있습니다. Paperclip 시작 로그에서 첫 관리자 초대 URL을 확인하거나, 아래 명령어를 실행하여 갱신하세요:",
+    "bootstrapNoInvite": "Paperclip 환경에서 아래 명령어를 실행하여 첫 관리자 초대 URL을 생성하세요:"
+  },
+
+  "labels": {
+    "name": "이름",
+    "email": "이메일",
+    "password": "비밀번호",
+    "description": "설명",
+    "title": "제목",
+    "status": "상태",
+    "priority": "우선순위",
+    "assignee": "담당자",
+    "project": "프로젝트",
+    "targetDate": "목표일",
+    "all": "전체",
+    "filters": "필터",
+    "search": "검색",
+    "beta": "베타",
+    "optional": "선택사항",
+    "labels_label": "라벨",
+    "upload": "업로드",
+    "documents": "문서",
+    "attachments": "첨부파일",
+    "model": "모델",
+    "thinkingEffort": "사고 수준",
+    "default": "기본값",
+    "startDate": "시작일",
+    "dueDate": "마감일",
+    "run": "실행",
+    "reopen": "다시 열기",
+    "worktree": "워크트리",
+    "companies": "회사",
+    "companySettings": "회사 설정",
+    "manageCompanies": "회사 관리",
+    "selectCompany": "회사 선택",
+    "noCompanies": "회사 없음",
+    "noGoals": "목표 없음.",
+    "viewDetails": "상세 보기",
+    "requestedBy": "요청자",
+    "note": "메모",
+    "you": "나"
+  },
+
+  "pagination": {
+    "showMore": "더 보기",
+    "showLess": "접기"
+  },
+
+  "units": {
+    "agent": "에이전트",
+    "agents": "에이전트",
+    "company": "회사",
+    "companies": "회사"
+  },
+
+  "adapter": {
+    "claude_local": "Claude",
+    "codex_local": "Codex",
+    "gemini_local": "Gemini",
+    "opencode_local": "OpenCode",
+    "cursor": "Cursor",
+    "hermes_local": "Hermes",
+    "openclaw_gateway": "OpenClaw Gateway",
+    "process": "Process",
+    "http": "HTTP"
+  }
+}

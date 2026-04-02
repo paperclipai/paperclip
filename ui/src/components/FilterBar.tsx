@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +16,7 @@ interface FilterBarProps {
 }
 
 export function FilterBar({ filters, onRemove, onClear }: FilterBarProps) {
+  const { t } = useTranslation(["common"]);
   if (filters.length === 0) return null;
 
   return (
@@ -32,7 +34,7 @@ export function FilterBar({ filters, onRemove, onClear }: FilterBarProps) {
         </Badge>
       ))}
       <Button variant="ghost" size="sm" className="text-xs h-6" onClick={onClear}>
-        Clear all
+        {t("common:buttons.clear")}
       </Button>
     </div>
   );
