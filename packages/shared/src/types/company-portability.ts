@@ -234,6 +234,7 @@ export interface CompanyPortabilityPreviewRequest {
   collisionStrategy?: CompanyPortabilityCollisionStrategy;
   nameOverrides?: Record<string, string>;
   selectedFiles?: string[];
+  defaultAgentConfig?: CompanyPortabilityDefaultAgentConfig;
 }
 
 export interface CompanyPortabilityPreviewAgentPlan {

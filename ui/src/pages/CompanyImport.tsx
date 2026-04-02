@@ -608,6 +608,7 @@ function AdapterPickerList({
   adapterOverrides,
   expandedSlugs,
   configValues,
+  defaultAgentConfig,
   onChangeAdapter,
   onToggleExpand,
   onChangeConfig,
@@ -616,6 +617,7 @@ function AdapterPickerList({
   adapterOverrides: Record<string, string>;
   expandedSlugs: Set<string>;
   configValues: Record<string, CreateConfigValues>;
+  defaultAgentConfig: CompanyPortabilityDefaultAgentConfig;
   onChangeAdapter: (slug: string, adapterType: string) => void;
   onToggleExpand: (slug: string) => void;
   onChangeConfig: (slug: string, patch: Partial<CreateConfigValues>) => void;
@@ -634,7 +636,10 @@ function AdapterPickerList({
         <div className="divide-y divide-border">
           {agents.map((agent) => {
             const selectedType =
-              adapterOverrides[agent.slug] ?? agent.adapterType;
+              adapterOverrides[agent.slug] ??
+              defaultAgentConfig.adapterType ??
+              agent.adapterType ??
+              "claude_local";
             const isExpanded = expandedSlugs.has(agent.slug);
             const vals = configValues[agent.slug] ?? {
               ...defaultCreateValues,
@@ -1021,6 +1026,17 @@ export function CompanyImport() {
             ? { mode: "new_company", newCompanyName: newCompanyName || null }
             : { mode: "existing_company", companyId: selectedCompanyId! },
         collisionStrategy,
+        defaultAgentConfig: {
+          adapterType: defaultAgentConfig.adapterType || undefined,
+          model: defaultAgentConfig.model || undefined,
+          command: defaultAgentConfig.command || undefined,
+          extraArgs: defaultAgentConfig.extraArgs?.length
+            ? defaultAgentConfig.extraArgs
+            : undefined,
+          maxTurnsPerRun: defaultAgentConfig.maxTurnsPerRun,
+          heartbeatEnabled: defaultAgentConfig.heartbeatEnabled,
+          intervalSec: defaultAgentConfig.intervalSec,
+        },
       });
     },
     onSuccess: (result) => {
@@ -1047,10 +1063,12 @@ export function CompanyImport() {
       setSkippedSlugs(new Set());
       setConfirmedSlugs(new Set());
 
-      // Initialize adapter overrides — default all agents to the CEO's adapter type
+      // Initialize adapter overrides — use global default if set, else CEO's adapter type
       const defaultAdapters: Record<string, string> = {};
+      const effectiveDefaultAdapterType =
+        defaultAgentConfig.adapterType || ceoAdapterType;
       for (const agent of result.manifest.agents) {
-        defaultAdapters[agent.slug] = ceoAdapterType;
+        defaultAdapters[agent.slug] = effectiveDefaultAdapterType;
       }
       setAdapterOverrides(defaultAdapters);
       setAdapterExpandedSlugs(new Set());
@@ -1905,6 +1923,7 @@ export function CompanyImport() {
             adapterOverrides={adapterOverrides}
             expandedSlugs={adapterExpandedSlugs}
             configValues={adapterConfigValues}
+            defaultAgentConfig={defaultAgentConfig}
             onChangeAdapter={handleAdapterChange}
             onToggleExpand={handleAdapterToggleExpand}
             onChangeConfig={handleAdapterConfigChange}

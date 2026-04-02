@@ -79,6 +79,7 @@ export {
   companyPortabilityExportSchema,
   companyPortabilityPreviewSchema,
   companyPortabilityImportSchema,
+  portabilityDefaultAgentConfigSchema,
   type CompanyPortabilityExport,
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,

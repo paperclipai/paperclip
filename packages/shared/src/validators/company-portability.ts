@@ -78,10 +78,14 @@ export const portabilitySkillManifestEntrySchema = z.object({
   trustLevel: z.string().nullable(),
   compatibility: z.string().nullable(),
   metadata: z.record(z.unknown()).nullable(),
-  fileInventory: z.array(z.object({
-    path: z.string().min(1),
-    kind: z.string().min(1),
-  })).default([]),
+  fileInventory: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        kind: z.string().min(1),
+      }),
+    )
+    .default([]),
 });
 
 export const portabilityProjectManifestEntrySchema = z.object({
@@ -95,19 +99,23 @@ export const portabilityProjectManifestEntrySchema = z.object({
   color: z.string().nullable(),
   status: z.string().nullable(),
   executionWorkspacePolicy: z.record(z.unknown()).nullable(),
-  workspaces: z.array(z.object({
-    key: z.string().min(1),
-    name: z.string().min(1),
-    sourceType: z.string().nullable(),
-    repoUrl: z.string().nullable(),
-    repoRef: z.string().nullable(),
-    defaultRef: z.string().nullable(),
-    visibility: z.string().nullable(),
-    setupCommand: z.string().nullable(),
-    cleanupCommand: z.string().nullable(),
-    metadata: z.record(z.unknown()).nullable(),
-    isPrimary: z.boolean(),
-  })).default([]),
+  workspaces: z
+    .array(
+      z.object({
+        key: z.string().min(1),
+        name: z.string().min(1),
+        sourceType: z.string().nullable(),
+        repoUrl: z.string().nullable(),
+        repoRef: z.string().nullable(),
+        defaultRef: z.string().nullable(),
+        visibility: z.string().nullable(),
+        setupCommand: z.string().nullable(),
+        cleanupCommand: z.string().nullable(),
+        metadata: z.record(z.unknown()).nullable(),
+        isPrimary: z.boolean(),
+      }),
+    )
+    .default([]),
   metadata: z.record(z.unknown()).nullable(),
 });
 
@@ -125,7 +133,9 @@ export const portabilityIssueRoutineManifestEntrySchema = z.object({
   concurrencyPolicy: z.string().nullable(),
   catchUpPolicy: z.string().nullable(),
   variables: z.array(routineVariableSchema).nullable().optional(),
-  triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
+  triggers: z
+    .array(portabilityIssueRoutineTriggerManifestEntrySchema)
+    .default([]),
 });
 
 export const portabilityIssueManifestEntrySchema = z.object({
@@ -202,7 +212,11 @@ export const portabilityAgentSelectionSchema = z.union([
   z.array(z.string().min(1)),
 ]);
 
-export const portabilityCollisionStrategySchema = z.enum(["rename", "skip", "replace"]);
+export const portabilityCollisionStrategySchema = z.enum([
+  "rename",
+  "skip",
+  "replace",
+]);
 
 export const companyPortabilityExportSchema = z.object({
   include: portabilityIncludeSchema.optional(),
@@ -216,7 +230,25 @@ export const companyPortabilityExportSchema = z.object({
   sidebarOrder: portabilitySidebarOrderSchema.partial().optional(),
 });
 
-export type CompanyPortabilityExport = z.infer<typeof companyPortabilityExportSchema>;
+export type CompanyPortabilityExport = z.infer<
+  typeof companyPortabilityExportSchema
+>;
+
+export const portabilityAdapterOverrideSchema = z.object({
+  adapterType: z.string().min(1),
+  adapterConfig: z.record(z.unknown()).optional(),
+});
+
+export const portabilityDefaultAgentConfigSchema = z.object({
+  adapterType: z.string().optional(),
+  model: z.string().optional(),
+  command: z.string().optional(),
+  extraArgs: z.array(z.string()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  maxTurnsPerRun: z.number().int().nonnegative().optional(),
+  heartbeatEnabled: z.boolean().optional(),
+  intervalSec: z.number().int().nonnegative().optional(),
+});
 
 export const companyPortabilityPreviewSchema = z.object({
   source: portabilitySourceSchema,
@@ -226,17 +258,21 @@ export const companyPortabilityPreviewSchema = z.object({
   collisionStrategy: portabilityCollisionStrategySchema.optional(),
   nameOverrides: z.record(z.string().min(1), z.string().min(1)).optional(),
   selectedFiles: z.array(z.string().min(1)).optional(),
+  defaultAgentConfig: portabilityDefaultAgentConfigSchema.optional(),
 });
 
-export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreviewSchema>;
+export type CompanyPortabilityPreview = z.infer<
+  typeof companyPortabilityPreviewSchema
+>;
 
-export const portabilityAdapterOverrideSchema = z.object({
-  adapterType: z.string().min(1),
-  adapterConfig: z.record(z.unknown()).optional(),
-});
+export const companyPortabilityImportSchema =
+  companyPortabilityPreviewSchema.extend({
+    adapterOverrides: z
+      .record(z.string().min(1), portabilityAdapterOverrideSchema)
+      .optional(),
+    defaultAgentConfig: portabilityDefaultAgentConfigSchema.optional(),
+  });
 
-export const companyPortabilityImportSchema = companyPortabilityPreviewSchema.extend({
-  adapterOverrides: z.record(z.string().min(1), portabilityAdapterOverrideSchema).optional(),
-});
-
-export type CompanyPortabilityImport = z.infer<typeof companyPortabilityImportSchema>;
+export type CompanyPortabilityImport = z.infer<
+  typeof companyPortabilityImportSchema
+>;
