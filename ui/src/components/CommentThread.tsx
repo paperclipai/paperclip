@@ -10,6 +10,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { resolveCommentAuthorIdentity } from "../lib/comment-authors";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -41,6 +42,7 @@ interface CommentThreadProps {
   linkedRuns?: LinkedRunItem[];
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -127,6 +129,7 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   highlightCommentId,
   queued = false,
 }: {
@@ -134,12 +137,14 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const authorIdentity = resolveCommentAuthorIdentity(comment, currentUserId);
 
   return (
     <div
@@ -154,15 +159,15 @@ function CommentCard({
       } ${isPending ? "opacity-80" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
-          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
+        {authorIdentity.kind === "agent" && authorIdentity.agentId ? (
+          <Link to={`/agents/${authorIdentity.agentId}`} className="hover:underline">
             <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+              name={agentMap?.get(authorIdentity.agentId)?.name ?? authorIdentity.agentId.slice(0, 8)}
               size="sm"
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={authorIdentity.name} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -247,12 +252,14 @@ const TimelineList = memo(function TimelineList({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
@@ -299,6 +306,7 @@ const TimelineList = memo(function TimelineList({
             agentMap={agentMap}
             companyId={companyId}
             projectId={projectId}
+            currentUserId={currentUserId}
             highlightCommentId={highlightCommentId}
           />
         );
@@ -313,6 +321,7 @@ export function CommentThread({
   linkedRuns = [],
   companyId,
   projectId,
+  currentUserId,
   onAdd,
   agentMap,
   imageUploadHandler,
@@ -475,6 +484,7 @@ export function CommentThread({
           agentMap={agentMap}
           companyId={companyId}
           projectId={projectId}
+          currentUserId={currentUserId}
           highlightCommentId={highlightCommentId}
         />
       ) : null}
@@ -507,6 +517,7 @@ export function CommentThread({
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
+                currentUserId={currentUserId}
                 highlightCommentId={highlightCommentId}
                 queued
               />
