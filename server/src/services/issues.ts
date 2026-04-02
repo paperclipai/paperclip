@@ -1449,6 +1449,30 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
+    ensureCompanyLabel: async (companyId: string, name: string, color: string): Promise<string> => {
+      const existing = await db
+        .select({ id: labels.id })
+        .from(labels)
+        .where(and(eq(labels.companyId, companyId), eq(labels.name, name)))
+        .then((rows) => rows[0] ?? null);
+      if (existing) return existing.id;
+      const [created] = await db
+        .insert(labels)
+        .values({ companyId, name: name.trim(), color })
+        .returning();
+      return created.id;
+    },
+
+    addLabelToIssue: async (issueId: string, companyId: string, labelId: string): Promise<void> => {
+      const exists = await db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .where(and(eq(issueLabels.issueId, issueId), eq(issueLabels.labelId, labelId)))
+        .then((rows) => rows[0] ?? null);
+      if (exists) return;
+      await db.insert(issueLabels).values({ issueId, labelId, companyId });
+    },
+
     listComments: async (
       issueId: string,
       opts?: {

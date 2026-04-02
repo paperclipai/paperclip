@@ -691,6 +691,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
     }
+    // Auto-label issues that have a pull_request work product
+    if (product.type === "pull_request") {
+      try {
+        const labelId = await svc.ensureCompanyLabel(issue.companyId, "has-pr", "#8B5CF6");
+        await svc.addLabelToIssue(issue.id, issue.companyId, labelId);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to auto-apply has-pr label");
+      }
+    }
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
