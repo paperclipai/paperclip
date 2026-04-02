@@ -13,6 +13,30 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+const SECRET_KEY_RE = /(key|token|secret|password|authorization)/i;
+
+/** Recursively sanitize objects — replace values whose key matches SECRET_KEY_RE with "***". */
+function deepSanitize(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(deepSanitize);
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[k] = SECRET_KEY_RE.test(k) ? "***" : deepSanitize(v);
+  }
+  return result;
+}
+
+/** Best-effort callback — never allows rejection to abort the adapter run. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function safeCallback(fn: (...args: any[]) => Promise<void> | void, ...args: any[]): Promise<void> {
+  try {
+    await fn(...args);
+  } catch {
+    // Telemetry callbacks must not abort execution
+  }
+}
+
 /**
  * Parse hermes CLI stdout for structured result fields.
  *
@@ -171,34 +195,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // ---- Report invocation metadata ----
   if (onMeta) {
-    const SECRET_KEY_RE = /(key|token|secret|password|authorization)/i;
+    // Security: parse debugMetadata as strict boolean to prevent truthy bypass
+    const debug = config.debugMetadata === true || config.debugMetadata === "true";
 
-    // Security: redact prompt and scrub context unless debugMetadata is enabled (HIGH)
-    const safePrompt = config.debugMetadata
+    const safePrompt = debug
       ? prompt
       : `[redacted: ${prompt.length} chars]`;
 
-    const safeContext = config.debugMetadata
-      ? context
-      : (context != null && typeof context === "object"
-          ? Object.fromEntries(
-              Object.entries(context as Record<string, unknown>).map(([k, v]) =>
-                SECRET_KEY_RE.test(k) ? [k, "***"] : [k, v],
-              ),
-            )
-          : context);
+    // Security: recursive sanitizer for nested secret keys (e.g., auth.token)
+    const safeContext = debug ? context : deepSanitize(context);
 
-    await onMeta({
+    // Best-effort: telemetry callback must not abort the adapter run
+    await safeCallback(onMeta, {
       adapterType: "hermes_fleetos",
       command: `fleetos:${containerId}/${hermesCommand}`,
       commandArgs: command.slice(1),
-      env: Object.fromEntries(
-        Object.entries(execEnv).map(([k, v]) =>
-          SECRET_KEY_RE.test(k)
-            ? [k, "***"]
-            : [k, v],
-        ),
-      ),
+      env: deepSanitize(execEnv) as Record<string, unknown>,
       prompt: safePrompt,
       context: safeContext,
     });
@@ -212,10 +224,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Verify container is running before exec
     const container = await client.getContainer(containerId);
     if (container.status !== "running") {
-      await onLog("stderr", `[fleetos] Container ${containerId} is ${container.status}, attempting start...\n`);
+      await safeCallback(onLog, "stderr", `[fleetos] Container ${containerId} is ${container.status}, attempting start...\n`);
       try {
         await client.startContainer(containerId);
-        await onLog("stdout", `[fleetos] Container ${containerId} started.\n`);
+        await safeCallback(onLog, "stdout", `[fleetos] Container ${containerId} started.\n`);
       } catch (startErr) {
         const reason = startErr instanceof Error ? startErr.message : String(startErr);
         return {
@@ -228,16 +240,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
 
-    await onLog("stdout", `[fleetos] Executing hermes in container ${containerId}...\n`);
+    await safeCallback(onLog, "stdout", `[fleetos] Executing hermes in container ${containerId}...\n`);
 
     const result = await client.exec(containerId, command, timeoutMs, execEnv);
 
-    // Stream logs back
+    // Stream logs back (best-effort — never abort on callback failure)
     if (result.stdout) {
-      await onLog("stdout", result.stdout);
+      await safeCallback(onLog, "stdout", result.stdout);
     }
     if (result.stderr) {
-      await onLog("stderr", result.stderr);
+      await safeCallback(onLog, "stderr", result.stderr);
     }
 
     // ---- Parse hermes output ----
@@ -305,12 +317,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isClientError = err instanceof FleetOSClientError;
     const message = err instanceof Error ? err.message : String(err);
 
+    // Differentiate connection failures (statusCode 0) from API errors (non-zero)
+    const errorCode = isClientError
+      ? (err.statusCode === 0 ? "fleetos_connection_error" : "fleetos_api_error")
+      : "fleetos_connection_error";
+
     return {
       exitCode: 1,
       signal: null,
       timedOut: false,
       errorMessage: `FleetOS exec failed: ${message}`,
-      errorCode: isClientError ? "fleetos_api_error" : "fleetos_connection_error",
+      errorCode,
       errorMeta: isClientError
         ? { statusCode: err.statusCode, detail: err.detail }
         : undefined,
