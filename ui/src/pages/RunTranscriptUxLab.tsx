@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatDateTime } from "../lib/utils";
@@ -54,10 +54,12 @@ function RunDetailPreview({
   mode,
   streaming,
   density,
+  onEvent,
 }: {
   mode: TranscriptMode;
   streaming: boolean;
   density: TranscriptDensity;
+  onEvent: (type: string, message: string) => void;
 }) {
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
@@ -75,13 +77,37 @@ function RunDetailPreview({
           Transcript ({runTranscriptFixtureEntries.length})
         </div>
       </div>
-      <div className="max-h-[720px] overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(8,145,178,0.08),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.10),transparent_28%)] p-5">
+      <div className="max-h-[520px] overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(8,145,178,0.08),transparent_36%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.10),transparent_28%)] p-5">
         <RunTranscriptView
           entries={runTranscriptFixtureEntries}
           mode={mode}
           density={density}
           streaming={streaming}
         />
+      </div>
+      <div className="border-t border-border/60 bg-background/90 p-5">
+        <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+          <h3 className="text-sm font-semibold text-cyan-700 dark:text-cyan-300">Run Paused: Human Review Required</h3>
+          <p className="mt-1 text-xs text-muted-foreground">The agent has completed the draft. Please review the findings and either hand it back or approve it.</p>
+          <div className="mt-4 flex gap-3">
+            <Button size="sm" onClick={() => onEvent("handoff_action_taken", "Approved draft")}>Approve</Button>
+            <Button size="sm" variant="outline" onClick={() => onEvent("handoff_action_taken", "Rejected draft")}>Request Changes</Button>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <input
+            type="text"
+            placeholder="Steer the agent (e.g. 'try searching in a different file')"
+            className="flex-1 rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && e.currentTarget.value) {
+                onEvent("steer_attempted", `Steered: ${e.currentTarget.value}`);
+                e.currentTarget.value = "";
+              }
+            }}
+          />
+          <Button size="sm" variant="secondary" onClick={() => onEvent("steer_attempted", "Clicked send on steering input")}>Send</Button>
+        </div>
       </div>
     </div>
   );
@@ -195,6 +221,16 @@ export function RunTranscriptUxLab() {
   const [detailMode, setDetailMode] = useState<TranscriptMode>("nice");
   const [streaming, setStreaming] = useState(true);
   const [density, setDensity] = useState<TranscriptDensity>("comfortable");
+  const [events, setEvents] = useState<{ id: number, type: string, message: string, timestamp: Date }[]>([]);
+
+  const handleEvent = (type: string, message: string) => {
+    setEvents((prev) => [{ id: Date.now(), type, message, timestamp: new Date() }, ...prev].slice(0, 15));
+    console.info(`[Instrumentation] ${type}:`, message);
+  };
+
+  useEffect(() => {
+    handleEvent("run_viewed", `User viewed run on ${selectedSurface} surface`);
+  }, [selectedSurface]);
 
   const selected = surfaceOptions.find((option) => option.id === selectedSurface) ?? surfaceOptions[0];
 
@@ -249,7 +285,17 @@ export function RunTranscriptUxLab() {
             </div>
           </aside>
 
-          <main className="min-w-0 p-5">
+          <main 
+            className="min-w-0 p-5"
+            onClickCapture={(e) => {
+              const target = e.target as HTMLElement;
+              const button = target.closest('button[aria-label^="Expand"]');
+              const divBtn = target.closest('div[role="button"]');
+              if (button || divBtn) {
+                handleEvent("step_expanded", `User expanded a step`);
+              }
+            }}
+          >
             <div className="mb-5 flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
@@ -317,7 +363,7 @@ export function RunTranscriptUxLab() {
 
             {selectedSurface === "detail" ? (
               <div className={cn(density === "compact" && "max-w-5xl")}>
-                <RunDetailPreview mode={detailMode} streaming={streaming} density={density} />
+                <RunDetailPreview mode={detailMode} streaming={streaming} density={density} onEvent={handleEvent} />
               </div>
             ) : selectedSurface === "live" ? (
               <div className={cn(density === "compact" && "max-w-4xl")}>
@@ -326,6 +372,35 @@ export function RunTranscriptUxLab() {
             ) : (
               <DashboardPreview streaming={streaming} mode={detailMode} density={density} />
             )}
+
+            <div className="mt-8 rounded-xl border border-border/70 bg-background/60 shadow-sm">
+              <div className="border-b border-border/60 bg-background/90 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Instrumentation Log
+                </div>
+              </div>
+              <div className="max-h-[300px] overflow-y-auto p-4">
+                {events.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">No events yet</div>
+                ) : (
+                  <div className="space-y-3 font-mono text-[11px]">
+                    {events.map((event) => (
+                      <div key={event.id} className="flex gap-3">
+                        <span className="text-muted-foreground whitespace-nowrap">
+                          {event.timestamp.toLocaleTimeString()}
+                        </span>
+                        <span className="font-semibold text-cyan-600 dark:text-cyan-400 whitespace-nowrap">
+                          [{event.type}]
+                        </span>
+                        <span className="text-foreground/80">
+                          {event.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </main>
         </div>
       </div>
