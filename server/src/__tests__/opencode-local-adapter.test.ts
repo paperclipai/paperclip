@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import http from "node:http";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import { parseOpenCodeStdoutLine } from "@paperclipai/adapter-opencode-local/ui";
 import { printOpenCodeStreamEvent } from "@paperclipai/adapter-opencode-local/cli";
+import {
+  probeOllamaHealthcheck,
+  resolveLocalFirstDecision,
+} from "../../../packages/adapters/opencode-local/src/server/local-provider.ts";
 
 describe("opencode_local parser", () => {
   it("extracts session, summary, usage, cost, and terminal error message", () => {
@@ -45,6 +50,94 @@ describe("opencode_local parser", () => {
     });
     expect(parsed.costUsd).toBeCloseTo(0.003, 6);
     expect(parsed.errorMessage).toBe("model access denied");
+  });
+});
+
+describe("opencode_local local-first routing", () => {
+  it("defers non-critical work when the primary local model is unavailable", () => {
+    const decision = resolveLocalFirstDecision({
+      primaryModel: "ollama/qwen3:14b",
+      fallbackModel: "openai/gpt-5.4",
+      fallbackPolicy: "critical_only",
+      deferWhenPrimaryUnavailable: true,
+      issuePriority: "medium",
+      healthcheck: {
+        ok: false,
+        status: null,
+        detail: "connect ECONNREFUSED",
+        url: "http://100.64.0.10:11434/api/tags",
+      },
+    });
+
+    expect(decision).toEqual({
+      action: "defer",
+      model: "ollama/qwen3:14b",
+      reason: "primary_unavailable",
+      detail: "connect ECONNREFUSED",
+    });
+  });
+
+  it("falls back for critical work when policy allows it", () => {
+    const decision = resolveLocalFirstDecision({
+      primaryModel: "ollama/qwen3:14b",
+      fallbackModel: "openai/gpt-5.4",
+      fallbackPolicy: "critical_only",
+      deferWhenPrimaryUnavailable: true,
+      issuePriority: "critical",
+      healthcheck: {
+        ok: false,
+        status: 503,
+        detail: "healthcheck returned HTTP 503",
+        url: "http://100.64.0.10:11434/api/tags",
+      },
+    });
+
+    expect(decision).toEqual({
+      action: "fallback",
+      model: "openai/gpt-5.4",
+      reason: "primary_unavailable",
+      detail: "healthcheck returned HTTP 503",
+    });
+  });
+});
+
+describe("opencode_local Ollama healthcheck", () => {
+  const servers: http.Server[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          }),
+      ),
+    );
+    servers.length = 0;
+  });
+
+  it("verifies the expected local model is present", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [{ name: "qwen3:14b" }] }));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing address");
+
+    const result = await probeOllamaHealthcheck({
+      url: `http://127.0.0.1:${address.port}/api/tags`,
+      expectedModel: "qwen3:14b",
+      timeoutMs: 1000,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      detail: null,
+      url: `http://127.0.0.1:${address.port}/api/tags`,
+    });
   });
 });
 

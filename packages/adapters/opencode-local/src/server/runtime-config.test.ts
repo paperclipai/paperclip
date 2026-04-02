@@ -76,4 +76,54 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  it("injects an Ollama-compatible provider when an ollama/* model is configured", async () => {
+    const configHome = await makeConfigHome({
+      provider: {
+        openai: {
+          name: "OpenAI",
+        },
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        OLLAMA_HOST: "http://100.64.0.10:11434",
+      },
+      config: {
+        model: "ollama/qwen3:14b",
+        fallbackModel: "openai/gpt-5.4",
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      provider: {
+        openai: {
+          name: "OpenAI",
+        },
+        ollama: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "Ollama",
+          options: {
+            baseURL: "http://100.64.0.10:11434/v1",
+          },
+          models: {
+            "qwen3:14b": {},
+          },
+        },
+      },
+    });
+    expect(prepared.notes.some((note) => note.includes("Ollama provider config"))).toBe(true);
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
 });

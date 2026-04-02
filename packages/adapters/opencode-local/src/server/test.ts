@@ -13,6 +13,12 @@ import {
   ensurePathInEnv,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  extractProviderModelName,
+  isOllamaModel,
+  probeOllamaHealthcheck,
+  resolveOllamaHealthcheckUrl,
+} from "./local-provider.js";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -201,6 +207,37 @@ export async function testEnvironment(
             hint: "Run `opencode models` manually to verify provider auth and config.",
           });
         }
+      }
+    }
+
+    if (isOllamaModel(configuredModel)) {
+      const healthcheckUrl = resolveOllamaHealthcheckUrl(config, runtimeEnv);
+      if (!healthcheckUrl) {
+        checks.push({
+          code: "opencode_ollama_healthcheck_missing",
+          level: "warn",
+          message: "No Ollama healthcheck URL could be derived for the local-first model.",
+          hint: "Set OLLAMA_HOST or adapterConfig.healthcheckUrl before enabling local-first routing.",
+        });
+      } else {
+        const healthcheck = await probeOllamaHealthcheck({
+          url: healthcheckUrl,
+          timeoutMs: config.healthcheckTimeoutMs,
+          expectedModel: extractProviderModelName(configuredModel),
+        });
+        checks.push({
+          code: healthcheck.ok ? "opencode_ollama_healthcheck_ok" : "opencode_ollama_healthcheck_failed",
+          level: healthcheck.ok ? "info" : "warn",
+          message: healthcheck.ok
+            ? `Ollama healthcheck succeeded: ${healthcheckUrl}`
+            : "Ollama healthcheck failed for the configured local model.",
+          ...(healthcheck.detail ? { detail: healthcheck.detail } : {}),
+          ...(healthcheck.ok
+            ? {}
+            : {
+                hint: "Verify the tailnet route and that Ollama is listening on the configured Tailscale address.",
+              }),
+        });
       }
     }
 

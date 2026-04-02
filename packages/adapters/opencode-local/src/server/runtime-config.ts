@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { collectOllamaModelNames, resolveOllamaBaseUrl } from "./local-provider.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -29,6 +30,55 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
   } catch {
     return {};
   }
+}
+
+function mergeOllamaProviderConfig(input: {
+  config: Record<string, unknown>;
+  env: Record<string, string>;
+  runtimeConfig: Record<string, unknown>;
+}): { nextConfig: Record<string, unknown>; notes: string[] } {
+  const baseUrl = resolveOllamaBaseUrl(input.config, input.env);
+  const modelNames = collectOllamaModelNames([
+    typeof input.config.model === "string" ? input.config.model : null,
+    typeof input.config.fallbackModel === "string" ? input.config.fallbackModel : null,
+  ]);
+  if (!baseUrl || modelNames.length === 0) {
+    return { nextConfig: input.runtimeConfig, notes: [] };
+  }
+
+  const provider = isPlainObject(input.runtimeConfig.provider) ? input.runtimeConfig.provider : {};
+  const existingOllama = isPlainObject(provider.ollama) ? provider.ollama : {};
+  const existingOptions = isPlainObject(existingOllama.options) ? existingOllama.options : {};
+  const existingModels = isPlainObject(existingOllama.models) ? existingOllama.models : {};
+
+  const mergedModels: Record<string, unknown> = { ...existingModels };
+  for (const modelName of modelNames) {
+    if (!isPlainObject(mergedModels[modelName])) {
+      mergedModels[modelName] = {};
+    }
+  }
+
+  return {
+    nextConfig: {
+      ...input.runtimeConfig,
+      provider: {
+        ...provider,
+        ollama: {
+          ...existingOllama,
+          npm: "@ai-sdk/openai-compatible",
+          name: "Ollama",
+          options: {
+            ...existingOptions,
+            baseURL: baseUrl,
+          },
+          models: mergedModels,
+        },
+      },
+    },
+    notes: [
+      `Injected OpenCode Ollama provider config for ${modelNames.join(", ")} via ${baseUrl}.`,
+    ],
+  };
 }
 
 export async function prepareOpenCodeRuntimeConfig(input: {
@@ -67,13 +117,18 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const nextConfig = {
+  const permissionConfig = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
     },
   };
+  const { nextConfig, notes } = mergeOllamaProviderConfig({
+    config: input.config,
+    env: input.env,
+    runtimeConfig: permissionConfig,
+  });
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
   return {
@@ -83,6 +138,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     },
     notes: [
       "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+      ...notes,
     ],
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });

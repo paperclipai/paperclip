@@ -6,6 +6,7 @@ import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type Adapter
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -25,6 +26,16 @@ import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  extractProviderModelName,
+  isOllamaModel,
+  parseFallbackPolicy,
+  parseModelProvider,
+  probeOllamaHealthcheck,
+  readIssuePriority,
+  resolveLocalFirstDecision,
+  resolveOllamaHealthcheckUrl,
+} from "./local-provider.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,13 +46,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function parseModelProvider(model: string | null): string | null {
-  if (!model) return null;
-  const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
 }
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
@@ -98,7 +102,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
   const command = asString(config.command, "opencode");
-  const model = asString(config.model, "").trim();
+  const primaryModel = asString(config.model, "").trim();
+  const fallbackModel = asString(config.fallbackModel, "").trim() || null;
+  const fallbackPolicy = parseFallbackPolicy(config.fallbackPolicy);
+  const deferWhenPrimaryUnavailable = asBoolean(config.deferWhenPrimaryUnavailable, true);
+  const healthcheckTimeoutMs = Math.max(100, asNumber(config.healthcheckTimeoutMs, 1500));
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -194,13 +202,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    await ensureOpenCodeModelConfiguredAndAvailable({
-      model,
-      command,
-      cwd,
-      env: runtimeEnv,
-    });
-
     const timeoutSec = asNumber(config.timeoutSec, 0);
     const graceSec = asNumber(config.graceSec, 20);
     const extraArgs = (() => {
@@ -222,6 +223,84 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
       );
     }
+
+    let selectedModel = primaryModel || null;
+    let selectedSessionId = sessionId;
+    let deferredResult: AdapterExecutionResult | null = null;
+    if (isOllamaModel(primaryModel)) {
+      const healthcheckUrl = resolveOllamaHealthcheckUrl(config, runtimeEnv);
+      const healthcheck = healthcheckUrl
+        ? await probeOllamaHealthcheck({
+            url: healthcheckUrl,
+            timeoutMs: healthcheckTimeoutMs,
+            expectedModel: extractProviderModelName(primaryModel),
+          })
+        : {
+            ok: false,
+            status: null,
+            detail: "OLLAMA_HOST or adapterConfig.healthcheckUrl is not configured",
+            url: "unconfigured",
+          };
+      if (healthcheck.ok) {
+        await onLog(
+          "stdout",
+          `[paperclip] Local Ollama healthcheck OK for ${primaryModel} via ${healthcheck.url}.\n`,
+        );
+      } else {
+        const decision = resolveLocalFirstDecision({
+          primaryModel: primaryModel || null,
+          fallbackModel,
+          fallbackPolicy,
+          deferWhenPrimaryUnavailable,
+          issuePriority: readIssuePriority(context),
+          healthcheck,
+        });
+        await onLog(
+          "stdout",
+          `[paperclip] Local Ollama unavailable for ${primaryModel}: ${healthcheck.detail ?? "healthcheck failed"}.\n`,
+        );
+        if (decision.action === "fallback" && decision.model) {
+          selectedModel = decision.model;
+          selectedSessionId = null;
+          await onLog(
+            "stdout",
+            `[paperclip] Falling back to ${decision.model} due to ${decision.reason}.\n`,
+          );
+        } else if (decision.action === "defer") {
+          deferredResult = {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            errorMessage: null,
+            provider: parseModelProvider(primaryModel),
+            biller: parseModelProvider(primaryModel),
+            model: primaryModel || null,
+            billingType: "unknown",
+            costUsd: null,
+            resultJson: {
+              deferred: true,
+              reason: decision.reason,
+              detail: decision.detail,
+              healthcheckUrl: healthcheck.url,
+              primaryModel: primaryModel || null,
+              fallbackModel,
+            },
+            summary: `Deferred: local model unavailable for ${primaryModel}`,
+          };
+        }
+      }
+    }
+
+    if (deferredResult) {
+      return deferredResult;
+    }
+
+    await ensureOpenCodeModelConfiguredAndAvailable({
+      model: selectedModel,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
 
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const resolvedInstructionsFilePath = instructionsFilePath
@@ -273,7 +352,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
     const renderedPrompt = renderTemplate(promptTemplate, templateData);
     const renderedBootstrapPrompt =
-      !sessionId && bootstrapPromptTemplate.trim().length > 0
+      !selectedSessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
@@ -291,17 +370,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null) => {
+    const buildArgs = (resumeSessionId: string | null, modelId: string | null) => {
       const args = ["run", "--format", "json"];
       if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
+      if (modelId) args.push("--model", modelId);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
 
-    const runAttempt = async (resumeSessionId: string | null) => {
-      const args = buildArgs(resumeSessionId);
+    const runAttempt = async (resumeSessionId: string | null, modelId: string | null) => {
+      const args = buildArgs(resumeSessionId, modelId);
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
@@ -338,6 +417,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
       },
+      modelId: string | null,
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
@@ -371,7 +451,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsedError ||
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
-      const modelId = model || null;
 
       return {
         exitCode: synthesizedExitCode,
@@ -400,23 +479,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    const initial = await runAttempt(sessionId);
+    const initial = await runAttempt(selectedSessionId, selectedModel);
     const initialFailed =
       !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
     if (
-      sessionId &&
+      selectedSessionId &&
       initialFailed &&
       isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
     ) {
       await onLog(
         "stdout",
-        `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] OpenCode session "${selectedSessionId}" is unavailable; retrying with a fresh session.\n`,
       );
-      const retry = await runAttempt(null);
-      return toResult(retry, true);
+      const retry = await runAttempt(null, selectedModel);
+      return toResult(retry, selectedModel, true);
     }
 
-    return toResult(initial);
+    return toResult(initial, selectedModel);
   } finally {
     await preparedRuntimeConfig.cleanup();
   }
