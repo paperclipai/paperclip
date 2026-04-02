@@ -110,6 +110,25 @@ export function collectOllamaModelNames(models: Array<string | null | undefined>
   return result;
 }
 
+export function parseOllamaTagsPayload(
+  payload: unknown,
+  options?: { prefix?: string },
+): Array<{ id: string; label: string }> {
+  const prefix = readNonEmptyString(options?.prefix) ?? "ollama";
+  const models = Array.isArray((payload as { models?: unknown[] } | null | undefined)?.models)
+    ? ((payload as { models: Array<{ name?: unknown; model?: unknown }> }).models)
+    : [];
+  const result: Array<{ id: string; label: string }> = [];
+  for (const entry of models) {
+    const name = readNonEmptyString(entry?.name) ?? readNonEmptyString(entry?.model);
+    if (!name) continue;
+    const id = `${prefix}/${name}`;
+    if (result.some((model) => model.id === id)) continue;
+    result.push({ id, label: id });
+  }
+  return result;
+}
+
 function summarizeError(value: unknown): string | null {
   if (value instanceof Error && value.message.trim()) return value.message.trim();
   const text = readNonEmptyString(value);
@@ -171,6 +190,29 @@ export async function probeOllamaHealthcheck(input: {
       detail: summarizeError(error) ?? "healthcheck failed",
       url: input.url,
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function listOllamaModels(input: {
+  url: string;
+  timeoutMs?: unknown;
+}): Promise<Array<{ id: string; label: string }>> {
+  const timeoutMs = Math.max(100, asNumber(input.timeoutMs, 1500));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(input.url, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    const payload = await response.json().catch(() => null);
+    return parseOllamaTagsPayload(payload);
+  } catch {
+    return [];
   } finally {
     clearTimeout(timer);
   }

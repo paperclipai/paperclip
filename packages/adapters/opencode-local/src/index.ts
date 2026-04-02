@@ -29,6 +29,11 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
+- fallbackModel (string, optional): provider/model to use only when local-first fallback policy allows it
+- fallbackPolicy (string, optional): never | critical_only | always
+- healthcheckUrl (string, optional): explicit URL used to verify local provider availability before each run
+- healthcheckTimeoutMs (number, optional): timeout for the local healthcheck probe; defaults to 1500
+- deferWhenPrimaryUnavailable (boolean, optional): when true, non-eligible fallback cases are deferred cleanly instead of escalating
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
@@ -43,6 +48,8 @@ Operational fields:
 Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
+- If \`OLLAMA_HOST\` is configured on the Paperclip server, Paperclip also lists \
+  \`ollama/*\` models discovered from \`/api/tags\` in the UI model selector.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
