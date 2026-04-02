@@ -45,6 +45,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { notFound, unprocessable } from "../errors.js";
+import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -1475,7 +1476,7 @@ function normalizePortableConfig(
       key === "instructionsRootPath" ||
       key === "instructionsEntryFile" ||
       key === "promptTemplate" ||
-      key === "bootstrapPromptTemplate" ||
+      key === "bootstrapPromptTemplate" || // deprecated — kept for backward compat
       key === "paperclipSkillSync"
     ) continue;
     if (key === "env") continue;
@@ -2101,7 +2102,7 @@ function parseFrontmatterMarkdown(raw: string): MarkdownDoc {
 }
 
 async function fetchText(url: string) {
-  const response = await fetch(url);
+  const response = await ghFetch(url);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -2109,7 +2110,7 @@ async function fetchText(url: string) {
 }
 
 async function fetchOptionalText(url: string) {
-  const response = await fetch(url);
+  const response = await ghFetch(url);
   if (response.status === 404) return null;
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
@@ -2118,7 +2119,7 @@ async function fetchOptionalText(url: string) {
 }
 
 async function fetchBinary(url: string) {
-  const response = await fetch(url);
+  const response = await ghFetch(url);
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -2126,7 +2127,7 @@ async function fetchBinary(url: string) {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, {
+  const response = await ghFetch(url, {
     headers: {
       accept: "application/vnd.github+json",
     },
@@ -2411,14 +2412,16 @@ function buildManifestFromPackageFiles(
       const repoPath = asString(primarySource?.path);
       const commit = asString(primarySource?.commit);
       const trackingRef = asString(primarySource?.trackingRef);
+      const sourceHostname = asString(primarySource?.hostname) || "github.com";
       const [owner, repoName] = (repo ?? "").split("/");
       sourceType = "github";
       sourceLocator = asString(primarySource?.url)
-        ?? (repo ? `https://github.com/${repo}${repoPath ? `/tree/${trackingRef ?? commit ?? "main"}/${repoPath}` : ""}` : null);
+        ?? (repo ? `https://${sourceHostname}/${repo}${repoPath ? `/tree/${trackingRef ?? commit ?? "main"}/${repoPath}` : ""}` : null);
       sourceRef = commit;
       normalizedMetadata = owner && repoName
         ? {
             sourceKind: "github",
+            ...(sourceHostname !== "github.com" ? { hostname: sourceHostname } : {}),
             owner,
             repo: repoName,
             ref: commit,
@@ -2564,9 +2567,10 @@ function normalizeGitHubSourcePath(value: string | null | undefined) {
 
 export function parseGitHubSourceUrl(rawUrl: string) {
   const url = new URL(rawUrl);
-  if (url.hostname !== "github.com") {
-    throw unprocessable("GitHub source must use github.com URL");
+  if (url.protocol !== "https:") {
+    throw unprocessable("GitHub source URL must use HTTPS");
   }
+  const hostname = url.hostname;
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw unprocessable("Invalid GitHub URL");
@@ -2584,6 +2588,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
       if (basePath === ".") basePath = "";
     }
     return {
+      hostname,
       owner,
       repo,
       ref: queryRef || "main",
@@ -2607,13 +2612,9 @@ export function parseGitHubSourceUrl(rawUrl: string) {
     basePath = path.posix.dirname(blobPath);
     if (basePath === ".") basePath = "";
   }
-  return { owner, repo, ref, basePath, companyPath };
+  return { hostname, owner, repo, ref, basePath, companyPath };
 }
 
-function resolveRawGitHubUrl(owner: string, repo: string, ref: string, filePath: string) {
-  const normalizedFilePath = filePath.replace(/^\/+/, "");
-  return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${normalizedFilePath}`;
-}
 
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
@@ -2641,14 +2642,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     let companyMarkdown: string | null = null;
     try {
       companyMarkdown = await fetchOptionalText(
-        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, companyRelativePath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
       );
     } catch (err) {
       if (ref === "main") {
         ref = "master";
         warnings.push("GitHub ref main not found; falling back to master.");
         companyMarkdown = await fetchOptionalText(
-          resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, companyRelativePath),
+          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
         );
       } else {
         throw err;
@@ -2664,8 +2665,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const files: Record<string, CompanyPortabilityFileEntry> = {
       [companyPath]: companyMarkdown,
     };
+    const apiBase = gitHubApiBase(parsed.hostname);
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
-      `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
+      `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
     ).catch(() => ({ tree: [] }));
     const basePrefix = parsed.basePath ? `${parsed.basePath.replace(/^\/+|\/+$/g, "")}/` : "";
     const candidatePaths = (tree.tree ?? [])
@@ -2686,7 +2688,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const relativePath = basePrefix ? repoPath.slice(basePrefix.length) : repoPath;
       if (files[relativePath] !== undefined) continue;
       files[normalizePortablePath(relativePath)] = await fetchText(
-        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, repoPath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
       );
     }
     const companyDoc = parseFrontmatterMarkdown(companyMarkdown);
@@ -2697,7 +2699,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (files[relativePath] !== undefined) continue;
       if (!(repoPath.endsWith(".md") || repoPath.endsWith(".yaml") || repoPath.endsWith(".yml"))) continue;
       files[relativePath] = await fetchText(
-        resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, repoPath),
+        resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
       );
     }
 
@@ -2707,7 +2709,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const repoPath = [parsed.basePath, companyLogoPath].filter(Boolean).join("/");
       try {
         const binary = await fetchBinary(
-          resolveRawGitHubUrl(parsed.owner, parsed.repo, ref, repoPath),
+          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoPath),
         );
         resolved.files[companyLogoPath] = bufferToPortableBinaryFile(binary, inferContentTypeFromPath(companyLogoPath));
       } catch (err) {
@@ -3895,7 +3897,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           desiredSkills,
         );
         delete adapterConfigWithSkills.promptTemplate;
-        delete adapterConfigWithSkills.bootstrapPromptTemplate;
+        delete adapterConfigWithSkills.bootstrapPromptTemplate; // deprecated
         delete adapterConfigWithSkills.instructionsFilePath;
         delete adapterConfigWithSkills.instructionsBundleMode;
         delete adapterConfigWithSkills.instructionsRootPath;

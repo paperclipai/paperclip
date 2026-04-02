@@ -579,6 +579,7 @@ export interface WorkerToHostMethods {
       projectId?: string;
       goalId?: string;
       parentId?: string;
+      inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
       description?: string;
       priority?: string;

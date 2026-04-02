@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,12 @@ import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 const itWindows = process.platform === "win32" ? it : it.skip;
 
 describe("codex_local environment diagnostics", () => {
+  beforeEach(() => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
   it("creates a missing working directory when cwd is absolute", async () => {
     const cwd = path.join(
       os.tmpdir(),
@@ -30,6 +36,67 @@ describe("codex_local environment diagnostics", () => {
     const stats = await fs.stat(cwd);
     expect(stats.isDirectory()).toBe(true);
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
+  });
+
+  it("emits codex_native_auth_present when ~/.codex/auth.json exists and OPENAI_API_KEY is unset", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const codexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(codexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", accountId: "acct-1" }),
+      );
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: process.execPath,
+          cwd,
+          env: { CODEX_HOME: codexHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("emits codex_openai_api_key_missing when neither env var nor native auth exists", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-noauth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const codexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+
+    try {
+      await fs.mkdir(codexHome, { recursive: true });
+      // No auth.json written
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: {
+          command: process.execPath,
+          cwd,
+          env: { CODEX_HOME: codexHome },
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {

@@ -107,8 +107,8 @@ function parsePlanAndEmailFromToken(idToken: string | null, accessToken: string 
   return { email: null, planType: null };
 }
 
-export async function readCodexAuthInfo(): Promise<CodexAuthInfo | null> {
-  const authPath = path.join(codexHomeDir(), "auth.json");
+export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthInfo | null> {
+  const authPath = path.join(codexHome ?? codexHomeDir(), "auth.json");
   let raw: string;
   try {
     raw = await fs.readFile(authPath, "utf8");
@@ -429,6 +429,13 @@ class CodexRpcClient {
       for (const request of this.pending.values()) {
         clearTimeout(request.timer);
         request.reject(new Error(this.stderr.trim() || "codex app-server closed unexpectedly"));
+      }
+      this.pending.clear();
+    });
+    this.proc.on("error", (err: Error) => {
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
       }
       this.pending.clear();
     });

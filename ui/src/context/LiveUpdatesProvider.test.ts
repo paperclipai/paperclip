@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -24,6 +24,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       },
     );
 
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.listMineByMe("company-1"),
+    });
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.listTouchedByMe("company-1"),
     });
@@ -112,5 +115,131 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
         { isForegrounded: true },
       ),
     ).toBe(true);
+  });
+});
+
+describe("LiveUpdatesProvider run lifecycle toasts", () => {
+  it("does not build start or success toasts for agent runs", () => {
+    const queryClient = {
+      getQueryData: () => [],
+    };
+
+    expect(
+      __liveUpdatesTestUtils.buildAgentStatusToast(
+        {
+          agentId: "agent-1",
+          status: "running",
+        },
+        () => "CodexCoder",
+        queryClient as never,
+        "company-1",
+      ),
+    ).toBeNull();
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-1",
+          agentId: "agent-1",
+          status: "succeeded",
+        },
+        () => "CodexCoder",
+      ),
+    ).toBeNull();
+  });
+
+  it("still builds failure toasts for agent errors and failed runs", () => {
+    const queryClient = {
+      getQueryData: () => [
+        {
+          id: "agent-1",
+          title: "Software Engineer",
+        },
+      ],
+    };
+
+    expect(
+      __liveUpdatesTestUtils.buildAgentStatusToast(
+        {
+          agentId: "agent-1",
+          status: "error",
+        },
+        () => "CodexCoder",
+        queryClient as never,
+        "company-1",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder errored",
+      body: "Software Engineer",
+      tone: "error",
+    });
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-1",
+          agentId: "agent-1",
+          status: "failed",
+          error: "boom",
+        },
+        () => "CodexCoder",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder run failed",
+      body: "boom",
+      tone: "error",
+    });
+  });
+});
+
+describe("LiveUpdatesProvider socket helpers", () => {
+  it("waits for the selected company object to catch up before connecting", () => {
+    expect(__liveUpdatesTestUtils.resolveLiveCompanyId("company-1", null)).toBeNull();
+    expect(__liveUpdatesTestUtils.resolveLiveCompanyId("company-1", "company-2")).toBeNull();
+    expect(__liveUpdatesTestUtils.resolveLiveCompanyId("company-1", "company-1")).toBe("company-1");
+  });
+
+  it("defers close until onopen for sockets that are still connecting", () => {
+    const socket = {
+      readyState: 0,
+      onopen: (() => undefined) as (() => void) | null,
+      onmessage: (() => undefined) as (() => void) | null,
+      onerror: (() => undefined) as (() => void) | null,
+      onclose: (() => undefined) as (() => void) | null,
+      close: vi.fn(),
+    };
+
+    __liveUpdatesTestUtils.closeSocketQuietly(socket as never, "provider_unmount");
+
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.onmessage).toBeNull();
+    expect(socket.onclose).toBeNull();
+    expect(socket.onopen).toBeTypeOf("function");
+    expect(socket.onerror).toBeTypeOf("function");
+
+    socket.onopen?.();
+
+    expect(socket.close).toHaveBeenCalledWith(1000, "provider_unmount");
+    expect(socket.onopen).toBeNull();
+    expect(socket.onerror).toBeNull();
+  });
+
+  it("closes open sockets immediately without leaving handlers behind", () => {
+    const socket = {
+      readyState: 1,
+      onopen: (() => undefined) as (() => void) | null,
+      onmessage: (() => undefined) as (() => void) | null,
+      onerror: (() => undefined) as (() => void) | null,
+      onclose: (() => undefined) as (() => void) | null,
+      close: vi.fn(),
+    };
+
+    __liveUpdatesTestUtils.closeSocketQuietly(socket as never, "stale_connection");
+
+    expect(socket.close).toHaveBeenCalledWith(1000, "stale_connection");
+    expect(socket.onopen).toBeNull();
+    expect(socket.onmessage).toBeNull();
+    expect(socket.onerror).toBeNull();
+    expect(socket.onclose).toBeNull();
   });
 });

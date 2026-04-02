@@ -9,12 +9,13 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
+  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
@@ -271,6 +272,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveCursorBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -307,10 +314,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
-      await onLog(
-        "stdout",
-        `[paperclip] Loaded agent instructions file: ${instructionsFilePath}\n`,
-      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
@@ -387,11 +390,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "cursor",
-        command,
+        command: resolvedCommand,
         cwd,
         commandNotes,
         commandArgs: args,
-        env: redactEnvForLogs(env),
+        env: loggedEnv,
         prompt,
         promptMetrics,
         context,

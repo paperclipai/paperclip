@@ -41,6 +41,8 @@ import {
   projects,
   runDatabaseBackup,
   runDatabaseRestore,
+  createEmbeddedPostgresLogBuffer,
+  formatEmbeddedPostgresError,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -465,6 +467,62 @@ async function findAvailablePort(preferredPort: number, reserved = new Set<numbe
   return port;
 }
 
+function resolveRepoManagedWorktreesRoot(cwd: string): string | null {
+  const normalized = path.resolve(cwd);
+  const marker = `${path.sep}.paperclip${path.sep}worktrees${path.sep}`;
+  const index = normalized.indexOf(marker);
+  if (index === -1) return null;
+  const repoRoot = normalized.slice(0, index);
+  return path.resolve(repoRoot, ".paperclip", "worktrees");
+}
+
+function collectClaimedWorktreePorts(homeDir: string, currentInstanceId: string, cwd: string): {
+  serverPorts: Set<number>;
+  databasePorts: Set<number>;
+} {
+  const serverPorts = new Set<number>();
+  const databasePorts = new Set<number>();
+  const configPaths = new Set<string>();
+  const instancesDir = path.resolve(homeDir, "instances");
+  if (existsSync(instancesDir)) {
+    for (const entry of readdirSync(instancesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === currentInstanceId) continue;
+
+      const configPath = path.resolve(instancesDir, entry.name, "config.json");
+      if (existsSync(configPath)) {
+        configPaths.add(configPath);
+      }
+    }
+  }
+
+  const repoManagedWorktreesRoot = resolveRepoManagedWorktreesRoot(cwd);
+  if (repoManagedWorktreesRoot && existsSync(repoManagedWorktreesRoot)) {
+    for (const entry of readdirSync(repoManagedWorktreesRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const configPath = path.resolve(repoManagedWorktreesRoot, entry.name, ".paperclip", "config.json");
+      if (existsSync(configPath)) {
+        configPaths.add(configPath);
+      }
+    }
+  }
+
+  for (const configPath of configPaths) {
+    try {
+      const config = readConfig(configPath);
+      if (config?.server.port) {
+        serverPorts.add(config.server.port);
+      }
+      if (config?.database.mode === "embedded-postgres") {
+        databasePorts.add(config.database.embeddedPostgresPort);
+      }
+    } catch {
+      // Ignore malformed sibling configs.
+    }
+  }
+
+  return { serverPorts, databasePorts };
+}
+
 function detectGitBranchName(cwd: string): string | null {
   try {
     const value = execFileSync("git", ["branch", "--show-current"], {
@@ -750,24 +808,39 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   }
 
   const port = await findAvailablePort(preferredPort);
+  const logBuffer = createEmbeddedPostgresLogBuffer();
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
     password: "paperclip",
     port,
     persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C"],
-    onLog: () => {},
-    onError: () => {},
+    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    onLog: logBuffer.append,
+    onError: logBuffer.append,
   });
 
   if (!existsSync(path.resolve(dataDir, "PG_VERSION"))) {
-    await instance.initialise();
+    try {
+      await instance.initialise();
+    } catch (error) {
+      throw formatEmbeddedPostgresError(error, {
+        fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
+        recentLogs: logBuffer.getRecentLogs(),
+      });
+    }
   }
   if (existsSync(postmasterPidFile)) {
     rmSync(postmasterPidFile, { force: true });
   }
-  await instance.start();
+  try {
+    await instance.start();
+  } catch (error) {
+    throw formatEmbeddedPostgresError(error, {
+      fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
+      recentLogs: logBuffer.getRecentLogs(),
+    });
+  }
 
   return {
     port,
@@ -886,10 +959,14 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
+  const claimedPorts = collectClaimedWorktreePorts(paths.homeDir, paths.instanceId, paths.cwd);
   const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
-  const serverPort = await findAvailablePort(preferredServerPort);
+  const serverPort = await findAvailablePort(preferredServerPort, claimedPorts.serverPorts);
   const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
-  const databasePort = await findAvailablePort(preferredDbPort, new Set([serverPort]));
+  const databasePort = await findAvailablePort(
+    preferredDbPort,
+    new Set([...claimedPorts.databasePorts, serverPort]),
+  );
   const targetConfig = buildWorktreeConfig({
     sourceConfig,
     paths,

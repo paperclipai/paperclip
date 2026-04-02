@@ -6,10 +6,13 @@ import {
   computeInboxBadgeData,
   getApprovalsForTab,
   getInboxWorkItems,
+  getInboxKeyboardSelectionIndex,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
+  isMineInboxTab,
   loadLastInboxTab,
   RECENT_ISSUES_LIMIT,
+  resolveInboxSelectionIndex,
   saveLastInboxTab,
   shouldShowInboxSection,
 } from "./inbox";
@@ -210,7 +213,7 @@ describe("inbox helpers", () => {
         makeRun("run-latest", "timed_out", "2026-03-11T01:00:00.000Z"),
         makeRun("run-other-agent", "failed", "2026-03-11T02:00:00.000Z", "agent-2"),
       ],
-      unreadIssues: [makeIssue("1", true)],
+      mineIssues: [makeIssue("1", true)],
       dismissed: new Set<string>(),
     });
 
@@ -219,7 +222,7 @@ describe("inbox helpers", () => {
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
-      unreadTouchedIssues: 1,
+      mineIssues: 1,
       alerts: 1,
     });
   });
@@ -230,7 +233,7 @@ describe("inbox helpers", () => {
       joinRequests: [],
       dashboard,
       heartbeatRuns: [makeRun("run-1", "failed", "2026-03-11T00:00:00.000Z")],
-      unreadIssues: [],
+      mineIssues: [],
       dismissed: new Set<string>(["run:run-1", "alert:budget", "alert:agent-errors"]),
     });
 
@@ -239,7 +242,7 @@ describe("inbox helpers", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 0,
-      unreadTouchedIssues: 0,
+      mineIssues: 0,
       alerts: 0,
     });
   });
@@ -262,6 +265,11 @@ describe("inbox helpers", () => {
       ),
     ];
 
+    expect(getApprovalsForTab(approvals, "mine", "all").map((approval) => approval.id)).toEqual([
+      "approval-revision",
+      "approval-approved",
+      "approval-pending",
+    ]);
     expect(getApprovalsForTab(approvals, "recent", "all").map((approval) => approval.id)).toEqual([
       "approval-revision",
       "approval-approved",
@@ -296,6 +304,7 @@ describe("inbox helpers", () => {
       }).map((item) => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
         return `run:${item.run.id}`;
       }),
     ).toEqual([
@@ -305,11 +314,73 @@ describe("inbox helpers", () => {
     ]);
   });
 
+  it("mixes join requests into the inbox feed by most recent activity", () => {
+    const issue = makeIssue("1", true);
+    issue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+
+    const joinRequest = makeJoinRequest("join-1");
+    joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const approval = makeApprovalWithTimestamps(
+      "approval-oldest",
+      "pending",
+      "2026-03-11T02:00:00.000Z",
+    );
+
+    expect(
+      getInboxWorkItems({
+        issues: [issue],
+        approvals: [approval],
+        joinRequests: [joinRequest],
+      }).map((item) => {
+        if (item.kind === "issue") return `issue:${item.issue.id}`;
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+        return `run:${item.run.id}`;
+      }),
+    ).toEqual([
+      "issue:1",
+      "join:join-1",
+      "approval:approval-oldest",
+    ]);
+  });
+
+  it("sorts self-touched issues without external comments by updatedAt", () => {
+    const recentSelfTouched = makeIssue("recent", false);
+    recentSelfTouched.lastExternalCommentAt = null as unknown as Date;
+    recentSelfTouched.updatedAt = new Date("2026-03-11T05:00:00.000Z");
+    recentSelfTouched.myLastTouchAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const olderCommented = makeIssue("older", false);
+    olderCommented.lastExternalCommentAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const items = getInboxWorkItems({
+      issues: [olderCommented, recentSelfTouched],
+      approvals: [],
+    });
+
+    expect(items.map((i) => (i.kind === "issue" ? i.issue.id : ""))).toEqual([
+      "recent",
+      "older",
+    ]);
+  });
+
   it("can include sections on recent without forcing them to be unread", () => {
+    expect(
+      shouldShowInboxSection({
+        tab: "mine",
+        hasItems: true,
+        showOnMine: true,
+        showOnRecent: false,
+        showOnUnread: false,
+        showOnAll: false,
+      }),
+    ).toBe(true);
     expect(
       shouldShowInboxSection({
         tab: "recent",
         hasItems: true,
+        showOnMine: false,
         showOnRecent: true,
         showOnUnread: false,
         showOnAll: false,
@@ -319,6 +390,7 @@ describe("inbox helpers", () => {
       shouldShowInboxSection({
         tab: "unread",
         hasItems: true,
+        showOnMine: true,
         showOnRecent: true,
         showOnUnread: false,
         showOnAll: false,
@@ -339,16 +411,36 @@ describe("inbox helpers", () => {
     expect(getUnreadTouchedIssues(recentIssues).map((issue) => issue.id)).toEqual(["1", "2", "3"]);
   });
 
-  it("defaults the remembered inbox tab to recent and persists all", () => {
+  it("defaults the remembered inbox tab to mine and persists all", () => {
     localStorage.clear();
-    expect(loadLastInboxTab()).toBe("recent");
+    expect(loadLastInboxTab()).toBe("mine");
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
   });
 
-  it("maps legacy new-tab storage to recent", () => {
+  it("maps legacy new-tab storage to mine", () => {
     localStorage.setItem("paperclip:inbox:last-tab", "new");
-    expect(loadLastInboxTab()).toBe("recent");
+    expect(loadLastInboxTab()).toBe("mine");
+  });
+
+  it("enables swipe archive only on the mine tab", () => {
+    expect(isMineInboxTab("mine")).toBe(true);
+    expect(isMineInboxTab("recent")).toBe(false);
+    expect(isMineInboxTab("unread")).toBe(false);
+    expect(isMineInboxTab("all")).toBe(false);
+  });
+
+  it("anchors Mine selection to the first available inbox row", () => {
+    expect(resolveInboxSelectionIndex(-1, 3)).toBe(-1);
+    expect(resolveInboxSelectionIndex(5, 3)).toBe(2);
+    expect(resolveInboxSelectionIndex(1, 0)).toBe(-1);
+  });
+
+  it("selects the first row only after keyboard navigation starts", () => {
+    expect(getInboxKeyboardSelectionIndex(-1, 3, "next")).toBe(0);
+    expect(getInboxKeyboardSelectionIndex(-1, 3, "previous")).toBe(0);
+    expect(getInboxKeyboardSelectionIndex(0, 3, "next")).toBe(1);
+    expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 });

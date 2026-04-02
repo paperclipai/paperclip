@@ -765,8 +765,15 @@ export function isHttpUrl(input: string): boolean {
   return /^https?:\/\//i.test(input.trim());
 }
 
-export function isGithubUrl(input: string): boolean {
-  return /^https?:\/\/github\.com\//i.test(input.trim());
+export function looksLikeRepoUrl(input: string): boolean {
+  try {
+    const url = new URL(input.trim());
+    if (url.protocol !== "https:") return false;
+    const segments = url.pathname.split("/").filter(Boolean);
+    return segments.length >= 2;
+  } catch {
+    return false;
+  }
 }
 
 function isGithubSegment(input: string): boolean {
@@ -797,13 +804,15 @@ function normalizeGithubImportPath(input: string | null | undefined): string | n
 }
 
 function buildGithubImportUrl(input: {
+  hostname?: string;
   owner: string;
   repo: string;
   ref?: string | null;
   path?: string | null;
   companyPath?: string | null;
 }): string {
-  const url = new URL(`https://github.com/${input.owner}/${input.repo.replace(/\.git$/i, "")}`);
+  const host = input.hostname || "github.com";
+  const url = new URL(`https://${host}/${input.owner}/${input.repo.replace(/\.git$/i, "")}`);
   const ref = input.ref?.trim();
   if (ref) {
     url.searchParams.set("ref", ref);
@@ -834,14 +843,15 @@ export function normalizeGithubImportSource(input: string, refOverride?: string)
     });
   }
 
-  if (!isGithubUrl(trimmed)) {
-    throw new Error("GitHub source must be a github.com URL or owner/repo[/path] shorthand.");
+  if (!looksLikeRepoUrl(trimmed)) {
+    throw new Error("GitHub source must be a GitHub or GitHub Enterprise URL, or owner/repo[/path] shorthand.");
   }
   if (!ref) {
     return trimmed;
   }
 
   const url = new URL(trimmed);
+  const hostname = url.hostname;
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw new Error("Invalid GitHub URL.");
@@ -852,18 +862,18 @@ export function normalizeGithubImportSource(input: string, refOverride?: string)
   const existingPath = normalizeGithubImportPath(url.searchParams.get("path"));
   const existingCompanyPath = normalizeGithubImportPath(url.searchParams.get("companyPath"));
   if (existingCompanyPath) {
-    return buildGithubImportUrl({ owner, repo, ref, companyPath: existingCompanyPath });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, companyPath: existingCompanyPath });
   }
   if (existingPath) {
-    return buildGithubImportUrl({ owner, repo, ref, path: existingPath });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, path: existingPath });
   }
   if (parts[2] === "tree") {
-    return buildGithubImportUrl({ owner, repo, ref, path: parts.slice(4).join("/") });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, path: parts.slice(4).join("/") });
   }
   if (parts[2] === "blob") {
-    return buildGithubImportUrl({ owner, repo, ref, companyPath: parts.slice(4).join("/") });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, companyPath: parts.slice(4).join("/") });
   }
-  return buildGithubImportUrl({ owner, repo, ref });
+  return buildGithubImportUrl({ hostname, owner, repo, ref });
 }
 
 async function pathExists(inputPath: string): Promise<boolean> {
@@ -1208,13 +1218,13 @@ export function registerCompanyCommands(program: Command): void {
             | { type: "github"; url: string };
 
           const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
-          const isGithubSource = isGithubUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
+          const isGithubSource = looksLikeRepoUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
 
           if (isHttpUrl(from) || isGithubSource) {
-            if (!isGithubUrl(from) && !isGithubShorthand(from)) {
+            if (!looksLikeRepoUrl(from) && !isGithubShorthand(from)) {
               throw new Error(
                 "Only GitHub URLs and local paths are supported for import. " +
-                "Generic HTTP URLs are not supported. Use a GitHub URL (https://github.com/...) or a local directory path.",
+                "Generic HTTP URLs are not supported. Use a GitHub or GitHub Enterprise URL (https://github.com/... or https://ghe.example.com/...) or a local directory path.",
               );
             }
             sourcePayload = { type: "github", url: normalizeGithubImportSource(from, opts.ref) };

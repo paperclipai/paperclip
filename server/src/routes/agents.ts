@@ -6,6 +6,7 @@ import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
+  agentMineInboxQuerySchema,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -44,7 +45,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
-import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
+import { findServerAdapter, listAdapterModels, detectAdapterModel } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -671,6 +672,15 @@ export function agentRoutes(db: Db) {
     res.json(models);
   });
 
+  router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const type = req.params.type as string;
+
+    const detected = await detectAdapterModel(type);
+    res.json(detected);
+  });
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -995,6 +1005,23 @@ export function agentRoutes(db: Db) {
         activeRun: issue.activeRun,
       })),
     );
+  });
+
+  router.get("/agents/me/inbox/mine", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const query = agentMineInboxQuerySchema.parse(req.query);
+    const issuesSvc = issueService(db);
+    const rows = await issuesSvc.list(req.actor.companyId, {
+      touchedByUserId: query.userId,
+      inboxArchivedByUserId: query.userId,
+      status: query.status,
+    });
+
+    res.json(rows);
   });
 
   router.get("/agents/:id", async (req, res) => {
@@ -1745,6 +1772,18 @@ export function agentRoutes(db: Db) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
       }
       if (changingAdapterType) {
+        // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
+        // when the adapter type changes. Without this, a PATCH that includes
+        // adapterConfig but omits these keys would silently drop them.
+        const ADAPTER_AGNOSTIC_KEYS = [
+          "env", "cwd", "timeoutSec", "graceSec",
+          "promptTemplate", "bootstrapPromptTemplate",
+        ] as const;
+        for (const key of ADAPTER_AGNOSTIC_KEYS) {
+          if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
+            rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, [key]: existingAdapterConfig[key] };
+          }
+        }
         rawEffectiveAdapterConfig = preserveInstructionsBundleConfig(
           existingAdapterConfig,
           rawEffectiveAdapterConfig,

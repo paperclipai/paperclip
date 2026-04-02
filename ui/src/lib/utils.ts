@@ -1,6 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { deriveAgentUrlKey, deriveProjectUrlKey } from "@paperclipai/shared";
+import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
 
 export function cn(...inputs: ClassValue[]) {
@@ -156,12 +156,23 @@ export function agentUrl(agent: { id: string; urlKey?: string | null; name?: str
   return `/agents/${agentRouteRef(agent)}`;
 }
 
-/** Build a project route reference using the short URL key when available. */
+/** Build a project route reference, falling back to UUID when the derived key is ambiguous. */
 export function projectRouteRef(project: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  const key = project.urlKey ?? deriveProjectUrlKey(project.name, project.id);
+  // Guard for rolling deploys or legacy data where the server returned a bare slug without UUID suffix.
+  if (key === normalizeProjectUrlKey(project.name) && hasNonAsciiContent(project.name)) return project.id;
+  return key;
 }
 
 /** Build a project URL using the short URL key when available. */
 export function projectUrl(project: { id: string; urlKey?: string | null; name?: string | null }): string {
   return `/projects/${projectRouteRef(project)}`;
+}
+
+/** Build a project workspace URL scoped under its project. */
+export function projectWorkspaceUrl(
+  project: { id: string; urlKey?: string | null; name?: string | null },
+  workspaceId: string,
+): string {
+  return `${projectUrl(project)}/workspaces/${workspaceId}`;
 }
