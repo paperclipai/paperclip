@@ -193,12 +193,22 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
-  availableSkills: () =>
-    api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  availableSkills: () => api.get<ClaudeCodeRuntimeSkillsResponse>("/skills/available"),
 };
 
-export interface AvailableSkill {
+/** Skill folder on disk under the Claude Code skills home (read-only / UI observability). */
+export interface ClaudeCodeAvailableSkill {
   name: string;
+  title: string | null;
   description: string;
   isPaperclipManaged: boolean;
 }
+
+export interface ClaudeCodeRuntimeSkillsResponse {
+  skills: ClaudeCodeAvailableSkill[];
+  enabledPlugins: string[];
+  claudeHomeDisplay: string;
+}
+
+/** @deprecated Use {@link ClaudeCodeAvailableSkill} */
+export type AvailableSkill = ClaudeCodeAvailableSkill;

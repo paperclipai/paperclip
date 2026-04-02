@@ -5,6 +5,7 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
@@ -144,18 +145,31 @@ function resolvePaperclipSkillsDir(): string | null {
   return null;
 }
 
-/** Parse YAML frontmatter from a SKILL.md file to extract the description. */
-function parseSkillFrontmatter(markdown: string): { description: string } {
+/** Parse YAML frontmatter from a SKILL.md file to extract name and description. */
+function parseSkillFrontmatter(markdown: string): { title: string | null; description: string } {
   const match = markdown.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return { description: "" };
+  if (!match) return { title: null, description: "" };
   const yaml = match[1];
+  const nameMatch = yaml.match(/^name:\s*(?:>\s*\n((?:\s{2,}[^\n]*\n?)+)|[|]\s*\n((?:\s{2,}[^\n]*\n?)+)|["']?([^"'\n]+?)["']?\s*$)/m);
+  let title: string | null = null;
+  if (nameMatch) {
+    const rawName = nameMatch[1] ?? nameMatch[2] ?? nameMatch[3] ?? "";
+    const collapsed = rawName
+      .split("\n")
+      .map((l: string) => l.trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    title = collapsed.length > 0 ? collapsed : null;
+  }
   // Extract description — handles both single-line and multi-line YAML values
   const descMatch = yaml.match(
     /^description:\s*(?:>\s*\n((?:\s{2,}[^\n]*\n?)+)|[|]\s*\n((?:\s{2,}[^\n]*\n?)+)|["']?(.*?)["']?\s*$)/m
   );
-  if (!descMatch) return { description: "" };
+  if (!descMatch) return { title, description: "" };
   const raw = descMatch[1] ?? descMatch[2] ?? descMatch[3] ?? "";
   return {
+    title,
     description: raw
       .split("\n")
       .map((l: string) => l.trim())
@@ -166,15 +180,80 @@ function parseSkillFrontmatter(markdown: string): { description: string } {
 }
 
 interface AvailableSkill {
+  /** Directory name under the Claude skills folder (runtime key). */
   name: string;
+  /** Optional display title from SKILL.md frontmatter `name`. */
+  title: string | null;
   description: string;
+  /** True when a skill of the same folder name exists in the Paperclip repo `skills/` tree. */
   isPaperclipManaged: boolean;
 }
 
-/** Discover all available Claude Code skills from ~/.claude/skills/. */
+function resolveClaudeHomeDir(): string {
+  const fromEnv = process.env.CLAUDE_HOME?.trim();
+  if (fromEnv && fromEnv.length > 0) return path.resolve(fromEnv);
+  return os.homedir();
+}
+
+function claudeHomeDisplayLabel(resolvedHome: string): string {
+  const fromEnv = process.env.CLAUDE_HOME?.trim();
+  if (fromEnv && fromEnv.length > 0) return "$CLAUDE_HOME";
+  try {
+    const home = os.homedir();
+    if (resolvedHome === path.resolve(home)) return "~/.claude";
+  } catch { /* skip */ }
+  return resolvedHome;
+}
+
+function normalizeEnabledPluginsValue(value: unknown): string[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) {
+    const out: string[] = [];
+    for (const item of value) {
+      if (typeof item === "string" && item.trim()) out.push(item.trim());
+    }
+    return out;
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => {
+        if (v === true || v === 1 || v === "true") return true;
+        if (typeof v === "string" && v.trim().length > 0) return true;
+        return false;
+      })
+      .map(([k]) => k)
+      .filter((k) => k.trim().length > 0);
+  }
+  return [];
+}
+
+function readJsonFileIfExists(filePath: string): Record<string, unknown> | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read `enabledPlugins` from Claude Code user settings (settings.json + settings.local.json). */
+function listClaudeEnabledPlugins(claudeHomeDir: string): string[] {
+  const base = readJsonFileIfExists(path.join(claudeHomeDir, "settings.json"));
+  const local = readJsonFileIfExists(path.join(claudeHomeDir, "settings.local.json"));
+  const fromBase = normalizeEnabledPluginsValue(base?.enabledPlugins);
+  const fromLocal = normalizeEnabledPluginsValue(local?.enabledPlugins);
+  if (fromLocal.length === 0) return [...fromBase].sort((a, b) => a.localeCompare(b));
+  const merged = new Set([...fromBase, ...fromLocal]);
+  return [...merged].sort((a, b) => a.localeCompare(b));
+}
+
+/** Discover all available Claude Code skills from ~/.claude/skills/ (or $CLAUDE_HOME/skills). */
 function listAvailableSkills(): AvailableSkill[] {
-  const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-  const claudeSkillsDir = path.join(homeDir, ".claude", "skills");
+  const claudeHomeDir = resolveClaudeHomeDir();
+  const claudeSkillsDir = path.join(claudeHomeDir, "skills");
   const paperclipSkillsDir = resolvePaperclipSkillsDir();
 
   // Build set of Paperclip-managed skill names
@@ -196,17 +275,21 @@ function listAvailableSkills(): AvailableSkill[] {
       if (entry.name.startsWith(".")) continue;
       const skillMdPath = path.join(claudeSkillsDir, entry.name, "SKILL.md");
       let description = "";
+      let title: string | null = null;
       try {
         const md = fs.readFileSync(skillMdPath, "utf8");
-        description = parseSkillFrontmatter(md).description;
+        const parsed = parseSkillFrontmatter(md);
+        description = parsed.description;
+        title = parsed.title;
       } catch { /* no SKILL.md or unreadable */ }
       skills.push({
         name: entry.name,
+        title,
         description,
         isPaperclipManaged: paperclipSkillNames.has(entry.name),
       });
     }
-  } catch { /* ~/.claude/skills/ doesn't exist */ }
+  } catch { /* Claude skills dir doesn't exist */ }
 
   skills.sort((a, b) => a.name.localeCompare(b.name));
   return skills;
@@ -1907,7 +1990,12 @@ export function accessRoutes(
   }
 
   router.get("/skills/available", (_req, res) => {
-    res.json({ skills: listAvailableSkills() });
+    const claudeHomeDir = resolveClaudeHomeDir();
+    res.json({
+      skills: listAvailableSkills(),
+      enabledPlugins: listClaudeEnabledPlugins(claudeHomeDir),
+      claudeHomeDisplay: claudeHomeDisplayLabel(claudeHomeDir),
+    });
   });
 
   router.get("/skills/index", (_req, res) => {
