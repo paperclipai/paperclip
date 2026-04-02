@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueDependencySchema,
   createIssueAttachmentMetadataSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
@@ -25,6 +26,7 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  issueDependencyService,
   issueService,
   documentService,
   logActivity,
@@ -56,6 +58,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const depsSvc = issueDependencyService(db);
   const routinesSvc = routineService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -418,11 +421,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
         ? req.query.wakeCommentId.trim()
         : null;
 
-    const [{ project, goal }, ancestors, commentCursor, wakeComment] = await Promise.all([
+    const [{ project, goal }, ancestors, commentCursor, wakeComment, blockers] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
       svc.getCommentCursor(issue.id),
       wakeCommentId ? svc.getComment(wakeCommentId) : null,
+      depsSvc.listBlockers(issue.id),
     ]);
 
     res.json({
@@ -464,6 +468,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
             parentId: goal.parentId,
           }
         : null,
+      blockers: blockers.map((b) => ({
+        id: b.id,
+        blockerIssueId: b.blockerIssueId,
+        blockerIdentifier: b.blockerIdentifier,
+        blockerTitle: b.blockerTitle,
+        blockerStatus: b.blockerStatus,
+      })),
       commentCursor,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
@@ -471,6 +482,100 @@ export function issueRoutes(db: Db, storage: StorageService) {
           : null,
     });
   });
+
+  // ── Issue dependency (blocker) routes ──────────────────────────────
+
+  router.get("/issues/:id/dependencies", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const blockers = await depsSvc.listBlockers(issue.id);
+    res.json(blockers);
+  });
+
+  router.post("/issues/:id/dependencies", validate(addIssueDependencySchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const actor = getActorInfo(req);
+    const dep = await depsSvc.addDependency(id, req.body.blockerIssueId, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.dependency_added",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        blockerIssueId: req.body.blockerIssueId,
+      },
+    });
+
+    res.status(201).json(dep);
+  });
+
+  router.delete("/issues/:id/dependencies/:blockerIssueId", async (req, res) => {
+    const id = req.params.id as string;
+    const blockerIssueId = req.params.blockerIssueId as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const actor = getActorInfo(req);
+    const deleted = await depsSvc.removeDependency(id, blockerIssueId);
+    if (!deleted) {
+      res.status(404).json({ error: "Dependency not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.dependency_removed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        blockerIssueId,
+      },
+    });
+
+    res.json({ ok: true });
+  });
+
+  router.get("/issues/:id/dependents", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const dependents = await depsSvc.listDependents(issue.id);
+    res.json(dependents);
+  });
+
+  // ── End dependency routes ─────────────────────────────────────────
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
@@ -1192,6 +1297,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const blockerResolved =
+      existing.status !== issue.status &&
+      (issue.status === "done" || issue.status === "cancelled");
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -1235,6 +1343,38 @@ export function issueRoutes(db: Db, storage: StorageService) {
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
         });
+      }
+
+      // Wake dependents whose all blockers are now resolved
+      if (blockerResolved) {
+        try {
+          const readyToWake = await depsSvc.findDependentsReadyToWake(issue.id);
+          for (const dependent of readyToWake) {
+            if (!dependent.assigneeAgentId) continue;
+            if (wakeups.has(dependent.assigneeAgentId)) continue;
+            wakeups.set(dependent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "dependency_resolved",
+              payload: {
+                issueId: dependent.id,
+                resolvedBlockerIssueId: issue.id,
+                mutation: "update",
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: dependent.id,
+                taskId: dependent.id,
+                resolvedBlockerIssueId: issue.id,
+                wakeReason: "dependency_resolved",
+                source: "issue.dependency_resolved",
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to wake dependents on blocker resolve");
+        }
       }
 
       if (commentBody && comment) {

@@ -94,6 +94,8 @@ export type {
   IssueAncestorProject,
   IssueAncestorGoal,
   IssueAttachment,
+  IssueDependency,
+  IssueDependencySummary,
   IssueLabel,
 } from "./issue.js";
 export type { Goal } from "./goal.js";

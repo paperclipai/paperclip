@@ -177,3 +177,23 @@ export interface IssueAttachment {
   updatedAt: Date;
   contentPath: string;
 }
+
+export interface IssueDependency {
+  id: string;
+  companyId: string;
+  issueId: string;
+  blockerIssueId: string;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface IssueDependencySummary {
+  id: string;
+  issueId: string;
+  blockerIssueId: string;
+  blockerIdentifier: string | null;
+  blockerTitle: string;
+  blockerStatus: string;
+  createdAt: Date;
+}

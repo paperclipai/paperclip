@@ -89,6 +89,12 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const addIssueDependencySchema = z.object({
+  blockerIssueId: z.string().uuid(),
+});
+
+export type AddIssueDependency = z.infer<typeof addIssueDependencySchema>;
+
 export const linkIssueApprovalSchema = z.object({
   approvalId: z.string().uuid(),
 });

@@ -38,6 +38,13 @@ vi.mock("../services/index.js", () => ({
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => ({}),
+  issueDependencyService: () => ({
+    addDependency: vi.fn(),
+    removeDependency: vi.fn(),
+    listBlockers: vi.fn().mockResolvedValue([]),
+    listDependents: vi.fn(),
+    findDependentsReadyToWake: vi.fn().mockResolvedValue([]),
+  }),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
