@@ -11,8 +11,6 @@ import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { chatApi } from "../api/chat";
-import { ChatRoom } from "../components/ChatRoom";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
@@ -1067,38 +1065,11 @@ export function AgentDetail() {
 /* ---- Helper components ---- */
 
 function AgentChatTab({ agentId, companyId }: { agentId: string; companyId: string }) {
-  const { data: agents = [] } = useQuery({
-    queryKey: queryKeys.agents.list(companyId),
-    queryFn: () => agentsApi.list(companyId),
-  });
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
-  const { data: room, isLoading } = useQuery({
-    queryKey: [...queryKeys.chat.rooms(companyId), "direct", agentId],
-    queryFn: async () => {
-      const rooms = await chatApi.listRooms(companyId);
-      const existing = rooms.find((r) => r.kind === "direct" && r.agentId === agentId);
-      if (existing) return existing;
-      return chatApi.getOrCreateRoom(companyId, { kind: "direct", agentId });
-    },
-  });
-
-  if (isLoading) {
-    return <div className="text-sm text-muted-foreground py-8 text-center">Loading chat...</div>;
-  }
-  if (!room) {
-    return <div className="text-sm text-muted-foreground py-8 text-center">Could not load chat room.</div>;
-  }
-
-  return (
-    <div className="h-[600px] border border-border rounded-lg overflow-hidden">
-      <ChatRoom roomId={room.id} roomAgentId={agentId} agentMap={agentMap} />
-    </div>
-  );
+  const navigate = useNavigate();
+  useEffect(() => {
+    navigate(`/chat/${agentId}`, { replace: true });
+  }, [agentId, navigate]);
+  return null;
 }
 
 function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
