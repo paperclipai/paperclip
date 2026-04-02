@@ -213,7 +213,7 @@ describe("createZipArchive", () => {
     expect(readUint16(archive, endOffset + 10)).toBe(2);
   });
 
-  it("reads a Paperclip zip archive back into rootPath and file contents", async () => {
+  it("reads a Raava zip archive back into rootPath and file contents", async () => {
     const archive = createZipArchive(
       {
         "COMPANY.md": "# Company\n",
@@ -257,7 +257,7 @@ describe("createZipArchive", () => {
     });
   });
 
-  it("reads standard DEFLATE zip archives created outside Paperclip", async () => {
+  it("reads standard DEFLATE zip archives created outside Raava", async () => {
     const archive = createDeflatedZipArchive(
       {
         "COMPANY.md": "# Company\n",

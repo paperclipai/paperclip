@@ -166,6 +166,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/adapters/hermes-fleetos:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/adapters/openclaw-gateway:
     dependencies:
       '@paperclipai/adapter-utils':
@@ -473,6 +486,9 @@ importers:
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@raava/adapter-hermes-fleetos':
+        specifier: workspace:*
+        version: link:../packages/adapters/hermes-fleetos
       ajv:
         specifier: ^8.18.0
         version: 8.18.0

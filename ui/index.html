@@ -7,25 +7,30 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Paperclip" />
-    <title>Paperclip</title>
-    <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
-    <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
-    <!-- PAPERCLIP_FAVICON_START -->
+    <meta name="apple-mobile-web-app-title" content="Raava" />
+    <title>Raava Dashboard</title>
+    <!-- RAAVA_RUNTIME_BRANDING_START -->
+    <!-- RAAVA_RUNTIME_BRANDING_END -->
+    <!-- RAAVA_FAVICON_START -->
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
-    <!-- PAPERCLIP_FAVICON_END -->
+    <!-- RAAVA_FAVICON_END -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=Plus+Jakarta+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" />
     <script>
       (() => {
-        const key = "paperclip.theme";
+        const key = "raava.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
-          const stored = window.localStorage.getItem(key);
+          let stored = window.localStorage.getItem(key);
+          if (!stored) {
+            const legacy = window.localStorage.getItem("paperclip.theme");
+            if (legacy) { window.localStorage.setItem(key, legacy); window.localStorage.removeItem("paperclip.theme"); stored = legacy; }
+          }
           const theme = stored === "light" || stored === "dark" ? stored : "dark";
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);

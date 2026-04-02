@@ -45,8 +45,8 @@ describe("agent local JWT", () => {
       company_id: "company-1",
       adapter_type: "claude_local",
       run_id: "run-1",
-      iss: "paperclip",
-      aud: "paperclip-api",
+      iss: "raava",
+      aud: "raava-api",
     });
   });
 
@@ -66,7 +66,7 @@ describe("agent local JWT", () => {
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 
-  it("rejects issuer/audience mismatch", () => {
+  it("rejects truly unknown issuer/audience", () => {
     process.env[issuerEnv] = "custom-issuer";
     process.env[audienceEnv] = "custom-audience";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -75,5 +75,43 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("accepts legacy paperclip issuer/audience during rebrand", () => {
+    // Mint a token with old "paperclip" defaults
+    process.env[issuerEnv] = "paperclip";
+    process.env[audienceEnv] = "paperclip-api";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    // Verify with new "raava" defaults — should still accept
+    delete process.env[issuerEnv];
+    delete process.env[audienceEnv];
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      iss: "paperclip",
+      aud: "paperclip-api",
+    });
+  });
+
+  it("accepts raava issuer/audience when env is set to paperclip", () => {
+    // Mint a token with new "raava" defaults
+    delete process.env[issuerEnv];
+    delete process.env[audienceEnv];
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    // Verify with old "paperclip" env overrides — should still accept
+    process.env[issuerEnv] = "paperclip";
+    process.env[audienceEnv] = "paperclip-api";
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+    expect(claims).toMatchObject({
+      sub: "agent-1",
+      iss: "raava",
+      aud: "raava-api",
+    });
   });
 });

@@ -32,8 +32,8 @@ function jwtConfig() {
   return {
     secret,
     ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
-    issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
-    audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
+    issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "raava",
+    audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "raava-api",
   };
 }
 
@@ -124,8 +124,14 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
-  if (issuer && issuer !== config.issuer) return null;
-  if (audience && audience !== config.audience) return null;
+
+  // TODO: Remove legacy "paperclip"/"paperclip-api" values after one release cycle
+  // Build allowed issuers/audiences for backward compatibility during rebrand
+  const allowedIssuers = new Set([config.issuer, "paperclip", "raava"]);
+  const allowedAudiences = new Set([config.audience, "paperclip-api", "raava-api"]);
+
+  if (issuer && !allowedIssuers.has(issuer)) return null;
+  if (audience && !allowedAudiences.has(audience)) return null;
 
   return {
     sub,

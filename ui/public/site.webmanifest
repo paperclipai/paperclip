@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Paperclip",
-  "short_name": "Paperclip",
+  "name": "Raava Dashboard",
+  "short_name": "Raava",
   "description": "AI-powered project management and agent coordination platform",
   "start_url": "/",
   "scope": "/",

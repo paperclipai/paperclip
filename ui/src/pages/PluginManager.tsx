@@ -46,7 +46,7 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
 /**
  * PluginManager page component.
  *
- * Provides a management UI for the Paperclip plugin system:
+ * Provides a management UI for the Raava plugin system:
  * - Lists all installed plugins with their status, version, and category badges.
  * - Allows installing new plugins by npm package name.
  * - Provides per-plugin actions: enable, disable, navigate to settings.

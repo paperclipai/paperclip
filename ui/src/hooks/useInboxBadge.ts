@@ -14,6 +14,7 @@ import {
   saveDismissedInboxItems,
   loadReadInboxItems,
   saveReadInboxItems,
+  DISMISSED_KEY,
   READ_ITEMS_KEY,
 } from "../lib/inbox";
 
@@ -24,7 +25,7 @@ export function useDismissedInboxItems() {
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== "paperclip:inbox:dismissed") return;
+      if (event.key !== DISMISSED_KEY) return;
       setDismissed(loadDismissedInboxItems());
     };
     window.addEventListener("storage", handleStorage);

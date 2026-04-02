@@ -399,7 +399,7 @@ export function ExecutionWorkspaceDetail() {
                   </div>
                   <h1 className="text-2xl font-semibold">{workspace.name}</h1>
                   <p className="max-w-2xl text-sm text-muted-foreground">
-                    Configure the concrete runtime workspace that Paperclip reuses for this issue flow. These settings stay
+                    Configure the concrete runtime workspace that Raava reuses for this issue flow. These settings stay
                     attached to the execution workspace so future runs can keep local paths, repo refs, provisioning, teardown,
                     and runtime-service behavior in sync with the actual workspace being reused.
                   </p>
@@ -476,7 +476,7 @@ export function ExecutionWorkspaceDetail() {
               </div>
 
               <div className="mt-4 grid gap-4 md:grid-cols-2">
-                <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                <Field label="Provision command" hint="Runs when Raava prepares this execution workspace">
                   <textarea
                     className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.provisionCommand}
