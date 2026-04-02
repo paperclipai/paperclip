@@ -66,6 +66,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const PROCESS_LOSS_PENDING_ERROR_CODE = "process_lost_pending";
+const DEFAULT_ORPHAN_STALE_THRESHOLD_MS = 60_000;
 const DEFAULT_PROCESS_LOSS_CONFIRMATION_MS = 30_000;
 const MAX_PROCESS_LOSS_RETRIES = 2;
 const startLocksByAgent = new Map<string, Promise<void>>();
@@ -1852,7 +1853,7 @@ export function heartbeatService(db: Db) {
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; processLossConfirmationMs?: number }) {
-    const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const staleThresholdMs = opts?.staleThresholdMs ?? DEFAULT_ORPHAN_STALE_THRESHOLD_MS;
     const processLossConfirmationMs = Math.max(0, opts?.processLossConfirmationMs ?? DEFAULT_PROCESS_LOSS_CONFIRMATION_MS);
     const now = new Date();
 

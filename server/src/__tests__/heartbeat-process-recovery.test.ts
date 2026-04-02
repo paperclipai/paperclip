@@ -73,6 +73,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runUpdatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -128,7 +129,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.runUpdatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -176,13 +177,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("does not reap a fresh running process-lost candidate unless staleness threshold is explicitly disabled", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      includeIssue: false,
+      runUpdatedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ processLossConfirmationMs: 0 });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.reapOrphanedRuns({ processLossConfirmationMs: 0 });
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0, processLossConfirmationMs: 0 });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
@@ -216,7 +232,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.reapOrphanedRuns({ processLossConfirmationMs: 0 });
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0, processLossConfirmationMs: 0 });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
@@ -248,7 +264,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.reapOrphanedRuns({ processLossConfirmationMs: 0 });
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0, processLossConfirmationMs: 0 });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
