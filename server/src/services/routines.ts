@@ -131,11 +131,36 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
-  if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "coalesced" && issueId) return `Updated existing execution issue ${issueId}`;
+  if (status === "coalesced") return "Updated an existing execution issue";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
+}
+
+function formatRoutineReuseComment(input: {
+  routineTitle: string;
+  source: "schedule" | "manual" | "api" | "webhook";
+  triggerLabel: string | null;
+  payload?: Record<string, unknown> | null;
+  triggeredAt: Date;
+}) {
+  const lines = [
+    "Routine run reused this open issue instead of creating a duplicate.",
+    "",
+    `- Routine: ${input.routineTitle}`,
+    `- Source: ${input.source}`,
+    `- Trigger: ${input.triggerLabel ?? "direct run"}`,
+    `- Triggered at: ${input.triggeredAt.toISOString()}`,
+  ];
+  if (input.payload && Object.keys(input.payload).length > 0) {
+    lines.push("- Payload:");
+    lines.push("```json");
+    lines.push(JSON.stringify(input.payload, null, 2));
+    lines.push("```");
+  }
+  return lines.join("\n");
 }
 
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
@@ -618,6 +643,27 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  async function findReusableExecutionIssue(routine: typeof routines.$inferSelect, executor: Db = db) {
+    const liveIssue = await findLiveExecutionIssue(routine, executor);
+    if (liveIssue) return liveIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -721,9 +767,31 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
+        const activeIssue = await findReusableExecutionIssue(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (status === "coalesced") {
+            await issueSvc.addComment(
+              activeIssue.id,
+              formatRoutineReuseComment({
+                routineTitle: input.routine.title,
+                source: input.source,
+                triggerLabel: input.trigger?.label ?? null,
+                payload: input.payload ?? null,
+                triggeredAt,
+              }),
+              {},
+            );
+            await queueIssueAssignmentWakeup({
+              heartbeat,
+              issue: activeIssue,
+              reason: "routine_issue_reused",
+              mutation: "comment",
+              contextSource: "routine.dispatch.reuse",
+              requestedByActorType: input.source === "schedule" ? "system" : undefined,
+              rethrowOnError: true,
+            });
+          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: activeIssue.id,

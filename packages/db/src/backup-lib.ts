@@ -70,20 +70,40 @@ function timestamp(date: Date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function utcDayKey(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
 function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
   const safeRetention = Math.max(1, Math.trunc(retentionDays));
   const cutoff = Date.now() - safeRetention * 24 * 60 * 60 * 1000;
   let pruned = 0;
+  const backupFiles = readdirSync(backupDir)
+    .filter((name) => name.startsWith(`${filenamePrefix}-`) && name.endsWith(".sql"))
+    .map((name) => {
+      const fullPath = resolve(backupDir, name);
+      const stat = statSync(fullPath);
+      return { name, fullPath, stat };
+    })
+    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || b.name.localeCompare(a.name));
+  const keptDays = new Set<string>();
 
-  for (const name of readdirSync(backupDir)) {
-    if (!name.startsWith(`${filenamePrefix}-`) || !name.endsWith(".sql")) continue;
-    const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
-    if (stat.mtimeMs < cutoff) {
-      unlinkSync(fullPath);
+  for (const backup of backupFiles) {
+    if (backup.stat.mtimeMs < cutoff) {
+      unlinkSync(backup.fullPath);
       pruned++;
+      continue;
     }
+
+    const dayKey = utcDayKey(backup.stat.mtime);
+    if (keptDays.has(dayKey)) {
+      unlinkSync(backup.fullPath);
+      pruned++;
+      continue;
+    }
+
+    keptDays.add(dayKey);
   }
 
   return pruned;

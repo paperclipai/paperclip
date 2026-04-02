@@ -41,6 +41,8 @@ export const databaseConfigSchema = z.object({
 export const loggingConfigSchema = z.object({
   mode: z.enum(["file", "cloud"]),
   logDir: z.string().default("~/.paperclip/instances/default/logs"),
+  runLogRetentionDays: z.number().int().min(1).max(3650).default(7),
+  workspaceOperationLogRetentionDays: z.number().int().min(1).max(3650).default(14),
 });
 
 export const serverConfigSchema = z.object({

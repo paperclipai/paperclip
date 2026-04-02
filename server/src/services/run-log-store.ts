@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -147,6 +148,31 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
 
 let cachedStore: RunLogStore | null = null;
 
+async function pruneExpiredLogFiles(basePath: string, cutoff: Date): Promise<number> {
+  let deleted = 0;
+  const stack = [basePath];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    if (!currentDir) continue;
+    const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".ndjson")) continue;
+      const stat = await fs.stat(entryPath).catch(() => null);
+      if (!stat || stat.mtime >= cutoff) continue;
+      await fs.unlink(entryPath).catch(() => {});
+      deleted += 1;
+    }
+  }
+
+  return deleted;
+}
+
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
@@ -154,3 +180,25 @@ export function getRunLogStore() {
   return cachedStore;
 }
 
+export async function pruneRunLogs(retentionDays: number, basePath?: string): Promise<number> {
+  const root = basePath ?? process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - Math.max(1, Math.trunc(retentionDays)));
+  const deleted = await pruneExpiredLogFiles(root, cutoff);
+  if (deleted > 0) {
+    logger.info({ deleted, retentionDays, root }, "Pruned expired run logs");
+  }
+  return deleted;
+}
+
+export function startRunLogRetention(intervalMs: number, retentionDays: number, basePath?: string): () => void {
+  const runSweep = () => {
+    void pruneRunLogs(retentionDays, basePath).catch((err) => {
+      logger.warn({ err, retentionDays, basePath }, "Run log retention sweep failed");
+    });
+  };
+
+  runSweep();
+  const timer = setInterval(runSweep, intervalMs);
+  return () => clearInterval(timer);
+}

@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issues,
   projectWorkspaces,
   projects,
@@ -52,6 +53,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -174,7 +176,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("reuses the open routine issue when the previous routine issue is open but idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -205,8 +207,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(detailBefore?.activeIssue).toBeNull();
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -216,9 +218,53 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
-    expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("reuses an open routine issue by commenting instead of creating a duplicate", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const previousRunId = randomUUID();
+    const existingIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: existingIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, {
+      source: "schedule",
+      idempotencyKey: "reuse-open-issue",
+    });
+
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(existingIssue.id);
+
+    const issueRows = await db.select().from(issues).where(eq(issues.originId, routine.id));
+    expect(issueRows).toHaveLength(1);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, existingIssue.id));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("reused this open issue instead of creating a duplicate");
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.opts.reason).toBe("routine_issue_reused");
   });
 
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {

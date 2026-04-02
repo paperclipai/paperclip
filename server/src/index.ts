@@ -35,6 +35,8 @@ import {
   routineService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import { startRunLogRetention } from "./services/run-log-store.js";
+import { startWorkspaceOperationLogRetention } from "./services/workspace-operation-log-store.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -667,6 +669,9 @@ export async function startServer(): Promise<StartedServer> {
       void runScheduledBackup();
     }, backupIntervalMs);
   }
+
+  startRunLogRetention(60 * 60 * 1000, config.runLogRetentionDays);
+  startWorkspaceOperationLogRetention(60 * 60 * 1000, config.workspaceOperationLogRetentionDays);
   
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
