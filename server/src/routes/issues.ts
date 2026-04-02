@@ -1086,6 +1086,35 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    // Auto-assign from @mention: when an agent transitions to in_review with a comment
+    // mentioning another agent but omits assigneeAgentId, infer the assignment.
+    // This prevents the common pattern where agents @mention a QA agent but forget
+    // to include assigneeAgentId, leaving the issue assigned to themselves.
+    if (
+      req.actor.type === "agent" &&
+      req.body.status === "in_review" &&
+      req.body.comment &&
+      req.body.assigneeAgentId === undefined
+    ) {
+      try {
+        const mentionedIds = await svc.findMentionedAgents(existing.companyId, req.body.comment);
+        if (mentionedIds.length > 0) {
+          // Pick the first mentioned agent that isn't the current actor
+          const targetId = mentionedIds.find((mid) => mid !== req.actor.agentId);
+          if (targetId) {
+            req.body.assigneeAgentId = targetId;
+            logger.info(
+              { issueId: id, mentionedAgentId: targetId, actorAgentId: req.actor.agentId },
+              "auto-inferred assigneeAgentId from @mention in in_review transition",
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @mentions for auto-assign inference");
+      }
+    }
+
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
