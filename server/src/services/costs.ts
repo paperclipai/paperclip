@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { logActivity } from "./activity-log.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -92,6 +93,30 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      void logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "cost-service",
+        action: "cost_event.created",
+        entityType: "cost_event",
+        entityId: event.id,
+        agentId: event.agentId,
+        runId: event.heartbeatRunId ?? undefined,
+        details: {
+          costCents: event.costCents,
+          model: event.model,
+          provider: event.provider,
+          biller: event.biller,
+          billingType: event.billingType,
+          inputTokens: event.inputTokens,
+          cachedInputTokens: event.cachedInputTokens,
+          outputTokens: event.outputTokens,
+          heartbeatRunId: event.heartbeatRunId,
+          agentId: event.agentId,
+          companyId,
+        },
+      });
 
       return event;
     },
