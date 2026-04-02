@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/collapsible";
 import type { Agent } from "@paperclipai/shared";
 export function SidebarAgents() {
+  const { t } = useTranslation("nav");
   const [open, setOpen] = useState(true);
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
@@ -81,7 +83,7 @@ export function SidebarAgents() {
               )}
             />
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
-              Agents
+              {t("agents")}
             </span>
           </CollapsibleTrigger>
           <button
@@ -90,7 +92,7 @@ export function SidebarAgents() {
               openNewAgent();
             }}
             className="flex items-center justify-center h-4 w-4 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent/50 transition-colors"
-            aria-label="New agent"
+            aria-label={t("newAgent")}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -130,7 +132,7 @@ export function SidebarAgents() {
                     ) : null}
                     {runCount > 0 ? (
                       <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                        {runCount} live
+                        {runCount} {t("common:live")}
                       </span>
                     ) : null}
                   </span>
