@@ -37,6 +37,10 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
  * the repo's `skills/` directory, so `--add-dir` makes Claude Code discover
  * them as proper registered skills.
+ *
+ * When `customSkillsDirs` is provided, skills from those directories are also
+ * symlinked in.  If a custom skill has the same directory name as a built-in
+ * skill the custom one wins (symlink is overwritten).
  */
 async function buildSkillsDir(config: Record<string, unknown>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-"));
@@ -56,6 +60,24 @@ async function buildSkillsDir(config: Record<string, unknown>): Promise<string> 
       path.join(target, entry.runtimeName),
     );
   }
+  }
+
+  // 2. Custom / external skills (e.g. MiniMax-skills)
+  for (const customDir of customSkillsDirs) {
+    const resolved = path.resolve(customDir);
+    const isDir = await fs.stat(resolved).then((s) => s.isDirectory()).catch(() => false);
+    if (!isDir) continue;
+    const entries = await fs.readdir(resolved, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const linkTarget = path.join(target, entry.name);
+      // Remove existing symlink if present so custom skills can override built-in
+      const existing = await fs.lstat(linkTarget).catch(() => null);
+      if (existing) await fs.unlink(linkTarget);
+      await fs.symlink(path.join(resolved, entry.name), linkTarget);
+    }
+  }
+
   return tmp;
 }
 

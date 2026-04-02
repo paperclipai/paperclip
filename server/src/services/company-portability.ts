@@ -494,12 +494,12 @@ const COMPANY_LOGO_FILE_NAME = "company-logo";
 
 const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
   { path: ["heartbeat", "cooldownSec"], value: 10 },
-  { path: ["heartbeat", "intervalSec"], value: 3600 },
+  { path: ["heartbeat", "intervalSec"], value: 7200 },
   { path: ["heartbeat", "wakeOnOnDemand"], value: true },
   { path: ["heartbeat", "wakeOnAssignment"], value: true },
   { path: ["heartbeat", "wakeOnAutomation"], value: true },
   { path: ["heartbeat", "wakeOnDemand"], value: true },
-  { path: ["heartbeat", "maxConcurrentRuns"], value: 3 },
+  { path: ["heartbeat", "maxConcurrentRuns"], value: 1 },
 ];
 
 const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
@@ -522,7 +522,9 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
   claude_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
-    { path: ["maxTurnsPerRun"], value: 300 },
+    { path: ["maxTurnsPerRun"], value: 30 },
+    { path: ["model"], value: "claude-sonnet-4-6" },
+    { path: ["effort"], value: "low" },
   ],
   openclaw_gateway: [
     { path: ["timeoutSec"], value: 120 },

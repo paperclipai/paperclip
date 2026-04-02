@@ -2,9 +2,9 @@ export const type = "claude_local";
 export const label = "Claude Code (local)";
 
 export const models = [
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-  { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (recommended)" },
+  { id: "claude-haiku-4-6", label: "Claude Haiku 4.6 (fast & cheap)" },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6 (high cost)" },
   { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
 ];
@@ -23,6 +23,7 @@ Core fields:
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional): pass --dangerously-skip-permissions to claude
 - command (string, optional): defaults to "claude"
+- customSkillsDirs (string[], optional): additional directories containing skill subdirectories to inject alongside built-in skills
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
