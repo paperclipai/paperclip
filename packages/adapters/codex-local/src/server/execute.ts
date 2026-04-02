@@ -229,6 +229,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
   );
+  const sessionPolicy = asString(config.sessionPolicy, "resume");
+  const skipSkills = asBoolean(config.skipSkills, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -274,14 +276,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   const codexWorkspaceSkillsDir = resolveCodexWorkspaceSkillsDir(cwd);
-  await ensureCodexSkillsInjected(
-    onLog,
-    {
-      skillsHome: codexWorkspaceSkillsDir,
-      skillsEntries: codexSkillEntries,
-      desiredSkillNames,
-    },
-  );
+  if (!skipSkills) {
+    await ensureCodexSkillsInjected(
+      onLog,
+      {
+        skillsHome: codexWorkspaceSkillsDir,
+        skillsEntries: codexSkillEntries,
+        desiredSkillNames,
+      },
+    );
+  }
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -393,11 +397,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const alwaysFresh = sessionPolicy === "always_fresh";
   const canResumeSession =
+    !alwaysFresh &&
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
+  if (runtimeSessionId && !canResumeSession && !alwaysFresh) {
     await onLog(
       "stdout",
       `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
@@ -538,7 +544,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        clearSession: clearSessionOnMissingSession,
+        errorCode: "timeout",
+        clearSession: alwaysFresh || clearSessionOnMissingSession,
       };
     }
 
@@ -581,7 +588,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
       },
       summary: attempt.parsed.summary,
-      clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession: alwaysFresh || Boolean(clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
