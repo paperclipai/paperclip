@@ -35,6 +35,7 @@ import {
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
 import { LanguageSwitcher } from "./LanguageSwitcher";
+import { DEFAULT_CODEBUDDY_LOCAL_MODEL } from "@penclipai/adapter-codebuddy-local";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
@@ -43,6 +44,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@penclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@penclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { CodeBuddyLogoIcon } from "./CodeBuddyLogoIcon";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
   Building2,
@@ -67,6 +69,7 @@ type Step = 1 | 2 | 3 | 4;
 type AdapterType =
   | "claude_local"
   | "codex_local"
+  | "codebuddy_local"
   | "gemini_local"
   | "hermes_local"
   | "opencode_local"
@@ -232,6 +235,7 @@ export function OnboardingWizard() {
   const isLocalAdapter =
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
+    adapterType === "codebuddy_local" ||
     adapterType === "gemini_local" ||
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
@@ -241,6 +245,8 @@ export function OnboardingWizard() {
     command.trim() ||
     (adapterType === "codex_local"
       ? "codex"
+      : adapterType === "codebuddy_local"
+        ? "codebuddy"
       : adapterType === "gemini_local"
         ? "gemini"
       : adapterType === "hermes_local"
@@ -352,6 +358,8 @@ export function OnboardingWizard() {
       model:
         adapterType === "codex_local"
           ? model || DEFAULT_CODEX_LOCAL_MODEL
+          : adapterType === "codebuddy_local"
+            ? model || DEFAULT_CODEBUDDY_LOCAL_MODEL
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "cursor"
@@ -361,7 +369,7 @@ export function OnboardingWizard() {
       args,
       url,
       dangerouslySkipPermissions:
-        adapterType === "claude_local" || adapterType === "opencode_local",
+        adapterType === "claude_local" || adapterType === "codebuddy_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
@@ -814,6 +822,12 @@ export function OnboardingWizard() {
                           icon: Code,
                           desc: t("Local Codex agent"),
                           recommended: true
+                        },
+                        {
+                          value: "codebuddy_local" as const,
+                          label: "CodeBuddy",
+                          icon: CodeBuddyLogoIcon,
+                          desc: t("newAgent.option.codebuddyLocal")
                         }
                       ].map((opt) => (
                         <button
@@ -829,8 +843,13 @@ export function OnboardingWizard() {
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
+                              return;
                             }
-                            if (nextType !== "codex_local") {
+                            if (nextType === "codebuddy_local" && !model) {
+                              setModel(DEFAULT_CODEBUDDY_LOCAL_MODEL);
+                              return;
+                            }
+                            if (nextType !== "codex_local" && nextType !== "codebuddy_local") {
                               setModel("");
                             }
                           }}
@@ -957,6 +976,7 @@ export function OnboardingWizard() {
                   {/* Conditional adapter fields */}
                   {(adapterType === "claude_local" ||
                     adapterType === "codex_local" ||
+                    adapterType === "codebuddy_local" ||
                     adapterType === "gemini_local" ||
                     adapterType === "hermes_local" ||
                     adapterType === "opencode_local" ||
@@ -1149,6 +1169,8 @@ export function OnboardingWizard() {
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "codebuddy_local"
+                                ? `echo "Respond with hello." | ${effectiveAdapterCommand} -p --output-format stream-json --max-turns 1`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "opencode_local"
@@ -1161,6 +1183,7 @@ export function OnboardingWizard() {
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
+                          adapterType === "codebuddy_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
@@ -1168,6 +1191,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "CURSOR_API_KEY"
+                                  : adapterType === "codebuddy_local"
+                                    ? "CODEBUDDY_API_KEY (optional)"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
                                     : "OPENAI_API_KEY"}
@@ -1176,6 +1201,8 @@ export function OnboardingWizard() {
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
+                                  : adapterType === "codebuddy_local"
+                                    ? "codebuddy"
                                   : adapterType === "codex_local"
                                     ? "codex login"
                                     : adapterType === "gemini_local"

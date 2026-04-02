@@ -22,12 +22,14 @@ import {
   Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CodeBuddyLogoIcon } from "./CodeBuddyLogoIcon";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { HermesIcon } from "./HermesIcon";
 
 type AdvancedAdapterType =
   | "claude_local"
   | "codex_local"
+  | "codebuddy_local"
   | "gemini_local"
   | "opencode_local"
   | "pi_local"
@@ -55,6 +57,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     icon: Code,
     descKey: "newAgent.option.codexLocal",
     recommended: true,
+  },
+  {
+    value: "codebuddy_local",
+    label: "CodeBuddy",
+    icon: CodeBuddyLogoIcon,
+    descKey: "newAgent.option.codebuddyLocal",
   },
   {
     value: "gemini_local",

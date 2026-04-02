@@ -1,5 +1,6 @@
 import type { CLIAdapterModule } from "@penclipai/adapter-utils";
 import { printClaudeStreamEvent } from "@penclipai/adapter-claude-local/cli";
+import { printCodeBuddyStreamEvent } from "@penclipai/adapter-codebuddy-local/cli";
 import { printCodexStreamEvent } from "@penclipai/adapter-codex-local/cli";
 import { printCursorStreamEvent } from "@penclipai/adapter-cursor-local/cli";
 import { printGeminiStreamEvent } from "@penclipai/adapter-gemini-local/cli";
@@ -17,6 +18,11 @@ const claudeLocalCLIAdapter: CLIAdapterModule = {
 const codexLocalCLIAdapter: CLIAdapterModule = {
   type: "codex_local",
   formatStdoutEvent: printCodexStreamEvent,
+};
+
+const codeBuddyLocalCLIAdapter: CLIAdapterModule = {
+  type: "codebuddy_local",
+  formatStdoutEvent: printCodeBuddyStreamEvent,
 };
 
 const openCodeLocalCLIAdapter: CLIAdapterModule = {
@@ -48,6 +54,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
   [
     claudeLocalCLIAdapter,
     codexLocalCLIAdapter,
+    codeBuddyLocalCLIAdapter,
     openCodeLocalCLIAdapter,
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,

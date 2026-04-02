@@ -73,6 +73,7 @@ const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
+  "codebuddy_local",
   "cursor",
   "gemini_local",
   "opencode_local",

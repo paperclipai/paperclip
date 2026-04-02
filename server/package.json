@@ -46,6 +46,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
     "@penclipai/adapter-claude-local": "workspace:*",
+    "@penclipai/adapter-codebuddy-local": "workspace:*",
     "@penclipai/adapter-codex-local": "workspace:*",
     "@penclipai/adapter-cursor-local": "workspace:*",
     "@penclipai/adapter-gemini-local": "workspace:*",

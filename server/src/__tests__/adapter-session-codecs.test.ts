@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { sessionCodec as claudeSessionCodec } from "@penclipai/adapter-claude-local/server";
+import {
+  sessionCodec as codeBuddySessionCodec,
+  isCodeBuddyUnknownSessionError,
+} from "@penclipai/adapter-codebuddy-local/server";
 import { sessionCodec as codexSessionCodec, isCodexUnknownSessionError } from "@penclipai/adapter-codex-local/server";
 import {
   sessionCodec as cursorSessionCodec,
@@ -49,6 +53,24 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/codex",
     });
     expect(codexSessionCodec.getDisplayId?.(serialized ?? null)).toBe("codex-session-1");
+  });
+
+  it("normalizes codebuddy session params with cwd", () => {
+    const parsed = codeBuddySessionCodec.deserialize({
+      session_id: "codebuddy-session-1",
+      cwd: "/tmp/codebuddy",
+    });
+    expect(parsed).toEqual({
+      sessionId: "codebuddy-session-1",
+      cwd: "/tmp/codebuddy",
+    });
+
+    const serialized = codeBuddySessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "codebuddy-session-1",
+      cwd: "/tmp/codebuddy",
+    });
+    expect(codeBuddySessionCodec.getDisplayId?.(serialized ?? null)).toBe("codebuddy-session-1");
   });
 
   it("normalizes opencode session params with cwd", () => {
@@ -103,6 +125,29 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+});
+
+describe("codebuddy resume recovery detection", () => {
+  it("detects unknown session errors from codebuddy output", () => {
+    expect(
+      isCodeBuddyUnknownSessionError(
+        "{\"type\":\"error\",\"message\":\"No conversation found with session ID: stale-session\"}",
+        "",
+      ),
+    ).toBe(true);
+    expect(
+      isCodeBuddyUnknownSessionError(
+        "",
+        "resume session not found",
+      ),
+    ).toBe(true);
+    expect(
+      isCodeBuddyUnknownSessionError(
+        "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\"}",
+        "",
+      ),
+    ).toBe(false);
   });
 });
 

@@ -53,11 +53,15 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { resolveExplicitRequestUiLocale } from "../ui-locale.js";
 import { runClaudeLogin } from "@penclipai/adapter-claude-local/server";
 import {
+  DEFAULT_CODEBUDDY_LOCAL_MODEL,
+} from "@penclipai/adapter-codebuddy-local";
+import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@penclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@penclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@penclipai/adapter-gemini-local";
+import { ensureCodeBuddyModelConfiguredAndAvailable } from "@penclipai/adapter-codebuddy-local/server";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@penclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
@@ -68,6 +72,7 @@ export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
+    codebuddy_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
@@ -400,6 +405,10 @@ export function agentRoutes(db: Db) {
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "codebuddy_local" && !asNonEmptyString(next.model)) {
+      next.model = DEFAULT_CODEBUDDY_LOCAL_MODEL;
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
@@ -412,6 +421,22 @@ export function agentRoutes(db: Db) {
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "codebuddy_local") {
+      const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
+      const runtimeEnv = asRecord(runtimeConfig.env) ?? {};
+      try {
+        await ensureCodeBuddyModelConfiguredAndAvailable({
+          model: runtimeConfig.model,
+          command: runtimeConfig.command,
+          cwd: runtimeConfig.cwd,
+          env: runtimeEnv,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid codebuddy_local adapterConfig: ${reason}`);
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig);
     const runtimeEnv = asRecord(runtimeConfig.env) ?? {};

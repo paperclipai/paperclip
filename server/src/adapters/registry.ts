@@ -10,6 +10,18 @@ import {
 } from "@penclipai/adapter-claude-local/server";
 import { agentConfigurationDoc as claudeAgentConfigurationDoc, models as claudeModels } from "@penclipai/adapter-claude-local";
 import {
+  execute as codeBuddyExecute,
+  listCodeBuddySkills,
+  listCodeBuddyModels,
+  syncCodeBuddySkills,
+  testEnvironment as codeBuddyTestEnvironment,
+  sessionCodec as codeBuddySessionCodec,
+} from "@penclipai/adapter-codebuddy-local/server";
+import {
+  agentConfigurationDoc as codeBuddyAgentConfigurationDoc,
+  models as codeBuddyModels,
+} from "@penclipai/adapter-codebuddy-local";
+import {
   execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
@@ -123,6 +135,20 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+const codeBuddyLocalAdapter: ServerAdapterModule = {
+  type: "codebuddy_local",
+  execute: wrapExecuteWithPaperclipPromptLayers(codeBuddyExecute),
+  testEnvironment: codeBuddyTestEnvironment,
+  listSkills: listCodeBuddySkills,
+  syncSkills: syncCodeBuddySkills,
+  sessionCodec: codeBuddySessionCodec,
+  sessionManagement: getAdapterSessionManagement("codebuddy_local") ?? undefined,
+  models: codeBuddyModels,
+  listModels: listCodeBuddyModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: codeBuddyAgentConfigurationDoc,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: wrapExecuteWithPaperclipPromptLayers(cursorExecute),
@@ -204,6 +230,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
     codexLocalAdapter,
+    codeBuddyLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorLocalAdapter,
