@@ -257,17 +257,21 @@ export async function startClaudeLoginSession(
     config: {
       command: "claude",
       env: { HOME: tempHome },
+      timeoutSec: 300,
     },
-    onLog: async (_stream, chunk) => {
-      // Capture login URL from stdout stream
+    onLog: async (stream, chunk) => {
+      // Capture login URL from any output stream
       const current = sessions.get(sessionId);
-      if (!current || current.loginUrl) return;
+      if (!current) return;
 
-      // The claude login command outputs a URL — look for https:// pattern
-      const urlMatch = chunk.match(/https:\/\/[^\s]+/);
-      if (urlMatch) {
-        current.loginUrl = urlMatch[0];
-        logger.info({ sessionId, loginUrl: current.loginUrl }, "claude login: captured login URL");
+      logger.debug({ sessionId, stream, chunk: chunk.slice(0, 200) }, "claude login: output");
+
+      if (!current.loginUrl) {
+        const urlMatch = chunk.match(/https:\/\/[^\s]+/);
+        if (urlMatch) {
+          current.loginUrl = urlMatch[0].replace(/[\])}.!,?;:'"]+$/g, "");
+          logger.info({ sessionId, loginUrl: current.loginUrl }, "claude login: captured login URL");
+        }
       }
     },
   });
@@ -284,7 +288,9 @@ export async function startClaudeLoginSession(
 
       // If the process exited with an error and we haven't completed, mark failed
       if (result.exitCode !== 0 && current.status === "pending") {
-        const errMsg = result.stderr?.trim() || `claude login exited with code ${result.exitCode}`;
+        const detail = [result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join(" | ");
+        const errMsg = detail || `claude login exited with code ${result.exitCode}`;
+        logger.warn({ sessionId, exitCode: result.exitCode, stderr: result.stderr?.slice(0, 500), stdout: result.stdout?.slice(0, 500) }, "claude login: failed");
         finalizeSession(sessionId, "failed", { error: errMsg });
       }
       // If exitCode is 0, the polling should pick up the credentials file

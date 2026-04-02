@@ -294,7 +294,7 @@ export async function runClaudeLogin(input: {
     authToken: input.authToken,
   });
 
-  const proc = await runChildProcess(input.runId, runtime.command, ["login"], {
+  const proc = await runChildProcess(input.runId, runtime.command, ["auth", "login"], {
     cwd: runtime.cwd,
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
