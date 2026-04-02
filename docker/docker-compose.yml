@@ -12,7 +12,7 @@ services:
       timeout: 5s
       retries: 30
     volumes:
-      - /mnt/paperclip/pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   server:
     build:
@@ -44,6 +44,8 @@ services:
       - default
       - traefik-net
 
+volumes:
+  pgdata:
 networks:
   traefik-net:
     external: true

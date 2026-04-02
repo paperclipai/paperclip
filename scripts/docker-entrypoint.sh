@@ -22,8 +22,8 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-# Always fix ownership - files may have been created by root via docker exec
-chown -R node:node /paperclip
+# Fix ownership where possible (NFS mounts may reject chown — that's OK)
+chown -R node:node /paperclip 2>/dev/null || true
 
 # --- SSH server setup (persistent keys on volume) ---
 SSH_DIR="/paperclip/.ssh"
@@ -56,7 +56,7 @@ if [ ! -f "$SSH_DIR/authorized_keys" ]; then
 fi
 chmod 700 "$SSH_DIR"
 chmod 600 "$SSH_DIR/authorized_keys" "$SSH_DIR/ssh_host_"* 2>/dev/null || true
-chown -R node:node "$SSH_DIR"
+chown -R node:node "$SSH_DIR" 2>/dev/null || true
 
 # Set node user shell to bash
 usermod -s /bin/bash node 2>/dev/null || true
