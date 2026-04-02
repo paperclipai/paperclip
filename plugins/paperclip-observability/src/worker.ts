@@ -2,8 +2,12 @@
  * Observability plugin worker.
  *
  * Subscribes to Paperclip domain events (agent runs, issue lifecycle, cost
- * events, approvals) and forwards them as OTel metrics and traces to a
- * configured OTLP collector.
+ * events, approvals) and forwards them as OTel metrics, traces, and logs
+ * to a configured OTLP collector.
+ *
+ * Event dispatch is handled by the EventTelemetryRouter, which fans out
+ * each event to focused handler modules (metrics, traces, logs) via
+ * Promise.allSettled.
  */
 
 import {
@@ -11,24 +15,58 @@ import {
   runWorker,
   type PaperclipPlugin,
   type PluginContext,
-  type PluginEvent,
   type PluginHealthDiagnostics,
   type PluginJobContext,
   type Agent,
   type Issue,
   type Project,
 } from "@paperclipai/plugin-sdk";
-import {
-  SpanKind,
-  SpanStatusCode,
-  context,
-  trace,
-  type Span,
-} from "@opentelemetry/api";
+import { SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { ObservabilityConfig } from "./config.js";
-import { DEFAULT_CONFIG, resolveConfig } from "./config.js";
+import { resolveConfig } from "./config.js";
 import { JOB_KEYS, METRIC_NAMES } from "./constants.js";
 import { initOTel, type OTelHandle } from "./otel-setup.js";
+import {
+  EventTelemetryRouter,
+  type TelemetryContext,
+} from "./telemetry/router.js";
+
+// Metrics handlers
+import {
+  handleRunStartedMetrics,
+  handleRunFinishedMetrics,
+  handleRunFailedMetrics,
+  handleRunCancelledMetrics,
+  handleCostMetrics,
+  handleIssueCreatedMetrics,
+  handleIssueUpdatedMetrics,
+  handleAgentStatusChangedMetrics,
+  handleApprovalCreatedMetrics,
+  handleApprovalDecidedMetrics,
+  handleGenericMetrics,
+} from "./telemetry/metrics-handlers.js";
+
+// Trace handlers
+import {
+  handleRunStartedTraces,
+  handleRunFinishedTraces,
+  handleRunFailedTraces,
+  handleRunCancelledTraces,
+  handleCostTraces,
+  handleIssueUpdatedTraces,
+} from "./telemetry/trace-handlers.js";
+
+// Log handlers
+import {
+  handleRunStartedLogs,
+  handleRunFinishedLogs,
+  handleRunFailedLogs,
+  handleAgentStatusChangedLogs,
+  handleIssueCreatedLogs,
+  handleIssueUpdatedLogs,
+  handleApprovalCreatedLogs,
+  handleApprovalDecidedLogs,
+} from "./telemetry/log-handlers.js";
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -40,10 +78,8 @@ let startedAt: string | null = null;
 let eventsProcessed = 0;
 let lastError: string | null = null;
 
-// Active run spans — keyed by runId, kept open until run.finished/failed/cancelled
+// Active span maps — shared across handler modules via TelemetryContext
 const activeRunSpans = new Map<string, Span>();
-
-// Active issue lifecycle spans — keyed by issueId
 const activeIssueSpans = new Map<string, Span>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
@@ -59,7 +95,6 @@ interface AgentSnapshot {
 }
 let agentSnapshots: AgentSnapshot[] = [];
 
-// Issue gauge snapshot data — written by the collect-metrics job, read by observable gauge callback
 interface IssueSnapshot {
   companyId: string;
   projectId: string;
@@ -69,7 +104,6 @@ interface IssueSnapshot {
 }
 let issueSnapshots: IssueSnapshot[] = [];
 
-// Governance gauge snapshot data — written by the collect-metrics job
 interface GovernanceSnapshot {
   companyId: string;
   approvalsPending: number;
@@ -81,594 +115,60 @@ interface GovernanceSnapshot {
 let governanceSnapshots: GovernanceSnapshot[] = [];
 
 // ---------------------------------------------------------------------------
-// Provider name mapping (adapter type → OTel well-known value)
+// Router setup — register all handlers
 // ---------------------------------------------------------------------------
 
-function mapProvider(adapterType: string): string {
-  switch (adapterType) {
-    case "claude_local":
-    case "claude":
-      return "anthropic";
-    case "openai":
-    case "cursor-local":
-    case "codex-local":
-      return "openai";
-    case "gemini-local":
-      return "gcp.gemini";
-    case "openclaw-gateway":
-    case "openclaw":
-      // OpenClaw proxies multiple providers; best-effort from model name
-      return adapterType;
-    default:
-      return adapterType || "unknown";
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Event handlers
-// ---------------------------------------------------------------------------
-
-async function handleAgentRunStarted(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const runId = String(p.runId ?? "");
-
-  // Run counter
-  const runCounter = otel.meter.createCounter(METRIC_NAMES.agentRunsStarted, {
-    description: "Count of agent runs started",
-  });
-  runCounter.add(1, {
-    agent_id: String(p.agentId ?? ""),
-    invocation_source: String(p.invocationSource ?? ""),
-  });
-
-  // Root span — kept open until run.finished/failed/cancelled
-  const span = otel.tracer.startSpan("paperclip.heartbeat.run", {
-    kind: SpanKind.INTERNAL,
-    attributes: {
-      // Paperclip-specific
-      "paperclip.agent.id": String(p.agentId ?? ""),
-      "paperclip.run.id": runId,
-      "paperclip.company.id": String(p.companyId ?? ""),
-      "paperclip.run.invocation_source": String(p.invocationSource ?? ""),
-      "paperclip.run.trigger_detail": String(p.triggerDetail ?? ""),
-      // GenAI semconv agent span attributes
-      "gen_ai.operation.name": "invoke_agent",
-      "gen_ai.agent.id": String(p.agentId ?? ""),
-      "gen_ai.agent.name": String(p.agentName ?? ""),
-    },
-  });
-
-  if (runId) {
-    // Keep span in memory for ending on run.finished/failed
-    activeRunSpans.set(runId, span);
-
-    // Also persist span context in plugin state for cross-restart resilience
-    if (ctx) {
-      await ctx.state
-        .set(
-          { scopeKind: "instance", stateKey: `span:run:${runId}` },
-          {
-            traceId: span.spanContext().traceId,
-            spanId: span.spanContext().spanId,
-            traceFlags: span.spanContext().traceFlags,
-            startTime: Date.now(),
-          },
-        )
-        .catch(() => {});
-    }
-  } else {
-    // No runId — end immediately as a point-in-time event
-    span.end();
-  }
-}
-
-async function handleAgentRunFinished(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const runId = String(p.runId ?? "");
-
-  const durationHist = otel.meter.createHistogram(
-    METRIC_NAMES.agentRunDuration,
-    {
-      description: "Duration of agent heartbeat runs in milliseconds",
-      unit: "ms",
-    },
-  );
-
-  // GenAI semconv: gen_ai.client.operation.duration (seconds)
-  const genAIDurationHist = otel.meter.createHistogram(
-    "gen_ai.client.operation.duration",
-    {
-      description: "GenAI operation duration",
-      unit: "s",
-    },
-  );
-
-  if (p.durationMs != null) {
-    const durationMs = Number(p.durationMs);
-    durationHist.record(durationMs, {
-      agent_id: String(p.agentId ?? ""),
-      status: "finished",
-    });
-    genAIDurationHist.record(durationMs / 1000, {
-      "gen_ai.operation.name": "invoke_agent",
-      "gen_ai.provider.name": mapProvider(String(p.provider ?? "anthropic")),
-      "gen_ai.request.model": String(p.model ?? "unknown"),
-    });
-  }
-
-  // End the root span with OK status
-  if (runId) {
-    const span = activeRunSpans.get(runId);
-    if (span) {
-      if (p.exitCode != null) {
-        span.setAttribute("paperclip.run.exit_code", Number(p.exitCode));
-      }
-      if (p.durationMs != null) {
-        span.setAttribute(
-          "paperclip.run.duration_ms",
-          Number(p.durationMs),
-        );
-      }
-      span.setStatus({ code: SpanStatusCode.OK });
-      span.end();
-      activeRunSpans.delete(runId);
-    }
-
-    if (ctx) {
-      await ctx.state
-        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-        .catch(() => {});
-    }
-  }
-}
-
-async function handleAgentRunFailed(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const runId = String(p.runId ?? "");
-
-  const errorCounter = otel.meter.createCounter(METRIC_NAMES.agentRunErrors, {
-    description: "Count of failed agent runs",
-  });
-  errorCounter.add(1, {
-    agent_id: String(p.agentId ?? ""),
-    error: String(p.error ?? "unknown"),
-  });
-
-  // End the root span with ERROR status
-  if (runId) {
-    const span = activeRunSpans.get(runId);
-    if (span) {
-      const errorMsg = String(p.error ?? "unknown");
-      span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
-      span.setAttribute("error.type", String(p.errorCode ?? "run_failed"));
-      if (p.exitCode != null) {
-        span.setAttribute("paperclip.run.exit_code", Number(p.exitCode));
-      }
-      if (p.stderrExcerpt) {
-        span.setAttribute(
-          "paperclip.run.stderr_excerpt",
-          String(p.stderrExcerpt),
-        );
-      }
-      span.recordException(new Error(errorMsg));
-      span.end();
-      activeRunSpans.delete(runId);
-    }
-
-    if (ctx) {
-      await ctx.state
-        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-        .catch(() => {});
-    }
-  }
-}
-
-async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const provider = mapProvider(String(p.provider ?? ""));
-
-  // --- Paperclip-specific counters ---
-
-  const inputTokensCounter = otel.meter.createCounter(
-    METRIC_NAMES.tokensInput,
-    { description: "Total input tokens consumed" },
-  );
-  const outputTokensCounter = otel.meter.createCounter(
-    METRIC_NAMES.tokensOutput,
-    { description: "Total output tokens consumed" },
-  );
-  const costCounter = otel.meter.createCounter(METRIC_NAMES.costCents, {
-    description: "Total cost in cents",
-    unit: "cent",
-  });
-
-  const costTags = {
-    agent_id: String(p.agentId ?? ""),
-    provider,
-    model: String(p.model ?? "unknown"),
-    billing_type: String(p.billingType ?? ""),
-    biller: String(p.biller ?? ""),
-  };
-
-  if (p.inputTokens != null) inputTokensCounter.add(Number(p.inputTokens), costTags);
-  if (p.outputTokens != null) outputTokensCounter.add(Number(p.outputTokens), costTags);
-  if (p.costCents != null) costCounter.add(Number(p.costCents), costTags);
-
-  // --- GenAI semconv: gen_ai.client.token.usage histogram ---
-
-  const tokenUsage = otel.meter.createHistogram(
-    "gen_ai.client.token.usage",
-    {
-      description: "Measures number of input and output tokens used",
-      unit: "{token}",
-    },
-  );
-
-  const genAIBaseAttrs = {
-    "gen_ai.operation.name": "chat",
-    "gen_ai.provider.name": provider,
-    "gen_ai.request.model": String(p.model ?? "unknown"),
-  };
-
-  if (p.inputTokens != null) {
-    tokenUsage.record(Number(p.inputTokens), {
-      ...genAIBaseAttrs,
-      "gen_ai.token.type": "input",
-    });
-  }
-  if (p.outputTokens != null) {
-    tokenUsage.record(Number(p.outputTokens), {
-      ...genAIBaseAttrs,
-      "gen_ai.token.type": "output",
-    });
-  }
-
-  // --- LLM child span for cost event (ISI-143) ---
-
-  const model = String(p.model ?? "unknown");
-  const spanName = `chat ${model}`;
-
-  const llmSpanAttrs = {
-    "paperclip.agent.id": String(p.agentId ?? ""),
-    "paperclip.company.id": String(p.companyId ?? ""),
-    "paperclip.cost.cents": Number(p.costCents ?? 0),
-    "paperclip.billing.type": String(p.billingType ?? ""),
-    "paperclip.billing.biller": String(p.biller ?? ""),
-    "gen_ai.operation.name": "chat" as const,
-    "gen_ai.provider.name": provider,
-    "gen_ai.request.model": model,
-    "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
-    "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
-    "gen_ai.usage.cache_read.input_tokens": Number(
-      p.cachedInputTokens ?? 0,
-    ),
-  };
-
-  // If this cost event belongs to an active run, create as a child span.
-  // Try in-memory map first, then fall back to plugin state for cross-restart resilience.
-  const heartbeatRunId = String(p.heartbeatRunId ?? "");
-  let parentSpan = heartbeatRunId
-    ? activeRunSpans.get(heartbeatRunId)
-    : undefined;
-
-  let parentCtx = parentSpan
-    ? trace.setSpan(context.active(), parentSpan)
-    : undefined;
-
-  // Fallback: restore parent context from plugin state if not in memory
-  if (!parentCtx && heartbeatRunId && ctx) {
-    const stored = await ctx.state
-      .get({ scopeKind: "instance", stateKey: `span:run:${heartbeatRunId}` })
-      .catch(() => null);
-    if (
-      stored &&
-      typeof stored === "object" &&
-      "traceId" in (stored as Record<string, unknown>) &&
-      "spanId" in (stored as Record<string, unknown>)
-    ) {
-      const s = stored as { traceId: string; spanId: string; traceFlags: number };
-      const restoredSpanCtx = {
-        traceId: s.traceId,
-        spanId: s.spanId,
-        traceFlags: s.traceFlags ?? 1,
-        isRemote: true,
-      };
-      parentCtx = trace.setSpanContext(context.active(), restoredSpanCtx);
-    }
-  }
-
-  let span: Span;
-  if (parentCtx) {
-    span = otel.tracer.startSpan(
-      spanName,
-      { kind: SpanKind.CLIENT, attributes: llmSpanAttrs },
-      parentCtx,
-    );
-  } else {
-    span = otel.tracer.startSpan(spanName, {
-      kind: SpanKind.CLIENT,
-      attributes: llmSpanAttrs,
-    });
-  }
-  span.end();
-}
-
-async function handleIssueUpdated(event: PluginEvent<unknown>): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const status = String(p.status ?? "unknown");
-  const previousStatus = String(p.previousStatus ?? "");
-  const issueId = String(p.id ?? "");
-
-  const issueTransitions = otel.meter.createCounter(
-    METRIC_NAMES.issueTransitions,
-    { description: "Count of issue status transitions" },
-  );
-  issueTransitions.add(1, {
-    status,
-    project_id: String(p.projectId ?? ""),
-  });
-
-  // Track issue completions (transition to "done")
-  if (status === "done" && previousStatus !== "done") {
-    const issuesCompleted = otel.meter.createCounter(
-      METRIC_NAMES.issuesCompleted,
-      { description: "Count of issues completed" },
-    );
-    issuesCompleted.add(1, {
-      project_id: String(p.projectId ?? ""),
-    });
-  }
-
-  // --- Issue lifecycle spans (ISI-144) ---
-
-  // Start span when issue transitions to in_progress
-  if (status === "in_progress" && previousStatus !== "in_progress" && issueId) {
-    const span = otel.tracer.startSpan("paperclip.issue.execution", {
-      kind: SpanKind.INTERNAL,
-      attributes: {
-        "paperclip.issue.id": issueId,
-        "paperclip.issue.identifier": String(p.identifier ?? ""),
-        "paperclip.issue.title": String(p.title ?? ""),
-        "gen_ai.agent.id": String(p.assigneeAgentId ?? ""),
-        "paperclip.project.id": String(p.projectId ?? ""),
-        "paperclip.goal.id": String(p.goalId ?? ""),
-        "paperclip.issue.priority": String(p.priority ?? "medium"),
-      },
-    });
-
-    activeIssueSpans.set(issueId, span);
-
-    // Persist span context in plugin state for cross-restart resilience
-    if (ctx) {
-      await ctx.state
-        .set(
-          { scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" },
-          {
-            traceId: span.spanContext().traceId,
-            spanId: span.spanContext().spanId,
-            traceFlags: span.spanContext().traceFlags,
-            startTime: Date.now(),
-          },
-        )
-        .catch(() => {});
-    }
-  }
-
-  // End span when issue transitions to done or cancelled
-  if ((status === "done" || status === "cancelled") && issueId) {
-    let span = activeIssueSpans.get(issueId);
-
-    // Fallback: restore from plugin state if not in memory
-    if (!span && ctx) {
-      const stored = await ctx.state
-        .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
-        .catch(() => null);
-      if (
-        stored &&
-        typeof stored === "object" &&
-        "traceId" in (stored as Record<string, unknown>)
-      ) {
-        // Cannot restore an actual Span object from serialized context,
-        // but we can create a finishing span that carries the original trace
-        const s = stored as { traceId: string; spanId: string; traceFlags: number; startTime: number };
-        const restoredCtx = trace.setSpanContext(context.active(), {
-          traceId: s.traceId,
-          spanId: s.spanId,
-          traceFlags: s.traceFlags ?? 1,
-          isRemote: true,
-        });
-        // Create a child span to record the completion event under the same trace
-        span = otel!.tracer.startSpan(
-          "paperclip.issue.execution.end",
-          {
-            kind: SpanKind.INTERNAL,
-            attributes: {
-              "paperclip.issue.id": issueId,
-              "paperclip.issue.identifier": String(p.identifier ?? ""),
-              "paperclip.issue.status": status,
-            },
-          },
-          restoredCtx,
-        );
-      }
-    }
-
-    if (span) {
-      span.setAttribute("paperclip.issue.status", status);
-      if (status === "done") {
-        span.setStatus({ code: SpanStatusCode.OK });
-      } else {
-        span.setStatus({ code: SpanStatusCode.UNSET });
-        span.setAttribute("paperclip.issue.cancelled", true);
-      }
-      span.end();
-      activeIssueSpans.delete(issueId);
-    }
-
-    // Clean up plugin state
-    if (ctx) {
-      await ctx.state
-        .delete({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
-        .catch(() => {});
-    }
-  }
-}
-
-async function handleAgentStatusChanged(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-
-  const agentStatusChanges = otel.meter.createCounter(
-    METRIC_NAMES.agentStatusChanges,
-    { description: "Count of agent status changes" },
-  );
-  agentStatusChanges.add(1, {
-    agent_id: String(p.agentId ?? ""),
-    status: String(p.status ?? "unknown"),
-  });
-}
-
-async function handleApprovalDecided(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const companyId = String(p.companyId ?? "");
-
-  const approvalCounter = otel.meter.createCounter(
-    METRIC_NAMES.approvalsDecided,
-    { description: "Count of approval decisions" },
-  );
-  approvalCounter.add(1, {
-    decision: String(p.decision ?? "unknown"),
-    company_id: companyId,
-  });
-
-  // Track pending approval count in plugin state (decrement)
-  if (ctx && companyId) {
-    const stateKey = `approvals:pending:${companyId}`;
-    const current = await ctx.state
-      .get({ scopeKind: "instance", stateKey })
-      .catch(() => null);
-    const count = Math.max(0, (typeof current === "number" ? current : 0) - 1);
-    await ctx.state
-      .set({ scopeKind: "instance", stateKey }, count)
-      .catch(() => {});
-  }
-}
-
-async function handleIssueCreated(event: PluginEvent<unknown>): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-
-  const issueCounter = otel.meter.createCounter(METRIC_NAMES.issuesCreated, {
-    description: "Count of issues created",
-  });
-  issueCounter.add(1, {
-    project_id: String(p.projectId ?? ""),
-    priority: String(p.priority ?? "medium"),
-  });
-}
-
-async function handleApprovalCreated(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const companyId = String(p.companyId ?? "");
-
-  const approvalCounter = otel.meter.createCounter(
-    METRIC_NAMES.approvalsCreated,
-    { description: "Count of approvals created" },
-  );
-  approvalCounter.add(1, {
-    company_id: companyId,
-  });
-
-  // Track pending approval count in plugin state (increment)
-  if (ctx && companyId) {
-    const stateKey = `approvals:pending:${companyId}`;
-    const current = await ctx.state
-      .get({ scopeKind: "instance", stateKey })
-      .catch(() => null);
-    const count = (typeof current === "number" ? current : 0) + 1;
-    await ctx.state
-      .set({ scopeKind: "instance", stateKey }, count)
-      .catch(() => {});
-  }
-}
-
-async function handleAgentRunCancelled(
-  event: PluginEvent<unknown>,
-): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const p = event.payload as Record<string, unknown>;
-  const runId = String(p.runId ?? "");
-
-  const genericCounter = otel.meter.createCounter(METRIC_NAMES.eventsTotal, {
-    description: "Total domain events observed",
-  });
-  genericCounter.add(1, { event_type: event.eventType });
-
-  // End the root span with cancelled status
-  if (runId) {
-    const span = activeRunSpans.get(runId);
-    if (span) {
-      span.setStatus({ code: SpanStatusCode.OK, message: "cancelled" });
-      span.setAttribute("paperclip.run.cancelled", true);
-      span.end();
-      activeRunSpans.delete(runId);
-    }
-
-    if (ctx) {
-      await ctx.state
-        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-        .catch(() => {});
-    }
-  }
-}
-
-async function handleGenericEvent(event: PluginEvent<unknown>): Promise<void> {
-  if (!otel) return;
-  eventsProcessed++;
-
-  const genericCounter = otel.meter.createCounter(METRIC_NAMES.eventsTotal, {
-    description: "Total domain events observed",
-  });
-  genericCounter.add(1, { event_type: event.eventType });
+function createRouter(): EventTelemetryRouter {
+  const router = new EventTelemetryRouter();
+
+  // agent.run.started
+  router.register("agent.run.started", handleRunStartedMetrics);
+  router.register("agent.run.started", handleRunStartedTraces);
+  router.register("agent.run.started", handleRunStartedLogs);
+
+  // agent.run.finished
+  router.register("agent.run.finished", handleRunFinishedMetrics);
+  router.register("agent.run.finished", handleRunFinishedTraces);
+  router.register("agent.run.finished", handleRunFinishedLogs);
+
+  // agent.run.failed
+  router.register("agent.run.failed", handleRunFailedMetrics);
+  router.register("agent.run.failed", handleRunFailedTraces);
+  router.register("agent.run.failed", handleRunFailedLogs);
+
+  // agent.run.cancelled
+  router.register("agent.run.cancelled", handleRunCancelledMetrics);
+  router.register("agent.run.cancelled", handleRunCancelledTraces);
+
+  // cost_event.created
+  router.register("cost_event.created", handleCostMetrics);
+  router.register("cost_event.created", handleCostTraces);
+
+  // issue.created
+  router.register("issue.created", handleIssueCreatedMetrics);
+  router.register("issue.created", handleIssueCreatedLogs);
+
+  // issue.updated
+  router.register("issue.updated", handleIssueUpdatedMetrics);
+  router.register("issue.updated", handleIssueUpdatedTraces);
+  router.register("issue.updated", handleIssueUpdatedLogs);
+
+  // agent.status_changed
+  router.register("agent.status_changed", handleAgentStatusChangedMetrics);
+  router.register("agent.status_changed", handleAgentStatusChangedLogs);
+
+  // approval.created
+  router.register("approval.created", handleApprovalCreatedMetrics);
+  router.register("approval.created", handleApprovalCreatedLogs);
+
+  // approval.decided
+  router.register("approval.decided", handleApprovalDecidedMetrics);
+  router.register("approval.decided", handleApprovalDecidedLogs);
+
+  // activity.logged (generic)
+  router.register("activity.logged", handleGenericMetrics);
+
+  return router;
 }
 
 // ---------------------------------------------------------------------------
@@ -699,26 +199,46 @@ const plugin: PaperclipPlugin = definePlugin({
       });
     }
 
-    // ----- Subscribe to domain events -----
+    // ----- Create router and telemetry context -----
 
-    ctx.events.on("agent.run.started", handleAgentRunStarted);
-    ctx.events.on("agent.run.finished", handleAgentRunFinished);
-    ctx.events.on("agent.run.failed", handleAgentRunFailed);
-    ctx.events.on("agent.run.cancelled", handleAgentRunCancelled);
+    const router = createRouter();
 
-    ctx.events.on("cost_event.created", handleCostEvent);
+    const telemetryCtx: TelemetryContext | null = otel
+      ? {
+          meter: otel.meter,
+          tracer: otel.tracer,
+          state: ctx.state,
+          logger: ctx.logger,
+          activeRunSpans,
+          activeIssueSpans,
+        }
+      : null;
 
-    ctx.events.on("issue.created", handleIssueCreated);
-    ctx.events.on("issue.updated", handleIssueUpdated);
+    // ----- Subscribe to domain events via router -----
 
-    ctx.events.on("agent.status_changed", handleAgentStatusChanged);
+    const eventTypes = [
+      "agent.run.started",
+      "agent.run.finished",
+      "agent.run.failed",
+      "agent.run.cancelled",
+      "cost_event.created",
+      "issue.created",
+      "issue.updated",
+      "agent.status_changed",
+      "approval.created",
+      "approval.decided",
+      "activity.logged",
+    ] as const;
 
-    ctx.events.on("approval.created", handleApprovalCreated);
-    ctx.events.on("approval.decided", handleApprovalDecided);
+    for (const eventType of eventTypes) {
+      ctx.events.on(eventType, async (event) => {
+        if (!telemetryCtx) return;
+        eventsProcessed++;
+        await router.dispatch(event, telemetryCtx);
+      });
+    }
 
-    ctx.events.on("activity.logged", handleGenericEvent);
-
-    // ----- Register observable gauges (read from agentSnapshots) -----
+    // ----- Register observable gauges (read from snapshots) -----
 
     if (otel) {
     const agentCountGauge = otel.meter.createObservableGauge(
@@ -791,6 +311,7 @@ const plugin: PaperclipPlugin = definePlugin({
         }
       }
     });
+
     const issueCountGauge = otel.meter.createObservableGauge(
       METRIC_NAMES.issuesCount,
       { description: "Number of issues by status and project" },
@@ -805,7 +326,6 @@ const plugin: PaperclipPlugin = definePlugin({
         });
       }
     });
-    // --- Governance & budget gauges (read from governanceSnapshots) ---
 
     const approvalsPendingGauge = otel.meter.createObservableGauge(
       METRIC_NAMES.approvalsPending,
@@ -863,7 +383,7 @@ const plugin: PaperclipPlugin = definePlugin({
 
     } // end if (otel) — gauge registration
 
-    // ----- Register collect-metrics job (refreshes agentSnapshots) -----
+    // ----- Register collect-metrics job (refreshes snapshots) -----
 
     ctx.jobs.register(
       JOB_KEYS.collectMetrics,
@@ -909,7 +429,6 @@ const plugin: PaperclipPlugin = definePlugin({
 
         // --- Collect issue count gauges ---
 
-        // Build project name lookup
         const projectNameMap = new Map<string, string>();
         for (const company of companies) {
           const projects = await ctx.projects.list({
@@ -922,7 +441,6 @@ const plugin: PaperclipPlugin = definePlugin({
           }
         }
 
-        // Fetch all issues and group by (companyId, projectId, status)
         const issueBuckets = new Map<string, IssueSnapshot>();
 
         for (const company of companies) {
@@ -960,7 +478,6 @@ const plugin: PaperclipPlugin = definePlugin({
         const govSnapshots: GovernanceSnapshot[] = [];
 
         for (const company of companies) {
-          // Pending approvals — read from event-driven state counter
           const pendingCount = await ctx.state
             .get({
               scopeKind: "instance",
@@ -970,13 +487,11 @@ const plugin: PaperclipPlugin = definePlugin({
           const approvalsPending =
             typeof pendingCount === "number" ? Math.max(0, pendingCount) : 0;
 
-          // Company-level budget utilization
           const companyBudgetUtilPct =
             company.budgetMonthlyCents > 0
               ? (company.spentMonthlyCents / company.budgetMonthlyCents) * 100
               : 0;
 
-          // Budget incidents: agents whose spend has reached or exceeded budget
           const companyAgents = snapshots.filter(
             (s) => s.companyId === company.id,
           );
@@ -986,12 +501,10 @@ const plugin: PaperclipPlugin = definePlugin({
               a.spentMonthlyCents >= a.budgetMonthlyCents,
           ).length;
 
-          // Paused agent/project counts
           const pausedAgentCount = companyAgents.filter(
             (a) => a.status === "paused",
           ).length;
 
-          // Projects paused due to budget — check project status
           const companyProjects = await ctx.projects.list({
             companyId: company.id,
             limit: 200,
