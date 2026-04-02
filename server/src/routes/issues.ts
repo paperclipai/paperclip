@@ -539,7 +539,7 @@ export function issueRoutes(
         filename: a.originalFilename,
         contentType: a.contentType,
         byteSize: a.byteSize,
-        contentPath: `/api/attachments/${a.id}/content`,
+        contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
       })),
     });
