@@ -269,6 +269,34 @@ pnpm paperclipai worktree env --json
 eval "$(pnpm paperclipai worktree env)"
 ```
 
+**`pnpm paperclipai worktree:list [options]`** — List git worktrees visible from this repo and whether they look like Paperclip worktrees.
+
+| Option | Description |
+|---|---|
+| `--json` | Print JSON instead of text output |
+
+**`pnpm paperclipai worktree:merge-history [source] [options]`** — Preview or import issue/comment history from another worktree into the current instance.
+
+| Option | Description |
+|---|---|
+| `[source]` | Optional source worktree path, directory name, or branch name (back-compat alias for `--from`) |
+| `--from <worktree>` | Source worktree path, directory name, branch name, or `current` |
+| `--to <worktree>` | Target worktree path, directory name, branch name, or `current` (defaults to current) |
+| `--company <id-or-prefix>` | Shared company id or issue prefix inside the chosen source/target instances |
+| `--scope <items>` | Comma-separated scopes to import: `issues`, `comments` (default: `issues,comments`) |
+| `--apply` | Apply the import after previewing the plan |
+| `--dry` | Preview only and do not import anything |
+| `--yes` | Skip the interactive confirmation prompt when applying |
+
+**`pnpm paperclipai worktree:cleanup <name> [options]`** — Safely remove a worktree, its branch, and its isolated instance data.
+
+| Option | Description |
+|---|---|
+| `<name>` | Worktree name — auto-prefixed with `paperclip-` if needed |
+| `--instance <id>` | Explicit instance id (if different from the worktree name) |
+| `--home <path>` | Home root for worktree instances (default: `~/.paperclip-worktrees`) |
+| `--force` | Bypass safety checks (uncommitted changes, unique commits) |
+
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
 ## Quick Health Checks

@@ -11,8 +11,8 @@ We really appreciate both small fixes and thoughtful larger changes.
 - Pick **one** clear thing to fix/improve
 - Touch the **smallest possible number of files**
 - Make sure the change is very targeted and easy to review
-- All automated checks pass (including Greptile comments)
-- No new lint/test failures
+- All automated checks pass (CI typecheck, tests, build)
+- No new test failures
 
 These almost always get merged quickly when they're clean.
 
@@ -27,7 +27,7 @@ These almost always get merged quickly when they're clean.
   - Clear description of what & why
   - Proof it works (manual testing notes)
   - All tests passing
-  - All Greptile + other PR comments addressed
+  - All PR review comments addressed
 
 PRs that follow this path are **much** more likely to be accepted, even when they're large.
 

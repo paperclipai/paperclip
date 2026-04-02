@@ -54,7 +54,7 @@ I am researching the Facebook ads Granola uses (current task)
 
 Tasks have parentage. Every task exists in service of a parent task, all the way up to the company goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
 
-More detailed task structure TBD.
+Tasks carry statuses (backlog, todo, in_progress, in_review, done, blocked, cancelled), priorities, project and goal associations, billing codes for cross-team cost attribution, and execution workspace context. See [SPEC.md](./SPEC.md) for the full task model.
 
 ## Principles
 
