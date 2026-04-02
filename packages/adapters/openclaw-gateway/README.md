@@ -40,6 +40,7 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 - `sessionKeyStrategy=issue|fixed|run`
 - `sessionKey` is used when strategy is `fixed`
+- when `sessionKeyStrategy=issue` and the wake has no `issueId`, the adapter falls back to a stable per-agent session key
 
 Resolved session key is sent as `agent.sessionKey`.
 

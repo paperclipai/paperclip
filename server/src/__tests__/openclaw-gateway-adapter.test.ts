@@ -463,6 +463,40 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("falls back to a per-agent session key when issue strategy has no issue id", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            agentId: "dot",
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: null,
+              issueId: null,
+              wakeReason: "manual",
+              issueIds: [],
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("paperclip:agent:dot");
+      expect(payload?.agentId).toBe("dot");
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("fails fast when url is missing", async () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);

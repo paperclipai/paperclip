@@ -93,7 +93,7 @@ export function OpenClawGatewayConfigFields({
   const sessionStrategy = eff(
     "adapterConfig",
     "sessionKeyStrategy",
-    String(config.sessionKeyStrategy ?? "fixed"),
+    String(config.sessionKeyStrategy ?? "issue"),
   );
 
   return (
