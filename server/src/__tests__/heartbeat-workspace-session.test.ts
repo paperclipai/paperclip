@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -8,6 +11,7 @@ import {
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
   formatRuntimeWorkspaceWarningLog,
+  materializeAgentHomeInstructions,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -55,6 +59,17 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+const cleanupPaths = new Set<string>();
+
+afterEach(async () => {
+  await Promise.all(
+    [...cleanupPaths].map(async (candidate) => {
+      await fs.rm(candidate, { recursive: true, force: true });
+      cleanupPaths.delete(candidate);
+    }),
+  );
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
@@ -414,6 +429,23 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
       stream: "stdout",
       chunk: "[paperclip] Using fallback workspace\n",
     });
+  });
+});
+
+describe("materializeAgentHomeInstructions", () => {
+  it("writes exported instruction bundle files into AGENT_HOME", async () => {
+    const agentHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-home-"));
+    cleanupPaths.add(agentHome);
+
+    await materializeAgentHomeInstructions(buildAgent("codex_local"), agentHome, {
+      "AGENTS.md": "# Agent\n",
+      "SOUL.md": "# Soul\n",
+      "docs/TOOLS.md": "# Tools\n",
+    });
+
+    await expect(fs.readFile(path.join(agentHome, "AGENTS.md"), "utf8")).resolves.toBe("# Agent\n");
+    await expect(fs.readFile(path.join(agentHome, "SOUL.md"), "utf8")).resolves.toBe("# Soul\n");
+    await expect(fs.readFile(path.join(agentHome, "docs", "TOOLS.md"), "utf8")).resolves.toBe("# Tools\n");
   });
 });
 
