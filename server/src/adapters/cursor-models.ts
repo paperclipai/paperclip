@@ -87,10 +87,12 @@ export function parseCursorModelsOutput(stdout: string, stderr: string): Adapter
     }
   }
 
-  for (const match of combined.matchAll(/available models?:\s*([^\n]+)/gi)) {
-    const list = match[1] ?? "";
-    for (const token of list.split(",")) {
-      pushModelId(models, token);
+  for (const match of combined.matchAll(/available models?:?\s*([^\n]*)/gi)) {
+    const list = (match[1] ?? "").trim();
+    if (list) {
+      for (const token of list.split(",")) {
+        pushModelId(models, token);
+      }
     }
   }
 
@@ -98,7 +100,20 @@ export function parseCursorModelsOutput(stdout: string, stderr: string): Adapter
     const line = lineRaw.trim();
     if (!line) continue;
     const bullet = line.replace(/^[-*]\s+/, "").trim();
-    if (!bullet || bullet.includes(" ")) continue;
+    if (!bullet) continue;
+    // Handle "id - label" format from `agent models` output
+    const idDashLabel = bullet.match(
+      /^([A-Za-z0-9][A-Za-z0-9._/-]*)\s+-\s+(.+?)(?:\s+\((?:default|current)\))?\s*$/,
+    );
+    if (idDashLabel) {
+      const id = sanitizeModelId(idDashLabel[1]);
+      const label = idDashLabel[2].trim();
+      if (isLikelyModelId(id)) {
+        models.push({ id, label: label || id });
+      }
+      continue;
+    }
+    if (bullet.includes(" ")) continue;
     pushModelId(models, bullet);
   }
 
