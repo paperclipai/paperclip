@@ -4,6 +4,7 @@ export const queryKeys = {
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
   },
+  adapterRuntimeSkills: ["adapter-runtime-skills"] as const,
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
