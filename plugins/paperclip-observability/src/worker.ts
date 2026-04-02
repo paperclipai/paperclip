@@ -15,6 +15,8 @@ import {
   type PluginHealthDiagnostics,
   type PluginJobContext,
   type Agent,
+  type Issue,
+  type Project,
 } from "@paperclipai/plugin-sdk";
 import type { ObservabilityConfig } from "./config.js";
 import { DEFAULT_CONFIG, resolveConfig } from "./config.js";
@@ -43,6 +45,16 @@ interface AgentSnapshot {
   spentMonthlyCents: number;
 }
 let agentSnapshots: AgentSnapshot[] = [];
+
+// Issue gauge snapshot data — written by the collect-metrics job, read by observable gauge callback
+interface IssueSnapshot {
+  companyId: string;
+  projectId: string;
+  projectName: string;
+  status: string;
+  count: number;
+}
+let issueSnapshots: IssueSnapshot[] = [];
 
 // ---------------------------------------------------------------------------
 // Provider name mapping (adapter type → OTel well-known value)
@@ -291,6 +303,20 @@ async function handleIssueUpdated(event: PluginEvent<unknown>): Promise<void> {
     status: String(p.status ?? "unknown"),
     project_id: String(p.projectId ?? ""),
   });
+
+  // Track issue completions (transition to "done")
+  if (
+    String(p.status ?? "") === "done" &&
+    String(p.previousStatus ?? "") !== "done"
+  ) {
+    const issuesCompleted = otel.meter.createCounter(
+      METRIC_NAMES.issuesCompleted,
+      { description: "Count of issues completed" },
+    );
+    issuesCompleted.add(1, {
+      project_id: String(p.projectId ?? ""),
+    });
+  }
 }
 
 async function handleAgentStatusChanged(
@@ -491,6 +517,20 @@ const plugin: PaperclipPlugin = definePlugin({
         }
       }
     });
+    const issueCountGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.issuesCount,
+      { description: "Number of issues by status and project" },
+    );
+    issueCountGauge.addCallback((obs) => {
+      for (const snap of issueSnapshots) {
+        obs.observe(snap.count, {
+          status: snap.status,
+          project_id: snap.projectId,
+          project_name: snap.projectName,
+          company_id: snap.companyId,
+        });
+      }
+    });
     } // end if (otel) — gauge registration
 
     // ----- Register collect-metrics job (refreshes agentSnapshots) -----
@@ -537,9 +577,57 @@ const plugin: PaperclipPlugin = definePlugin({
           companyCount: companies.length,
         });
 
+        // --- Collect issue count gauges ---
+
+        // Build project name lookup
+        const projectNameMap = new Map<string, string>();
+        for (const company of companies) {
+          const projects = await ctx.projects.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+          for (const project of projects as Project[]) {
+            projectNameMap.set(project.id, project.name);
+          }
+        }
+
+        // Fetch all issues and group by (companyId, projectId, status)
+        const issueBuckets = new Map<string, IssueSnapshot>();
+
+        for (const company of companies) {
+          const issues = await ctx.issues.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+
+          for (const issue of issues as Issue[]) {
+            const projectId = issue.projectId ?? "";
+            const key = `${company.id}:${projectId}:${issue.status}`;
+            const existing = issueBuckets.get(key);
+            if (existing) {
+              existing.count++;
+            } else {
+              issueBuckets.set(key, {
+                companyId: company.id,
+                projectId,
+                projectName: projectNameMap.get(projectId) ?? "",
+                status: issue.status,
+                count: 1,
+              });
+            }
+          }
+        }
+
+        issueSnapshots = Array.from(issueBuckets.values());
+        ctx.logger.info("Issue count snapshots updated", {
+          buckets: issueSnapshots.length,
+        });
+
         await ctx.activity.log({
           companyId: "",
-          message: `Metrics collection — ${snapshots.length} agents, ${eventsProcessed} events processed since startup`,
+          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${eventsProcessed} events processed since startup`,
         });
       },
     );
