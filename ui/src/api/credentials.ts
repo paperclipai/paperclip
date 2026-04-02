@@ -30,6 +30,9 @@ export const credentialsApi = {
   reveal: (id: string) =>
     api.get<{ credential: Record<string, unknown> }>(`/credentials/${id}/reveal`),
 
+  validate: (type: string, credential: Record<string, unknown>) =>
+    api.post<{ valid: boolean; error?: string }>(`/credentials/validate`, { type, credential }),
+
   // Claude OAuth login flow
   startClaudeLogin: (
     companyId: string,

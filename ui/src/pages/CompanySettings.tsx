@@ -1004,12 +1004,8 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [revealedValue, setRevealedValue] = useState<string | null>(null);
 
-  // Claude login flow state
-  const [loginSessionId, setLoginSessionId] = useState<string | null>(null);
-  const [loginUrl, setLoginUrl] = useState<string | null>(null);
-  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "pending" | "waiting_for_code" | "exchanging" | "complete" | "failed" | "expired">("idle");
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [authCode, setAuthCode] = useState("");
+  // Token validation state
+  const [tokenValidation, setTokenValidation] = useState<string | null>(null);
 
   const resetAddForm = () => {
     setShowAddForm(false);
@@ -1109,80 +1105,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     updateMutation.mutate({ id: cred.id, data });
   }
 
-  const startLoginMutation = useMutation({
-    mutationFn: () =>
-      credentialsApi.startClaudeLogin(companyId, { isDefault: credentials.length === 0 }),
-    onSuccess: (data) => {
-      setLoginSessionId(data.loginSessionId);
-      setLoginUrl(data.loginUrl);
-      setLoginStatus(data.loginUrl ? "waiting_for_code" : "pending");
-      setLoginError(null);
-      setAuthCode("");
-      if (data.loginUrl) {
-        window.open(data.loginUrl, "_blank", "noopener");
-      }
-    },
-    onError: (err) => {
-      setLoginStatus("failed");
-      setLoginError(err instanceof Error ? err.message : "Failed to start login");
-    },
-  });
-
-  const submitCodeMutation = useMutation({
-    mutationFn: () =>
-      credentialsApi.submitClaudeLoginCode(companyId, loginSessionId!, authCode.trim()),
-    onSuccess: () => {
-      setLoginStatus("exchanging");
-    },
-    onError: (err) => {
-      setLoginStatus("failed");
-      setLoginError(err instanceof Error ? err.message : "Failed to submit code");
-    },
-  });
-
-  // Poll for login status changes (URL appearing, completion, failure)
-  useEffect(() => {
-    if (!loginSessionId || loginStatus === "idle" || loginStatus === "complete" || loginStatus === "failed" || loginStatus === "expired") return;
-    const interval = setInterval(async () => {
-      try {
-        const result = await credentialsApi.pollClaudeLogin(companyId, loginSessionId);
-        if (result.loginUrl && !loginUrl) {
-          setLoginUrl(result.loginUrl);
-          setLoginStatus("waiting_for_code");
-          window.open(result.loginUrl, "_blank", "noopener");
-        }
-        if (result.status === "complete") {
-          setLoginStatus("complete");
-          invalidate();
-          clearInterval(interval);
-          setTimeout(() => {
-            setLoginSessionId(null);
-            setLoginUrl(null);
-            setLoginStatus("idle");
-            setAuthCode("");
-          }, 3000);
-        } else if (result.status === "failed" || result.status === "expired") {
-          setLoginStatus(result.status as typeof loginStatus);
-          setLoginError(result.error ?? "Login failed");
-          clearInterval(interval);
-        }
-      } catch {
-        // Ignore transient poll errors
-      }
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [loginStatus, loginSessionId, companyId, loginUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const resetLogin = () => {
-    if (loginSessionId) {
-      credentialsApi.cancelClaudeLogin(companyId, loginSessionId).catch(() => {});
-    }
-    setLoginSessionId(null);
-    setLoginUrl(null);
-    setLoginStatus("idle");
-    setLoginError(null);
-    setAuthCode("");
-  };
+  // (login flow removed — using direct token paste with validation instead)
 
   return (
     <div className="space-y-4">
@@ -1362,11 +1285,10 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               <div className="rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 space-y-1.5">
                 <p className="text-xs font-medium text-blue-700 dark:text-blue-300">How to get your Claude token:</p>
                 <ol className="text-[11px] text-blue-600/80 dark:text-blue-400/80 space-y-1 list-decimal list-inside">
-                  <li>Run <code className="bg-blue-500/10 px-1 rounded">claude auth login</code> on your local machine</li>
+                  <li>Run <code className="bg-blue-500/10 px-1 rounded">claude auth login</code> on any machine with Claude Code</li>
                   <li>Complete the browser authentication</li>
                   <li>Run <code className="bg-blue-500/10 px-1 rounded">cat ~/.claude/.credentials.json</code></li>
                   <li>Copy the <code className="bg-blue-500/10 px-1 rounded">accessToken</code> value (starts with <code className="bg-blue-500/10 px-1 rounded">sk-ant-oat01-</code>)</li>
-                  <li>Paste it below</li>
                 </ol>
               </div>
             )}
@@ -1393,13 +1315,45 @@ function CredentialsSection({ companyId }: { companyId: string }) {
               </select>
             </Field>
             <Field label={addType === "claude_oauth" ? "Access Token" : "Token / Key"}>
-              <input
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                type="password"
-                value={addToken}
-                placeholder={credentialPlaceholder(addType)}
-                onChange={(e) => setAddToken(e.target.value)}
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  className="flex-1 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="password"
+                  value={addToken}
+                  placeholder={credentialPlaceholder(addType)}
+                  onChange={(e) => {
+                    setAddToken(e.target.value);
+                    setTokenValidation(null);
+                  }}
+                />
+                {addToken.trim() && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 h-8"
+                    onClick={async () => {
+                      setTokenValidation("checking");
+                      try {
+                        const result = await credentialsApi.validate(
+                          addType,
+                          buildCredentialPayload(addType, addToken.trim()),
+                        );
+                        setTokenValidation(result.valid ? "valid" : result.error ?? "invalid");
+                      } catch {
+                        setTokenValidation("Failed to validate");
+                      }
+                    }}
+                    disabled={tokenValidation === "checking"}
+                  >
+                    {tokenValidation === "checking" ? "..." : "Test"}
+                  </Button>
+                )}
+              </div>
+              {tokenValidation && tokenValidation !== "checking" && (
+                <p className={`text-xs mt-1 ${tokenValidation === "valid" ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>
+                  {tokenValidation === "valid" ? "Token is valid!" : tokenValidation}
+                </p>
+              )}
             </Field>
             <ToggleField
               label="Set as default"
@@ -1432,98 +1386,31 @@ function CredentialsSection({ companyId }: { companyId: string }) {
             </div>
           </div>
         ) : (
-          <div className="flex items-center gap-2 flex-wrap">
-            {loginStatus === "idle" ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={() => {
-                  setLoginStatus("starting");
-                  startLoginMutation.mutate();
-                }}
-                disabled={startLoginMutation.isPending}
-              >
-                <KeyRound className="h-3.5 w-3.5" />
-                Login with Claude
-              </Button>
-            ) : loginStatus === "starting" ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                Starting login...
-              </div>
-            ) : loginStatus === "pending" || loginStatus === "waiting_for_code" ? (
-              <div className="w-full space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
-                {loginUrl ? (
-                  <>
-                    <p className="text-xs text-muted-foreground">
-                      1. Open the login page and authenticate:
-                    </p>
-                    <a
-                      href={loginUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 underline underline-offset-2 break-all"
-                    >
-                      {loginUrl.length > 60 ? loginUrl.slice(0, 60) + "..." : loginUrl}
-                    </a>
-                    <p className="text-xs text-muted-foreground pt-1">
-                      2. After authenticating, paste the code you receive:
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <input
-                        className="flex-1 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
-                        type="text"
-                        placeholder="Paste authentication code here..."
-                        value={authCode}
-                        onChange={(e) => setAuthCode(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && authCode.trim()) {
-                            submitCodeMutation.mutate();
-                          }
-                        }}
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => submitCodeMutation.mutate()}
-                        disabled={!authCode.trim() || submitCodeMutation.isPending}
-                      >
-                        {submitCodeMutation.isPending ? "..." : "Submit"}
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                    Waiting for login URL...
-                  </div>
-                )}
-                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
-                  Cancel
-                </Button>
-              </div>
-            ) : loginStatus === "exchanging" ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                Authenticating...
-              </div>
-            ) : loginStatus === "complete" ? (
-              <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
-                <Check className="h-3.5 w-3.5" />
-                Claude login successful!
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-destructive">
-                  {loginError ?? "Login failed"}
-                </span>
-                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
-                  Retry
-                </Button>
-              </div>
-            )}
-            <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setShowAddForm(true)}>
-              Add manually
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => {
+                setAddType("claude_oauth");
+                setAddName(`Claude (${new Date().toLocaleDateString("en-CA")})`);
+                setTokenValidation(null);
+                setShowAddForm(true);
+              }}
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              Add Claude Login
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-xs text-muted-foreground"
+              onClick={() => {
+                setTokenValidation(null);
+                setShowAddForm(true);
+              }}
+            >
+              Add other credential
             </Button>
           </div>
         )}
