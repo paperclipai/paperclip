@@ -11,6 +11,8 @@ import type {
   CompanySkillSourceBadge,
   CompanySkillUpdateStatus,
 } from "@paperclipai/shared";
+import { agentsApi } from "../api/agents";
+import type { AdapterRuntimeSkillsResponse } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -30,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -53,6 +56,7 @@ import {
   Save,
   Search,
   Trash2,
+  Sparkles,
 } from "lucide-react";
 
 type SkillTreeNode = {
@@ -753,6 +757,172 @@ function SkillPane({
   );
 }
 
+function globalSkillCollidesWithCompany(
+  folderName: string,
+  companySkills: CompanySkillListItem[] | undefined,
+): boolean {
+  if (!companySkills?.length) return false;
+  const n = folderName.toLowerCase();
+  return companySkills.some((s) => {
+    if (s.slug.toLowerCase() === n) return true;
+    const key = s.key.toLowerCase();
+    if (key === n) return true;
+    if (key.endsWith(`/${n}`)) return true;
+    return false;
+  });
+}
+
+function RuntimeSkillsSidebar({
+  skillFilter,
+  companySkills,
+  loading,
+  error,
+  data,
+}: {
+  skillFilter: string;
+  companySkills: CompanySkillListItem[] | undefined;
+  loading: boolean;
+  error: Error | null;
+  data: AdapterRuntimeSkillsResponse | undefined;
+}) {
+  const needle = skillFilter.toLowerCase();
+
+  return (
+    <div className="border-t border-border px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Sparkles className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <h2 className="text-sm font-semibold leading-none">Runtime skill catalogs</h2>
+        <Badge variant="secondary" className="font-normal">
+          Read-only
+        </Badge>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        Adapter-provided runtime visibility for skills and related read-only metadata.
+      </p>
+
+      {loading && (
+        <p className="mt-3 text-xs text-muted-foreground">Loading runtime catalogs…</p>
+      )}
+      {error && (
+        <p className="mt-3 text-xs text-destructive">{error.message}</p>
+      )}
+      {!loading && !error && data?.adapters?.length === 0 && (
+        <p className="mt-3 text-xs text-muted-foreground">No adapters expose runtime skill catalogs.</p>
+      )}
+      {!loading && !error && (data?.adapters ?? []).map((adapter) => {
+        const filteredSkills = adapter.skills.filter((skill) => {
+          const haystack = `${skill.name} ${skill.title ?? ""} ${skill.description ?? ""}`.toLowerCase();
+          return haystack.includes(needle);
+        });
+        const filteredSections = (adapter.sections ?? []).map((section) => ({
+          ...section,
+          items: section.items.filter((item) => item.toLowerCase().includes(needle)),
+        }));
+        return (
+          <div key={adapter.adapterType} className="mt-4 rounded-md border border-border/80 px-2.5 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{adapter.label}</span>
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                {adapter.adapterType}
+              </Badge>
+            </div>
+            {adapter.locationLabel ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Source: <span className="font-mono text-[11px]">{adapter.locationLabel}</span>
+              </p>
+            ) : null}
+            {(adapter.warnings ?? []).map((warning) => (
+              <p key={warning} className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                {warning}
+              </p>
+            ))}
+
+            <h3 className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Skills ({filteredSkills.length}{needle ? ` / ${adapter.skills.length}` : ""})
+            </h3>
+            {filteredSkills.length === 0 ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {adapter.skills.length === 0 ? "No runtime skills found." : "No runtime skills match this filter."}
+              </p>
+            ) : (
+              <ul className="mt-2 space-y-2">
+                {filteredSkills.map((skill) => {
+                  const collides = globalSkillCollidesWithCompany(skill.name, companySkills);
+                  const label = skill.title?.trim() || skill.name;
+                  return (
+                    <li
+                      key={`${adapter.adapterType}:${skill.name}`}
+                      className="rounded-md border border-border/80 bg-muted/20 px-2.5 py-2 text-[13px] leading-snug"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="min-w-0 font-medium">{label}</span>
+                        {skill.title?.trim() ? (
+                          <span className="min-w-0 truncate text-xs text-muted-foreground">({skill.name})</span>
+                        ) : null}
+                        {collides ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                                Name overlap
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-[240px] text-xs">
+                              Same skill name as a company skill — verify which definition the adapter uses at runtime.
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : null}
+                        {skill.isPaperclipManaged ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
+                                Repo skill
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-[220px] text-xs">
+                              Matches a Paperclip-managed runtime skill name; external copies may differ.
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : null}
+                      </div>
+                      {skill.description ? (
+                        <p className="mt-1 text-xs text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
+                          {skill.description}
+                        </p>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {filteredSections.map((section) => (
+              <div key={section.key}>
+                <h3 className="mt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {section.label} ({section.items.length}{needle ? ` / ${(adapter.sections ?? []).find((s) => s.key === section.key)?.items.length ?? 0}` : ""})
+                </h3>
+                {section.items.length === 0 ? (
+                  <p className="mt-1 text-xs text-muted-foreground">No items match this filter.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1.5 text-[13px]">
+                    {section.items.map((item) => (
+                      <li
+                        key={`${section.key}:${item}`}
+                        className="rounded-md border border-border/80 bg-muted/20 px-2.5 py-1.5 font-mono text-xs leading-snug"
+                      >
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function CompanySkills() {
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
@@ -790,6 +960,13 @@ export function CompanySkills() {
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
     queryFn: () => companySkillsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+
+  const runtimeSkillsQuery = useQuery({
+    queryKey: queryKeys.adapterRuntimeSkills,
+    queryFn: () => agentsApi.availableSkills(),
+    enabled: Boolean(selectedCompanyId),
+    staleTime: 30_000,
   });
 
   const selectedSkillId = useMemo(() => {
@@ -1262,6 +1439,13 @@ export function CompanySkills() {
               onSelectPath={() => {}}
             />
           )}
+          <RuntimeSkillsSidebar
+            skillFilter={skillFilter}
+            companySkills={skillsQuery.data}
+            loading={runtimeSkillsQuery.isLoading}
+            error={runtimeSkillsQuery.error instanceof Error ? runtimeSkillsQuery.error : null}
+            data={runtimeSkillsQuery.data}
+          />
         </aside>
 
         <div className="min-w-0 pl-6">

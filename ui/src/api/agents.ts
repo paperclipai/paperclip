@@ -194,12 +194,32 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
-  availableSkills: () =>
-    api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  availableSkills: () => api.get<AdapterRuntimeSkillsResponse>("/skills/available"),
 };
 
-export interface AvailableSkill {
+export interface AdapterRuntimeSkillCatalogItem {
   name: string;
-  description: string;
-  isPaperclipManaged: boolean;
+  title?: string | null;
+  description?: string | null;
+  isPaperclipManaged?: boolean;
+}
+
+export interface AdapterRuntimeInfoSection {
+  key: string;
+  label: string;
+  items: string[];
+}
+
+export interface AdapterRuntimeSkillCatalog {
+  adapterType: string;
+  label: string;
+  readOnly: boolean;
+  locationLabel?: string | null;
+  skills: AdapterRuntimeSkillCatalogItem[];
+  sections?: AdapterRuntimeInfoSection[];
+  warnings?: string[];
+}
+
+export interface AdapterRuntimeSkillsResponse {
+  adapters: AdapterRuntimeSkillCatalog[];
 }
