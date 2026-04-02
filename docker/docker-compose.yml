@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:17-alpine
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER must be set}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
@@ -21,7 +21,7 @@ services:
       args:
         USER_UID: "${USER_UID:-1000}"
         USER_GID: "${USER_GID:-1000}"
-    restart: unless-stopped
+    restart: always
     ports:
       - "3100:3100"
     environment:
