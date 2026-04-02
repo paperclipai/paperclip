@@ -412,6 +412,20 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+// [PRACTICO-PATCH] Detect empty agent results (#1117)
+export function isEmptyResult(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!resultJson) return true;
+  const keys = Object.keys(resultJson);
+  if (keys.length === 0) return true;
+  const hasSubstantiveValue = keys.some((k) => {
+    const v = resultJson[k];
+    return typeof v === "string" ? v.length > 0 : v != null;
+  });
+  return !hasSubstantiveValue;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -2847,6 +2861,17 @@ export function heartbeatService(db: Db) {
         outcome = "failed";
       }
 
+      // [PRACTICO-PATCH] Override succeeded → failed when result is empty (#1117)
+      let emptyResultOverride = false;
+      if (outcome === "succeeded" && isEmptyResult(adapterResult.resultJson)) {
+        outcome = "failed";
+        emptyResultOverride = true;
+      }
+      // [PRACTICO-PATCH] Effective error message for empty-result override (#1117)
+      const effectiveErrorMessage = emptyResultOverride
+        ? "Agent exited successfully but produced no result"
+        : (adapterResult.errorMessage ?? null);
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
@@ -2893,7 +2918,7 @@ export function heartbeatService(db: Db) {
           outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                silentFailureMessage ?? adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                silentFailureMessage ?? effectiveErrorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
         errorCode:
@@ -2902,7 +2927,7 @@ export function heartbeatService(db: Db) {
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (silentFailureMessage ? "silent_failure" : adapterResult.errorCode ?? "adapter_failed")
+                ? (silentFailureMessage ? "silent_failure" : adapterResult.errorCode ?? (emptyResultOverride ? "EMPTY_RESULT" : "adapter_failed"))
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -2918,7 +2943,8 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        // [PRACTICO-PATCH] Use effective error message for wakeup status (#1117)
+        error: effectiveErrorMessage,
       });
 
       const finalizedRun = await getRun(run.id);
