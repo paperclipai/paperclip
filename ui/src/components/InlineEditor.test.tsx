@@ -36,7 +36,7 @@ describe("InlineEditor", () => {
     container.remove();
   });
 
-  it("calls onSave with null when nullable and the field is cleared (single-line)", () => {
+  it("calls onSave with empty string when nullable and the field is cleared (single-line)", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const root = createRoot(container);
 
