@@ -8,12 +8,13 @@ export function mapProvider(adapterType: string): string {
     case "claude":
       return "anthropic";
     case "openai":
-    case "cursor-local":
-    case "codex-local":
+    case "cursor_local":
+    case "codex_local":
       return "openai";
-    case "gemini-local":
+    case "gemini_local":
+    case "gemini":
       return "gcp.gemini";
-    case "openclaw-gateway":
+    case "openclaw_gateway":
     case "openclaw":
       return adapterType;
     default:
