@@ -18,6 +18,13 @@ import {
   type Issue,
   type Project,
 } from "@paperclipai/plugin-sdk";
+import {
+  SpanKind,
+  SpanStatusCode,
+  context,
+  trace,
+  type Span,
+} from "@opentelemetry/api";
 import type { ObservabilityConfig } from "./config.js";
 import { DEFAULT_CONFIG, resolveConfig } from "./config.js";
 import { JOB_KEYS, METRIC_NAMES } from "./constants.js";
@@ -32,6 +39,9 @@ let ctx: PluginContext | null = null;
 let startedAt: string | null = null;
 let eventsProcessed = 0;
 let lastError: string | null = null;
+
+// Active run spans — keyed by runId, kept open until run.finished/failed/cancelled
+const activeRunSpans = new Map<string, Span>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
@@ -102,6 +112,7 @@ async function handleAgentRunStarted(
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+  const runId = String(p.runId ?? "");
 
   // Run counter
   const runCounter = otel.meter.createCounter(METRIC_NAMES.agentRunsStarted, {
@@ -112,14 +123,16 @@ async function handleAgentRunStarted(
     invocation_source: String(p.invocationSource ?? ""),
   });
 
-  // Root span — kept open for correlation on run.finished/failed
-  const span = otel.tracer.startSpan("agent.run", {
+  // Root span — kept open until run.finished/failed/cancelled
+  const span = otel.tracer.startSpan("paperclip.heartbeat.run", {
+    kind: SpanKind.INTERNAL,
     attributes: {
       // Paperclip-specific
       "paperclip.agent.id": String(p.agentId ?? ""),
-      "paperclip.run.id": String(p.runId ?? ""),
+      "paperclip.run.id": runId,
       "paperclip.company.id": String(p.companyId ?? ""),
       "paperclip.run.invocation_source": String(p.invocationSource ?? ""),
+      "paperclip.run.trigger_detail": String(p.triggerDetail ?? ""),
       // GenAI semconv agent span attributes
       "gen_ai.operation.name": "invoke_agent",
       "gen_ai.agent.id": String(p.agentId ?? ""),
@@ -127,22 +140,28 @@ async function handleAgentRunStarted(
     },
   });
 
-  // Store span context in plugin state for correlation on run.finished/failed
-  const runId = String(p.runId ?? "");
-  if (runId && ctx) {
-    await ctx.state
-      .set(
-        { scopeKind: "instance", stateKey: `span:run:${runId}` },
-        {
-          traceId: span.spanContext().traceId,
-          spanId: span.spanContext().spanId,
-          startTime: Date.now(),
-        },
-      )
-      .catch(() => {});
-  }
+  if (runId) {
+    // Keep span in memory for ending on run.finished/failed
+    activeRunSpans.set(runId, span);
 
-  span.end();
+    // Also persist span context in plugin state for cross-restart resilience
+    if (ctx) {
+      await ctx.state
+        .set(
+          { scopeKind: "instance", stateKey: `span:run:${runId}` },
+          {
+            traceId: span.spanContext().traceId,
+            spanId: span.spanContext().spanId,
+            traceFlags: span.spanContext().traceFlags,
+            startTime: Date.now(),
+          },
+        )
+        .catch(() => {});
+    }
+  } else {
+    // No runId — end immediately as a point-in-time event
+    span.end();
+  }
 }
 
 async function handleAgentRunFinished(
@@ -184,10 +203,29 @@ async function handleAgentRunFinished(
     });
   }
 
-  if (runId && ctx) {
-    await ctx.state
-      .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-      .catch(() => {});
+  // End the root span with OK status
+  if (runId) {
+    const span = activeRunSpans.get(runId);
+    if (span) {
+      if (p.exitCode != null) {
+        span.setAttribute("paperclip.run.exit_code", Number(p.exitCode));
+      }
+      if (p.durationMs != null) {
+        span.setAttribute(
+          "paperclip.run.duration_ms",
+          Number(p.durationMs),
+        );
+      }
+      span.setStatus({ code: SpanStatusCode.OK });
+      span.end();
+      activeRunSpans.delete(runId);
+    }
+
+    if (ctx) {
+      await ctx.state
+        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
+        .catch(() => {});
+    }
   }
 }
 
@@ -208,10 +246,32 @@ async function handleAgentRunFailed(
     error: String(p.error ?? "unknown"),
   });
 
-  if (runId && ctx) {
-    await ctx.state
-      .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
-      .catch(() => {});
+  // End the root span with ERROR status
+  if (runId) {
+    const span = activeRunSpans.get(runId);
+    if (span) {
+      const errorMsg = String(p.error ?? "unknown");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: errorMsg });
+      span.setAttribute("error.type", String(p.errorCode ?? "run_failed"));
+      if (p.exitCode != null) {
+        span.setAttribute("paperclip.run.exit_code", Number(p.exitCode));
+      }
+      if (p.stderrExcerpt) {
+        span.setAttribute(
+          "paperclip.run.stderr_excerpt",
+          String(p.stderrExcerpt),
+        );
+      }
+      span.recordException(new Error(errorMsg));
+      span.end();
+      activeRunSpans.delete(runId);
+    }
+
+    if (ctx) {
+      await ctx.state
+        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
+        .catch(() => {});
+    }
   }
 }
 
@@ -278,25 +338,44 @@ async function handleCostEvent(event: PluginEvent<unknown>): Promise<void> {
     });
   }
 
-  // --- LLM span for cost event ---
+  // --- LLM child span for cost event ---
 
-  const span = otel.tracer.startSpan("llm.cost", {
-    attributes: {
-      "paperclip.agent.id": String(p.agentId ?? ""),
-      "paperclip.company.id": String(p.companyId ?? ""),
-      "paperclip.cost.cents": Number(p.costCents ?? 0),
-      "paperclip.billing.type": String(p.billingType ?? ""),
-      "paperclip.billing.biller": String(p.biller ?? ""),
-      "gen_ai.operation.name": "chat",
-      "gen_ai.provider.name": provider,
-      "gen_ai.request.model": String(p.model ?? "unknown"),
-      "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
-      "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
-      "gen_ai.usage.cache_read.input_tokens": Number(
-        p.cachedInputTokens ?? 0,
-      ),
-    },
-  });
+  const llmSpanAttrs = {
+    "paperclip.agent.id": String(p.agentId ?? ""),
+    "paperclip.company.id": String(p.companyId ?? ""),
+    "paperclip.cost.cents": Number(p.costCents ?? 0),
+    "paperclip.billing.type": String(p.billingType ?? ""),
+    "paperclip.billing.biller": String(p.biller ?? ""),
+    "gen_ai.operation.name": "chat" as const,
+    "gen_ai.provider.name": provider,
+    "gen_ai.request.model": String(p.model ?? "unknown"),
+    "gen_ai.usage.input_tokens": Number(p.inputTokens ?? 0),
+    "gen_ai.usage.output_tokens": Number(p.outputTokens ?? 0),
+    "gen_ai.usage.cache_read.input_tokens": Number(
+      p.cachedInputTokens ?? 0,
+    ),
+  };
+
+  // If this cost event belongs to an active run, create as a child span
+  const heartbeatRunId = String(p.heartbeatRunId ?? "");
+  const parentSpan = heartbeatRunId
+    ? activeRunSpans.get(heartbeatRunId)
+    : undefined;
+
+  let span: Span;
+  if (parentSpan) {
+    const parentCtx = trace.setSpan(context.active(), parentSpan);
+    span = otel.tracer.startSpan(
+      "gen_ai.chat",
+      { kind: SpanKind.CLIENT, attributes: llmSpanAttrs },
+      parentCtx,
+    );
+  } else {
+    span = otel.tracer.startSpan("gen_ai.chat", {
+      kind: SpanKind.CLIENT,
+      attributes: llmSpanAttrs,
+    });
+  }
   span.end();
 }
 
@@ -424,6 +503,38 @@ async function handleApprovalCreated(
   }
 }
 
+async function handleAgentRunCancelled(
+  event: PluginEvent<unknown>,
+): Promise<void> {
+  if (!otel) return;
+  eventsProcessed++;
+
+  const p = event.payload as Record<string, unknown>;
+  const runId = String(p.runId ?? "");
+
+  const genericCounter = otel.meter.createCounter(METRIC_NAMES.eventsTotal, {
+    description: "Total domain events observed",
+  });
+  genericCounter.add(1, { event_type: event.eventType });
+
+  // End the root span with cancelled status
+  if (runId) {
+    const span = activeRunSpans.get(runId);
+    if (span) {
+      span.setStatus({ code: SpanStatusCode.OK, message: "cancelled" });
+      span.setAttribute("paperclip.run.cancelled", true);
+      span.end();
+      activeRunSpans.delete(runId);
+    }
+
+    if (ctx) {
+      await ctx.state
+        .delete({ scopeKind: "instance", stateKey: `span:run:${runId}` })
+        .catch(() => {});
+    }
+  }
+}
+
 async function handleGenericEvent(event: PluginEvent<unknown>): Promise<void> {
   if (!otel) return;
   eventsProcessed++;
@@ -467,7 +578,7 @@ const plugin: PaperclipPlugin = definePlugin({
     ctx.events.on("agent.run.started", handleAgentRunStarted);
     ctx.events.on("agent.run.finished", handleAgentRunFinished);
     ctx.events.on("agent.run.failed", handleAgentRunFailed);
-    ctx.events.on("agent.run.cancelled", handleGenericEvent);
+    ctx.events.on("agent.run.cancelled", handleAgentRunCancelled);
 
     ctx.events.on("cost_event.created", handleCostEvent);
 
@@ -866,6 +977,15 @@ const plugin: PaperclipPlugin = definePlugin({
     ctx?.logger.info(
       "Observability plugin shutting down — flushing telemetry",
     );
+
+    // End any active run spans before shutdown
+    for (const [runId, span] of activeRunSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.run.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned run span on shutdown", { runId });
+    }
+    activeRunSpans.clear();
 
     if (otel) {
       try {
