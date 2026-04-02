@@ -1281,17 +1281,6 @@ function CredentialsSection({ companyId }: { companyId: string }) {
         {/* Add credential form */}
         {showAddForm ? (
           <div className="space-y-3 rounded-md border border-border bg-muted/30 px-3 py-3">
-            {addType === "claude_oauth" && (
-              <div className="rounded-md bg-blue-500/5 border border-blue-500/20 px-3 py-2.5 space-y-1.5">
-                <p className="text-xs font-medium text-blue-700 dark:text-blue-300">How to get your Claude token:</p>
-                <ol className="text-[11px] text-blue-600/80 dark:text-blue-400/80 space-y-1 list-decimal list-inside">
-                  <li>Run <code className="bg-blue-500/10 px-1 rounded">claude auth login</code> on any machine with Claude Code</li>
-                  <li>Complete the browser authentication</li>
-                  <li>Run <code className="bg-blue-500/10 px-1 rounded">cat ~/.claude/.credentials.json</code></li>
-                  <li>Copy the <code className="bg-blue-500/10 px-1 rounded">accessToken</code> value (starts with <code className="bg-blue-500/10 px-1 rounded">sk-ant-oat01-</code>)</li>
-                </ol>
-              </div>
-            )}
             <Field label="Name" hint="A human-readable label for this credential.">
               <input
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
