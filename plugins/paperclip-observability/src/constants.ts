@@ -26,4 +26,11 @@ export const METRIC_NAMES = {
   agentsHeartbeatAge: "paperclip.agents.heartbeat.age_seconds",
   budgetUtilization: "paperclip.budget.utilization",
   budgetRemaining: "paperclip.budget.remaining_cents",
+
+  // Budget & governance gauges (scheduled job)
+  approvalsPending: "paperclip.approvals.pending",
+  budgetIncidentsActive: "paperclip.budget.incidents.active",
+  companyBudgetUtilization: "paperclip.budget.company.utilization",
+  budgetPausedAgents: "paperclip.budget.paused_agents",
+  budgetPausedProjects: "paperclip.budget.paused_projects",
 } as const;
