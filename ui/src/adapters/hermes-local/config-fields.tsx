@@ -10,6 +10,9 @@ const inputClass =
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
+const modelFieldHint =
+  "Override the model for this agent (e.g. qwen/qwen3.6-plus-preview:free, anthropic/claude-sonnet-4). Leave blank to use the default.";
+
 export function HermesLocalConfigFields({
   isCreate,
   values,
@@ -21,29 +24,52 @@ export function HermesLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   if (hideInstructionsFile) return null;
   return (
-    <Field label="Agent instructions file" hint={instructionsFileHint}>
-      <div className="flex items-center gap-2">
+    <>
+      <Field label="Model" hint={modelFieldHint}>
         <DraftInput
           value={
             isCreate
-              ? values!.instructionsFilePath ?? ""
+              ? values!.model ?? ""
               : eff(
                   "adapterConfig",
-                  "instructionsFilePath",
-                  String(config.instructionsFilePath ?? ""),
+                  "model",
+                  String(config.model ?? ""),
                 )
           }
           onCommit={(v) =>
             isCreate
-              ? set!({ instructionsFilePath: v })
-              : mark("adapterConfig", "instructionsFilePath", v || undefined)
+              ? set!({ model: v })
+              : mark("adapterConfig", "model", v || undefined)
           }
           immediate
           className={inputClass}
-          placeholder="/absolute/path/to/AGENTS.md"
+          placeholder="qwen/qwen3.6-plus-preview:free"
         />
-        <ChoosePathButton />
-      </div>
-    </Field>
+      </Field>
+      <Field label="Agent instructions file" hint={instructionsFileHint}>
+        <div className="flex items-center gap-2">
+          <DraftInput
+            value={
+              isCreate
+                ? values!.instructionsFilePath ?? ""
+                : eff(
+                    "adapterConfig",
+                    "instructionsFilePath",
+                    String(config.instructionsFilePath ?? ""),
+                  )
+            }
+            onCommit={(v) =>
+              isCreate
+                ? set!({ instructionsFilePath: v })
+                : mark("adapterConfig", "instructionsFilePath", v || undefined)
+            }
+            immediate
+            className={inputClass}
+            placeholder="/absolute/path/to/AGENTS.md"
+          />
+          <ChoosePathButton />
+        </div>
+      </Field>
+    </>
   );
 }
