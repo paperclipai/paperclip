@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -242,6 +242,63 @@ type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
 
+const VISIBLE_TAIL_COUNT = 3;
+
+function TimelineItemView({
+  item,
+  agentMap,
+  companyId,
+  projectId,
+  highlightCommentId,
+}: {
+  item: TimelineItem;
+  agentMap?: Map<string, Agent>;
+  companyId?: string | null;
+  projectId?: string | null;
+  highlightCommentId?: string | null;
+}) {
+  if (item.kind === "run") {
+    const run = item.run;
+    return (
+      <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
+        <div className="flex items-center justify-between mb-2">
+          <Link to={`/agents/${run.agentId}`} className="hover:underline">
+            <Identity
+              name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
+              size="sm"
+            />
+          </Link>
+          <span className="text-xs text-muted-foreground">
+            {formatDateTime(run.startedAt ?? run.createdAt)}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Run</span>
+          <Link
+            to={`/agents/${run.agentId}/runs/${run.runId}`}
+            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+          >
+            {run.runId.slice(0, 8)}
+          </Link>
+          <StatusBadge status={run.status} />
+        </div>
+      </div>
+    );
+  }
+
+  const comment = item.comment;
+  return (
+    <CommentCard
+      key={comment.id}
+      comment={comment}
+      agentMap={agentMap}
+      companyId={companyId}
+      projectId={projectId}
+      highlightCommentId={highlightCommentId}
+    />
+  );
+}
+
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
@@ -255,54 +312,48 @@ const TimelineList = memo(function TimelineList({
   projectId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
   }
 
+  const collapsible = timeline.length > VISIBLE_TAIL_COUNT;
+  const hiddenCount = collapsible && !expanded ? timeline.length - VISIBLE_TAIL_COUNT : 0;
+  const visibleItems = hiddenCount > 0 ? timeline.slice(-VISIBLE_TAIL_COUNT) : timeline;
+
   return (
     <div className="space-y-3">
-      {timeline.map((item) => {
-        if (item.kind === "run") {
-          const run = item.run;
-          return (
-            <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
-              <div className="flex items-center justify-between mb-2">
-                <Link to={`/agents/${run.agentId}`} className="hover:underline">
-                  <Identity
-                    name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
-                    size="sm"
-                  />
-                </Link>
-                <span className="text-xs text-muted-foreground">
-                  {formatDateTime(run.startedAt ?? run.createdAt)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">Run</span>
-                <Link
-                  to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
-                >
-                  {run.runId.slice(0, 8)}
-                </Link>
-                <StatusBadge status={run.status} />
-              </div>
-            </div>
-          );
-        }
-
-        const comment = item.comment;
-        return (
-          <CommentCard
-            key={comment.id}
-            comment={comment}
-            agentMap={agentMap}
-            companyId={companyId}
-            projectId={projectId}
-            highlightCommentId={highlightCommentId}
-          />
-        );
-      })}
+      {collapsible && !expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(true)}
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          Show {hiddenCount} earlier {hiddenCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      {visibleItems.map((item) => (
+        <TimelineItemView
+          key={item.id}
+          item={item}
+          agentMap={agentMap}
+          companyId={companyId}
+          projectId={projectId}
+          highlightCommentId={highlightCommentId}
+        />
+      ))}
+      {collapsible && expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(false)}
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          Show less
+        </button>
+      )}
     </div>
   );
 });
