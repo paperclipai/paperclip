@@ -70,6 +70,7 @@
   "tabPaused": "Приостановленные",
   "tabError": "С ошибками",
   "agentCount_one": "{{count}} агент",
+  "agentCount_other": "{{count}} агентов",
   "agentCount_few": "{{count}} агента",
   "agentCount_many": "{{count}} агентов",
   "dashboard": "Панель",
