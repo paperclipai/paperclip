@@ -40,7 +40,9 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 - `sessionKeyStrategy=issue|fixed|run`
 - `sessionKey` is used when strategy is `fixed`
-- when `sessionKeyStrategy=issue` and the wake has no `issueId`, the adapter falls back to a stable per-agent session key
+- OpenClaw agent requests must use agent-scoped session keys in the form `agent:<agentId>:...`
+- when `sessionKeyStrategy=issue` and the wake has no `issueId`, the adapter falls back to `agent:<agentId>:paperclip`
+- bare fixed keys like `paperclip` are automatically scoped to the configured OpenClaw agent before sending the request
 
 Resolved session key is sent as `agent.sessionKey`.
 

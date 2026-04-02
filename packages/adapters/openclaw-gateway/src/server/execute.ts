@@ -126,17 +126,39 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
+function normalizeOpenClawAgentId(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "main";
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+/g, "")
+    .replace(/-+$/g, "");
+  return normalized || "main";
+}
+
+function scopeOpenClawSessionKey(agentId: string, sessionKey: string): string {
+  const trimmed = sessionKey.trim();
+  if (!trimmed) return `agent:${normalizeOpenClawAgentId(agentId)}:main`;
+  if (trimmed.toLowerCase().startsWith("agent:")) return trimmed;
+  return `agent:${normalizeOpenClawAgentId(agentId)}:${trimmed}`;
+}
+
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
-  agentSessionKeyFallback: string;
+  agentId: string;
 }): string {
-  const fallback = input.configuredSessionKey ?? input.agentSessionKeyFallback;
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  const fallback = input.configuredSessionKey ?? "paperclip";
+  if (input.strategy === "run") {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:run:${input.runId}`);
+  }
+  if (input.strategy === "issue" && input.issueId) {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:issue:${input.issueId}`);
+  }
+  return scopeOpenClawSessionKey(input.agentId, fallback);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -1059,15 +1081,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
   const configuredAgentId = nonEmpty(ctx.config.agentId);
-  const agentSessionKeyFallback = configuredAgentId
-    ? `paperclip:agent:${configuredAgentId}`
-    : `paperclip:agent:${ctx.agent.id}`;
+  const templateAgentId = nonEmpty(payloadTemplate.agentId);
+  const effectiveGatewayAgentId = templateAgentId ?? configuredAgentId ?? "main";
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
-    agentSessionKeyFallback,
+    agentId: effectiveGatewayAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
