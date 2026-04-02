@@ -42,7 +42,6 @@ interface CommentThreadProps {
   companyId?: string | null;
   projectId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
-  issueStatus?: string;
   agentMap?: Map<string, Agent>;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
@@ -501,77 +500,77 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="flex flex-col max-h-[60vh] min-h-[250px] rounded-lg border border-border bg-card">
+    <div className="flex flex-col max-h-[80vh] md:max-h-[60vh] min-h-[250px] rounded-lg border border-border bg-card">
       <div className="shrink-0 border-b border-border/60 px-4 py-2">
         <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
       </div>
 
-      <div className="relative flex-1 min-h-0">
-        <div
-          ref={scrollAreaRef}
-          className="h-full overflow-y-auto px-4 py-3"
-          onScroll={handleTimelineScroll}
-        >
-          <div className="space-y-3">
-            {timeline.length > 0 ? (
-              <TimelineList
-                timeline={timeline}
-                agentMap={agentMap}
-                companyId={companyId}
-                projectId={projectId}
-                highlightCommentId={highlightCommentId}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">No comments or runs yet.</p>
-            )}
+      <div
+        ref={scrollAreaRef}
+        className="flex-1 min-h-0 overflow-y-auto px-4 py-3"
+        onScroll={handleTimelineScroll}
+      >
+        <div className="space-y-3">
+          {timeline.length > 0 ? (
+            <TimelineList
+              timeline={timeline}
+              agentMap={agentMap}
+              companyId={companyId}
+              projectId={projectId}
+              highlightCommentId={highlightCommentId}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">No comments or runs yet.</p>
+          )}
 
-            {liveRunSlot}
+          {liveRunSlot}
 
-            {queuedComments.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-                    Queued Comments ({queuedComments.length})
-                  </h4>
-                  {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                      disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
-                      onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
-                    >
-                      {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
-                    </Button>
-                  ) : null}
-                </div>
-                <div className="space-y-3">
-                  {queuedComments.map((comment) => (
-                    <CommentCard
-                      key={comment.id}
-                      comment={comment}
-                      agentMap={agentMap}
-                      companyId={companyId}
-                      projectId={projectId}
-                      highlightCommentId={highlightCommentId}
-                      queued
-                    />
-                  ))}
-                </div>
+          {queuedComments.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+                  Queued Comments ({queuedComments.length})
+                </h4>
+                {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                    disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                    onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
+                  >
+                    {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                  </Button>
+                ) : null}
               </div>
-            )}
-          </div>
+              <div className="space-y-3">
+                {queuedComments.map((comment) => (
+                  <CommentCard
+                    key={comment.id}
+                    comment={comment}
+                    agentMap={agentMap}
+                    companyId={companyId}
+                    projectId={projectId}
+                    highlightCommentId={highlightCommentId}
+                    queued
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {showScrollToBottom && (
-          <button
-            type="button"
-            onClick={() => scrollToBottom("smooth")}
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-md hover:bg-accent hover:text-foreground transition-colors"
-          >
-            <ArrowDown className="h-3 w-3" />
-            Latest
-          </button>
+          <div className="sticky bottom-2 flex justify-center pointer-events-none pt-2">
+            <button
+              type="button"
+              onClick={() => scrollToBottom("smooth")}
+              className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-md hover:bg-accent hover:text-foreground transition-colors"
+            >
+              <ArrowDown className="h-3 w-3" />
+              Latest
+            </button>
+          </div>
         )}
       </div>
 

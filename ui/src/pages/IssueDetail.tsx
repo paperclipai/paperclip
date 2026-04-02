@@ -1237,7 +1237,6 @@ export function IssueDetail() {
             linkedRuns={timelineRuns}
             companyId={issue.companyId}
             projectId={issue.projectId}
-            issueStatus={issue.status}
             agentMap={agentMap}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
             enableReassign
