@@ -578,7 +578,7 @@ export async function startServer(): Promise<StartedServer> {
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
-          if (result.enqueued > 0) {
+          if (result.enqueued > 0 || result.idleSkipped > 0) {
             logger.info({ ...result }, "heartbeat timer tick enqueued runs");
           }
         })
