@@ -1036,7 +1036,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to your own OpenClaw workspace: ~/.openclaw/workspace-<openclaw-agent-id>/paperclip-claimed-api-key.json for non-main agents, or ~/.openclaw/workspace/paperclip-claimed-api-key.json for main. Load PAPERCLIP_API_KEY from that per-agent file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1242,10 +1242,11 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
+    On successful claim, save the full JSON response to your own OpenClaw workspace:
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    - non-main agents: ~/.openclaw/workspace-<openclaw-agent-id>/paperclip-claimed-api-key.json
+    - main agent: ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    chmod 600 <that per-agent paperclip-claimed-api-key.json file>
 
     And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
@@ -1259,7 +1260,7 @@ export function buildInviteOnboardingTextDocument(
       },
     }
 
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run. Do not reuse another agent's claimed key file.
 
     Important:
     - claim secrets expire
