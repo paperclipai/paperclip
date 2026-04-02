@@ -42,6 +42,7 @@ import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { OrgTreeView } from "./OrgTreeView";
+import { FolderPicker } from "./FolderPicker";
 import {
   Building2,
   Bot,
@@ -150,6 +151,7 @@ export function OnboardingWizard() {
   const [workspaceScan, setWorkspaceScan] = useState<WorkspaceScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
 
   // Step 5 — Task (was step 3)
   const contextual = useMemo(() => buildContextualTaskDescription(workspaceScan), [workspaceScan]);
@@ -336,6 +338,7 @@ export function OnboardingWizard() {
     setWorkspaceScan(null);
     setScanLoading(false);
     setScanError(null);
+    setFolderPickerOpen(false);
     const defaults = buildContextualTaskDescription(null);
     setTaskTitle(defaults.title);
     setTaskDescription(defaults.description);
@@ -720,12 +723,13 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleScanWorkspace() {
-    if (!workspacePath.trim()) return;
+  async function handleScanWorkspace(pathOverride?: string) {
+    const scanPath = pathOverride ?? workspacePath.trim();
+    if (!scanPath) return;
     setScanLoading(true);
     setScanError(null);
     try {
-      const result = await workspaceApi.scan(workspacePath.trim());
+      const result = await workspaceApi.scan(scanPath);
       setWorkspaceScan(result);
       // Update task description with workspace context if user hasn't edited it
       if (!taskTouched) {
@@ -776,7 +780,7 @@ export function OnboardingWizard() {
         await projectsApi.createWorkspace(project.id, {
           name: projectName,
           cwd: workspaceScan?.cwd ?? workspacePath.trim(),
-          repoUrl: workspaceScan?.gitRemoteUrl ?? undefined,
+          repoUrl: workspaceScan?.gitRemoteUrl?.startsWith("http") ? workspaceScan.gitRemoteUrl : undefined,
           repoRef: workspaceScan?.gitDefaultBranch ?? undefined,
           isPrimary: true,
         }, createdCompanyId);
@@ -1718,8 +1722,16 @@ export function OnboardingWizard() {
                       <Button
                         size="sm"
                         variant="outline"
+                        onClick={() => setFolderPickerOpen(true)}
+                        title="Browse folders"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
                         disabled={!workspacePath.trim() || scanLoading}
-                        onClick={handleScanWorkspace}
+                        onClick={() => handleScanWorkspace()}
                       >
                         {scanLoading ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1729,6 +1741,17 @@ export function OnboardingWizard() {
                       </Button>
                     </div>
                   </div>
+
+                  <FolderPicker
+                    open={folderPickerOpen}
+                    onOpenChange={setFolderPickerOpen}
+                    onSelect={(path) => {
+                      setWorkspacePath(path);
+                      setWorkspaceScan(null);
+                      setScanError(null);
+                      void handleScanWorkspace(path);
+                    }}
+                  />
 
                   {scanError && (
                     <p className="text-xs text-destructive">{scanError}</p>

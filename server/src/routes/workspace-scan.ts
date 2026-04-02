@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { stat, readdir, readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 
@@ -181,6 +182,52 @@ export function workspaceScanRoutes() {
     };
 
     res.json(result);
+  });
+
+  router.post("/workspace/browse", async (req, res) => {
+    const { path: requestedPath } = req.body as { path?: string };
+    const home = homedir();
+    const expanded = !requestedPath || requestedPath === "~"
+      ? home
+      : requestedPath.startsWith("~")
+        ? requestedPath.replace("~", home)
+        : requestedPath;
+
+    let resolved: string;
+    try {
+      resolved = await realpath(expanded);
+      const s = await stat(resolved);
+      if (!s.isDirectory()) {
+        res.status(400).json({ error: "Path is not a directory" });
+        return;
+      }
+    } catch {
+      res.status(400).json({ error: "Directory does not exist" });
+      return;
+    }
+
+    if (!resolved.startsWith(home)) {
+      res.status(403).json({ error: "Path must be within your home directory" });
+      return;
+    }
+
+    const raw = await readdir(resolved, { withFileTypes: true });
+    const entries = raw
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+    const hasGit = raw.some((e) => e.name === ".git" && e.isDirectory());
+    const hasConfig = raw.some((e) =>
+      !e.isDirectory() && Object.keys(CONFIG_FILE_LANGUAGES).includes(e.name)
+    );
+
+    res.json({
+      path: resolved,
+      parent: resolved === home ? null : dirname(resolved),
+      entries,
+      isProject: hasGit || hasConfig,
+    });
   });
 
   return router;
