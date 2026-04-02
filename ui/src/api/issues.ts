@@ -4,6 +4,8 @@ import type {
   Issue,
   IssueAttachment,
   IssueComment,
+  IssueDependency,
+  IssueDependencySummary,
   IssueDocument,
   IssueLabel,
   IssueWorkProduct,
@@ -115,6 +117,11 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
+  listDependencies: (id: string) => api.get<IssueDependencySummary[]>(`/issues/${id}/dependencies`),
+  addDependency: (id: string, blockerIssueId: string) =>
+    api.post<IssueDependency>(`/issues/${id}/dependencies`, { blockerIssueId }),
+  removeDependency: (id: string, blockerIssueId: string) =>
+    api.delete<IssueDependency>(`/issues/${id}/dependencies/${blockerIssueId}`),
   listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
