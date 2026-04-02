@@ -142,13 +142,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   execEnv.RAAVA_COMPANY_ID = agent.companyId;
   execEnv.RAAVA_RUN_ID = runId;
 
-  // Security: block dangerous env var names (MEDIUM)
-  const BLOCKED_ENV_VARS = new Set([
-    "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "HOME", "SHELL", "USER",
-    "PYTHONPATH", "NODE_PATH", "CLASSPATH", "LD_AUDIT",
-  ]);
+  // Security: prefix-based allowlist for env vars (MEDIUM)
+  const ALLOWED_ENV_PREFIXES = ["RAAVA_", "HERMES_", "OPENROUTER_", "DISCORD_"];
   for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string" && !BLOCKED_ENV_VARS.has(key.toUpperCase())) {
+    if (
+      typeof value === "string" &&
+      ALLOWED_ENV_PREFIXES.some((prefix) => key.toUpperCase().startsWith(prefix))
+    ) {
       execEnv[key] = value;
     }
   }
@@ -165,23 +165,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // The prompt is passed via stdin to the hermes CLI; we append it as the last positional arg
   // TODO: Determine if hermes accepts prompt via stdin or positional arg
+  // Security: use "--" to prevent prompt from being interpreted as CLI flags (MEDIUM)
+  command.push("--");
   command.push(prompt);
 
   // ---- Report invocation metadata ----
   if (onMeta) {
+    const SECRET_KEY_RE = /(key|token|secret|password|authorization)/i;
+
+    // Security: redact prompt and scrub context unless debugMetadata is enabled (HIGH)
+    const safePrompt = config.debugMetadata
+      ? prompt
+      : `[redacted: ${prompt.length} chars]`;
+
+    const safeContext = config.debugMetadata
+      ? context
+      : (context != null && typeof context === "object"
+          ? Object.fromEntries(
+              Object.entries(context as Record<string, unknown>).map(([k, v]) =>
+                SECRET_KEY_RE.test(k) ? [k, "***"] : [k, v],
+              ),
+            )
+          : context);
+
     await onMeta({
       adapterType: "hermes_fleetos",
       command: `fleetos:${containerId}/${hermesCommand}`,
       commandArgs: command.slice(1),
       env: Object.fromEntries(
         Object.entries(execEnv).map(([k, v]) =>
-          /(key|token|secret|password|authorization)/i.test(k)
+          SECRET_KEY_RE.test(k)
             ? [k, "***"]
             : [k, v],
         ),
       ),
-      prompt,
-      context,
+      prompt: safePrompt,
+      context: safeContext,
     });
   }
 

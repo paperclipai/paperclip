@@ -19,13 +19,18 @@
     <!-- RAAVA_FAVICON_END -->
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=Plus+Jakarta+Sans:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" />
     <script>
       (() => {
         const key = "raava.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
-          const stored = window.localStorage.getItem(key);
+          let stored = window.localStorage.getItem(key);
+          if (!stored) {
+            const legacy = window.localStorage.getItem("paperclip.theme");
+            if (legacy) { window.localStorage.setItem(key, legacy); window.localStorage.removeItem("paperclip.theme"); stored = legacy; }
+          }
           const theme = stored === "light" || stored === "dark" ? stored : "dark";
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);

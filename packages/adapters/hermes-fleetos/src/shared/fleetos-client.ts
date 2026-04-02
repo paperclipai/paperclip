@@ -27,8 +27,44 @@ export class FleetOSClient {
   private readonly apiKey: string;
 
   constructor(baseUrl: string, apiKey: string) {
+    // Security: validate and normalize the base URL to prevent SSRF (HIGH)
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      throw new FleetOSClientError(`Invalid FleetOS base URL: ${baseUrl}`, 0, null);
+    }
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new FleetOSClientError(
+        `FleetOS base URL must use http or https protocol, got: ${parsed.protocol}`,
+        0,
+        null,
+      );
+    }
+
+    // Block cloud metadata endpoints and loopback addresses
+    const DANGEROUS_HOSTS = [
+      "169.254.169.254",  // AWS/GCP metadata
+      "metadata.google.internal", // GCP metadata
+      "100.100.100.200",  // Alibaba metadata
+    ];
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      DANGEROUS_HOSTS.includes(hostname) ||
+      hostname === "localhost" ||
+      hostname === "[::1]" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    ) {
+      throw new FleetOSClientError(
+        `FleetOS base URL points to a blocked host: ${hostname}`,
+        0,
+        null,
+      );
+    }
+
     // Strip trailing slash for consistent URL construction
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.baseUrl = parsed.origin + parsed.pathname.replace(/\/+$/, "");
     this.apiKey = apiKey;
   }
 

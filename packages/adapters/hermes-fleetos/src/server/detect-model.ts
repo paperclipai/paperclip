@@ -37,8 +37,17 @@ export async function detectModel(
           source: `fleetos:${containerId}:${configPath}`,
         };
       }
-    } catch {
+    } catch (err: unknown) {
       // Config file not found at this path — try next
+      const isNotFound =
+        err instanceof Error &&
+        (/404/.test(err.message) || /ENOENT/.test(err.message));
+      if (!isNotFound) {
+        console.warn(
+          `[detect-model] Unexpected error reading ${configPath} in container ${containerId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
       continue;
     }
   }

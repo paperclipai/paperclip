@@ -205,11 +205,8 @@ const hermesFleetosAdapter: ServerAdapterModule = {
   models: hermesFleetosModels,
   supportsLocalAgentJwt: false,
   agentConfigurationDoc: hermesFleetosAgentConfigurationDoc,
-  detectModel: async () => {
-    // detectModel requires adapter config which is not available at the module level.
-    // This is a placeholder — detection works via the per-agent test flow.
-    return null;
-  },
+  // detectModel omitted — requires adapter config not available at module level;
+  // detection works via the per-agent test flow instead.
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>(

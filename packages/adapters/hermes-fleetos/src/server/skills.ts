@@ -80,8 +80,13 @@ export async function listSkills(ctx: AdapterSkillContext): Promise<AdapterSkill
           });
         }
       }
-    } catch {
+    } catch (parseErr: unknown) {
       // JSON parse failed — stdout may not be valid JSON
+      console.warn(
+        `[skills] Failed to parse hermes skills JSON output:`,
+        parseErr instanceof Error ? parseErr.message : parseErr,
+        `| raw stdout: ${result.stdout.slice(0, 500)}`,
+      );
     }
 
     return {
