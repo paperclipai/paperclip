@@ -637,6 +637,30 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  async function clearStaleExecutionLock(issueId: string, expectedExecutionRunId: string) {
+    const stale = await isTerminalOrMissingHeartbeatRun(expectedExecutionRunId);
+    if (!stale) return false;
+
+    const cleared = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, expectedExecutionRunId),
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+
+    return cleared != null;
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -1315,6 +1339,38 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      // If an executionRunId is blocking checkout but its run is dead, clear it and retry
+      if (current.executionRunId && current.executionRunId !== checkoutRunId) {
+        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
+        if (cleared) {
+          const now = new Date();
+          const retried = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              status: "in_progress",
+              startedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                or(isNull(issues.executionRunId), checkoutRunId ? eq(issues.executionRunId, checkoutRunId) : sql`false`),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (retried) {
+            const [enriched] = await withIssueLabels(db, [retried]);
+            return enriched;
+          }
+        }
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,
@@ -1331,6 +1387,7 @@ export function issueService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1365,6 +1422,43 @@ export function issueService(db: Db) {
             ...adopted,
             adoptedFromRunId: current.checkoutRunId,
           };
+        }
+      }
+
+      // Clear stale execution lock from a dead run before giving up
+      if (
+        actorRunId &&
+        current.executionRunId &&
+        current.executionRunId !== actorRunId
+      ) {
+        const cleared = await clearStaleExecutionLock(id, current.executionRunId);
+        if (cleared) {
+          const refreshed = await db
+            .update(issues)
+            .set({
+              checkoutRunId: actorRunId,
+              executionRunId: actorRunId,
+              executionLockedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, actorAgentId),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning({
+              id: issues.id,
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              checkoutRunId: issues.checkoutRunId,
+            })
+            .then((rows) => rows[0] ?? null);
+          if (refreshed) {
+            return { ...refreshed, adoptedFromRunId: current.executionRunId };
+          }
         }
       }
 
