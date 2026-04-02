@@ -194,9 +194,9 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
 function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
   const raw = (value ?? "").trim().toLowerCase();
   const normalized = raw
-    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^[-/]+|[-/]+$/g, "");
+    .replace(/^[-_]+|[-_]+$/g, "");
   return normalized.length > 0 ? normalized : fallback;
 }
 
@@ -295,6 +295,32 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 function gitErrorIncludes(error: unknown, needle: string) {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes(needle.toLowerCase());
+}
+
+async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
+  // Try the explicit remote HEAD first (set by git clone or git remote set-head)
+  try {
+    const remoteHead = await runGit(
+      ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+      repoRoot,
+    );
+    const branch = remoteHead?.startsWith("origin/") ? remoteHead.slice("origin/".length) : remoteHead;
+    if (branch) return branch;
+  } catch {
+    // Not set — fall through to heuristic
+  }
+
+  // Fallback: check for common default branch names on the remote
+  for (const candidate of ["main", "master"]) {
+    try {
+      await runGit(["rev-parse", "--verify", `refs/remotes/origin/${candidate}`], repoRoot);
+      return candidate;
+    } catch {
+      // Not found — try next
+    }
+  }
+
+  return null;
 }
 
 async function directoryExists(value: string) {
@@ -601,7 +627,12 @@ export async function realizeExecutionWorkspace(input: {
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
     : path.join(repoRoot, ".paperclip", "worktrees");
   const worktreePath = path.join(worktreeParentDir, branchName);
-  const baseRef = asString(rawStrategy.baseRef, input.base.repoRef ?? "HEAD");
+  const configuredBaseRef = typeof rawStrategy.baseRef === "string" && rawStrategy.baseRef.length > 0
+    ? rawStrategy.baseRef
+    : input.base.repoRef ?? null;
+  const baseRef = configuredBaseRef
+    ?? await detectDefaultBranch(repoRoot)
+    ?? "HEAD";
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
 

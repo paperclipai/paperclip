@@ -9,20 +9,29 @@ import {
   createIssueLabelSchema,
   checkoutIssueSchema,
   createIssueSchema,
+  feedbackTargetTypeSchema,
+  feedbackTraceStatusSchema,
+  feedbackVoteValueSchema,
+  upsertIssueFeedbackVoteSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  restoreIssueDocumentRevisionSchema,
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
 } from "@paperclipai/shared";
+import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
   agentService,
   executionWorkspaceService,
+  feedbackService,
   goalService,
   heartbeatService,
+  instanceSettingsService,
   issueApprovalService,
   issueService,
   documentService,
@@ -48,6 +57,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
+  const feedback = feedbackService(db);
+  const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
@@ -66,6 +77,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  function parseBooleanQuery(value: unknown) {
+    return value === true || value === "true" || value === "1";
+  }
+
+  function parseDateQuery(value: unknown, field: string) {
+    if (typeof value !== "string" || value.trim().length === 0) return undefined;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new HttpError(400, `Invalid ${field} query value`);
+    }
+    return parsed;
   }
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -92,6 +116,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
     res.status(403).json({ error: "Missing permission to link approvals" });
     return false;
+  }
+
+  function actorCanAccessCompany(req: Request, companyId: string) {
+    if (req.actor.type === "none") return false;
+    if (req.actor.type === "agent") return req.actor.companyId === companyId;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    return (req.actor.companyIds ?? []).includes(companyId);
   }
 
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
@@ -541,6 +572,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       baseRevisionId: req.body.baseRevisionId ?? null,
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
     });
     const doc = result.document;
 
@@ -581,6 +613,57 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const revisions = await documentsSvc.listIssueDocumentRevisions(issue.id, keyParsed.data);
     res.json(revisions);
   });
+
+  router.post(
+    "/issues/:id/documents/:key/revisions/:revisionId/restore",
+    validate(restoreIssueDocumentRevisionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const revisionId = req.params.revisionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await documentsSvc.restoreIssueDocumentRevision({
+        issueId: issue.id,
+        key: keyParsed.data,
+        revisionId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_restored",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: result.document.key,
+          documentId: result.document.id,
+          title: result.document.title,
+          format: result.document.format,
+          revisionNumber: result.document.latestRevisionNumber,
+          restoredFromRevisionId: result.restoredFromRevisionId,
+          restoredFromRevisionNumber: result.restoredFromRevisionNumber,
+        },
+      });
+
+      res.json(result.document);
+    },
+  );
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
@@ -1096,11 +1179,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
+    if (issue.status === "done" && existing.status !== "done") {
+      const tc = getTelemetryClient();
+      if (tc && actor.agentId) {
+        const actorAgent = await agentsSvc.getById(actor.agentId);
+        if (actorAgent) {
+          trackAgentTaskCompleted(tc, { agentRole: actorAgent.role });
+        }
+      }
+    }
+
     let comment = null;
     if (commentBody) {
       comment = await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
       });
 
       await logActivity(db, {
@@ -1410,6 +1504,86 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(comment);
   });
 
+  router.get("/issues/:id/feedback-votes", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can view feedback votes" });
+      return;
+    }
+
+    const votes = await feedback.listIssueVotesForUser(id, req.actor.userId ?? "local-board");
+    res.json(votes);
+  });
+
+  router.get("/issues/:id/feedback-traces", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can view feedback traces" });
+      return;
+    }
+
+    const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
+    const voteRaw = typeof req.query.vote === "string" ? req.query.vote : undefined;
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+    const targetType = targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw) : undefined;
+    const vote = voteRaw ? feedbackVoteValueSchema.parse(voteRaw) : undefined;
+    const status = statusRaw ? feedbackTraceStatusSchema.parse(statusRaw) : undefined;
+
+    const traces = await feedback.listFeedbackTraces({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      targetType,
+      vote,
+      status,
+      from: parseDateQuery(req.query.from, "from"),
+      to: parseDateQuery(req.query.to, "to"),
+      sharedOnly: parseBooleanQuery(req.query.sharedOnly),
+      includePayload: parseBooleanQuery(req.query.includePayload),
+    });
+    res.json(traces);
+  });
+
+  router.get("/feedback-traces/:traceId", async (req, res) => {
+    const traceId = req.params.traceId as string;
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can view feedback traces" });
+      return;
+    }
+    const includePayload = parseBooleanQuery(req.query.includePayload) || req.query.includePayload === undefined;
+    const trace = await feedback.getFeedbackTraceById(traceId, includePayload);
+    if (!trace || !actorCanAccessCompany(req, trace.companyId)) {
+      res.status(404).json({ error: "Feedback trace not found" });
+      return;
+    }
+    res.json(trace);
+  });
+
+  router.get("/feedback-traces/:traceId/bundle", async (req, res) => {
+    const traceId = req.params.traceId as string;
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can view feedback trace bundles" });
+      return;
+    }
+    const bundle = await feedback.getFeedbackTraceBundle(traceId);
+    if (!bundle || !actorCanAccessCompany(req, bundle.companyId)) {
+      res.status(404).json({ error: "Feedback trace not found" });
+      return;
+    }
+    res.json(bundle);
+  });
+
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1487,6 +1661,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId,
     });
 
     if (actor.runId) {
@@ -1606,6 +1781,93 @@ export function issueRoutes(db: Db, storage: StorageService) {
     })();
 
     res.status(201).json(comment);
+  });
+
+  router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can vote on AI feedback" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await feedback.saveIssueVote({
+      issueId: id,
+      targetType: req.body.targetType,
+      targetId: req.body.targetId,
+      vote: req.body.vote,
+      reason: req.body.reason,
+      authorUserId: req.actor.userId ?? "local-board",
+      allowSharing: req.body.allowSharing === true,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.feedback_vote_saved",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        targetType: result.vote.targetType,
+        targetId: result.vote.targetId,
+        vote: result.vote.vote,
+        hasReason: Boolean(result.vote.reason),
+        sharingEnabled: result.sharingEnabled,
+      },
+    });
+
+    if (result.consentEnabledNow) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.feedback_data_sharing_updated",
+        entityType: "company",
+        entityId: issue.companyId,
+        details: {
+          feedbackDataSharingEnabled: true,
+          source: "issue_feedback_vote",
+        },
+      });
+    }
+
+    if (result.persistedSharingPreference) {
+      const settings = await instanceSettings.get();
+      const companyIds = await instanceSettings.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.general_updated",
+            entityType: "instance_settings",
+            entityId: settings.id,
+            details: {
+              general: settings.general,
+              changedKeys: ["feedbackDataSharingPreference"],
+              source: "issue_feedback_vote",
+            },
+          }),
+        ),
+      );
+    }
+
+    res.status(201).json(result.vote);
   });
 
   router.get("/issues/:id/attachments", async (req, res) => {

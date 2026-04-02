@@ -1,15 +1,23 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
-import type { IssueComment, Agent } from "@paperclipai/shared";
+import type {
+  Agent,
+  FeedbackDataSharingPreference,
+  FeedbackVote,
+  FeedbackVoteValue,
+  IssueComment,
+} from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
+import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -37,9 +45,17 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   queuedComments?: CommentWithRunMeta[];
+  feedbackVotes?: FeedbackVote[];
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
   linkedRuns?: LinkedRunItem[];
   companyId?: string | null;
   projectId?: string | null;
+  onVote?: (
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -126,6 +142,11 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  feedbackVote = null,
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
+  onVote,
+  voting = false,
   highlightCommentId,
   queued = false,
 }: {
@@ -133,6 +154,14 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  feedbackVote?: FeedbackVoteValue | null;
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
+  onVote?: (
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
+  voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
@@ -217,6 +246,15 @@ function CommentCard({
           />
         </div>
       ) : null}
+      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+        <OutputFeedbackButtons
+          activeVote={feedbackVote}
+          disabled={voting}
+          sharingPreference={feedbackDataSharingPreference}
+          termsUrl={feedbackTermsUrl}
+          onVote={onVote}
+        />
+      ) : null}
       {comment.runId && !isPending ? (
         <div className="mt-2 pt-2 border-t border-border/60">
           {comment.runAgentId ? (
@@ -246,12 +284,26 @@ const TimelineList = memo(function TimelineList({
   agentMap,
   companyId,
   projectId,
+  feedbackVoteByTargetId,
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
+  onVote,
+  votingTargetId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  feedbackVoteByTargetId?: Map<string, FeedbackVoteValue>;
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
+  onVote?: (
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
+  votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
@@ -298,6 +350,11 @@ const TimelineList = memo(function TimelineList({
             agentMap={agentMap}
             companyId={companyId}
             projectId={projectId}
+            feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
+            feedbackDataSharingPreference={feedbackDataSharingPreference}
+            feedbackTermsUrl={feedbackTermsUrl}
+            onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
+            voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
           />
         );
@@ -309,9 +366,13 @@ const TimelineList = memo(function TimelineList({
 export function CommentThread({
   comments,
   queuedComments = [],
+  feedbackVotes = [],
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
   linkedRuns = [],
   companyId,
   projectId,
+  onVote,
   onAdd,
   agentMap,
   imageUploadHandler,
@@ -333,6 +394,7 @@ export function CommentThread({
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
+  const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -358,6 +420,15 @@ export function CommentThread({
       return a.kind === "comment" ? -1 : 1;
     });
   }, [comments, linkedRuns]);
+
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes) {
+      if (feedbackVote.targetType !== "issue_comment") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
 
   // Build mention options from agent map (exclude terminated agents)
   const mentions = useMemo<MentionOption[]>(() => {
@@ -420,17 +491,24 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const submittedBody = trimmed;
 
     setSubmitting(true);
+    setBody("");
     try {
       // TODO: wire an explicit "send + interrupt" action through the composer if we expose it in the UI.
-      await onAdd(trimmed, reopen ? true : undefined, reassignment ?? undefined);
-      setBody("");
+      await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
-      // Parent mutation handlers surface the failure and keep the draft intact.
+      setBody((current) =>
+        restoreSubmittedCommentDraft({
+          currentBody: current,
+          submittedBody,
+        }),
+      );
+      // Parent mutation handlers surface the failure and the draft is restored for retry.
     } finally {
       setSubmitting(false);
     }
@@ -455,21 +533,38 @@ export function CommentThread({
     }
   }
 
+  async function handleFeedbackVote(
+    commentId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) {
+    if (!onVote) return;
+    setVotingTargetId(commentId);
+    try {
+      await onVote(commentId, vote, options);
+    } finally {
+      setVotingTargetId(null);
+    }
+  }
+
   const canSubmit = !submitting && !!body.trim();
 
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
 
-      {timeline.length > 0 ? (
-        <TimelineList
-          timeline={timeline}
-          agentMap={agentMap}
-          companyId={companyId}
-          projectId={projectId}
-          highlightCommentId={highlightCommentId}
-        />
-      ) : null}
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        companyId={companyId}
+        projectId={projectId}
+        feedbackVoteByTargetId={feedbackVoteByTargetId}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        onVote={onVote ? handleFeedbackVote : undefined}
+        votingTargetId={votingTargetId}
+        highlightCommentId={highlightCommentId}
+        feedbackTermsUrl={feedbackTermsUrl}
+      />
 
       {liveRunSlot}
 
@@ -591,6 +686,7 @@ export function CommentThread({
           </Button>
         </div>
       </div>
+
     </div>
   );
 }

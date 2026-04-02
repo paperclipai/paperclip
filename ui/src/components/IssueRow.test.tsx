@@ -113,4 +113,27 @@ describe("IssueRow", () => {
       root.unmount();
     });
   });
+
+  it("preserves the issue detail breadcrumb source and href in the link target", () => {
+    const root = createRoot(container);
+    const issue = createIssue();
+    const state = {
+      issueDetailBreadcrumb: { label: "Inbox", href: "/PAP/inbox/mine" },
+      issueDetailSource: "inbox",
+    };
+
+    act(() => {
+      root.render(<IssueRow issue={issue} issueLinkState={state} />);
+    });
+
+    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("to") ?? link?.getAttribute("href")).toContain(
+      "/issues/PAP-1?from=inbox&fromHref=%2FPAP%2Finbox%2Fmine",
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

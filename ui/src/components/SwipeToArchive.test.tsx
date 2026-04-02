@@ -136,7 +136,10 @@ describe("SwipeToArchive", () => {
 
     const surface = container.querySelector("[data-inbox-row-surface]") as HTMLDivElement | null;
     expect(surface).not.toBeNull();
-    expect(surface?.style.backgroundColor).toBe("hsl(var(--muted))");
+    expect(surface?.className).toContain("bg-zinc-100");
+    expect(surface?.className).toContain("dark:bg-zinc-800");
+    expect(surface?.className).not.toContain("bg-card");
+    expect(surface?.style.backgroundColor).toBe("");
     expect(surface?.style.boxShadow).toBe("");
 
     act(() => {

@@ -3,9 +3,10 @@ name: paperclip
 description: >
   Interact with the Paperclip control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check
-  assignments, update task status, delegate work, post comments, or call any
-  Paperclip API endpoint. Do NOT use for the actual domain work itself (writing
-  code, research, etc.) — only for Paperclip coordination.
+  assignments, update task status, delegate work, post comments, set up or manage
+  routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
+  use for the actual domain work itself (writing code, research, etc.) — only for
+  Paperclip coordination.
 ---
 
 # Paperclip Skill
@@ -85,7 +86,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
 ## Project Setup Workflow (CEO/Manager Common Path)
 
@@ -137,6 +138,17 @@ Authorized managers can install company skills independently of hiring, then ass
 If you are asked to install a skill for the company or an agent you MUST read:
 `skills/paperclip/references/company-skills.md`
 
+## Routines
+
+Routines are recurring tasks. Each time a routine fires it creates an execution issue assigned to the routine's agent — the agent picks it up in the normal heartbeat flow.
+
+- Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
+- Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
+- Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+
+If you are asked to create or manage routines you MUST read:
+`skills/paperclip/references/routines.md`
+
 ## Critical Rules
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
@@ -147,6 +159,7 @@ If you are asked to install a skill for the company or an agent you MUST read:
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.
 - **Always comment** on `in_progress` work before exiting a heartbeat — **except** for blocked tasks with no new context (see blocked-task dedup in Step 4).
 - **Always set `parentId`** on subtasks (and `goalId` unless you're CEO/manager creating top-level work).
+- **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace linkage server-side from `parentId`. For non-child follow-ups tied to the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly instead of relying on free-text references or memory.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
 - **@-mentions** (`@AgentName` in comments) trigger heartbeats — use sparingly, they cost budget.
@@ -290,6 +303,17 @@ PATCH /api/agents/{agentId}/instructions-path
 | List issue attachments                    | `GET /api/issues/:issueId/attachments`                                                     |
 | Get attachment content                    | `GET /api/attachments/:attachmentId/content`                                               |
 | Delete attachment                         | `DELETE /api/attachments/:attachmentId`                                                    |
+| List routines                             | `GET /api/companies/:companyId/routines`                                                   |
+| Get routine                               | `GET /api/routines/:routineId`                                                             |
+| Create routine                            | `POST /api/companies/:companyId/routines`                                                  |
+| Update routine                            | `PATCH /api/routines/:routineId`                                                           |
+| Add trigger                               | `POST /api/routines/:routineId/triggers`                                                   |
+| Update trigger                            | `PATCH /api/routine-triggers/:triggerId`                                                   |
+| Delete trigger                            | `DELETE /api/routine-triggers/:triggerId`                                                  |
+| Rotate webhook secret                     | `POST /api/routine-triggers/:triggerId/rotate-secret`                                      |
+| Manual run                                | `POST /api/routines/:routineId/run`                                                        |
+| Fire webhook (external)                   | `POST /api/routine-triggers/public/:publicId/fire`                                         |
+| List runs                                 | `GET /api/routines/:routineId/runs`                                                        |
 
 ## Company Import / Export
 
