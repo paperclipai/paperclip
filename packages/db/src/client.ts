@@ -689,8 +689,38 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   }
 
   if (initialState.reason === "no-migration-journal-non-empty-db") {
+    // Existing database predates migration tracking. Bootstrap the journal
+    // by running the standard drizzle migrator (which creates the journal
+    // table), then reconcile to mark already-applied migrations, then apply
+    // any genuinely pending ones. See #2419.
+    const sql = createUtilitySql(url);
+    try {
+      const db = drizzlePg(sql);
+      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    } finally {
+      await sql.end();
+    }
+
+    // After drizzle migrate, the journal exists but may only have a single
+    // hash entry from the CLI migrator. Reconcile to detect already-applied
+    // migrations by inspecting the schema.
+    let reconciledState = await inspectMigrations(url);
+    if (reconciledState.status === "upToDate") return;
+
+    if (reconciledState.reason === "pending-migrations") {
+      const repair = await reconcilePendingMigrationHistory(url);
+      if (repair.repairedMigrations.length > 0) {
+        reconciledState = await inspectMigrations(url);
+      }
+      if (reconciledState.status === "needsMigrations" && reconciledState.reason === "pending-migrations") {
+        await applyPendingMigrationsManually(url, reconciledState.pendingMigrations);
+        reconciledState = await inspectMigrations(url);
+      }
+    }
+
+    if (reconciledState.status === "upToDate") return;
     throw new Error(
-      "Database has tables but no migration journal; automatic migration is unsafe. Initialize migration history manually.",
+      `Failed to reconcile migrations for existing database: ${reconciledState.pendingMigrations.join(", ")}`,
     );
   }
 
