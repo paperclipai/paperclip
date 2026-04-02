@@ -231,6 +231,18 @@ async function handleQuestion(chatId: string, question: string, chatKey: string,
   await reply(chatId, "🤔 Syncing & thinking...", threadId);
   syncData();
 
+  // Snapshot report files BEFORE Claude CLI call to detect new ones after
+  const fsMod = await import("fs");
+  const filesBefore = new Set(
+    fsMod.existsSync(REPORTS_DIR)
+      ? fsMod.readdirSync(REPORTS_DIR).filter((f: string) => f.endsWith(".md"))
+      : []
+  );
+  const mtimesBefore = new Map<string, number>();
+  for (const f of filesBefore) {
+    try { mtimesBefore.set(f, fsMod.statSync(`${REPORTS_DIR}/${f}`).mtimeMs); } catch {}
+  }
+
   const session = getSession(chatKey);
   const isNewSession = !session.sessionId;
 
@@ -299,19 +311,26 @@ Câu hỏi: "${question}"`;
     if (answer) {
       await reply(chatId, answer, threadId);
 
-      // Check if a report file was created and offer inline keyboard
-      const today = new Date().toISOString().slice(0, 10);
-      const reportsDir = REPORTS_DIR;
+      // Find the report file that was created or modified by THIS Claude CLI call
       try {
-        const fs = await import("fs");
-        const files = fs.readdirSync(reportsDir)
-          .filter((f: string) => f.startsWith(today) && f.endsWith(".md"))
-          .sort()
-          .reverse();
-        if (files.length > 0) {
-          // Embed filename (without .md) in callback_data so each button pair
-          // always points to the correct report, not the latest one
-          const reportFile = files[0].replace(/\.md$/, "");
+        const filesAfter = fsMod.readdirSync(REPORTS_DIR).filter((f: string) => f.endsWith(".md"));
+
+        // New file = exists now but didn't before
+        // Modified file = exists before but mtime changed
+        let targetFile: string | undefined;
+        for (const f of filesAfter) {
+          if (!filesBefore.has(f)) {
+            targetFile = f; // new file — highest priority
+            break;
+          }
+          const newMtime = fsMod.statSync(`${REPORTS_DIR}/${f}`).mtimeMs;
+          if (mtimesBefore.has(f) && newMtime > mtimesBefore.get(f)!) {
+            targetFile = f; // modified file
+          }
+        }
+
+        if (targetFile) {
+          const reportFile = targetFile.replace(/\.md$/, "");
           await sendMessageWithKeyboard(
             "📎 Phân tích chi tiết đã lưu.",
             [
@@ -393,10 +412,9 @@ async function main() {
           } else if (action === "chart") {
             await reply(cbChatId, "⏳ Generating chart...", cbThreadId);
             try {
-              const { generateContextChart } = await import("./lib/context-chart.js");
-              const { sendPhoto } = await import("./lib/telegram.js");
-              const png = await generateContextChart(reportPath, WHALES_DB_PATH!);
-              await sendPhoto(png, "📊 Context Chart", {
+              const { generateContextHtml } = await import("./lib/context-chart.js");
+              const htmlPath = await generateContextHtml(reportPath, WHALES_DB_PATH!);
+              await sendDocument(htmlPath, "📊 Interactive Report", {
                 botToken: BOT_TOKEN!, chatId: cbChatId, threadId: cbThreadId
               });
             } catch (e: any) {
