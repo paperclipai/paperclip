@@ -22,6 +22,7 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `yolo` | boolean | No | Pass `--approval-mode yolo` for unattended operation |
+| `helloProbeTimeoutSec` | number | No | Timeout for the environment test hello probe in seconds (default: 60). Increase if Gemini CLI cold starts are slow. |
 
 ## Session Persistence
 
@@ -42,4 +43,4 @@ Use the "Test Environment" button in the UI to validate the adapter config. It c
 - Gemini CLI is installed and accessible
 - Working directory is absolute and available (auto-created if missing and permitted)
 - API key/auth hints (`GEMINI_API_KEY` or `GOOGLE_API_KEY`)
-- A live hello probe (`gemini --output-format json "Respond with hello."`) to verify CLI readiness
+- A live hello probe (`gemini --output-format stream-json --prompt "Respond with hello." --sandbox=none`) to verify CLI readiness

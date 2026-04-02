@@ -38,6 +38,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- helloProbeTimeoutSec (number, optional): timeout for the environment test hello probe in seconds (default: 60). Increase if Gemini CLI cold starts are slow on your host.
 
 Notes:
 - Runs use positional prompt arguments, not stdin.
