@@ -54,6 +54,7 @@ import {
   resolveInboxSelectionIndex,
   InboxApprovalFilter,
   saveLastInboxTab,
+  partitionMineInboxWorkItems,
   shouldShowInboxSection,
   type InboxTab,
   type InboxWorkItem,
@@ -590,6 +591,14 @@ function JoinRequestInboxRow({
   );
 }
 
+function InboxSectionHeader({ label }: { label: string }) {
+  return (
+    <div className="border-b border-border/60 bg-muted/25 px-4 py-2">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</h3>
+    </div>
+  );
+}
+
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -773,7 +782,7 @@ export function Inbox() {
     return joinRequests;
   }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
 
-  const workItemsToRender = useMemo(
+  const mergedWorkItems = useMemo(
     () =>
       getInboxWorkItems({
         issues: tab === "all" && !showTouchedCategory ? [] : issuesToRender,
@@ -783,6 +792,16 @@ export function Inbox() {
       }),
     [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
   );
+
+  const minePartition = useMemo(() => {
+    if (tab !== "mine") return null;
+    return partitionMineInboxWorkItems(mergedWorkItems, readItems);
+  }, [mergedWorkItems, readItems, tab]);
+
+  const workItemsToRender = useMemo(() => {
+    if (!minePartition) return mergedWorkItems;
+    return [...minePartition.action, ...minePartition.rest];
+  }, [mergedWorkItems, minePartition]);
 
   const agentName = (id: string | null) => {
     if (!id) return null;
@@ -1333,6 +1352,19 @@ export function Inbox() {
                   item.timestamp < todayCutoff &&
                   workItemsToRender[index - 1].timestamp >= todayCutoff;
                 const elements: ReactNode[] = [];
+                if (minePartition && tab === "mine") {
+                  const actionLen = minePartition.action.length;
+                  const restLen = minePartition.rest.length;
+                  if (index === 0) {
+                    if (actionLen > 0) {
+                      elements.push(<InboxSectionHeader key="inbox-section-action" label="Action" />);
+                    } else if (restLen > 0) {
+                      elements.push(<InboxSectionHeader key="inbox-section-updates" label="Updates" />);
+                    }
+                  } else if (index === actionLen && actionLen > 0 && restLen > 0) {
+                    elements.push(<InboxSectionHeader key="inbox-section-updates" label="Updates" />);
+                  }
+                }
                 if (showTodayDivider) {
                   elements.push(
                     <div key="today-divider" className="flex items-center gap-3 px-4 my-2">
