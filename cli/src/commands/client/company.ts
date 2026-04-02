@@ -399,6 +399,24 @@ function buildDefaultImportAdapterMessages(
   ];
 }
 
+async function promptForAdapterType(): Promise<string> {
+  const selected = await p.select({
+    message: "Select adapter type for imported agents without an explicit adapter",
+    options: [
+      { value: "claude_local", label: "claude-local", hint: "Claude Code (default)" },
+      { value: "codex_local", label: "codex-local", hint: "Codex CLI" },
+      { value: "gemini_local", label: "gemini-local", hint: "Gemini CLI" },
+      { value: "opencode_local", label: "opencode-local", hint: "OpenCode" },
+    ],
+    initialValue: "claude_local",
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Import cancelled.");
+    process.exit(0);
+  }
+  return selected as string;
+}
+
 async function promptForImportSelection(preview: CompanyPortabilityPreviewResult): Promise<string[]> {
   const catalog = buildImportSelectionCatalog(preview);
   const state = buildDefaultImportSelectionState(catalog);
@@ -1380,7 +1398,17 @@ export function registerCompanyCommands(program: Command): void {
           if (!preview) {
             throw new Error("Import preview returned no data.");
           }
-          const adapterOverrides = buildDefaultImportAdapterOverrides(preview, "claude_local");
+          const selectedAgentSlugs = new Set(preview.selectedAgentSlugs);
+          const hasProcessAgents = preview.manifest.agents.some(
+            (agent) =>
+              agent.adapterType === "process" &&
+              (selectedAgentSlugs.size === 0 || selectedAgentSlugs.has(agent.slug)),
+          );
+          const adapterType =
+            hasProcessAgents && interactiveView && !opts.yes
+              ? await promptForAdapterType()
+              : "claude_local";
+          const adapterOverrides = buildDefaultImportAdapterOverrides(preview, adapterType);
           const adapterMessages = buildDefaultImportAdapterMessages(adapterOverrides);
 
           if (opts.dryRun) {
