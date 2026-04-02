@@ -141,7 +141,7 @@ describeEmbeddedPostgres("heartbeat enqueueWakeup idempotency", () => {
     expect(wakeupRequests.length).toBe(1);
   });
 
-  it("returns null for duplicate idempotencyKey when pending (no runId)", async () => {
+  it("returns null for pending request with same idempotencyKey", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const heartbeat = heartbeatService(db);
     const idempotencyKey = "pending-key-456";
@@ -162,6 +162,85 @@ describeEmbeddedPostgres("heartbeat enqueueWakeup idempotency", () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  it("creates new run when existing request's runId points to missing run", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const heartbeat = heartbeatService(db);
+    const idempotencyKey = "missing-run-key-789";
+
+    // Create an issue
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test Issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    // Manually insert a wakeup request with runId pointing to non-existent run
+    const fakeRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      status: "claimed",
+      idempotencyKey,
+      runId: fakeRunId,
+    });
+
+    // Call with same idempotency key - should create new run (data inconsistency recovery)
+    const result = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      idempotencyKey,
+      payload: { issueId },
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.id).not.toBe(fakeRunId);
+  });
+
+  it("allows retry after skipped request with same idempotencyKey", async () => {
+    const { companyId, agentId, issuePrefix } = await seedCompanyAndAgent();
+    const heartbeat = heartbeatService(db);
+    const idempotencyKey = "skipped-key-101";
+
+    // Create an issue
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test Issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    // Manually insert a skipped wakeup request
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "on_demand",
+      status: "skipped",
+      idempotencyKey,
+      reason: "budget.blocked",
+      finishedAt: new Date(),
+    });
+
+    // Call with same idempotency key - should create new run (skipped requests don't block)
+    const result = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      idempotencyKey,
+      payload: { issueId },
+    });
+
+    expect(result).not.toBeNull();
   });
 
   it("allows different idempotencyKeys to create separate runs", async () => {

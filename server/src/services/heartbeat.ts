@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -3145,6 +3145,7 @@ export function heartbeatService(db: Db) {
     if (!agent) throw notFound("Agent not found");
 
     // Idempotency check: if an idempotencyKey is provided, check for existing request
+    // Note: skipped requests are excluded to allow retries after transient failures
     const idempotencyKey = readNonEmptyString(opts.idempotencyKey);
     if (idempotencyKey) {
       const existingRequest = await db
@@ -3155,6 +3156,8 @@ export function heartbeatService(db: Db) {
             eq(agentWakeupRequests.companyId, agent.companyId),
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            // Exclude skipped requests to allow retries after transient conditions
+            not(eq(agentWakeupRequests.status, "skipped")),
           ),
         )
         .orderBy(desc(agentWakeupRequests.createdAt))
@@ -3162,13 +3165,16 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (existingRequest) {
-        // If the existing request has a run, return it
+        // If the existing request has a run, try to return it
         if (existingRequest.runId) {
           const existingRun = await getRun(existingRequest.runId);
           if (existingRun) return existingRun;
+          // If runId is set but run not found (data inconsistency), fall through to create new run
+          // by continuing past this if-block without returning
+        } else {
+          // runId not yet assigned → request is genuinely pending, return null to deduplicate
+          return null;
         }
-        // If pending (no runId yet), return null to indicate deduplication
-        return null;
       }
     }
 
