@@ -65,6 +65,9 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const PROCESS_LOSS_PENDING_ERROR_CODE = "process_lost_pending";
+const DEFAULT_PROCESS_LOSS_CONFIRMATION_MS = 30_000;
+const MAX_PROCESS_LOSS_RETRIES = 2;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1596,7 +1599,7 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function clearDetachedRunWarning(runId: string) {
+  async function clearTransientProcessWarning(runId: string) {
     const updated = await db
       .update(heartbeatRuns)
       .set({
@@ -1604,7 +1607,13 @@ export function heartbeatService(db: Db) {
         errorCode: null,
         updatedAt: new Date(),
       })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE)))
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.status, "running"),
+          inArray(heartbeatRuns.errorCode, [DETACHED_PROCESS_ERROR_CODE, PROCESS_LOSS_PENDING_ERROR_CODE]),
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!updated) return null;
@@ -1613,7 +1622,7 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Detached child process reported activity; cleared detached warning",
+      message: "Child process reported activity; cleared transient process warning",
     });
     return updated;
   }
@@ -1842,8 +1851,9 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; processLossConfirmationMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const processLossConfirmationMs = Math.max(0, opts?.processLossConfirmationMs ?? DEFAULT_PROCESS_LOSS_CONFIRMATION_MS);
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -1890,19 +1900,66 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const processLostDiagnosticContext = {
+        runId: run.id,
+        agentId: run.agentId,
+        processPid: run.processPid,
+        processStartedAt: run.processStartedAt ? new Date(run.processStartedAt).toISOString() : null,
+        runStartedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+        runUpdatedAt: run.updatedAt ? new Date(run.updatedAt).toISOString() : null,
+      };
+
+      if (tracksLocalChild && run.processPid && processLossConfirmationMs > 0) {
+        const isPendingConfirmation = run.errorCode === PROCESS_LOSS_PENDING_ERROR_CODE;
+        const pendingSinceMs = run.updatedAt ? now.getTime() - new Date(run.updatedAt).getTime() : Number.POSITIVE_INFINITY;
+        if (!isPendingConfirmation || pendingSinceMs < processLossConfirmationMs) {
+          const waitMs = isPendingConfirmation
+            ? Math.max(0, processLossConfirmationMs - pendingSinceMs)
+            : processLossConfirmationMs;
+          const pendingMessage = `Process watchdog detected missing child pid ${run.processPid}; confirming for ${Math.ceil(waitMs / 1000)}s before failure`;
+          const pendingRun = await setRunStatus(run.id, "running", {
+            error: pendingMessage,
+            errorCode: PROCESS_LOSS_PENDING_ERROR_CODE,
+          });
+          if (pendingRun) {
+            await appendRunEvent(pendingRun, await nextRunEventSeq(pendingRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: pendingMessage,
+              payload: {
+                ...processLostDiagnosticContext,
+                processLossConfirmationMs,
+                pendingSinceMs: Number.isFinite(pendingSinceMs) ? pendingSinceMs : null,
+                processLossRetryCount: run.processLossRetryCount ?? 0,
+              },
+            });
+          }
+          continue;
+        }
+      }
+
+      const currentProcessLossRetryCount = run.processLossRetryCount ?? 0;
+      const nextProcessLossRetryCount = currentProcessLossRetryCount + 1;
+      const shouldRetry =
+        tracksLocalChild &&
+        !!run.processPid &&
+        currentProcessLossRetryCount < MAX_PROCESS_LOSS_RETRIES;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
+      const finalizedMessage = shouldRetry
+        ? `${baseMessage}; retrying (${nextProcessLossRetryCount}/${MAX_PROCESS_LOSS_RETRIES})`
+        : `${baseMessage}; no retries remaining`;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalizedMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalizedMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -1922,10 +1979,13 @@ export function heartbeatService(db: Db) {
         stream: "system",
         level: "error",
         message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+          ? `${baseMessage}; queued retry (${nextProcessLossRetryCount}/${MAX_PROCESS_LOSS_RETRIES}) ${retriedRun?.id ?? ""}`.trim()
+          : `${baseMessage}; no retries remaining`,
         payload: {
-          ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...processLostDiagnosticContext,
+          processLossConfirmationMs,
+          processLossRetryCount: currentProcessLossRetryCount,
+          maxProcessLossRetries: MAX_PROCESS_LOSS_RETRIES,
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -3939,7 +3999,7 @@ export function heartbeatService(db: Db) {
 
     wakeup: enqueueWakeup,
 
-    reportRunActivity: clearDetachedRunWarning,
+    reportRunActivity: clearTransientProcessWarning,
 
     reapOrphanedRuns,
 
