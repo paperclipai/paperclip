@@ -1,8 +1,8 @@
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..1b09a2b9600fefe6180b9f258ce0c40a1d74f28a 100644
+index 93cddf8243271f5fb3ab101617f9114257e41328..782e227b9cce93ed8cc0bebe02d5697db3a760e4 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -41,6 +41,24 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
+@@ -41,6 +41,26 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
  
  IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
  
@@ -15,19 +15,21 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..1b09a2b9600fefe6180b9f258ce0c40a
 +- Be concise. Keep heartbeat updates short and focused.
 +- Do not print full scripts unless explicitly requested.
 +- Summarize results in a few lines with key outcomes only.
++- Emit one final summary block only; do not repeat the same summary text.
 +
 +Auth + headers (mandatory):
-+- Use injected \`$PAPERCLIP_API_KEY\` directly. Do not generate JWT manually when this variable is present.
++- Bootstrap auth once per run, then reuse it for every API call.
++- Use injected \`$PAPERCLIP_API_KEY\` directly when present (preferred).
 +- Reuse headers instead of rebuilding auth each command:
-+  \`AUTH=(-H "Authorization: Bearer <PAPERCLIP_API_KEY>")\`
++  \`AUTH=(-H "Authorization: Bearer <token>")\`
 +  \`RUN=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")\`
-+- If \`$PAPERCLIP_API_KEY\` is empty, generate a token once, store in \`$TOKEN\`, and reuse it for all calls in the run.
++- If \`$PAPERCLIP_API_KEY\` is empty, generate a token once, store in \`$TOKEN\`, set \`AUTH\` once, and reuse it for all calls in the run.
 +- Never print secrets/tokens to output.
 +
  Your Paperclip identity:
    Agent ID: {{agentId}}
    Company ID: {{companyId}}
-@@ -58,18 +76,19 @@ Title: {{taskTitle}}
+@@ -58,18 +78,19 @@ Title: {{taskTitle}}
  
  1. Work on the task using your tools
  2. When done, mark the issue as completed:
@@ -52,7 +54,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..1b09a2b9600fefe6180b9f258ce0c40a
  
  Address the comment, POST a reply if needed, then continue working.
  {{/commentId}}
-@@ -77,18 +96,20 @@ Address the comment, POST a reply if needed, then continue working.
+@@ -77,18 +98,20 @@ Address the comment, POST a reply if needed, then continue working.
  {{#noTask}}
  ## Heartbeat Wake — Check for Work
  
