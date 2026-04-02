@@ -19,6 +19,14 @@ const pad = "px-1 -mx-1";
 const markdownPad = "px-1";
 const AUTOSAVE_DEBOUNCE_MS = 900;
 
+export function normalizeInlineEditorValue(value: string): string {
+  return value.trim();
+}
+
+export function shouldSaveInlineEditorValue(nextValue: string, currentValue: string): boolean {
+  return normalizeInlineEditorValue(nextValue) !== currentValue;
+}
+
 export function InlineEditor({
   value,
   onSave,
@@ -80,8 +88,8 @@ export function InlineEditor({
   }, [editing, multiline]);
 
   const commit = useCallback(async (nextValue = draft) => {
-    const trimmed = nextValue.trim();
-    if (trimmed && trimmed !== value) {
+    const trimmed = normalizeInlineEditorValue(nextValue);
+    if (shouldSaveInlineEditorValue(nextValue, value)) {
       await Promise.resolve(onSave(trimmed));
     } else {
       setDraft(value);
