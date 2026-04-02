@@ -305,6 +305,99 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
       const finalState = await inspectMigrations(connectionString);
       expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const constraints = await verifySql.unsafe<{ conname: string }[]>(
+          `
+            SELECT conname
+            FROM pg_constraint
+            WHERE conname IN (
+              'feedback_exports_company_id_companies_id_fk',
+              'feedback_exports_feedback_vote_id_feedback_votes_id_fk',
+              'feedback_exports_issue_id_issues_id_fk',
+              'feedback_votes_company_id_companies_id_fk',
+              'feedback_votes_issue_id_issues_id_fk'
+            )
+            ORDER BY conname
+          `,
+        );
+        expect(constraints.map((row) => row.conname)).toEqual([
+          "feedback_exports_company_id_companies_id_fk",
+          "feedback_exports_feedback_vote_id_feedback_votes_id_fk",
+          "feedback_exports_issue_id_issues_id_fk",
+          "feedback_votes_company_id_companies_id_fk",
+          "feedback_votes_issue_id_issues_id_fk",
+        ]);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0048 safely when routines.variables already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const flashyMarrowHash = await migrationHash("0048_flashy_marrow.sql");
+
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${flashyMarrowHash}'`,
+        );
+
+        const columns = await sql.unsafe<{ column_name: string }[]>(
+          `
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'routines'
+              AND column_name = 'variables'
+          `,
+        );
+        expect(columns).toHaveLength(1);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0048_flashy_marrow.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; data_type: string }[]>(
+          `
+            SELECT column_name, is_nullable, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'routines'
+              AND column_name = 'variables'
+          `,
+        );
+        expect(columns).toEqual([
+          expect.objectContaining({
+            column_name: "variables",
+            is_nullable: "NO",
+            data_type: "jsonb",
+          }),
+        ]);
+      } finally {
+        await verifySql.end();
+      }
     },
     20_000,
   );

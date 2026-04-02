@@ -5,17 +5,23 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { activityApi } from "../api/activity";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
-import { createIssueDetailPath, readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import {
+  createIssueDetailPath,
+  readIssueDetailBreadcrumb,
+  shouldArmIssueDetailInboxQuickArchive,
+} from "../lib/issueDetailBreadcrumb";
+import { hasBlockingShortcutDialog, resolveInboxQuickArchiveKeyAction } from "../lib/keyboardShortcuts";
 import {
   applyOptimisticIssueCommentUpdate,
   createOptimisticIssueComment,
@@ -34,6 +40,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
+import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
@@ -287,6 +294,8 @@ export function IssueDetail() {
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -400,6 +409,7 @@ export function IssueDetail() {
     enabled: !!issueId,
     retry: false,
   });
+  const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
@@ -544,6 +554,10 @@ export function IssueDetail() {
   const timelineComments = useMemo(
     () => commentsWithRunMeta.filter((comment) => comment.queueState !== "queued"),
     [commentsWithRunMeta],
+  );
+  const timelineEvents = useMemo(
+    () => extractIssueTimelineEvents(activity),
+    [activity],
   );
 
   const issueCostSummary = useMemo(() => {
@@ -913,6 +927,22 @@ export function IssueDetail() {
     },
   });
 
+  const archiveFromInbox = useMutation({
+    mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
+    onSuccess: () => {
+      invalidateIssue();
+      navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
+      pushToast({ title: "Issue archived from inbox", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Archive failed",
+        body: err instanceof Error ? err.message : "Unable to archive this issue from the inbox",
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
@@ -946,6 +976,76 @@ export function IssueDetail() {
     }
     return () => closePanel();
   }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const inboxQuickArchiveArmedRef = useRef(false);
+  const canQuickArchiveFromInbox =
+    keyboardShortcutsEnabled &&
+    !issue?.hiddenAt &&
+    sourceBreadcrumb.href.startsWith("/inbox") &&
+    shouldArmIssueDetailInboxQuickArchive(location.state);
+
+  useEffect(() => {
+    if (!issue?.id || !canQuickArchiveFromInbox) {
+      inboxQuickArchiveArmedRef.current = false;
+      return;
+    }
+
+    inboxQuickArchiveArmedRef.current = true;
+
+    const disarm = () => {
+      inboxQuickArchiveArmedRef.current = false;
+    };
+
+    const handlePointerDown = () => {
+      disarm();
+    };
+
+    const handleFocusIn = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && event.target !== document.body) {
+        disarm();
+      }
+    };
+
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.toString().trim().length === 0) return;
+      disarm();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const action = resolveInboxQuickArchiveKeyAction({
+        armed: inboxQuickArchiveArmedRef.current,
+        defaultPrevented: event.defaultPrevented,
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        target: event.target,
+        hasOpenDialog: hasBlockingShortcutDialog(document),
+      });
+
+      if (action === "ignore") return;
+
+      disarm();
+      if (action !== "archive") return;
+
+      event.preventDefault();
+      if (!archiveFromInbox.isPending) {
+        archiveFromInbox.mutate(issue.id);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("focusin", handleFocusIn, true);
+    document.addEventListener("selectionchange", handleSelectionChange);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("focusin", handleFocusIn, true);
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
 
   const copyIssueToClipboard = async () => {
     if (!issue) return;
@@ -1000,6 +1100,7 @@ export function IssueDetail() {
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
+  const imageAttachments = attachmentList.filter(isImageAttachment);
   const hasAttachments = attachmentList.length > 0;
   const attachmentUploadButton = (
     <>
@@ -1338,20 +1439,35 @@ export function IssueDetail() {
                 {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
               </p>
               {isImageAttachment(attachment) && (
-                <a href={attachment.contentPath} target="_blank" rel="noreferrer">
+                <button
+                  type="button"
+                  className="block w-full text-left"
+                  onClick={() => {
+                    const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+                    setGalleryIndex(idx >= 0 ? idx : 0);
+                    setGalleryOpen(true);
+                  }}
+                >
                   <img
                     src={attachment.contentPath}
                     alt={attachment.originalFilename ?? "attachment"}
-                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10"
+                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10 cursor-pointer hover:opacity-80 transition-opacity"
                     loading="lazy"
                   />
-                </a>
+                </button>
               )}
             </div>
           ))}
         </div>
         </div>
       ) : null}
+
+      <ImageGalleryModal
+        images={imageAttachments}
+        initialIndex={galleryIndex}
+        open={galleryOpen}
+        onOpenChange={setGalleryOpen}
+      />
 
       <IssueWorkspaceCard
         issue={issue}
@@ -1390,10 +1506,12 @@ export function IssueDetail() {
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={FEEDBACK_TERMS_URL}
             linkedRuns={timelineRuns}
+            timelineEvents={timelineEvents}
             companyId={issue.companyId}
             projectId={issue.projectId}
             issueStatus={issue.status}
             agentMap={agentMap}
+            currentUserId={currentUserId}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
             enableReassign
             reassignOptions={commentReassignOptions}

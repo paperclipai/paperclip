@@ -27,6 +27,7 @@ import type {
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
+  RoutineVariable,
 } from "@paperclipai/shared";
 import {
   ISSUE_PRIORITIES,
@@ -523,7 +524,7 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
   claude_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
-    { path: ["maxTurnsPerRun"], value: 300 },
+    { path: ["maxTurnsPerRun"], value: 1000 },
   ],
   openclaw_gateway: [
     { path: ["timeoutSec"], value: 120 },
@@ -568,6 +569,29 @@ function normalizeRoutineTriggerExtension(value: unknown): CompanyPortabilityIss
   };
 }
 
+function normalizeRoutineVariableExtension(value: unknown): RoutineVariable | null {
+  if (!isPlainRecord(value)) return null;
+  const name = asString(value.name);
+  if (!name) return null;
+  const type = asString(value.type) ?? "text";
+  if (!["text", "textarea", "number", "boolean", "select"].includes(type)) return null;
+  const options = Array.isArray(value.options)
+    ? value.options.map((entry) => asString(entry)).filter((entry): entry is string => Boolean(entry))
+    : [];
+  const defaultValue =
+    typeof value.defaultValue === "string" || typeof value.defaultValue === "number" || typeof value.defaultValue === "boolean"
+      ? value.defaultValue
+      : null;
+  return {
+    name,
+    label: asString(value.label),
+    type: type as RoutineVariable["type"],
+    defaultValue,
+    required: asBoolean(value.required) ?? true,
+    options,
+  };
+}
+
 function normalizeRoutineExtension(value: unknown): CompanyPortabilityIssueRoutineManifestEntry | null {
   if (!isPlainRecord(value)) return null;
   const triggers = Array.isArray(value.triggers)
@@ -575,9 +599,15 @@ function normalizeRoutineExtension(value: unknown): CompanyPortabilityIssueRouti
       .map((entry) => normalizeRoutineTriggerExtension(entry))
       .filter((entry): entry is CompanyPortabilityIssueRoutineTriggerManifestEntry => entry !== null)
     : [];
+  const variables = Array.isArray(value.variables)
+    ? value.variables
+      .map((entry) => normalizeRoutineVariableExtension(entry))
+      .filter((entry): entry is RoutineVariable => entry !== null)
+    : null;
   const routine = {
     concurrencyPolicy: asString(value.concurrencyPolicy),
     catchUpPolicy: asString(value.catchUpPolicy),
+    variables,
     triggers,
   };
   return stripEmptyValues(routine) ? routine : null;
@@ -587,6 +617,7 @@ function buildRoutineManifestFromLiveRoutine(routine: RoutineLike): CompanyPorta
   return {
     concurrencyPolicy: routine.concurrencyPolicy,
     catchUpPolicy: routine.catchUpPolicy,
+    variables: routine.variables,
     triggers: routine.triggers.map((trigger) => ({
       kind: trigger.kind,
       label: trigger.label ?? null,
@@ -1086,11 +1117,13 @@ function resolvePortableRoutineDefinition(
     ? {
       concurrencyPolicy: issue.routine.concurrencyPolicy,
       catchUpPolicy: issue.routine.catchUpPolicy,
+      variables: issue.routine.variables ?? null,
       triggers: [...issue.routine.triggers],
     }
     : {
       concurrencyPolicy: null,
       catchUpPolicy: null,
+      variables: null,
       triggers: [] as CompanyPortabilityIssueRoutineTriggerManifestEntry[],
     };
 
@@ -3204,6 +3237,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         priority: routine.priority !== "medium" ? routine.priority : undefined,
         concurrencyPolicy: routine.concurrencyPolicy !== "coalesce_if_active" ? routine.concurrencyPolicy : undefined,
         catchUpPolicy: routine.catchUpPolicy !== "skip_missed" ? routine.catchUpPolicy : undefined,
+        variables: (routine.variables ?? []).length > 0 ? routine.variables : undefined,
         triggers: routine.triggers.map((trigger) => stripEmptyValues({
           kind: trigger.kind,
           label: trigger.label ?? null,
@@ -4173,6 +4207,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const routineDefinition = resolvedRoutine.routine ?? {
             concurrencyPolicy: null,
             catchUpPolicy: null,
+            variables: null,
             triggers: [],
           };
           const createdRoutine = await routines.create(targetCompany.id, {
@@ -4196,6 +4231,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
                 ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
                 : "skip_missed",
+            variables: routineDefinition.variables ?? [],
           }, {
             agentId: null,
             userId: actorUserId ?? null,

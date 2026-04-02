@@ -8,7 +8,8 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -16,7 +17,10 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
-import { formatDateTime } from "../lib/utils";
+import { formatAssigneeUserLabel } from "../lib/assignees";
+import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import { timeAgo } from "../lib/timeAgo";
+import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -35,6 +39,7 @@ interface LinkedRunItem {
   agentId: string;
   createdAt: Date | string;
   startedAt: Date | string | null;
+  finishedAt?: Date | string | null;
 }
 
 interface CommentReassignment {
@@ -49,6 +54,7 @@ interface CommentThreadProps {
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
   linkedRuns?: LinkedRunItem[];
+  timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
   projectId?: string | null;
   onVote?: (
@@ -59,6 +65,7 @@ interface CommentThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -116,6 +123,82 @@ function parseReassignment(target: string): CommentReassignment | null {
     return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
   }
   return null;
+}
+
+function humanizeValue(value: string | null): string {
+  if (!value) return "None";
+  return value.replace(/_/g, " ");
+}
+
+function formatTimelineAssigneeLabel(
+  assignee: IssueTimelineAssignee,
+  agentMap?: Map<string, Agent>,
+  currentUserId?: string | null,
+) {
+  if (assignee.agentId) {
+    return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
+  }
+  if (assignee.userId) {
+    return formatAssigneeUserLabel(assignee.userId, currentUserId) ?? "Board";
+  }
+  return "Unassigned";
+}
+
+function formatTimelineActorName(
+  actorType: IssueTimelineEvent["actorType"],
+  actorId: string,
+  agentMap?: Map<string, Agent>,
+  currentUserId?: string | null,
+) {
+  if (actorType === "agent") {
+    return agentMap?.get(actorId)?.name ?? actorId.slice(0, 8);
+  }
+  if (actorType === "system") {
+    return "System";
+  }
+  return formatAssigneeUserLabel(actorId, currentUserId) ?? "Board";
+}
+
+function initialsForName(name: string) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+function formatRunStatusLabel(status: string) {
+  switch (status) {
+    case "timed_out":
+      return "timed out";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+function runTimestamp(run: LinkedRunItem) {
+  return run.finishedAt ?? run.startedAt ?? run.createdAt;
+}
+
+function runStatusClass(status: string) {
+  switch (status) {
+    case "succeeded":
+      return "text-green-700 dark:text-green-300";
+    case "failed":
+    case "error":
+      return "text-red-700 dark:text-red-300";
+    case "timed_out":
+      return "text-orange-700 dark:text-orange-300";
+    case "running":
+      return "text-cyan-700 dark:text-cyan-300";
+    case "queued":
+    case "pending":
+      return "text-amber-700 dark:text-amber-300";
+    case "cancelled":
+      return "text-muted-foreground";
+    default:
+      return "text-foreground";
+  }
 }
 
 function CopyMarkdownButton({ text }: { text: string }) {
@@ -277,11 +360,76 @@ function CommentCard({
 
 type TimelineItem =
   | { kind: "comment"; id: string; createdAtMs: number; comment: CommentWithRunMeta }
+  | { kind: "event"; id: string; createdAtMs: number; event: IssueTimelineEvent }
   | { kind: "run"; id: string; createdAtMs: number; run: LinkedRunItem };
+
+function TimelineEventCard({
+  event,
+  agentMap,
+  currentUserId,
+}: {
+  event: IssueTimelineEvent;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+}) {
+  const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
+
+  return (
+    <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
+      <Avatar size="sm" className="mt-0.5">
+        <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+      </Avatar>
+
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
+          <span className="font-medium text-foreground">{actorName}</span>
+          <span className="text-muted-foreground">updated this task</span>
+          <a
+            href={`#activity-${event.id}`}
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+          >
+            {timeAgo(event.createdAt)}
+          </a>
+        </div>
+
+        {event.statusChange ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Status
+            </span>
+            <span className="text-muted-foreground">
+              {humanizeValue(event.statusChange.from)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {humanizeValue(event.statusChange.to)}
+            </span>
+          </div>
+        ) : null}
+
+        {event.assigneeChange ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Assignee
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineAssigneeLabel(event.assigneeChange.from, agentMap, currentUserId)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineAssigneeLabel(event.assigneeChange.to, agentMap, currentUserId)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
+  currentUserId,
   companyId,
   projectId,
   feedbackVoteByTargetId,
@@ -293,6 +441,7 @@ const TimelineList = memo(function TimelineList({
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   feedbackVoteByTargetId?: Map<string, FeedbackVoteValue>;
@@ -307,36 +456,54 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
+    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
   return (
     <div className="space-y-3">
       {timeline.map((item) => {
+        if (item.kind === "event") {
+          return (
+            <TimelineEventCard
+              key={`event:${item.event.id}`}
+              event={item.event}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+            />
+          );
+        }
+
         if (item.kind === "run") {
           const run = item.run;
+          const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
           return (
-            <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
-              <div className="flex items-center justify-between mb-2">
-                <Link to={`/agents/${run.agentId}`} className="hover:underline">
-                  <Identity
-                    name={agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8)}
-                    size="sm"
-                  />
-                </Link>
-                <span className="text-xs text-muted-foreground">
-                  {formatDateTime(run.startedAt ?? run.createdAt)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-muted-foreground">Run</span>
-                <Link
-                  to={`/agents/${run.agentId}/runs/${run.runId}`}
-                  className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
-                >
-                  {run.runId.slice(0, 8)}
-                </Link>
-                <StatusBadge status={run.status} />
+            <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
+              <Avatar size="sm">
+                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+              </Avatar>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
+                  <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
+                    {actorName}
+                  </Link>
+                  <span className="text-muted-foreground">run</span>
+                  <Link
+                    to={`/agents/${run.agentId}/runs/${run.runId}`}
+                    className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                  >
+                    {run.runId.slice(0, 8)}
+                  </Link>
+                  <span className={cn("font-medium", runStatusClass(run.status))}>
+                    {formatRunStatusLabel(run.status)}
+                  </span>
+                  <a
+                    href={`#run-${run.runId}`}
+                    className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                  >
+                    {timeAgo(runTimestamp(run))}
+                  </a>
+                </div>
               </div>
             </div>
           );
@@ -370,11 +537,13 @@ export function CommentThread({
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
   linkedRuns = [],
+  timelineEvents = [],
   companyId,
   projectId,
   onVote,
   onAdd,
   agentMap,
+  currentUserId,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -408,18 +577,29 @@ export function CommentThread({
       createdAtMs: new Date(comment.createdAt).getTime(),
       comment,
     }));
+    const eventItems: TimelineItem[] = timelineEvents.map((event) => ({
+      kind: "event",
+      id: event.id,
+      createdAtMs: new Date(event.createdAt).getTime(),
+      event,
+    }));
     const runItems: TimelineItem[] = linkedRuns.map((run) => ({
       kind: "run",
       id: run.runId,
-      createdAtMs: new Date(run.startedAt ?? run.createdAt).getTime(),
+      createdAtMs: new Date(runTimestamp(run)).getTime(),
       run,
     }));
-    return [...commentItems, ...runItems].sort((a, b) => {
+    return [...commentItems, ...eventItems, ...runItems].sort((a, b) => {
       if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
       if (a.kind === b.kind) return a.id.localeCompare(b.id);
-      return a.kind === "comment" ? -1 : 1;
+      const kindOrder = {
+        event: 0,
+        comment: 1,
+        run: 2,
+      } as const;
+      return kindOrder[a.kind] - kindOrder[b.kind];
     });
-  }, [comments, linkedRuns]);
+  }, [comments, timelineEvents, linkedRuns]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -496,7 +676,6 @@ export function CommentThread({
     setSubmitting(true);
     setBody("");
     try {
-      // TODO: wire an explicit "send + interrupt" action through the composer if we expose it in the UI.
       await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReopen(true);
@@ -551,11 +730,12 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
+      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
       <TimelineList
         timeline={timeline}
         agentMap={agentMap}
+        currentUserId={currentUserId}
         companyId={companyId}
         projectId={projectId}
         feedbackVoteByTargetId={feedbackVoteByTargetId}
