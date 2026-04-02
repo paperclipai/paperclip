@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
   agents,
+  agentManagers,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -2857,6 +2858,36 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // When an engineer's run completes with real work, wake registered manager
+      // agents so they can review and coordinate follow-up. Uses agent_managers
+      // join table to find the correct managers — not a company-wide role scan.
+      // Skip timer-only heartbeats (idle inbox checks) to prevent cascading wakes.
+      if (outcome === "succeeded" && agent.role === "engineer" && run.invocationSource !== "timer") {
+        void (async () => {
+          try {
+            const managerRows = await db
+              .select({ manager: agents })
+              .from(agentManagers)
+              .innerJoin(agents, eq(agentManagers.managerId, agents.id))
+              .where(eq(agentManagers.agentId, agent.id));
+            for (const { manager } of managerRows) {
+              if (manager.status === "paused" || manager.status === "terminated") continue;
+              await enqueueWakeup(manager.id, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "engineer_run_completed",
+                payload: { agentId: agent.id, agentName: agent.name, runId: run.id },
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                contextSnapshot: { source: "heartbeat.engineer_run_completed" },
+              });
+            }
+          } catch (wakeErr) {
+            logger.warn({ err: wakeErr, agentId: agent.id }, "failed to wake manager agents after engineer run");
+          }
+        })();
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",

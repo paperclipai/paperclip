@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
+import { agents as agentsTable, agentManagers, companies, heartbeatRuns } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -85,6 +85,21 @@ export function agentRoutes(db: Db) {
   const router = Router();
   const svc = agentService(db);
   const access = accessService(db);
+
+  /** Returns true if actorAgentId is a registered manager of targetAgentId. */
+  async function isManagerOf(actorAgentId: string, targetAgentId: string): Promise<boolean> {
+    return db
+      .select({ agentId: agentManagers.agentId })
+      .from(agentManagers)
+      .where(
+        and(
+          eq(agentManagers.agentId, targetAgentId),
+          eq(agentManagers.managerId, actorAgentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
@@ -1974,8 +1989,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      if (!await isManagerOf(req.actor.agentId!, id)) {
+        res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
+        return;
+      }
     }
 
     const run = await heartbeat.wakeup(id, {
@@ -2024,8 +2041,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
-      res.status(403).json({ error: "Agent can only invoke itself" });
-      return;
+      if (!await isManagerOf(req.actor.agentId!, id)) {
+        res.status(403).json({ error: "Agent can only invoke itself or managed agents" });
+        return;
+      }
     }
 
     const run = await heartbeat.invoke(

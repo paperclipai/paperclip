@@ -1,5 +1,5 @@
 import { createDb } from "./client.js";
-import { companies, agents, goals, projects, issues } from "./schema/index.js";
+import { companies, agents, agentManagers, goals, projects, issues } from "./schema/index.js";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is required");
@@ -40,12 +40,16 @@ const [engineer] = await db
     role: "engineer",
     title: "Software Engineer",
     status: "idle",
-    reportsTo: ceo!.id,
     adapterType: "process",
     adapterConfig: { command: "echo", args: ["hello from engineer"] },
     budgetMonthlyCents: 10000,
   })
   .returning();
+
+await db.insert(agentManagers).values({
+  agentId: engineer!.id,
+  managerId: ceo!.id,
+});
 
 const [goal] = await db
   .insert(goals)
