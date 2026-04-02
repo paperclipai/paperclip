@@ -160,7 +160,13 @@ export class FleetOSProxyClient {
 
 // ---------------------------------------------------------------------------
 // Factory — reads FLEETOS_API_URL from env
-// ---------------------------------------------------------------------------
+/**
+ * Create a FleetOSProxyClient configured from the FLEETOS_API_URL environment variable.
+ *
+ * @param apiKey - API key to send in the `X-API-Key` header for all requests
+ * @returns A configured `FleetOSProxyClient` using `FLEETOS_API_URL` as the base URL
+ * @throws FleetOSProxyError when `FLEETOS_API_URL` is not set (statusCode 500)
+ */
 
 export function createFleetOSClient(apiKey: string): FleetOSProxyClient {
   const baseUrl = process.env.FLEETOS_API_URL;

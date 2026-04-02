@@ -11,7 +11,14 @@ import { Sparkles } from "lucide-react";
 
 type AuthMode = "sign_in" | "sign_up";
 
-/** FleetOS API key login form — shown when deploymentMode === "fleetos". */
+/**
+ * Renders a sign-in form that authenticates using a FleetOS API key.
+ *
+ * On successful authentication, clears any error, invalidates the auth session
+ * and companies caches, and navigates to `nextPath` with replace behavior.
+ *
+ * @param nextPath - The path to navigate to after successful authentication
+ */
 function FleetosApiKeyForm({
   nextPath,
 }: {
@@ -82,6 +89,13 @@ function FleetosApiKeyForm({
   );
 }
 
+/**
+ * Renders the authentication page and handles sign-in/sign-up flows and session routing.
+ *
+ * Shows a loading state while session or app health are being fetched, displays a retryable error if health fails to load, and redirects to `next` when a session is present. When healthy, selects between FleetOS API-key authentication and an email/password sign-in or sign-up form, manages form state and validation, performs authentication mutations, invalidates relevant queries on success, and navigates to the configured next path.
+ *
+ * @returns The rendered authentication page element.
+ */
 export function AuthPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();

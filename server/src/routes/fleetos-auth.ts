@@ -17,9 +17,9 @@ export class FleetosUpstreamError extends Error {
 
 /**
  * Validate a FleetOS API key by calling the FleetOS backend.
- * Returns tenant info on success, null when auth is rejected (401/403).
- * Throws FleetosUpstreamError for 5xx / network errors so callers can
- * distinguish "bad key" from "FleetOS is down".
+ *
+ * @returns An object with `tenantId`, `tenantName`, and `companyId` when the key is valid; `null` if the key is rejected (HTTP 401/403) or the response is not OK for other client-level reasons.
+ * @throws FleetosUpstreamError when FleetOS is unreachable (network error) or returns a server error (HTTP 5xx). The error's `statusCode` is the HTTP status for server errors or `null` for network-level failures.
  */
 async function validateFleetosApiKey(
   fleetosApiUrl: string,
@@ -76,6 +76,17 @@ export interface FleetosAuthRoutesOptions {
   fleetosApiUrl: string;
 }
 
+/**
+ * Create Express routes for FleetOS API-key authentication.
+ *
+ * Provides three endpoints mounted under the router:
+ * - POST /login: accepts `{ apiKey }`, validates it against FleetOS, and sets an HTTP-only `fleetos_session` cookie on success; responds with tenant info.
+ * - POST /logout: clears the `fleetos_session` cookie and returns `{ ok: true }`.
+ * - GET /me: returns tenant and user identifiers when the request is authenticated via a FleetOS API-key session; otherwise responds with 401.
+ *
+ * @param opts - Configuration options containing `fleetosApiUrl` used to validate API keys
+ * @returns An Express `Router` configured with the FleetOS authentication routes
+ */
 export function fleetosAuthRoutes(opts: FleetosAuthRoutesOptions) {
   const router = Router();
 

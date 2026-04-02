@@ -9,6 +9,12 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 
+/**
+ * Computes a SHA-256 hexadecimal digest of the given token.
+ *
+ * @param token - The input token string to hash.
+ * @returns The lowercase hexadecimal SHA-256 digest of `token`.
+ */
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -27,6 +33,12 @@ const fleetosValidationCache = new Map<string, FleetosValidationCacheEntry>();
 const FLEETOS_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE_SIZE = 1000;
 
+/**
+ * Retrieves a cached FleetOS validation entry for the given API key and refreshes its LRU position.
+ *
+ * @param apiKey - The FleetOS API key used as the cache lookup key
+ * @returns The cached `FleetosValidationCacheEntry` for `apiKey`, or `null` if no entry exists or it has expired
+ */
 function getCachedFleetosValidation(apiKey: string): FleetosValidationCacheEntry | null {
   const entry = fleetosValidationCache.get(apiKey);
   if (!entry) return null;
@@ -40,6 +52,14 @@ function getCachedFleetosValidation(apiKey: string): FleetosValidationCacheEntry
   return entry;
 }
 
+/**
+ * Stores validated FleetOS tenant/company metadata for an API key with a time-to-live and LRU-like eviction.
+ *
+ * If the cache has reached its maximum size, the oldest entry is evicted before inserting the new entry.
+ *
+ * @param apiKey - The FleetOS API key used as the cache key
+ * @param data - Tenant and company metadata to cache; `tenantId`, `tenantName`, and `companyId` will be stored with an expiration timestamp
+ */
 function setCachedFleetosValidation(
   apiKey: string,
   data: { tenantId: string; tenantName: string; companyId: string },
@@ -63,6 +83,15 @@ interface ActorMiddlewareOptions {
   fleetosApiUrl?: string;
 }
 
+/**
+ * Create an Express middleware that resolves and assigns `req.actor` based on the server's deployment and request credentials.
+ *
+ * The middleware populates `req.actor` for local implicit board access, FleetOS API key access (including cached validation and fail-closed rejection), session-based authenticated users, board API keys, and agent tokens (API key or local JWT). For requests that cannot be associated with an actor it leaves `req.actor` as a non-board placeholder and continues the request flow.
+ *
+ * @param db - Database handle used to look up keys, agents, roles, and memberships
+ * @param opts - Middleware options controlling deployment mode, session resolution, and FleetOS configuration
+ * @returns An Express request handler that sets `req.actor` according to resolved credentials and either calls `next()` or responds with 401 when a provided FleetOS API key fails validation
+ */
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, res, next) => {

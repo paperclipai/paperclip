@@ -69,6 +69,13 @@ function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: b
   );
 }
 
+/**
+ * Guards routing based on instance health and required authentication state.
+ *
+ * Renders a loading indicator while health or session data are loading, an error message if the health check fails, the bootstrap pending page when instance bootstrap is required, or redirects to the auth flow when a session is required but missing. When none of those conditions apply, renders the nested routes.
+ *
+ * @returns A React element: either a loading or error message, the bootstrap pending UI, a redirect to `/auth?next=...`, or the nested routes via `<Outlet />`.
+ */
 function CloudAccessGate() {
   const location = useLocation();
   const healthQuery = useQuery({
@@ -120,6 +127,15 @@ function CloudAccessGate() {
   return <Outlet />;
 }
 
+/**
+ * Route definitions for the company-prefixed board area.
+ *
+ * Includes the dashboard, onboarding, company settings, agents (multiple alias routes and detail routes),
+ * projects, issues (alias redirects), routines, goals, approvals, inbox, fleet routes, plugin pages,
+ * a design guide, test UX runs, and a scoped 404 for board routes.
+ *
+ * @returns A JSX fragment containing Route elements to be nested under a company-prefixed layout
+ */
 function boardRoutes() {
   return (
     <>
@@ -307,6 +323,15 @@ function NoCompaniesStartPage() {
   );
 }
 
+/**
+ * Defines the application's top-level route structure and mounts the onboarding wizard.
+ *
+ * Renders public routes (auth, invites, CLI, board-claim), a protected group guarded by the cloud access gate
+ * (companyless routes, instance settings, unprefixed board redirects, company-prefixed board routes, and a global 404),
+ * and the persistent OnboardingWizard component.
+ *
+ * @returns The top-level React element that provides the app's routing and global onboarding UI.
+ */
 export function App() {
   return (
     <>

@@ -23,7 +23,13 @@ import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
+/**
+ * Create a FleetOS API client from the authenticated request.
+ *
+ * @param req - Express request whose `actor` is expected to contain `fleetosApiKey`
+ * @returns A FleetOS API client instance configured with the actor's API key
+ * @throws FleetOSProxyError if no FleetOS API key is present on the request actor
+ */
 
 function getClientFromRequest(req: Request) {
   const apiKey = req.actor.fleetosApiKey;
@@ -33,7 +39,16 @@ function getClientFromRequest(req: Request) {
   return createFleetOSClient(apiKey);
 }
 
-/** Formats uptime_seconds into a human-readable string. */
+/**
+ * Convert an uptime duration in seconds into a concise human-readable string.
+ *
+ * @param seconds - Total uptime in seconds.
+ * @returns A formatted uptime string:
+ * - "Xs" for durations less than 60 seconds (rounded),
+ * - "Ym" for durations less than 1 hour (whole minutes),
+ * - "Xh Ym" for durations less than 1 day (hours and whole minutes),
+ * - "Xd Xh" for durations of 1 day or more (days and whole hours).
+ */
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -41,7 +56,17 @@ function formatUptime(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 }
 
-/** Merges container + health into a unified response for the UI. */
+/**
+ * Produce a UI-friendly container object that includes normalized health information.
+ *
+ * When `health` is `null`, the returned object's `health` property is `null`.
+ * When `health` is provided, the returned `health` object contains a restricted set of fields:
+ * `cpu_percent`, `mem_percent`, `disk_percent`, `agent_status`, `uptime_seconds`, `uptime_display`, and `last_heartbeat`.
+ *
+ * @param container - The original container object to merge into the response
+ * @param health - The container's health data or `null`
+ * @returns The merged container object with a `health` property formatted for the UI
+ */
 function mergeContainerAndHealth(container: FleetContainer, health: FleetHealth | null) {
   return {
     ...container,
@@ -61,7 +86,17 @@ function mergeContainerAndHealth(container: FleetContainer, health: FleetHealth 
 
 // ---------------------------------------------------------------------------
 // Route factory
-// ---------------------------------------------------------------------------
+/**
+ * Create an Express Router that proxies FleetOS API endpoints through the dashboard server.
+ *
+ * The router enforces board-level authorization, reads the FleetOS API key from the authenticated
+ * session (so keys are never exposed to the browser), normalizes FleetOS responses for UI use,
+ * and maps FleetOS errors to consistent HTTP JSON responses.
+ *
+ * @param db - Database handle used for writing audit log entries for container lifecycle actions
+ * @returns An Express Router mounting FleetOS proxy endpoints (containers listing and detail, health,
+ * agent status, and start/stop/restart lifecycle actions)
+ */
 
 export function fleetosProxyRoutes(db: Db) {
   const router = Router();

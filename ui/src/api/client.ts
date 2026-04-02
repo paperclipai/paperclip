@@ -12,6 +12,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Perform an HTTP request against the API base path and return the parsed JSON response.
+ *
+ * Builds request headers (adds `Content-Type: application/json` unless the body is `FormData` or a `Content-Type` header is already present), sends the request with credentials included, and parses the response body as JSON. On HTTP 204 returns `undefined`. On non-OK responses parses the error body and throws an `ApiError`. For 401 responses, redirects the browser to `/auth?next=...` unless the request or current page is already an auth-related path.
+ *
+ * @param path - The API request path appended to the configured base (`BASE + path`)
+ * @param init - Optional fetch `RequestInit` overrides (headers, method, body, etc.)
+ * @returns The parsed JSON response typed as `T`, or `undefined` when the response status is 204.
+ * @throws ApiError when the response is not OK; contains the HTTP status and the parsed error body.
+ */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;

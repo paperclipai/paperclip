@@ -46,7 +46,19 @@ import { Link } from "@/lib/router";
 
 // ---------------------------------------------------------------------------
 // Gauge (same as FleetOverview, extracted for reuse)
-// ---------------------------------------------------------------------------
+/**
+ * Renders a circular percentage gauge with a label and color-coded thresholds.
+ *
+ * The `value` is clamped to the range 0–100 and shown as a rounded percentage in the center;
+ * the stroke color switches based on `warn` and `danger` thresholds.
+ *
+ * @param value - Input percentage (will be clamped to 0–100)
+ * @param label - Text to display beneath the gauge
+ * @param size - Visual size variant: `"lg"` (default) or `"sm"`
+ * @param warn - Percentage at or above which the gauge shows a warning color (default: 80)
+ * @param danger - Percentage at or above which the gauge shows a danger color (default: 95)
+ * @returns The rendered gauge JSX element containing an SVG circle, the percentage text, and the label
+ */
 
 function Gauge({
   value,
@@ -109,7 +121,14 @@ function Gauge({
 
 // ---------------------------------------------------------------------------
 // Info row
-// ---------------------------------------------------------------------------
+/**
+ * Render a single info row with an icon, a fixed-width label, and a monospace value.
+ *
+ * @param icon - Icon component to render at the start of the row
+ * @param label - Label text displayed in a fixed-width area to the left of the value
+ * @param value - Value to display in monospace; renders `"--"` when `null` or `undefined`
+ * @returns The rendered row element containing the icon, label, and value
+ */
 
 function InfoRow({
   icon: Icon,
@@ -131,7 +150,17 @@ function InfoRow({
 
 // ---------------------------------------------------------------------------
 // Confirmation dialog
-// ---------------------------------------------------------------------------
+/**
+ * Render a modal dialog that confirms a fleet lifecycle action for a container.
+ *
+ * @param open - Whether the dialog is visible
+ * @param onOpenChange - Callback invoked with the new open state when the dialog is opened or closed
+ * @param action - The lifecycle action being confirmed (`"start"`, `"stop"`, or `"restart"`)
+ * @param containerName - The container name shown in the dialog description
+ * @param onConfirm - Callback invoked when the user confirms the action
+ * @param isPending - When `true`, disables controls and shows a processing state
+ * @returns The dialog JSX element that prompts the user to confirm the specified action
+ */
 
 function ActionConfirmDialog({
   open,
@@ -185,7 +214,16 @@ function ActionConfirmDialog({
 
 // ---------------------------------------------------------------------------
 // Format uptime
-// ---------------------------------------------------------------------------
+/**
+ * Format an uptime duration (in seconds) into a compact human-readable string.
+ *
+ * @param seconds - Uptime duration expressed in seconds
+ * @returns A compact string:
+ * - `<60`: `Ns` (seconds)
+ * - `<3600`: `Mm Ss` (minutes and seconds)
+ * - `<86400`: `Hh Mm` (hours and minutes)
+ * - `>=86400`: `Dd Hh` (days and hours)
+ */
 
 function formatUptime(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -196,7 +234,13 @@ function formatUptime(seconds: number): string {
 
 // ---------------------------------------------------------------------------
 // Main page
-// ---------------------------------------------------------------------------
+/**
+ * Renders the Fleet agent detail page for a container, showing status, health gauges, container info, labels, and lifecycle controls.
+ *
+ * Fetches container details and, when the container is running, health data (both polled every 10 seconds). Updates breadcrumbs from the container metadata, shows a loading skeleton or an error state as appropriate, and provides Start/Restart/Stop actions via a confirmation dialog that invalidate relevant queries on success.
+ *
+ * @returns The rendered Fleet agent detail page view.
+ */
 
 export function FleetAgentDetail() {
   const { containerId } = useParams<{ containerId: string }>();

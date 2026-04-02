@@ -4,7 +4,12 @@ export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated", "fleetos"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
-/** Returns true for deployment modes that maintain per-user/per-tenant sessions. */
+/**
+ * Determine whether a deployment mode maintains per-user or per-tenant sessions.
+ *
+ * @param mode - The deployment mode identifier to check.
+ * @returns `true` if `mode` is `"authenticated"` or `"fleetos"`, `false` otherwise.
+ */
 export function isSessionAwareDeployment(mode: string): boolean {
   return mode === "authenticated" || mode === "fleetos";
 }

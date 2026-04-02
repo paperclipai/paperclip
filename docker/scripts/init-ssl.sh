@@ -82,6 +82,7 @@ fi
 
 mkdir -p "$LIVE_DIR"
 
+# generate_self_signed generates a self-signed X.509 certificate (CN=localhost) and an RSA 2048 private key valid for 365 days, writing fullchain.pem and privkey.pem into "$LIVE_DIR" and printing their locations and next steps.
 generate_self_signed() {
   echo "Generating self-signed certificate..."
   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -98,6 +99,8 @@ generate_self_signed() {
   echo "  cd $DOCKER_DIR && docker compose -f docker-compose.production.yml up -d"
 }
 
+# obtain_letsencrypt obtains a Let's Encrypt certificate for the configured DOMAIN and installs the issued certificate and private key into the nginx SSL live directory.
+# Requires global variables DOMAIN and EMAIL; exits with status 1 if either is missing, and reloads nginx after installing the certificate.
 obtain_letsencrypt() {
   if [[ -z "$DOMAIN" ]]; then
     echo "Error: --domain is required for Let's Encrypt"

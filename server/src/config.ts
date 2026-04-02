@@ -76,6 +76,11 @@ export interface Config {
   fleetosApiUrl?: string;
 }
 
+/**
+ * Load and resolve runtime configuration by combining environment variables, the optional config file, and sensible defaults.
+ *
+ * @returns A fully populated `Config` object containing resolved settings for deployment/server, authentication, database and backups, UI, secrets, storage, heartbeat scheduler, company deletion, and the optional `fleetosApiUrl`.
+ */
 export function loadConfig(): Config {
   const fileConfig = readConfigFile();
   const fileDatabaseMode =

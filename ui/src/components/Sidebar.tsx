@@ -27,6 +27,13 @@ import { healthApi } from "../api/health";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
+/**
+ * Render the application's left sidebar containing company header, primary navigation, plugin-provided sidebar content, and context-aware badges/counts.
+ *
+ * Conditionally includes an "Infrastructure" section when the deployment is detected as Fleetos and exposes plugin slots for sidebar items and a sidebar panel.
+ *
+ * @returns The sidebar element for the application UI.
+ */
 export function Sidebar() {
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();

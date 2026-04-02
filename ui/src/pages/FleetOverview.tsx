@@ -20,7 +20,18 @@ import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
 // Gauge component — a small radial-style progress bar for CPU / mem / disk
-// ---------------------------------------------------------------------------
+/**
+ * Render a compact radial percentage gauge with a label.
+ *
+ * The displayed percentage is clamped to the range 0–100. The gauge color indicates severity:
+ * it is red at or above `danger`, amber at or above `warn`, and green otherwise.
+ *
+ * @param value - Numeric value (percentage) to display; values outside 0–100 are clamped
+ * @param label - Text shown beneath the gauge
+ * @param warn - Threshold at or above which the gauge becomes amber (default: 80)
+ * @param danger - Threshold at or above which the gauge becomes red (default: 95)
+ * @returns A JSX element containing the radial gauge with the rounded percentage centered and the label below
+ */
 
 function Gauge({ value, label, warn = 80, danger = 95 }: { value: number; label: string; warn?: number; danger?: number }) {
   const pct = Math.min(100, Math.max(0, value));
@@ -67,7 +78,16 @@ function Gauge({ value, label, warn = 80, danger = 95 }: { value: number; label:
 
 // ---------------------------------------------------------------------------
 // Container card
-// ---------------------------------------------------------------------------
+/**
+ * Render a clickable card for a FleetContainer that links to the container's detail page.
+ *
+ * Displays the agent name (from `labels.agent_name` or `name`), container id, and a status badge.
+ * If health data is present, shows CPU/MEM/DISK gauges and uptime; if health is missing, shows either
+ * "Health unavailable" for running containers or "Container is {status}" for others. Also shows the tenant ID.
+ *
+ * @param container - The FleetContainer to render
+ * @returns The card element linking to `/fleet/:id` for the provided container
+ */
 
 function ContainerCard({ container }: { container: FleetContainer }) {
   const agentName = container.labels?.agent_name ?? container.name;
@@ -121,7 +141,16 @@ function ContainerCard({ container }: { container: FleetContainer }) {
 
 // ---------------------------------------------------------------------------
 // Main page
-// ---------------------------------------------------------------------------
+/**
+ * Render the Fleet page that lists FleetOS containers, summary metrics, and controls.
+ *
+ * Handles loading, error, and empty states; polls container data periodically and
+ * exposes manual refresh/retry controls. When data is available it splits containers
+ * into running and stopped groups, computes average CPU/Memory/Disk from available
+ * health data, and renders a grid of container cards with status and metrics.
+ *
+ * @returns The rendered Fleet overview page as a JSX element
+ */
 
 export function FleetOverview() {
   const { setBreadcrumbs } = useBreadcrumbs();

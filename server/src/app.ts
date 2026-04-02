@@ -59,6 +59,26 @@ export function resolveViteHmrPort(serverPort: number): number {
   return Math.max(1_024, serverPort - 10_000);
 }
 
+/**
+ * Create and configure the Paperclip Express application with API routes, UI serving modes, authentication/session handling, and plugin host/job infrastructure.
+ *
+ * @param db - Database handle used by routes, plugin services, and stores
+ * @param opts.uiMode - UI serving mode: `"static"` to serve prebuilt assets or `"vite-dev"` for Vite middleware
+ * @param opts.serverPort - Server port used to compute Vite HMR ports when running in `vite-dev` mode
+ * @param opts.storageService - Storage service used by routes that manage uploaded assets and exports
+ * @param opts.deploymentMode - Deployment mode influencing auth/session behavior
+ * @param opts.deploymentExposure - Deployment exposure; affects hostname gating when set to `"private"`
+ * @param opts.allowedHostnames - Hostnames allowed by the private-hostname guard
+ * @param opts.bindHost - Host to bind HMR/Web dev server and used for hostname allowlist resolution
+ * @param opts.authReady - Whether authentication subsystems are ready; passed to health checks
+ * @param opts.companyDeletionEnabled - Feature flag enabling company deletion; passed to health checks
+ * @param opts.instanceId - Optional instance identifier exposed to plugins (defaults to `"default"`)
+ * @param opts.hostVersion - Optional host version string exposed to plugins (defaults to `"0.0.0"`)
+ * @param opts.localPluginDir - Optional local plugin directory override (defaults to bundled location)
+ * @param opts.betterAuthHandler - Optional Express handler to mount at `/api/auth/*` for alternative auth flows
+ * @param opts.resolveSession - Optional session resolver used by actor middleware to resolve sessions from requests
+ * @returns The configured Express application ready to be mounted or started
+ */
 export async function createApp(
   db: Db,
   opts: {
