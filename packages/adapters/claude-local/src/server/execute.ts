@@ -32,6 +32,74 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const CLAUDE_COPIED_SHARED_FILES = ["config.json", "config.toml", "settings.json"] as const;
+const CLAUDE_SYMLINKED_SHARED_FILES = [".credentials.json", "credentials.json"] as const;
+
+async function pathExists(candidate: string): Promise<boolean> {
+  return fs.access(candidate).then(() => true).catch(() => false);
+}
+
+function nonEmpty(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveSharedClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = nonEmpty(env.CLAUDE_CONFIG_DIR);
+  return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".claude");
+}
+
+async function ensureParentDir(target: string): Promise<void> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
+}
+
+async function ensureSymlink(target: string, source: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await ensureParentDir(target);
+    await fs.symlink(source, target);
+    return;
+  }
+  if (!existing.isSymbolicLink()) return;
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return;
+  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+  if (resolvedLinkedPath === source) return;
+
+  await fs.unlink(target);
+  await fs.symlink(source, target);
+}
+
+async function ensureCopiedFile(target: string, source: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing) return;
+  await ensureParentDir(target);
+  await fs.copyFile(source, target);
+}
+
+async function prepareManagedClaudeConfigDir(
+  env: NodeJS.ProcessEnv,
+  agentHome: string,
+): Promise<string> {
+  const targetDir = path.join(agentHome, ".claude");
+  const sourceDir = resolveSharedClaudeConfigDir(env);
+  await fs.mkdir(targetDir, { recursive: true });
+  if (path.resolve(sourceDir) === path.resolve(targetDir)) return targetDir;
+
+  for (const name of CLAUDE_SYMLINKED_SHARED_FILES) {
+    const source = path.join(sourceDir, name);
+    if (!(await pathExists(source))) continue;
+    await ensureSymlink(path.join(targetDir, name), source);
+  }
+
+  for (const name of CLAUDE_COPIED_SHARED_FILES) {
+    const source = path.join(sourceDir, name);
+    if (!(await pathExists(source))) continue;
+    await ensureCopiedFile(path.join(targetDir, name), source);
+  }
+
+  return targetDir;
+}
 
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
@@ -144,6 +212,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const explicitClaudeConfigDir =
+    typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
+      ? path.resolve(envConfig.CLAUDE_CONFIG_DIR.trim())
+      : null;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
@@ -215,6 +287,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
   if (agentHome) {
     env.AGENT_HOME = agentHome;
+    env.HOME = agentHome;
+    env.CLAUDE_CONFIG_DIR = explicitClaudeConfigDir ?? await prepareManagedClaudeConfigDir(process.env, agentHome);
   }
   if (workspaceHints.length > 0) {
     env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
