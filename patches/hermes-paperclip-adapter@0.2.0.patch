@@ -1,15 +1,17 @@
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..ca4ccabb819dd1c66f09f5b29cbdc8fd13a6bb01 100644
+index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250cbbf816dc 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -41,6 +41,32 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
+@@ -41,6 +41,34 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
  
  IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
  
 +Command safety (mandatory):
 +- Never pipe downloaded/remote content into interpreters or shells (no \`curl|python\`, \`curl|bash\`, \`curl|sh\`, \`curl|perl\`, \`wget|*\`).
++- Avoid inline interpreter execution flags (no \`python -c\`, \`python3 -c\`, \`node -e\`, \`bash -c\`, \`sh -c\`, \`perl -e\`).
 +- Download to a local file first, then inspect/parse from that file.
 +- Prefer \`jq\` for JSON filtering.
++- If a script is necessary, write it to a local file first (for example \`/tmp/paperclip_auth.py\`) and execute that file explicitly.
 +
 +Output style (mandatory):
 +- Be concise. Keep heartbeat updates short and focused.
@@ -28,14 +30,14 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..ca4ccabb819dd1c66f09f5b29cbdc8fd
 +- Reuse headers instead of rebuilding auth each command:
 +  \`AUTH=(-H "Authorization: Bearer <token>")\`
 +  \`RUN=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")\`
-+- If fallback is needed, generate token once, store in \`$TOKEN\`, set \`AUTH\` once, and reuse it for all calls in the run.
++- If fallback is needed, generate token once via a local script file (not \`-c\` / \`-e\`), store in \`$TOKEN\`, set \`AUTH\` once, and reuse it for all calls in the run.
 +- After fallback succeeds, continue using the same \`$TOKEN\` for subsequent API calls (do not remint each command).
 +- Never print secrets/tokens to output.
 +
  Your Paperclip identity:
    Agent ID: {{agentId}}
    Company ID: {{companyId}}
-@@ -58,18 +84,19 @@ Title: {{taskTitle}}
+@@ -58,18 +86,19 @@ Title: {{taskTitle}}
  
  1. Work on the task using your tools
  2. When done, mark the issue as completed:
@@ -60,7 +62,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..ca4ccabb819dd1c66f09f5b29cbdc8fd
  
  Address the comment, POST a reply if needed, then continue working.
  {{/commentId}}
-@@ -77,18 +104,21 @@ Address the comment, POST a reply if needed, then continue working.
+@@ -77,18 +106,21 @@ Address the comment, POST a reply if needed, then continue working.
  {{#noTask}}
  ## Heartbeat Wake — Check for Work
  
@@ -88,7 +90,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..ca4ccabb819dd1c66f09f5b29cbdc8fd
  
  4. If truly nothing to do, report briefly what you checked.
  {{/noTask}}`;
-@@ -293,6 +323,11 @@ export async function execute(ctx) {
+@@ -293,6 +325,11 @@ export async function execute(ctx) {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
      };
