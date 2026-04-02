@@ -1,0 +1,16 @@
+{
+  "taskId": "TASK-001",
+  "featureTitle": "Create and Edit Tasks",
+  "evalScores": {
+    "functionality": 10,
+    "codeQuality": 9,
+    "testing": 8,
+    "documentation": 8
+  },
+  "passResult": true,
+  "testEvidence": "Created 5 tasks, edited each, verified persistence to database. No errors in console. API responses correct.",
+  "requiredFixes": [],
+  "notes": "Implementation is solid. Add UI for keyboard shortcuts in future.",
+  "evaluator": "qa-engineer",
+  "evaluatedAt": "2026-03-31T17:00:00Z"
+}

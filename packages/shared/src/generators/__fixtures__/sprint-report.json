@@ -1,0 +1,38 @@
+{
+  "sprintId": "2026-03-31-sprint-1",
+  "deploymentUrl": "https://example.com/deployments/2026-03-31",
+  "deploymentTime": "2026-03-31T18:00:00Z",
+  "summary": "Build a task management system with real-time updates and team collaboration features. Focus on simplicity and speed. Shipping V1 features only.",
+  "featuresShipped": [
+    {
+      "taskId": "TASK-001",
+      "title": "Create and Edit Tasks",
+      "engineer": "engineer-alpha",
+      "status": "shipped"
+    },
+    {
+      "taskId": "TASK-002",
+      "title": "Task List with Filtering",
+      "engineer": "engineer-beta",
+      "status": "shipped"
+    },
+    {
+      "taskId": "TASK-003",
+      "title": "Real-time Task Updates",
+      "engineer": "engineer-alpha",
+      "status": "shipped"
+    }
+  ],
+  "featuresDropped": [
+    {
+      "taskId": "TASK-004",
+      "title": "Real-time collaboration cursors",
+      "reason": "Deferred for UX polish"
+    },
+    {
+      "taskId": "TASK-005",
+      "title": "Advanced reporting dashboard",
+      "reason": "Not started"
+    }
+  ]
+}

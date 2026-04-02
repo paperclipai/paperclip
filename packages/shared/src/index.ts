@@ -599,3 +599,51 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+// Sprint artifact parsers
+export {
+  parseSprintPlan,
+  parseTaskBreakdown,
+  parseHandoff,
+  parseEvalReport,
+  determinePassResult,
+  parseSprintReport,
+  type SprintPlanData,
+  type VLabelBreakdown,
+  type Task,
+  type HandoffData,
+  type SelfEvaluationScores,
+  type EvalReportData,
+  type EvalScores,
+  type SprintReportData,
+  type ShippedFeature,
+  type DroppedFeature,
+  type ParsingError,
+  type ParsingResult,
+} from "./parsers/index.js";
+
+// Sprint release generators
+export {
+  generateChangelogEntry,
+  generatePRComment,
+  appendToChangelog,
+  extractVersionFromEntry,
+  findVersionInChangelog,
+  updateChangelogEntryMetadata,
+  postPRComment,
+  RateLimitError,
+  updatePaperclipRelease,
+  updatePaperclipReleaseStatus,
+  getPaperclipReleaseMetadata,
+  addPaperclipComment,
+  generateRelease,
+  type ChangelogEntry,
+  type ChangelogFeature,
+  type DroppedFeatureEntry,
+  type BreakingChange,
+  type PRCommentData,
+  type ReleaseMetadata,
+  type ReleaseResult,
+  type ArtifactData,
+  type ReleaseGeneratorOptions,
+} from "./generators/index.js";

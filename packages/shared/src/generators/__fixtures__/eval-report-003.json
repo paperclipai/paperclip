@@ -1,0 +1,16 @@
+{
+  "taskId": "TASK-003",
+  "featureTitle": "Real-time Task Updates",
+  "evalScores": {
+    "functionality": 7,
+    "codeQuality": 6,
+    "testing": 7,
+    "documentation": 8
+  },
+  "passResult": true,
+  "testEvidence": "2 browser windows, task updated in one appeared in other <500ms. Tested connection drop handling. Works correctly.",
+  "requiredFixes": [],
+  "notes": "Works well but could optimize socket message size. Add reconnection indicator for users.",
+  "evaluator": "qa-engineer",
+  "evaluatedAt": "2026-03-31T17:30:00Z"
+}
