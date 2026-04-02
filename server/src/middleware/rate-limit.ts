@@ -32,7 +32,7 @@ export async function createGlobalRateLimit(): Promise<RequestHandler> {
   const store = await getRedisStore();
   return rateLimit({
     windowMs: 60_000,
-    limit: parseEnvInt("PAPERCLIP_RATE_LIMIT_GLOBAL", 1000),
+    limit: parseEnvInt("PAPERCLIP_RATE_LIMIT_GLOBAL", 100_000),
     standardHeaders: "draft-7",
     legacyHeaders: false,
     message: { error: "Too many requests, please try again later" },
