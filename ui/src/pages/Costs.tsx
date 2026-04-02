@@ -568,6 +568,7 @@ export function Costs() {
                 value={customFrom}
                 onChange={(event) => setCustomFrom(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                aria-label="Start date"
               />
               <span className="text-sm text-muted-foreground">to</span>
               <input
@@ -575,6 +576,7 @@ export function Costs() {
                 value={customTo}
                 onChange={(event) => setCustomTo(event.target.value)}
                 className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                aria-label="End date"
               />
             </div>
           ) : null}

@@ -256,7 +256,11 @@ const TimelineList = memo(function TimelineList({
   highlightCommentId?: string | null;
 }) {
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
+    return (
+      <div className="rounded-lg border border-dashed border-border p-6 text-center">
+        <p className="text-sm text-muted-foreground">No comments yet. Use the editor below to start the conversation.</p>
+      </div>
+    );
   }
 
   return (
