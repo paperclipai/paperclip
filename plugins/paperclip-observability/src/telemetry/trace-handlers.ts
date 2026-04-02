@@ -17,7 +17,7 @@ import type { TelemetryContext } from "./router.js";
 import { mapProvider } from "../provider-map.js";
 
 // ---------------------------------------------------------------------------
-// agent.run.started — create root run span
+// agent.run.started — create run span (child of issue span when available)
 // ---------------------------------------------------------------------------
 
 export async function handleRunStartedTraces(
@@ -26,20 +26,56 @@ export async function handleRunStartedTraces(
 ): Promise<void> {
   const p = event.payload as Record<string, unknown>;
   const runId = String(p.runId ?? "");
+  const issueId = String(p.issueId ?? "");
 
-  const span = ctx.tracer.startSpan("paperclip.heartbeat.run", {
-    kind: SpanKind.INTERNAL,
-    attributes: {
-      "paperclip.agent.id": String(p.agentId ?? ""),
-      "paperclip.run.id": runId,
-      "paperclip.company.id": String(p.companyId ?? ""),
-      "paperclip.run.invocation_source": String(p.invocationSource ?? ""),
-      "paperclip.run.trigger_detail": String(p.triggerDetail ?? ""),
-      "gen_ai.operation.name": "invoke_agent",
-      "gen_ai.agent.id": String(p.agentId ?? ""),
-      "gen_ai.agent.name": String(p.agentName ?? ""),
-    },
-  });
+  const spanAttrs = {
+    "paperclip.agent.id": String(p.agentId ?? ""),
+    "paperclip.run.id": runId,
+    "paperclip.company.id": String(p.companyId ?? event.companyId ?? ""),
+    "paperclip.run.invocation_source": String(p.invocationSource ?? ""),
+    "paperclip.run.trigger_detail": String(p.triggerDetail ?? ""),
+    "paperclip.issue.id": issueId,
+    "gen_ai.operation.name": "invoke_agent",
+    "gen_ai.agent.id": String(p.agentId ?? ""),
+    "gen_ai.agent.name": String(p.agentName ?? ""),
+  };
+
+  // Try to parent under the issue execution span for cross-agent context
+  let parentCtx = issueId
+    ? resolveParentContext(ctx, issueId)
+    : undefined;
+
+  // Fallback: restore from plugin state if not in memory
+  if (!parentCtx && issueId) {
+    const stored = await ctx.state
+      .get({ scopeKind: "issue", scopeId: issueId, stateKey: "execution-span" })
+      .catch(() => null);
+    if (
+      stored &&
+      typeof stored === "object" &&
+      "traceId" in (stored as Record<string, unknown>) &&
+      "spanId" in (stored as Record<string, unknown>)
+    ) {
+      const s = stored as { traceId: string; spanId: string; traceFlags: number };
+      parentCtx = trace.setSpanContext(context.active(), {
+        traceId: s.traceId,
+        spanId: s.spanId,
+        traceFlags: s.traceFlags ?? 1,
+        isRemote: true,
+      });
+    }
+  }
+
+  const span = parentCtx
+    ? ctx.tracer.startSpan(
+        "paperclip.heartbeat.run",
+        { kind: SpanKind.INTERNAL, attributes: spanAttrs },
+        parentCtx,
+      )
+    : ctx.tracer.startSpan("paperclip.heartbeat.run", {
+        kind: SpanKind.INTERNAL,
+        attributes: spanAttrs,
+      });
 
   if (runId) {
     ctx.activeRunSpans.set(runId, span);
@@ -58,6 +94,20 @@ export async function handleRunStartedTraces(
   } else {
     span.end();
   }
+}
+
+/**
+ * Resolve a parent OTel context from an active issue span.
+ * Returns undefined when no in-memory span exists for the issue.
+ */
+function resolveParentContext(
+  ctx: TelemetryContext,
+  issueId: string,
+) {
+  const issueSpan = ctx.activeIssueSpans.get(issueId);
+  return issueSpan
+    ? trace.setSpan(context.active(), issueSpan)
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +129,9 @@ export async function handleRunFinishedTraces(
     }
     if (p.durationMs != null) {
       span.setAttribute("paperclip.run.duration_ms", Number(p.durationMs));
+    }
+    if (p.issueId) {
+      span.setAttribute("paperclip.issue.id", String(p.issueId));
     }
     span.setStatus({ code: SpanStatusCode.OK });
     span.end();
