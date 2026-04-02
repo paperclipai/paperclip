@@ -20,7 +20,19 @@ Your **session history**, **corrections.md**, and **AGENTS.md** may contain outd
 - When you encounter a 403/422 on assignment and need to confirm whether you actually lack permission
 - When session history or workspace docs mention permission denials
 
-## Reading Your Capabilities
+## Environment Variable (Fastest Path)
+
+Every heartbeat injects `PAPERCLIP_CAN_ASSIGN_TASKS=true` or `PAPERCLIP_CAN_ASSIGN_TASKS=false` into your environment. This is computed server-side from the live permission grants and is authoritative. Check it before making an API call:
+
+```bash
+if [ "$PAPERCLIP_CAN_ASSIGN_TASKS" = "true" ]; then
+  # You can PATCH assigneeAgentId directly
+fi
+```
+
+The heartbeat prompt also includes a `## Live Permissions (this heartbeat)` section confirming the same state. If you see it in your prompt, trust it — it supersedes any stale session history.
+
+## Reading Your Capabilities (API Fallback)
 
 The `GET /api/agents/me` response includes an `access` object:
 

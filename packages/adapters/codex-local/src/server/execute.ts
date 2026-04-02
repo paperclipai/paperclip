@@ -316,6 +316,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (wakeReason) {
     env.PAPERCLIP_WAKE_REASON = wakeReason;
   }
+  if (typeof context.paperclipCanAssignTasks === "boolean") {
+    env.PAPERCLIP_CAN_ASSIGN_TASKS = context.paperclipCanAssignTasks ? "true" : "false";
+  }
   if (wakeCommentId) {
     env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
   }
@@ -457,10 +460,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const permissionNote = asString(context.paperclipPermissionNote, "").trim();
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
+    permissionNote,
     renderedPrompt,
   ]);
   const promptMetrics = {

@@ -496,7 +496,17 @@ Bundled skill at `skills/capability-check/SKILL.md` that directs agents to read 
 
 **Integration:** The paperclip skill's Step 1 (Identity) now references `access.canAssignTasks` and points to this skill for detailed handoff rules.
 
+**Live permission injection (PR #138):** The server now computes `canAssignTasks` in `heartbeat.ts` before each adapter execution and injects it via two channels:
+- **Environment variable:** `PAPERCLIP_CAN_ASSIGN_TASKS=true/false` — agents can check programmatically
+- **Prompt section:** `context.paperclipPermissionNote` rendered as a `## Live Permissions (this heartbeat)` block in every heartbeat prompt — LLM sees it without needing an API call
+
+This ensures permissions supersede stale session history because the LLM reads the prompt before any session memory. The env var and prompt note are injected by all three local adapters (claude-local, codex-local, cursor-local).
+
 **Key files:**
+- `server/src/services/heartbeat.ts` — computes access state, sets `context.paperclipPermissionNote` and `context.paperclipCanAssignTasks`
+- `packages/adapters/claude-local/src/server/execute.ts` — reads permission note into prompt, injects env var
+- `packages/adapters/codex-local/src/server/execute.ts` — same
+- `packages/adapters/cursor-local/src/server/execute.ts` — same
 - `skills/capability-check/SKILL.md` — the skill
 - `skills/paperclip/SKILL.md` — Step 1 updated to reference capability checking
 

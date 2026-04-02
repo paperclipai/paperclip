@@ -43,6 +43,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { accessService } from "./access.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -2628,6 +2629,23 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Compute live permission state so the LLM sees it without an API call
+      const agentCanAssignTasks = await (async () => {
+        if (agent.role === "ceo") return true;
+        if (Boolean((agent.permissions as Record<string, unknown> | null)?.canCreateAgents)) return true;
+        const access = accessService(db);
+        const grants = await access.listPrincipalGrants(agent.companyId, "agent", agent.id);
+        return grants.some((g) => g.permissionKey === "tasks:assign");
+      })();
+      context.paperclipPermissionNote = [
+        "## Live Permissions (this heartbeat)",
+        `- **tasks:assign**: ${agentCanAssignTasks ? "GRANTED — use PATCH assigneeAgentId directly" : "NOT GRANTED — escalate via @mention"}`,
+        agentCanAssignTasks
+          ? "If your session history says tasks:assign is denied, that information is STALE. The above is ground truth."
+          : "",
+      ].filter(Boolean).join("\n");
+      context.paperclipCanAssignTasks = agentCanAssignTasks;
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
