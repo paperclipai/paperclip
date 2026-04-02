@@ -1,11 +1,14 @@
 import type { ServerAdapterModule } from "../types.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { listOpenrouterSkills, syncOpenrouterSkills } from "./skills.js";
 
 export const openrouterAdapter: ServerAdapterModule = {
   type: "openrouter_local",
   execute,
   testEnvironment,
+  listSkills: listOpenrouterSkills,
+  syncSkills: syncOpenrouterSkills,
   models: [
     { id: "deepseek/deepseek-v3.2-speciale", label: "DeepSeek V3.2 Speciale" },
     { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
@@ -38,5 +41,6 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): timeout in seconds (default: 600)
 - maxTurns (number, optional): max conversation turns (default: 30)
+- desiredSkills (string[], optional): skills to load into prompt (e.g. ["xlsx", "pdf"]). The "paperclip" skill is always included.
 `,
 };

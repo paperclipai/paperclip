@@ -13,10 +13,13 @@ import {
   joinPromptSections,
   ensureAbsoluteDirectory,
 } from "@paperclipai/adapter-utils/server-utils";
-import { readFile } from "node:fs/promises";
-import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { readFile, writeFile as writeFileAsync, mkdir, readdir, lstat, symlink, readlink, unlink } from "node:fs/promises";
+
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { resolve, dirname, relative } from "node:path";
+
+const execAsync = promisify(exec);
 
 const DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-v3.2";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -161,6 +164,38 @@ const AGENT_TOOLS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "update_issue",
+      description: "Update a Paperclip issue's status, title, or description. Use this to mark issues as done, in_progress, blocked, etc. You MUST call this when completing or updating a task.",
+      parameters: {
+        type: "object",
+        properties: {
+          issue_identifier: { type: "string", description: "Issue identifier (e.g., 'ANI-157')" },
+          status: { type: "string", description: "New status: todo, in_progress, done, blocked, cancelled" },
+          title: { type: "string", description: "Updated title (optional)" },
+          description: { type: "string", description: "Updated description (optional)" },
+        },
+        required: ["issue_identifier"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_comment",
+      description: "Add a comment to a Paperclip issue. Use this for progress updates, completion summaries, blocker reports, etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          issue_identifier: { type: "string", description: "Issue identifier (e.g., 'ANI-157')" },
+          body: { type: "string", description: "Comment body (supports markdown)" },
+        },
+        required: ["issue_identifier", "body"],
+      },
+    },
+  },
 ];
 
 async function executeToolCall(
@@ -168,7 +203,7 @@ async function executeToolCall(
   argsStr: string,
   cwd: string,
   onLog: AdapterExecutionContext["onLog"],
-  apiContext?: { port: string; authHeader?: string; companyId: string },
+  apiContext?: { port: string; authHeader?: string; companyId: string; agentId?: string; runId?: string; shellEnv?: Record<string, string> },
 ): Promise<string> {
   let args: Record<string, string>;
   try {
@@ -181,9 +216,10 @@ async function executeToolCall(
     const cmd = args.command || "";
     await onLog("stdout", `[openrouter] $ ${cmd}\n`);
     try {
-      const output = sanitize(execSync(cmd, { cwd, encoding: "utf-8", timeout: 300_000, maxBuffer: 10 * 1024 * 1024 }));
+      const { stdout, stderr } = await execAsync(cmd, { cwd, encoding: "utf-8", timeout: 300_000, maxBuffer: 10 * 1024 * 1024, env: { ...process.env, ...apiContext?.shellEnv } });
+      const output = sanitize(stdout || "");
       if (output.trim()) await onLog("stdout", output.substring(0, 1000) + "\n");
-      return output.substring(0, 50_000) || "(no output)";
+      return output.substring(0, 50_000) || (stderr ? sanitize(stderr).substring(0, 5000) : "(no output)");
     } catch (err: unknown) {
       const e = err as { stderr?: string; stdout?: string; message?: string };
       return sanitize((e.stderr || e.stdout || e.message || "Command failed").substring(0, 5000));
@@ -192,7 +228,7 @@ async function executeToolCall(
 
   if (name === "read_file") {
     try {
-      const content = sanitize(readFileSync(resolve(cwd, args.path || ""), "utf-8"));
+      const content = sanitize(await readFile(resolve(cwd, args.path || ""), "utf-8"));
       const lines = content.split("\n");
       const offset = Math.max(1, parseInt(args.offset as string) || 1);
       const limit = parseInt(args.limit as string) || 0;
@@ -211,8 +247,8 @@ async function executeToolCall(
   if (name === "write_file") {
     try {
       const fullPath = resolve(cwd, args.path || "");
-      mkdirSync(dirname(fullPath), { recursive: true });
-      writeFileSync(fullPath, args.content || "", "utf-8");
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFileAsync(fullPath, args.content || "", "utf-8");
       return `Written: ${args.path}`;
     } catch (err: unknown) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -222,14 +258,14 @@ async function executeToolCall(
   if (name === "edit_file") {
     try {
       const fullPath = resolve(cwd, args.path || "");
-      const content = readFileSync(fullPath, "utf-8");
+      const content = await readFile(fullPath, "utf-8");
       const oldText = args.old_text || "";
       const newText = args.new_text ?? "";
       if (!oldText) return "Error: old_text is required";
       const occurrences = content.split(oldText).length - 1;
       if (occurrences === 0) return `Error: old_text not found in ${args.path}. Make sure it matches exactly (including whitespace).`;
       if (occurrences > 1) return `Error: old_text found ${occurrences} times in ${args.path}. Provide a more unique text block to match exactly once.`;
-      writeFileSync(fullPath, content.replace(oldText, newText), "utf-8");
+      await writeFileAsync(fullPath, content.replace(oldText, newText), "utf-8");
       return `Edited: ${args.path} (replaced ${oldText.split("\n").length} lines)`;
     } catch (err: unknown) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -241,18 +277,18 @@ async function executeToolCall(
       const dirPath = resolve(cwd, args.path || ".");
       const recursive = args.recursive === "true" || (args as Record<string, unknown>).recursive === true;
       const entries: string[] = [];
-      function walk(dir: string, depth: number) {
-        if (depth > 4) return;
-        const items = readdirSync(dir);
+      async function walk(dir: string, depth: number) {
+        if (depth > 4 || entries.length > 500) return;
+        const items = await readdir(dir);
         for (const item of items) {
           if (item.startsWith(".") && depth > 0) continue;
           const full = resolve(dir, item);
           const rel = relative(cwd, full);
           try {
-            const st = statSync(full);
+            const st = await lstat(full);
             if (st.isDirectory()) {
               entries.push(rel + "/");
-              if (recursive) walk(full, depth + 1);
+              if (recursive) await walk(full, depth + 1);
             } else {
               entries.push(rel);
             }
@@ -260,7 +296,7 @@ async function executeToolCall(
           if (entries.length > 500) return;
         }
       }
-      walk(dirPath, 0);
+      await walk(dirPath, 0);
       return entries.length ? entries.join("\n") : "(empty directory)";
     } catch (err: unknown) {
       return `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -336,6 +372,77 @@ async function executeToolCall(
     }
   }
 
+  if (name === "update_issue" && apiContext) {
+    const identifier = args.issue_identifier || "";
+    await onLog("stdout", `[openrouter] Updating issue: ${identifier}${args.status ? ` → ${args.status}` : ""}\n`);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiContext.authHeader) headers["Authorization"] = apiContext.authHeader;
+      if (apiContext.runId) headers["X-Paperclip-Run-Id"] = apiContext.runId;
+
+      const searchRes = await fetch(
+        `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues?identifier=${encodeURIComponent(identifier)}`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (!searchRes.ok) return `Failed to find issue ${identifier}: ${searchRes.status}`;
+      const issues = await searchRes.json() as Array<{ id: string; identifier: string }>;
+      const issue = issues.find(i => i.identifier === identifier);
+      if (!issue) return `Issue ${identifier} not found`;
+
+      // Checkout first to claim ownership
+      await fetch(`http://localhost:${apiContext.port}/api/issues/${issue.id}/checkout`, {
+        method: "POST", headers, body: JSON.stringify({ agentId: apiContext.agentId, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000),
+      }).catch(() => {});
+
+      const patch: Record<string, unknown> = {};
+      if (args.status) patch.status = args.status;
+      if (args.title) patch.title = args.title;
+      if (args.description) patch.description = args.description;
+
+      const res = await fetch(
+        `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
+        { method: "PATCH", headers, body: JSON.stringify(patch), signal: AbortSignal.timeout(5000) },
+      );
+      if (res.ok) return `Issue ${identifier} updated${args.status ? ` → ${args.status}` : ""}`;
+      return `Failed to update issue ${identifier}: ${res.status}`;
+    } catch (err: unknown) {
+      return `Error updating issue: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  if (name === "add_comment" && apiContext) {
+    const identifier = args.issue_identifier || "";
+    await onLog("stdout", `[openrouter] Adding comment to: ${identifier}\n`);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (apiContext.authHeader) headers["Authorization"] = apiContext.authHeader;
+      if (apiContext.runId) headers["X-Paperclip-Run-Id"] = apiContext.runId;
+
+      const searchRes = await fetch(
+        `http://localhost:${apiContext.port}/api/companies/${apiContext.companyId}/issues?identifier=${encodeURIComponent(identifier)}`,
+        { headers, signal: AbortSignal.timeout(5000) },
+      );
+      if (!searchRes.ok) return `Failed to find issue ${identifier}: ${searchRes.status}`;
+      const issues = await searchRes.json() as Array<{ id: string; identifier: string }>;
+      const issue = issues.find(i => i.identifier === identifier);
+      if (!issue) return `Issue ${identifier} not found`;
+
+      // Checkout first to claim ownership
+      await fetch(`http://localhost:${apiContext.port}/api/issues/${issue.id}/checkout`, {
+        method: "POST", headers, body: JSON.stringify({ agentId: apiContext.agentId, expectedStatuses: ["todo", "in_progress", "blocked"] }), signal: AbortSignal.timeout(5000),
+      }).catch(() => {});
+
+      const res = await fetch(
+        `http://localhost:${apiContext.port}/api/issues/${issue.id}`,
+        { method: "PATCH", headers, body: JSON.stringify({ comment: args.body || "" }), signal: AbortSignal.timeout(5000) },
+      );
+      if (res.ok) return `Comment added to ${identifier}`;
+      return `Failed to add comment to ${identifier}: ${res.status}`;
+    } catch (err: unknown) {
+      return `Error adding comment: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   return `Unknown tool: ${name}`;
 }
 
@@ -378,7 +485,7 @@ async function callOpenRouter(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, config, context, onLog, onMeta } = ctx;
+  const { runId, agent, config, context, onLog, onMeta, onSpawn } = ctx;
   const startedAt = Date.now();
   const model = asString(config.model, DEFAULT_OPENROUTER_MODEL);
   const timeoutSec = asNumber(config.timeoutSec, 600);
@@ -421,6 +528,57 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     try { agentInstructions = sanitize(await readFile(instructionsFilePath, "utf-8")); } catch (err) {
       await onLog("stderr", `[openrouter] Warning: could not read instructions file "${instructionsFilePath}": ${err instanceof Error ? err.message : String(err)}\n`);
     }
+  }
+
+  // ── Sync skills to disk ─────────────────────────────────────
+  // Skills are managed via the UI's Skills tab (syncSkills in skills.ts).
+  // Here we just ensure symlinks are current for this run.
+  const runtimeSkills = Array.isArray(config.paperclipRuntimeSkills) ? config.paperclipRuntimeSkills as Array<{ key: string; runtimeName: string; source: string; required?: boolean }> : [];
+  const desiredSkillsRaw = config.desiredSkills;
+  const desiredSkills = new Set<string>(["paperclip"]); // always include core
+  if (Array.isArray(desiredSkillsRaw)) {
+    for (const s of desiredSkillsRaw) {
+      if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
+    }
+  }
+  // Also include required skills
+  for (const skill of runtimeSkills) {
+    if (skill.required) desiredSkills.add(skill.key);
+  }
+  // Read desired skills from the sync preference (set by UI Skills tab)
+  const syncPref = config.paperclipSkillSync as Record<string, unknown> | undefined;
+  if (syncPref && Array.isArray(syncPref.desiredSkills)) {
+    for (const s of syncPref.desiredSkills) {
+      if (typeof s === "string" && s.trim()) desiredSkills.add(s.trim());
+    }
+  }
+  const skillsDir = resolve(cwd, ".skills");
+  let syncedSkillCount = 0;
+  try {
+    await mkdir(skillsDir, { recursive: true });
+    // Remove stale symlinks
+    const existing = await readdir(skillsDir).catch(() => [] as string[]);
+    for (const name of existing) {
+      const link = resolve(skillsDir, name);
+      try {
+        await readlink(link);
+        await unlink(link);
+      } catch { /* not a symlink — leave it */ }
+    }
+    // Create symlinks for desired skills
+    for (const skill of runtimeSkills) {
+      if (!skill.source) continue;
+      if (!desiredSkills.has(skill.runtimeName) && !desiredSkills.has(skill.key)) continue;
+      try {
+        await symlink(skill.source, resolve(skillsDir, skill.runtimeName));
+        syncedSkillCount++;
+      } catch { /* symlink failed — skip */ }
+    }
+    if (syncedSkillCount > 0) {
+      await onLog("stdout", `[openrouter] Synced ${syncedSkillCount} skill(s) to .skills/\n`);
+    }
+  } catch {
+    // Skills dir creation failed — continue without skills
   }
 
   // ── Build prompt ───────────────────────────────────────────
@@ -524,7 +682,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(projectWorkspaces.length > 0
       ? [`Project source code directories: ${projectWorkspaces.join(", ")}. Use these paths when the task involves project code.`]
       : []),
-    "You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue.",
+    "You have tools: shell, read_file (with offset/limit for large files), write_file, edit_file (search/replace for surgical edits), list_directory, web_search, web_fetch, create_issue, update_issue, add_comment.",
     "PREFER edit_file over write_file when modifying existing files — it's faster and safer than rewriting entire files.",
     "",
     "",
@@ -537,10 +695,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     "RULES:",
     "- ONLY operate within your workspace directory. Do NOT explore /app or other system directories.",
     "- Stay focused on the assigned task. Do not start unrelated work.",
+    "- Use update_issue to mark tasks as done/in_progress/blocked. Use add_comment for progress updates.",
     "- Use minimal tool calls. When done, summarize what you accomplished and STOP.",
     "- For heartbeats without a task, report status briefly and stop.",
     "- To delegate work (e.g., sending email), create a sub-issue via create_issue and assign it to the appropriate agent.",
   );
+
+  // Point agent to skills directory (if any were synced)
+  if (syncedSkillCount > 0) {
+    systemParts.push(`You have ${syncedSkillCount} skill(s) in .skills/ — each is a directory containing a SKILL.md with domain knowledge. Use list_directory and read_file to consult them when the task requires specialized knowledge.`);
+  }
 
   const userParts: string[] = [];
   if (renderedBootstrap) userParts.push(renderedBootstrap);
@@ -594,7 +758,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Warn agent when nearing the turn limit
     if (turn === maxTurns - 3) {
-      messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining. You MUST stop using tools and write a final summary of what you accomplished, what you found, and any remaining work. Do NOT make any more tool calls." });
+      messages.push({ role: "user", content: "SYSTEM: You have 2 tool calls remaining. You MUST stop using tools and write a final summary of what you accomplished, what you found, and any remaining work. If you worked on an issue, call update_issue to set its status before stopping." });
       await onLog("stdout", `[openrouter] Warning agent: nearing turn limit\n`);
     }
 
@@ -605,6 +769,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         port,
         authHeader: jwtAuthHeader,
         companyId: agent.companyId,
+        agentId: agent.id,
+        runId,
+        shellEnv: {
+          PAPERCLIP_AGENT_ID: agent.id,
+          PAPERCLIP_COMPANY_ID: agent.companyId,
+          PAPERCLIP_API_URL: `http://localhost:${port}`,
+          PAPERCLIP_RUN_ID: runId,
+          PAPERCLIP_TASK_ID: issueId || "",
+          PAPERCLIP_WAKE_REASON: wakeReason || "",
+          ...(jwtAuthHeader ? { PAPERCLIP_API_KEY: jwtAuthHeader.replace("Bearer ", "") } : {}),
+        },
       });
       messages.push({ role: "tool", content: sanitize(toolResult).substring(0, 50_000), tool_call_id: tc.id });
     }

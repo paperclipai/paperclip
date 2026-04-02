@@ -71,6 +71,19 @@ export function OpenRouterLocalConfigFields({
           />
         </Field>
       )}
+
+      {/* Desired skills — edit mode only */}
+      {!isCreate && (
+        <Field label="Skills" hint="Comma-separated skill names to load (e.g. xlsx,pdf,frontend-design). The 'paperclip' skill is always included.">
+          <DraftInput
+            value={eff("adapterConfig", "desiredSkills", Array.isArray(config.desiredSkills) ? (config.desiredSkills as string[]).join(", ") : "")}
+            onCommit={(v) => mark("adapterConfig", "desiredSkills", v ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : undefined)}
+            immediate
+            className={inputClass}
+            placeholder="paperclip (default — add more as needed)"
+          />
+        </Field>
+      )}
     </>
   );
 }
