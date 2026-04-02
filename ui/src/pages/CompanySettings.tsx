@@ -1362,7 +1362,12 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                 ))}
               </select>
             </Field>
-            <Field label="Token / Key">
+            <Field
+              label="Token / Key"
+              hint={addType === "claude_oauth"
+                ? "Run `claude auth login` on your machine, then find the token in ~/.claude/.credentials.json (claudeAiOauth.accessToken)"
+                : undefined}
+            >
               <input
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                 type="password"
@@ -1403,61 +1408,21 @@ function CredentialsSection({ companyId }: { companyId: string }) {
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            {loginStatus === "idle" ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                onClick={() => {
-                  setLoginStatus("starting");
-                  startLoginMutation.mutate();
-                }}
-                disabled={startLoginMutation.isPending}
-              >
-                Login with Claude
-              </Button>
-            ) : loginStatus === "starting" ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                Starting login...
-              </div>
-            ) : loginStatus === "pending" ? (
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
-                  Waiting for login...
-                </div>
-                {loginUrl && (
-                  <a
-                    href={loginUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-blue-600 dark:text-blue-400 underline underline-offset-2"
-                  >
-                    Open login page
-                  </a>
-                )}
-                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
-                  Cancel
-                </Button>
-              </div>
-            ) : loginStatus === "complete" ? (
-              <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
-                <Check className="h-3.5 w-3.5" />
-                Claude login successful!
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-destructive">
-                  {loginError ?? "Login failed"}
-                </span>
-                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
-                  Retry
-                </Button>
-              </div>
-            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => {
+                setAddType("claude_oauth");
+                setAddName(`Claude (${new Date().toLocaleDateString("en-CA")})`);
+                setShowAddForm(true);
+              }}
+            >
+              <KeyRound className="h-3.5 w-3.5" />
+              Add Claude Login
+            </Button>
             <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setShowAddForm(true)}>
-              Add manually
+              Add other credential
             </Button>
           </div>
         )}
