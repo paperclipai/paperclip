@@ -79,6 +79,7 @@ import {
 
 let otel: OTelHandle | null = null;
 let ctx: PluginContext | null = null;
+let resolvedConfig: ObservabilityConfig | null = null;
 let startedAt: string | null = null;
 let eventsProcessed = 0;
 let lastError: string | null = null;
@@ -128,6 +129,17 @@ interface HealthScoreSnapshot {
   healthStatus: string;
 }
 let healthScoreSnapshots: HealthScoreSnapshot[] = [];
+
+interface ServerHealthSnapshot {
+  score: number;
+  dbReachable: boolean;
+  otelSdkInitialized: boolean;
+}
+let serverHealthSnapshot: ServerHealthSnapshot = {
+  score: 0,
+  dbReachable: false,
+  otelSdkInitialized: false,
+};
 
 // ---------------------------------------------------------------------------
 // Router setup — register all handlers
@@ -200,6 +212,7 @@ const plugin: PaperclipPlugin = definePlugin({
     // Load config and initialise OTel SDK
     const rawConfig = await ctx.config.get();
     const config = resolveConfig(rawConfig);
+    resolvedConfig = config;
 
     try {
       otel = initOTel(config);
@@ -414,6 +427,17 @@ const plugin: PaperclipPlugin = definePlugin({
       }
     });
 
+    const serverHealthGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.serverHealthScore,
+      { description: "Server health score (100 if healthy, 0 if error)" },
+    );
+    serverHealthGauge.addCallback((obs) => {
+      obs.observe(serverHealthSnapshot.score, {
+        db_reachable: String(serverHealthSnapshot.dbReachable),
+        otel_initialized: String(serverHealthSnapshot.otelSdkInitialized),
+      });
+    });
+
     } // end if (otel) — gauge registration
 
     // ----- Register collect-metrics job (refreshes snapshots) -----
@@ -588,6 +612,31 @@ const plugin: PaperclipPlugin = definePlugin({
           agentCount: healthSnapshots.length,
         });
 
+        // --- Collect server health probe ---
+
+        let dbReachable = false;
+        try {
+          await ctx.companies.list({ limit: 1, offset: 0 });
+          dbReachable = true;
+        } catch {
+          dbReachable = false;
+        }
+
+        const otelSdkInitialized = otel != null;
+        const serverScore = dbReachable && otelSdkInitialized ? 100 : 0;
+
+        serverHealthSnapshot = {
+          score: serverScore,
+          dbReachable,
+          otelSdkInitialized,
+        };
+
+        ctx.logger.info("Server health probe completed", {
+          score: serverScore,
+          dbReachable,
+          otelSdkInitialized,
+        });
+
         await ctx.activity.log({
           companyId: "",
           message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${healthSnapshots.length} health scores, ${eventsProcessed} events processed since startup`,
@@ -603,18 +652,61 @@ const plugin: PaperclipPlugin = definePlugin({
   },
 
   async onHealth(): Promise<PluginHealthDiagnostics> {
-    if (!otel) {
+    const otelSdkInitialized = otel != null;
+    const tracingEnabled = resolvedConfig?.enableTracing ?? false;
+    const metricsEnabled = resolvedConfig?.enableMetrics ?? false;
+    const otlpEndpoint = resolvedConfig?.otlpEndpoint ?? null;
+
+    // DB reachability probe
+    let dbReachable = false;
+    try {
+      if (ctx) {
+        await ctx.companies.list({ limit: 1, offset: 0 });
+        dbReachable = true;
+      }
+    } catch {
+      dbReachable = false;
+    }
+
+    const details = {
+      startedAt,
+      eventsProcessed,
+      otelSdkInitialized,
+      tracingEnabled,
+      metricsEnabled,
+      otlpEndpoint,
+      dbReachable,
+      lastError,
+    };
+
+    if (!otelSdkInitialized && !dbReachable) {
+      return {
+        status: "error",
+        message: "OTel SDK not initialised and DB unreachable",
+        details,
+      };
+    }
+
+    if (!otelSdkInitialized) {
       return {
         status: lastError ? "degraded" : "error",
         message: lastError ?? "OTel SDK not initialised",
-        details: { startedAt, eventsProcessed, lastError },
+        details,
+      };
+    }
+
+    if (!dbReachable) {
+      return {
+        status: "degraded",
+        message: "DB unreachable — metrics collection may be stale",
+        details,
       };
     }
 
     return {
       status: "ok",
       message: `Healthy — ${eventsProcessed} events processed`,
-      details: { startedAt, eventsProcessed, otelInitialised: true },
+      details,
     };
   },
 
@@ -632,6 +724,7 @@ const plugin: PaperclipPlugin = definePlugin({
     }
 
     const config = resolveConfig(newConfig);
+    resolvedConfig = config;
     try {
       otel = initOTel(config);
       lastError = null;

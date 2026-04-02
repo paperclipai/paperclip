@@ -36,4 +36,7 @@ export const METRIC_NAMES = {
 
   // Health scoring gauges (scheduled job)
   agentHealthScore: "paperclip.agent.health.score",
+
+  // Server health gauge (scheduled job)
+  serverHealthScore: "paperclip.health.server.score",
 } as const;
