@@ -26,4 +26,30 @@ if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
 fi
 
+# In authenticated deployments, the server hard-requires BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET).
+# To avoid CrashLoopBackOff / restart loops when operators forget to set it, generate and persist a secret
+# in the mounted PAPERCLIP_HOME volume.
+if [ "${PAPERCLIP_DEPLOYMENT_MODE:-}" = "authenticated" ] && \
+   [ -z "${BETTER_AUTH_SECRET:-}" ] && \
+   [ -z "${PAPERCLIP_AGENT_JWT_SECRET:-}" ]; then
+    HOME_DIR=${PAPERCLIP_HOME:-/paperclip}
+    SECRET_DIR="$HOME_DIR/secrets"
+    SECRET_FILE="$SECRET_DIR/better-auth-secret"
+
+    mkdir -p "$SECRET_DIR"
+
+    if [ -f "$SECRET_FILE" ] && [ -s "$SECRET_FILE" ]; then
+        BETTER_AUTH_SECRET=$(cat "$SECRET_FILE")
+        export BETTER_AUTH_SECRET
+        echo "Loaded BETTER_AUTH_SECRET from $SECRET_FILE"
+    else
+        BETTER_AUTH_SECRET=$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))')
+        printf "%s" "$BETTER_AUTH_SECRET" > "$SECRET_FILE"
+        chmod 600 "$SECRET_FILE" || true
+        chown node:node "$SECRET_FILE" || true
+        export BETTER_AUTH_SECRET
+        echo "Generated BETTER_AUTH_SECRET and wrote to $SECRET_FILE"
+    fi
+fi
+
 exec gosu node "$@"

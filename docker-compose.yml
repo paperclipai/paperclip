@@ -26,7 +26,8 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # Optional: if not provided, the container entrypoint will generate/persist one under /paperclip.
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
