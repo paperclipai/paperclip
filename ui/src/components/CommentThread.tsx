@@ -1,8 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { ArrowDown, Check, Copy, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -143,7 +143,6 @@ function CommentCard({
 
   return (
     <div
-      key={comment.id}
       id={`comment-${comment.id}`}
       className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
@@ -339,6 +338,10 @@ export function CommentThread({
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
   const hasScrolledRef = useRef(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+  const prevTimelineCountRef = useRef(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const timeline = useMemo<TimelineItem[]>(() => {
     const commentItems: TimelineItem[] = comments.map((comment) => ({
@@ -416,6 +419,37 @@ export function CommentThread({
     }
   }, [location.hash, comments, queuedComments]);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
+
+  const handleTimelineScroll = useCallback(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    isNearBottomRef.current = nearBottom;
+    setShowScrollToBottom(!nearBottom);
+  }, []);
+
+  useEffect(() => {
+    if (location.hash.startsWith("#comment-")) return;
+    requestAnimationFrame(() => scrollToBottom("auto"));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const count = timeline.length + queuedComments.length;
+    if (count > prevTimelineCountRef.current) {
+      if (prevTimelineCountRef.current === 0 && !location.hash.startsWith("#comment-")) {
+        requestAnimationFrame(() => scrollToBottom("auto"));
+      } else if (isNearBottomRef.current) {
+        requestAnimationFrame(() => scrollToBottom("smooth"));
+      }
+    }
+    prevTimelineCountRef.current = count;
+  }, [timeline.length, queuedComments.length, scrollToBottom, location.hash]);
+
   async function handleSubmit() {
     const trimmed = body.trim();
     if (!trimmed) return;
@@ -431,6 +465,7 @@ export function CommentThread({
       if (draftKey) clearDraft(draftKey);
       setReopen(true);
       setReassignTarget(effectiveSuggestedAssigneeValue);
+      requestAnimationFrame(() => scrollToBottom("smooth"));
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -466,56 +501,81 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
+    <div className="flex flex-col max-h-[60vh] min-h-[250px] rounded-lg border border-border bg-card">
+      <div className="shrink-0 border-b border-border/60 px-4 py-2">
+        <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
+      </div>
 
-      {timeline.length > 0 ? (
-        <TimelineList
-          timeline={timeline}
-          agentMap={agentMap}
-          companyId={companyId}
-          projectId={projectId}
-          highlightCommentId={highlightCommentId}
-        />
-      ) : null}
-
-      {liveRunSlot}
-
-      {queuedComments.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
-            </h4>
-            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
-                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
-              >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
-              </Button>
-            ) : null}
-          </div>
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={scrollAreaRef}
+          className="h-full overflow-y-auto px-4 py-3"
+          onScroll={handleTimelineScroll}
+        >
           <div className="space-y-3">
-            {queuedComments.map((comment) => (
-              <CommentCard
-                key={comment.id}
-                comment={comment}
+            {timeline.length > 0 ? (
+              <TimelineList
+                timeline={timeline}
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}
-                queued
               />
-            ))}
+            ) : (
+              <p className="text-sm text-muted-foreground">No comments or runs yet.</p>
+            )}
+
+            {liveRunSlot}
+
+            {queuedComments.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+                    Queued Comments ({queuedComments.length})
+                  </h4>
+                  {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                      disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                      onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
+                    >
+                      {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="space-y-3">
+                  {queuedComments.map((comment) => (
+                    <CommentCard
+                      key={comment.id}
+                      comment={comment}
+                      agentMap={agentMap}
+                      companyId={companyId}
+                      projectId={projectId}
+                      highlightCommentId={highlightCommentId}
+                      queued
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
-      )}
 
-      <div className="space-y-2">
+        {showScrollToBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-md hover:bg-accent hover:text-foreground transition-colors"
+          >
+            <ArrowDown className="h-3 w-3" />
+            Latest
+          </button>
+        )}
+      </div>
+
+      <div className="shrink-0 border-t border-border/60 px-4 py-3 space-y-2">
         <MarkdownEditor
           ref={editorRef}
           value={body}
