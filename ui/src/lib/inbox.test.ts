@@ -345,6 +345,26 @@ describe("inbox helpers", () => {
     ]);
   });
 
+  it("sorts self-touched issues without external comments by updatedAt", () => {
+    const recentSelfTouched = makeIssue("recent", false);
+    recentSelfTouched.lastExternalCommentAt = null as unknown as Date;
+    recentSelfTouched.updatedAt = new Date("2026-03-11T05:00:00.000Z");
+    recentSelfTouched.myLastTouchAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const olderCommented = makeIssue("older", false);
+    olderCommented.lastExternalCommentAt = new Date("2026-03-11T03:00:00.000Z");
+
+    const items = getInboxWorkItems({
+      issues: [olderCommented, recentSelfTouched],
+      approvals: [],
+    });
+
+    expect(items.map((i) => (i.kind === "issue" ? i.issue.id : ""))).toEqual([
+      "recent",
+      "older",
+    ]);
+  });
+
   it("can include sections on recent without forcing them to be unread", () => {
     expect(
       shouldShowInboxSection({

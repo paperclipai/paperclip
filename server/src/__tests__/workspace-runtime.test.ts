@@ -656,6 +656,121 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   });
 
+  it("auto-detects the default branch when baseRef is not configured", async () => {
+    // Create a repo with "master" as default branch (not "main")
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-master-"));
+    await runGit(repoRoot, ["init", "-b", "master"]);
+    await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+    await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
+    await runGit(repoRoot, ["add", "README.md"]);
+    await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+
+    // Set up a bare remote and push master so refs/remotes/origin/master
+    // exists locally. Note: refs/remotes/origin/HEAD is NOT set by a manual
+    // fetch — that requires git clone or git remote set-head. This test
+    // exercises the heuristic fallback path in detectDefaultBranch.
+    const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-"));
+    await runGit(bareRemote, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+    await runGit(repoRoot, ["fetch", "origin"]);
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          // No baseRef configured — should auto-detect "master"
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-460",
+        title: "Auto detect default branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.created).toBe(true);
+    // The worktree should have been created successfully (baseRef resolved to "master")
+    const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
+    expect(worktreeOp).toBeDefined();
+    expect(worktreeOp!.metadata!.baseRef).toBe("master");
+  });
+
+  it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
+    // Create a repo with "master" as default branch
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-symref-"));
+    await runGit(repoRoot, ["init", "-b", "master"]);
+    await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+    await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+    await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
+    await runGit(repoRoot, ["add", "README.md"]);
+    await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+
+    // Set up a bare remote and push
+    const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
+    await runGit(bareRemote, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+    await runGit(repoRoot, ["fetch", "origin"]);
+    // Explicitly set refs/remotes/origin/HEAD to exercise the symbolic-ref path
+    // (git remote set-head -a requires the remote to advertise HEAD, so we set it manually)
+    await runGit(repoRoot, ["remote", "set-head", "origin", "master"]);
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          // No baseRef configured — should auto-detect "master" via symbolic-ref
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-461",
+        title: "Auto detect default branch via symref",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.created).toBe(true);
+    const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
+    expect(worktreeOp).toBeDefined();
+    expect(worktreeOp!.metadata!.baseRef).toBe("master");
+  });
+
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
 
