@@ -89,6 +89,32 @@ Every DSpot agent must apply a validation-first mindset to all work. Validation 
 
 See the standard template for new validation scripts: `skills/dspot-company-rules/references/validation-template.md`.
 
+## Staged Transition Cleanup
+
+Whenever a change introduces a compatibility alias, transition window, staged migration, or temporary fallback surface, the implementing agent MUST treat cleanup as tracked work, not prose-only intent.
+
+Required steps:
+
+1. **Define the transition window** — state the exact retirement trigger (date-based, adoption-based, or condition-based).
+2. **Name the owner** — identify who owns the transition and the final removal.
+3. **Define removal criteria** — state what must be true before the compatibility surface can be retired.
+4. **Create a linked cleanup task** — open a Paperclip issue linked to the originating issue with the owner, transition window, removal criteria, and validation path for retirement.
+5. **Keep the cleanup task visible** — the cleanup issue should normally be `todo` until the transition gate is satisfied, not hidden inside a completion comment.
+6. **Link the cleanup task in closeout** — the originating issue's completion comment must link the cleanup task directly.
+7. **Do not mark the transition complete without it** — a staged transition is incomplete until the cleanup-removal task exists and is linked.
+
+## Feature Flags and Branch-by-Abstraction
+
+Engineering agents implementing code changes MUST follow these practices:
+
+1. **Use feature flags for risky or upstream-facing work.** Any change that affects shared interfaces, modifies user-visible behavior, or touches upstream repositories must be gated behind a feature flag. The flag must default to off until explicitly enabled.
+
+2. **Prefer branch-by-abstraction when changing existing behavior.** When modifying existing functionality, introduce the new behavior behind a flag or abstraction layer rather than replacing the old behavior in-place. Both code paths must coexist until the new behavior is validated.
+
+3. **Create a tracked cleanup task for every temporary surface.** Whenever a feature flag, compatibility shim, fallback path, or temporary abstraction is introduced, follow the **Staged Transition Cleanup** rules (above) to create and link a cleanup issue. This includes defining the transition window, naming the owner, and stating removal criteria.
+
+4. **Link the cleanup task in closeout.** The originating issue's completion comment must reference the cleanup task directly. A flagged change without a linked cleanup task is incomplete work.
+
 ## Browser Automation
 
 All browser work must be done using the **Playwright MCP tools** (`mcp__playwright__*`).
