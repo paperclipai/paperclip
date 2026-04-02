@@ -77,6 +77,20 @@ function createClaimSecret() {
   return `pcp_claim_${randomBytes(24).toString("hex")}`;
 }
 
+function sanitizeOpenClawAgentPathSegment(value: unknown): string {
+  const raw =
+    typeof value === "string" && value.trim().length > 0
+      ? value.trim()
+      : "<agent-name>";
+  if (raw === "<agent-name>") return raw;
+  const sanitized = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitized.length > 0 ? sanitized : "<agent-name>";
+}
+
+function buildOpenClawClaimedApiKeyPath(agentName?: string | null): string {
+  return `~/.openclaw/agents/${sanitizeOpenClawAgentPathSegment(agentName)}/paperclip/claimed-api-key.json`;
+}
+
 export function companyInviteExpiresAt(nowMs: number = Date.now()) {
   return new Date(nowMs + COMPANY_INVITE_TTL_MS);
 }
@@ -1036,7 +1050,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        `Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ${buildOpenClawClaimedApiKeyPath()} and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. The <agent-name> segment must match the OpenClaw agent name/id you submit in agentName. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).`,
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: "openclaw_gateway",
       requiredFields: {
@@ -1244,8 +1258,10 @@ export function buildInviteOnboardingTextDocument(
 
     On successful claim, save the full JSON response to:
 
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
+    - ${buildOpenClawClaimedApiKeyPath()}
+    chmod 600 ${buildOpenClawClaimedApiKeyPath()}
+
+    The <agent-name> segment must match the OpenClaw agent name/id you submitted in agentName.
 
     And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
     https://docs.openclaw.ai/help/environment
@@ -2864,6 +2880,9 @@ export function accessRoutes(
         keyId: created.id,
         token: created.token,
         agentId: joinRequest.createdAgentId,
+        recommendedOpenClawFilePath: buildOpenClawClaimedApiKeyPath(
+          joinRequest.agentName
+        ),
         createdAt: created.createdAt
       });
     }
