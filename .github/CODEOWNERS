@@ -8,3 +8,10 @@ scripts/rollback-latest.sh @cryppadotta @devinfoley
 doc/RELEASING.md @cryppadotta @devinfoley
 doc/PUBLISHING.md @cryppadotta @devinfoley
 doc/RELEASE-AUTOMATION-SETUP.md @cryppadotta @devinfoley
+
+# Package files — dependency changes require review
+# package.json matches recursively at all depths (covers root + all workspaces)
+package.json @cryppadotta @devinfoley
+pnpm-lock.yaml @cryppadotta @devinfoley
+pnpm-workspace.yaml @cryppadotta @devinfoley
+.npmrc @cryppadotta @devinfoley

@@ -5,7 +5,7 @@ import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FailedRunInboxRow, InboxIssueMetaLeading } from "./Inbox";
+import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -148,31 +148,91 @@ describe("InboxIssueMetaLeading", () => {
     container.remove();
   });
 
-  it("neutralizes selected status and live accents", () => {
+  it("keeps status and live accents visible", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(<InboxIssueMetaLeading issue={createIssue()} selected isLive />);
+      root.render(<InboxIssueMetaLeading issue={createIssue()} isLive />);
     });
 
-    const statusIcon = container.querySelector('span[class*="border-muted-foreground"]');
-    const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-muted"]');
+    const statusIcon = container.querySelector('span[class*="border-blue-600"]');
+    const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-blue-500/10"]');
     const liveBadgeLabel = Array.from(container.querySelectorAll("span")).find(
       (node) => node.textContent === "Live" && node.className.includes("text-"),
     );
-    const liveDot = container.querySelector('span[class*="bg-muted-foreground/70"]');
+    const liveDot = container.querySelector('span[class*="bg-blue-500"]');
     const pulseRing = container.querySelector('span[class*="animate-pulse"]');
 
     expect(statusIcon).not.toBeNull();
-    expect(statusIcon?.className).toContain("!border-muted-foreground");
-    expect(statusIcon?.className).toContain("!text-muted-foreground");
+    expect(statusIcon?.className).not.toContain("!border-muted-foreground");
+    expect(statusIcon?.className).not.toContain("!text-muted-foreground");
     expect(liveBadge).not.toBeNull();
-    expect(liveBadge?.className).toContain("bg-muted");
+    expect(liveBadge?.className).toContain("bg-blue-500/10");
     expect(liveBadgeLabel).not.toBeNull();
-    expect(liveBadgeLabel?.className).toContain("text-muted-foreground");
-    expect(liveBadgeLabel?.className).not.toContain("text-blue-600");
+    expect(liveBadgeLabel?.className).toContain("text-blue-600");
     expect(liveDot).not.toBeNull();
-    expect(pulseRing).toBeNull();
+    expect(pulseRing).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("InboxIssueTrailingColumns", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("renders an empty tags cell when an issue has no labels", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InboxIssueTrailingColumns
+          issue={createIssue({ labels: [], labelIds: [] })}
+          columns={["labels"]}
+          projectName={null}
+          projectColor={null}
+          workspaceName={null}
+          assigneeName={null}
+          currentUserId={null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("leaves the workspace cell blank when no explicit workspace label should be shown", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InboxIssueTrailingColumns
+          issue={createIssue()}
+          columns={["workspace"]}
+          projectName={null}
+          projectColor={null}
+          workspaceName={null}
+          assigneeName={null}
+          currentUserId={null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toBe("");
 
     act(() => {
       root.unmount();
