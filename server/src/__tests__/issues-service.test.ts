@@ -402,6 +402,79 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       resurfacedIssueId,
     ]));
   });
+
+  it("includes routine_execution issues when filtering by assigneeAgentId", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Writer",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const manualIssueId = randomUUID();
+    const routineIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: manualIssueId,
+        companyId,
+        title: "Manual task",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "manual",
+      },
+      {
+        id: routineIssueId,
+        companyId,
+        title: "Morning Reply Block",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      },
+    ]);
+
+    // Agent inbox query — should include routine_execution issues
+    const agentInbox = await svc.list(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,blocked",
+    });
+    const agentInboxIds = new Set(agentInbox.map((i) => i.id));
+    expect(agentInboxIds).toContain(manualIssueId);
+    expect(agentInboxIds).toContain(routineIssueId);
+
+    // General company list (no assignee filter) — should exclude routine_execution
+    const companyList = await svc.list(companyId, { status: "todo" });
+    const companyListIds = new Set(companyList.map((i) => i.id));
+    expect(companyListIds).toContain(manualIssueId);
+    expect(companyListIds).not.toContain(routineIssueId);
+
+    // Explicit includeRoutineExecutions flag — should include both
+    const withFlag = await svc.list(companyId, {
+      status: "todo",
+      includeRoutineExecutions: true,
+    });
+    const withFlagIds = new Set(withFlag.map((i) => i.id));
+    expect(withFlagIds).toContain(manualIssueId);
+    expect(withFlagIds).toContain(routineIssueId);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

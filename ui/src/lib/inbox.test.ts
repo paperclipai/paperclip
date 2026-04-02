@@ -247,6 +247,20 @@ describe("inbox helpers", () => {
     });
   });
 
+  it("excludes read issues from the sidebar badge count", () => {
+    const result = computeInboxBadgeData({
+      approvals: [],
+      joinRequests: [],
+      dashboard: undefined,
+      heartbeatRuns: [],
+      mineIssues: [makeIssue("1", true), makeIssue("2", false), makeIssue("3", false)],
+      dismissed: new Set<string>(),
+    });
+
+    expect(result.mineIssues).toBe(1);
+    expect(result.inbox).toBe(1);
+  });
+
   it("keeps read issues in the touched list but excludes them from unread counts", () => {
     const issues = [makeIssue("1", true), makeIssue("2", false)];
 
