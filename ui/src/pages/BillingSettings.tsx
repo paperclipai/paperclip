@@ -9,6 +9,7 @@ import { PricingTable } from "@/components/PricingTable";
 import { Button } from "@/components/ui/button";
 import type { PlanTier } from "@/api/billing";
 import { CreditCard, ExternalLink, AlertTriangle } from "lucide-react";
+import { formatDate } from "../lib/utils";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -19,13 +20,9 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} KB`;
 }
 
-function formatDate(iso: string | null): string {
+function formatBillingDate(iso: string | null): string {
   if (!iso) return "--";
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  return formatDate(iso);
 }
 
 export function BillingSettings() {
@@ -149,7 +146,7 @@ export function BillingSettings() {
           </div>
           <div>
             <div className="text-xs text-muted-foreground uppercase tracking-wide">Next Billing</div>
-            <div className="font-semibold mt-0.5">{formatDate(subscription.currentPeriodEnd)}</div>
+            <div className="font-semibold mt-0.5">{formatBillingDate(subscription.currentPeriodEnd)}</div>
           </div>
         </div>
 
@@ -158,7 +155,7 @@ export function BillingSettings() {
             <AlertTriangle className="h-4 w-4 shrink-0" />
             <span>
               Your subscription will be cancelled at the end of the current billing period
-              ({formatDate(subscription.currentPeriodEnd)}).
+              ({formatBillingDate(subscription.currentPeriodEnd)}).
             </span>
           </div>
         )}

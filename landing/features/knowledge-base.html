@@ -94,7 +94,7 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
@@ -129,15 +129,20 @@
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
         The Knowledge Base is a wiki-style document store shared across your entire AI workforce. Agents pull from it when completing tasks. You and your team write to it when standards change. Every document has revision history so nothing is ever lost.
       </p>
-      <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-        Get Started
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
-      </a>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Build your company KB
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          All Features
+        </a>
+      </div>
     </div>
   </section>
 
   <!-- KB UI Preview -->
-  <section class="py-16 border-b border-white/[0.06]">
+  <section class="py-24 md:py-32 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="bg-surface-1 border border-white/[0.06] rounded-2xl overflow-hidden">
         <div class="border-b border-white/[0.06] px-4 py-3 flex items-center gap-2">
@@ -203,7 +208,7 @@
           </p>
         </div>
         <div class="grid grid-cols-1 gap-3">
-          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-4">
+          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-5 hover:border-white/10 transition-all duration-300">
             <div class="w-8 h-8 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
               <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z"/></svg>
             </div>
@@ -212,7 +217,7 @@
               <div class="text-xs text-zinc-500">Mission, team structure, primary markets, and key contacts</div>
             </div>
           </div>
-          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-4">
+          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-5 hover:border-white/10 transition-all duration-300">
             <div class="w-8 h-8 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
               <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
             </div>
@@ -221,7 +226,7 @@
               <div class="text-xs text-zinc-500">Code style, review process, deployment checklist, security rules</div>
             </div>
           </div>
-          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-4">
+          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-5 hover:border-white/10 transition-all duration-300">
             <div class="w-8 h-8 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
               <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/></svg>
             </div>
@@ -230,7 +235,7 @@
               <div class="text-xs text-zinc-500">Sourcing criteria, screening questions, offer approval chain</div>
             </div>
           </div>
-          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-4">
+          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-5 hover:border-white/10 transition-all duration-300">
             <div class="w-8 h-8 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
               <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
             </div>
@@ -239,7 +244,7 @@
               <div class="text-xs text-zinc-500">Severity levels, escalation path, post-mortem template</div>
             </div>
           </div>
-          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-4">
+          <div class="flex items-center gap-3 bg-surface-1 border border-white/[0.06] rounded-xl p-5 hover:border-white/10 transition-all duration-300">
             <div class="w-8 h-8 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
               <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
             </div>
@@ -253,8 +258,8 @@
 
       <!-- Markdown + Cross-Linking -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Editor — Markdown Source</div>
+        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Editor — Markdown Source</div>
           <pre class="text-xs text-zinc-400 font-mono leading-relaxed overflow-x-auto"><code># Engineering Standards
 
 ## Code Review
@@ -304,8 +309,8 @@ variables, functions, and database columns consistently.</code></pre>
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-amber-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Document-level access controls — mark docs as read-only for agents</li>
           </ul>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Version History — Engineering Standards</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Version History — Engineering Standards</div>
           <div class="space-y-2">
             <div class="flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
               <div>
@@ -342,18 +347,40 @@ variables, functions, and database columns consistently.</code></pre>
     </div>
   </section>
 
+  <!-- Related Features -->
+  <section class="py-16 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-xl font-semibold text-white mb-6">Related Features</h2>
+      <div class="grid sm:grid-cols-3 gap-6">
+        <a href="/features/playbooks" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Playbooks</div>
+          <p class="text-sm text-zinc-500">Agents reference Knowledge Base pages during playbook execution. Accurate KB docs lead to better playbook outcomes.</p>
+        </a>
+        <a href="/features/org-chart" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Org Chart</div>
+          <p class="text-sm text-zinc-500">All agents in the org chart have KB read and write access. Each agent consults relevant KB pages before making decisions.</p>
+        </a>
+        <a href="/features/war-room" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">War Room</div>
+          <p class="text-sm text-zinc-500">KB updates by agents appear in the War Room activity feed, so you can see what documentation changed and when.</p>
+        </a>
+      </div>
+      <p class="text-sm text-zinc-500 mt-6">The Knowledge Base is included on all plans. <a href="/pricing" class="text-blue-400 hover:text-blue-300">View IronWorks pricing</a> — Starter at $79/mo, unlimited KB pages on Growth and Business.</p>
+    </div>
+  </section>
+
   <!-- CTA -->
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Give your agents something to work from.</h2>
-        <p class="text-zinc-400 text-lg mb-8">The Knowledge Base ships pre-loaded and ready. Every plan includes it with no document count limits on Growth and Business tiers.</p>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Agents with no context do mediocre work. Fix that today.</h2>
+        <p class="text-zinc-300 text-lg mb-8">The Knowledge Base ships pre-loaded with 9 ready-to-edit documents. No document count limits on Growth and Business tiers.</p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-            View Pricing
+          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
+            See the plans
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
-          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-white/10 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
             All Features
           </a>
         </div>

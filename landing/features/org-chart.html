@@ -97,7 +97,7 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
@@ -132,15 +132,20 @@
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
         IronWorks gives your AI workforce an organizational structure with real reporting chains, delegation rules, and accountability at every level. CEO delegates strategy to CTO and CMO. Engineers report to CTO. Work flows down the hierarchy and reports back up. You manage the top, the org manages the rest.
       </p>
-      <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-        Get Started
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
-      </a>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Deploy your team
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          All Features
+        </a>
+      </div>
     </div>
   </section>
 
   <!-- Org Chart Visual -->
-  <section class="py-16 border-b border-white/[0.06]">
+  <section class="py-24 md:py-32 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 md:p-12">
         <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-8 text-center">Agency Team Pack — Visual Org Chart</div>
@@ -219,34 +224,34 @@
           Each team pack is a complete org configuration with pre-named agents, role descriptions, skill sets, reporting chains, and operating instructions loaded into the Knowledge Base. Pick one, customize names if you want, and deploy. Every agent knows their role from the start.
         </p>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-xs font-medium text-cyan-400 uppercase tracking-wide mb-3">Startup Pack</div>
             <h3 class="text-lg font-semibold text-white mb-3">4 agents. Full coverage.</h3>
-            <p class="text-sm text-zinc-500 mb-4">CEO, CTO, CMO, and an ops agent that handles HR, finance, and admin. Designed for solo founders who need an entire team without the overhead of managing one.</p>
-            <div class="space-y-1.5 text-xs text-zinc-500">
+            <p class="text-sm text-zinc-400 mb-4">CEO, CTO, CMO, and an ops agent that handles HR, finance, and admin. Designed for solo founders who need an entire team without the overhead of managing one.</p>
+            <div class="space-y-1.5 text-xs text-zinc-400">
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>CEO — Strategy, stakeholder comms, goal setting</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>CTO — Architecture, engineering, reviews</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>CMO — Marketing, content, outreach</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Ops Agent — HR, finance, admin</div>
             </div>
           </div>
-          <div class="bg-surface-1 border-2 border-cyan-500/30 rounded-2xl p-6 card-glow transition-all relative">
+          <div class="bg-surface-1 border-2 border-cyan-500/30 rounded-2xl p-8 card-glow card-hover transition-all duration-300 hover:border-cyan-500/50 relative">
             <span class="absolute -top-3 left-6 bg-cyan-600 text-white text-xs font-medium px-3 py-1 rounded-full">Most Popular</span>
             <div class="text-xs font-medium text-cyan-400 uppercase tracking-wide mb-3">Agency Pack</div>
             <h3 class="text-lg font-semibold text-white mb-3">9 agents. Client-ready.</h3>
-            <p class="text-sm text-zinc-500 mb-4">Designed for agencies managing client work. CEO, CTO, CMO, engineers, content, HR, finance, and a dedicated client success agent. Each client can have their own project with dedicated agents.</p>
-            <div class="space-y-1.5 text-xs text-zinc-500">
+            <p class="text-sm text-zinc-400 mb-4">Designed for agencies managing client work. CEO, CTO, CMO, engineers, content, HR, finance, and a dedicated client success agent. Each client can have their own project with dedicated agents.</p>
+            <div class="space-y-1.5 text-xs text-zinc-400">
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Full executive layer (CEO, CTO, CMO, VP Ops)</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>2 engineers, 1 content agent</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>HR, Finance, Client Success agents</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Pre-loaded client onboarding playbook</div>
             </div>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-xs font-medium text-cyan-400 uppercase tracking-wide mb-3">Enterprise Pack</div>
             <h3 class="text-lg font-semibold text-white mb-3">15+ agents. Full depth.</h3>
-            <p class="text-sm text-zinc-500 mb-4">Multiple engineering teams, dedicated security and compliance agents, a full marketing stack, and executive reporting structures built for companies managing complex multi-project portfolios.</p>
-            <div class="space-y-1.5 text-xs text-zinc-500">
+            <p class="text-sm text-zinc-400 mb-4">Multiple engineering teams, dedicated security and compliance agents, a full marketing stack, and executive reporting structures built for companies managing complex multi-project portfolios.</p>
+            <div class="space-y-1.5 text-xs text-zinc-400">
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Dual engineering teams with team leads</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Security + Compliance dedicated agents</div>
               <div class="flex items-center gap-2"><div class="w-1.5 h-1.5 bg-cyan-500 rounded-full"></div>Marketing: CMO, content, SEO, paid media</div>
@@ -271,8 +276,8 @@
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Escalation rules: unresolved blockers surface to manager automatically</li>
           </ul>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Delegation Example</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Delegation Example</div>
           <div class="space-y-3">
             <div class="flex items-start gap-3">
               <div class="w-8 h-8 bg-blue-600/20 border border-blue-500/30 rounded-full flex items-center justify-center shrink-0 text-xs text-blue-400 font-medium">You</div>
@@ -302,8 +307,8 @@
 
       <!-- Customization -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Agent Configuration</div>
+        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Agent Configuration</div>
           <div class="space-y-4">
             <div>
               <label class="text-xs text-zinc-500 block mb-1">Agent Name</label>
@@ -349,18 +354,40 @@
     </div>
   </section>
 
+  <!-- Related Features -->
+  <section class="py-16 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-xl font-semibold text-white mb-6">Related Features</h2>
+      <div class="grid sm:grid-cols-3 gap-6">
+        <a href="/features/war-room" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">War Room</div>
+          <p class="text-sm text-zinc-500">Monitor every agent in the org chart from one screen. See who's working, who's blocked, and how much each agent costs.</p>
+        </a>
+        <a href="/features/playbooks" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Playbooks</div>
+          <p class="text-sm text-zinc-500">Playbook steps are assigned to roles in the org chart. The delegation chain determines who executes each step automatically.</p>
+        </a>
+        <a href="/features/agent-performance" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Agent Performance</div>
+          <p class="text-sm text-zinc-500">A-F performance grades for every agent in the org chart. Identify which roles are delivering value and which need tuning.</p>
+        </a>
+      </div>
+      <p class="text-sm text-zinc-500 mt-6">Org charts and team packs are available on all plans. <a href="/pricing" class="text-blue-400 hover:text-blue-300">View IronWorks pricing</a> starting at $79/month.</p>
+    </div>
+  </section>
+
   <!-- CTA -->
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Your team can be running in under 10 minutes.</h2>
-        <p class="text-zinc-400 text-lg mb-8">Pick a team pack, add your API keys, and deploy. All three packs are available on every plan.</p>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Go from zero to a full AI team in 10 minutes flat.</h2>
+        <p class="text-zinc-300 text-lg mb-8">Pick a team pack, add your API keys, and deploy. All three packs are on every plan.</p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-            View Pricing
+          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
+            Pick a team pack
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
-          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-white/10 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
             All Features
           </a>
         </div>

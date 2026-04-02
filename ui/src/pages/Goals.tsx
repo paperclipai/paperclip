@@ -184,7 +184,7 @@ export function Goals() {
   const { data: progressData } = useQuery({
     queryKey: ["goals", "progress", selectedCompanyId],
     queryFn: () => goalProgressApi.batch(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!goals && goals.length > 0,
+    enabled: !!selectedCompanyId && goals !== undefined,
   });
 
   const progressMap = useMemo(() => {
@@ -240,6 +240,15 @@ export function Goals() {
     return <PageSkeleton variant="list" />;
   }
 
+  if (error) {
+    return (
+      <EmptyState
+        icon={Target}
+        message={`Failed to load goals: ${error instanceof Error ? error.message : "Unknown error"}`}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -260,8 +269,6 @@ export function Goals() {
           Create Goal
         </Button>
       </div>
-
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {/* Toolbar */}
       {totalGoals > 0 && (

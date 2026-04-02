@@ -96,7 +96,7 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
@@ -125,12 +125,21 @@
       </div>
       <p class="text-sm font-medium text-rose-400 tracking-wide uppercase mb-4">Communications</p>
       <h1 class="font-display text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tighter leading-[0.9] mb-8">
-        <span class="gradient-text-hero">Manage your team</span><br>
-        <span class="text-white">from wherever you work.</span>
+        <span class="gradient-text-hero">Command your AI team</span><br>
+        <span class="text-white">from Telegram or email.</span>
       </h1>
-      <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
-        IronWorks connects to the messaging platforms you already use. Send instructions, ask for status updates, trigger playbooks, and get alerted when agents are blocked — all without opening a browser. Telegram and Email are live today. Slack and Discord are in active development.
+      <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-8">
+        Send instructions, check status, trigger playbooks, and unblock agents — all from your phone. No dashboard required. Telegram and Email are live. Slack and Discord ship later this year.
       </p>
+      <div class="flex flex-col sm:flex-row gap-4 mb-10">
+        <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Connect Telegram now
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          All Features
+        </a>
+      </div>
       <div class="flex flex-wrap items-center gap-3">
         <div class="flex items-center gap-2 bg-surface-1 border border-white/[0.06] rounded-lg px-4 py-2">
           <div class="w-2 h-2 bg-emerald-500 rounded-full"></div>
@@ -157,7 +166,7 @@
   </section>
 
   <!-- Telegram Conversation Preview -->
-  <section class="py-16 border-b border-white/[0.06]">
+  <section class="py-24 md:py-32 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
         <!-- Telegram Chat -->
@@ -247,22 +256,22 @@
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-rose-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Available on Starter, Growth, and Business plans</li>
           </ul>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 space-y-3">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-2">What you can do from Telegram</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 space-y-3">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-2">What you can do from Telegram</div>
           <div class="grid grid-cols-1 gap-2">
-            <div class="bg-surface-2 rounded-lg px-4 py-3">
+            <div class="bg-surface-2 rounded-lg p-4 hover:bg-surface-3 transition-all duration-300">
               <div class="text-sm text-zinc-300 font-mono">"Status on project Alpha"</div>
               <div class="text-xs text-zinc-600 mt-1">Gets current issue count, blocked items, and last agent activity</div>
             </div>
-            <div class="bg-surface-2 rounded-lg px-4 py-3">
+            <div class="bg-surface-2 rounded-lg p-4 hover:bg-surface-3 transition-all duration-300">
               <div class="text-sm text-zinc-300 font-mono">"Run the Security Audit playbook"</div>
               <div class="text-xs text-zinc-600 mt-1">Triggers playbook immediately. You get a notification when each step completes.</div>
             </div>
-            <div class="bg-surface-2 rounded-lg px-4 py-3">
+            <div class="bg-surface-2 rounded-lg p-4 hover:bg-surface-3 transition-all duration-300">
               <div class="text-sm text-zinc-300 font-mono">"Unblock Engineer #2, the spec is in the KB"</div>
               <div class="text-xs text-zinc-600 mt-1">Clears the blocker and notifies the agent to resume work</div>
             </div>
-            <div class="bg-surface-2 rounded-lg px-4 py-3">
+            <div class="bg-surface-2 rounded-lg p-4 hover:bg-surface-3 transition-all duration-300">
               <div class="text-sm text-zinc-300 font-mono">"How much have we spent this week?"</div>
               <div class="text-xs text-zinc-600 mt-1">Returns per-agent spend breakdown for the current week</div>
             </div>
@@ -272,8 +281,8 @@
 
       <!-- Email -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Email Alert Configuration</div>
+        <div class="order-2 md:order-1 bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Email Alert Configuration</div>
           <div class="space-y-4">
             <div class="flex items-center justify-between py-3 border-b border-white/[0.06]">
               <div>
@@ -335,19 +344,19 @@
           Slack and Discord integrations will bring the same two-way control available in Telegram to team-oriented channels. This includes channel-level agent updates, thread-based issue tracking, and the ability for multiple team members to interact with agents from a shared workspace.
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300">
             <div class="flex items-center gap-3 mb-3">
               <div class="w-8 h-8 bg-surface-2 rounded-lg flex items-center justify-center">
                 <svg class="w-4 h-4 text-zinc-400" fill="currentColor" viewBox="0 0 24 24"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
               </div>
               <div>
                 <div class="text-sm font-medium text-zinc-400">Slack</div>
-                <div class="text-xs text-zinc-600">Coming Growth + Business plans</div>
+                <div class="text-xs text-zinc-500">Coming Growth + Business plans</div>
               </div>
             </div>
-            <p class="text-xs text-zinc-600">Channel-based agent updates, slash command integration, and thread-level issue tracking for teams.</p>
+            <p class="text-xs text-zinc-400">Channel-based agent updates, slash command integration, and thread-level issue tracking for teams.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300">
             <div class="flex items-center gap-3 mb-3">
               <div class="w-8 h-8 bg-surface-2 rounded-lg flex items-center justify-center">
                 <svg class="w-4 h-4 text-zinc-400" fill="currentColor" viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.033.054 2.052 1.507 4.04 2.42 5.993 3.029a.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.201 13.201 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
@@ -357,7 +366,7 @@
                 <div class="text-xs text-zinc-600">Coming Growth + Business plans</div>
               </div>
             </div>
-            <p class="text-xs text-zinc-600">Server bot integration with channel-based ops updates and role-gated command access for your team.</p>
+            <p class="text-xs text-zinc-400">Server bot integration with channel-based ops updates and role-gated command access for your team.</p>
           </div>
         </div>
       </div>
@@ -365,18 +374,40 @@
     </div>
   </section>
 
+  <!-- Related Features -->
+  <section class="py-16 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="text-xl font-semibold text-white mb-6">Related Features</h2>
+      <div class="grid sm:grid-cols-3 gap-6">
+        <a href="/features/war-room" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">War Room</div>
+          <p class="text-sm text-zinc-500">Messages received via Telegram and email appear in the War Room activity feed alongside agent heartbeat runs.</p>
+        </a>
+        <a href="/features/org-chart" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Org Chart</div>
+          <p class="text-sm text-zinc-500">Messages route to the CEO by default. The org chart determines how the CEO delegates incoming requests to the right agents.</p>
+        </a>
+        <a href="/features/playbooks" class="block p-5 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/[0.12] transition-colors">
+          <div class="text-sm font-semibold text-white mb-1">Playbooks</div>
+          <p class="text-sm text-zinc-500">Trigger playbooks from a Telegram message. Send "run client onboarding for Acme Corp" and the CEO kicks off the workflow.</p>
+        </a>
+      </div>
+      <p class="text-sm text-zinc-500 mt-6">Telegram and email integrations are included on all plans. <a href="/pricing" class="text-blue-400 hover:text-blue-300">View IronWorks pricing</a> starting at $79/month.</p>
+    </div>
+  </section>
+
   <!-- CTA -->
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Connect your team to where you already work.</h2>
-        <p class="text-zinc-400 text-lg mb-8">Telegram and Email are available on all plans. Slack and Discord are included when they launch on Growth and Business tiers.</p>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Your team is already on Telegram. Put your AI workforce there too.</h2>
+        <p class="text-zinc-300 text-lg mb-8">Telegram and Email are on all plans. Slack and Discord arrive later this year on Growth and Business tiers.</p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-            View Pricing
+          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
+            Set up messaging
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
-          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-white/10 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
             All Features
           </a>
         </div>

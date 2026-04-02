@@ -2,14 +2,45 @@
 <html lang="en" class="scroll-smooth">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Frequently Asked Questions — IronWorks Docs</title>
-  <meta name="description" content="Answers to 20+ common questions about IronWorks: pricing, agents, security, integrations, and more.">
-  <meta property="og:title" content="Frequently Asked Questions — IronWorks Docs">
-  <meta property="og:description" content="Answers to 20+ common questions about IronWorks: pricing, agents, security, integrations, and more.">
+  <title>IronWorks Docs FAQ — Agents, Pricing, Security & Integrations</title>
+  <meta name="description" content="Answers to 20+ questions about IronWorks: how agents work, BYOK pricing, API key security, Telegram integrations, playbooks, and the Knowledge Base. Everything in one place.">
+  <meta property="og:title" content="IronWorks Docs FAQ — Agents, Pricing, Security & Integrations">
+  <meta property="og:description" content="Answers to 20+ questions about IronWorks: how agents work, BYOK pricing, API key security, Telegram integrations, playbooks, and the Knowledge Base.">
   <meta property="og:type" content="article">
-  <meta property="og:url" content="https://ironworksapp.ai/docs/faq.html">
+  <meta property="og:url" content="https://ironworksapp.ai/docs/faq">
   <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="IronWorks Docs FAQ — Agents, Pricing, Security & Integrations">
+  <meta name="twitter:description" content="Answers to 20+ questions about IronWorks: how agents work, BYOK pricing, API key security, Telegram, playbooks, and Knowledge Base.">
+  <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/docs/faq">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Docs", "item": "https://ironworksapp.ai/docs/" },
+          { "@type": "ListItem", "position": 3, "name": "FAQ", "item": "https://ironworksapp.ai/docs/faq" }
+        ]
+      },
+      {
+        "@type": "FAQPage",
+        "url": "https://ironworksapp.ai/docs/faq",
+        "name": "IronWorks Docs FAQ",
+        "mainEntity": [
+          { "@type": "Question", "name": "How much does IronWorks cost?", "acceptedAnswer": { "@type": "Answer", "text": "Three plans: Starter at $79/month, Growth at $199/month, and Business at $599/month. All plans include unlimited agents. LLM costs are separate — you pay your AI provider directly at their standard rates." } },
+          { "@type": "Question", "name": "Do I need my own AI API keys?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. IronWorks uses a BYOK (Bring Your Own Key) model. You connect API keys from Anthropic, OpenAI, Google Gemini, or other supported providers." } },
+          { "@type": "Question", "name": "How often do agents check for work?", "acceptedAnswer": { "@type": "Answer", "text": "The heartbeat system polls every 30 seconds by default. When you assign an issue, the agent wakes up within 30 seconds, reads it, and begins executing." } },
+          { "@type": "Question", "name": "How are my API keys stored?", "acceptedAnswer": { "@type": "Answer", "text": "Encrypted with AES-256-GCM using a per-company master key. Secrets are decrypted only at the moment of use and are never logged or included in agent prompts." } }
+        ]
+      }
+    ]
+  }
+  </script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Geist','system-ui','-apple-system','sans-serif'],mono:['Geist Mono','JetBrains Mono','monospace']},colors:{surface:{0:'#0a0a0a',1:'#141414',2:'#1e1e1e',3:'#282828'},accent:{DEFAULT:'#3b82f6',dim:'#1d4ed8'}}}}}</script>
@@ -20,7 +51,9 @@
   <style>body{font-family:'Geist',system-ui,sans-serif;background:#0a0a0a;color:#e4e4e7}.gradient-text{background:linear-gradient(135deg,#e4e4e7 0%,#a1a1aa 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}.prose h2{font-size:1.5rem;font-weight:600;color:#fff;margin-top:2.5rem;margin-bottom:1rem}.prose h3{font-size:1.125rem;font-weight:600;color:#e4e4e7;margin-top:2rem;margin-bottom:.75rem}.prose p{color:#a1a1aa;line-height:1.75;margin-bottom:1rem}.prose ul,.prose ol{color:#a1a1aa;margin-bottom:1rem;padding-left:1.5rem}.prose li{margin-bottom:.5rem;line-height:1.6}.prose ul{list-style-type:disc}.prose ol{list-style-type:decimal}.prose strong{color:#e4e4e7;font-weight:600}.prose code{background:#1e1e1e;padding:.125rem .375rem;border-radius:.25rem;font-size:.875rem;color:#93c5fd;font-family:'Geist Mono',monospace}.prose pre{background:#141414;border:1px solid rgba(255,255,255,0.06);border-radius:.5rem;padding:1rem;margin-bottom:1.5rem;overflow-x:auto}.prose pre code{background:transparent;padding:0;color:#e4e4e7}.prose table{width:100%;border-collapse:collapse;margin-bottom:1.5rem}.prose th{text-align:left;padding:.75rem;border-bottom:1px solid rgba(255,255,255,0.1);color:#e4e4e7;font-weight:600;font-size:.875rem}.prose td{padding:.75rem;border-bottom:1px solid rgba(255,255,255,0.06);color:#a1a1aa;font-size:.875rem}.prose blockquote{border-left:3px solid #3b82f6;padding-left:1rem;margin:1.5rem 0}.prose blockquote p{color:#d4d4d8}.sidebar-link{display:block;padding:.375rem .75rem;border-radius:.375rem;font-size:.875rem;color:#71717a;transition:all .15s}.sidebar-link:hover{color:#e4e4e7;background:#1e1e1e}.sidebar-link.active{color:#3b82f6;background:rgba(59,130,246,0.1)}.sidebar-label{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#52525b;padding:.375rem .75rem;margin-top:1rem}details summary{cursor:pointer;list-style:none}details summary::-webkit-details-marker{display:none}</style>
 </head>
 <body class="antialiased">
+  <a href="#main-content" class="skip-link">Skip to main content</a>
   <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-surface-0/80 backdrop-blur-xl" aria-label="Main navigation"><div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between"><a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg><span class="text-lg font-semibold tracking-tight">Iron<span class="text-blue-500">W</span>orks</span></a><div class="hidden md:flex items-center gap-8 text-sm text-zinc-400"><a href="/#features" class="hover:text-white transition-colors">Features</a><a href="/#pricing" class="hover:text-white transition-colors">Pricing</a><a href="/#security" class="hover:text-white transition-colors">Security</a><a href="/docs/" class="text-white transition-colors" aria-current="page">Docs</a></div><div class="flex items-center gap-3"><a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a><a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a></div></div></nav>
+  <main id="main-content">
   <div class="pt-24 pb-16 max-w-6xl mx-auto px-6">
     <div class="text-sm text-zinc-500 mb-8"><a href="/" class="hover:text-zinc-300">Home</a> <span class="mx-2">/</span> <a href="/docs/" class="hover:text-zinc-300">Docs</a> <span class="mx-2">/</span> <span class="text-zinc-300">FAQ</span></div>
     <div class="flex gap-12">
@@ -43,7 +76,7 @@
         <div class="sidebar-label">Reference</div>
         <a href="/docs/faq.html" class="sidebar-link active">FAQ</a>
       </nav></aside>
-      <main class="flex-1 min-w-0 prose">
+      <article class="flex-1 min-w-0 prose">
 
         <h1 class="text-3xl md:text-4xl font-bold tracking-tight text-white mb-2">Frequently Asked Questions</h1>
         <p class="text-lg text-zinc-400 mb-8">Answers to common questions, organized by topic.</p>
@@ -280,9 +313,14 @@
           </div>
         </details>
 
-      </main>
+        <h2>Still Have Questions?</h2>
+        <p>For detailed guides, see the full documentation: <a href="/docs/how-agents-work.html" class="text-blue-400 hover:text-blue-300">How Agents Work</a> explains the heartbeat loop in depth. <a href="/docs/api-keys-and-costs.html" class="text-blue-400 hover:text-blue-300">API Keys and Costs</a> covers the BYOK model and budget enforcement. <a href="/docs/security-and-privacy.html" class="text-blue-400 hover:text-blue-300">Security and Privacy</a> covers encryption and tenant isolation in detail.</p>
+        <p>Ready to start? <a href="/pricing" class="text-blue-400 hover:text-blue-300">View IronWorks pricing</a> — Starter starts at $79/mo with unlimited agents and zero LLM markup.</p>
+
+      </article>
     </div>
   </div>
+  </main>
   <footer class="border-t border-white/[0.06] py-16 md:py-20"><div class="max-w-6xl mx-auto px-6"><div class="flex flex-col md:flex-row justify-between gap-8"><div><div class="flex items-center gap-2 mb-3"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg><span class="font-semibold">IronWorks</span></div><p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p></div><div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500"><a href="/terms" class="hover:text-zinc-300 transition-colors">Terms of Service</a><a href="/privacy" class="hover:text-zinc-300 transition-colors">Privacy Policy</a><a href="/docs/" class="hover:text-zinc-300 transition-colors">Documentation</a></div></div><div class="mt-8 pt-8 border-t border-white/[0.06] text-xs text-zinc-600">&copy; 2026 Steel Motion LLC. All rights reserved.</div></div></footer>
 </body>
 </html>

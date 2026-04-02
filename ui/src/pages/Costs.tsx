@@ -594,7 +594,7 @@ export function Costs() {
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
-  const showOverviewLoading = (spendLoading || financeLoading) && customReady;
+  const showOverviewLoading = spendLoading || financeLoading;
   const overviewError = spendError ?? financeError;
 
   return (

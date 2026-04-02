@@ -139,6 +139,9 @@ export const queryKeys = {
     detail: (companyId: string, playbookId: string) =>
       ["playbooks", companyId, playbookId] as const,
   },
+  knowledge: {
+    list: (companyId: string) => ["companies", companyId, "knowledge"] as const,
+  },
   library: {
     tree: (companyId: string, dirPath: string) =>
       ["library", companyId, "tree", dirPath] as const,

@@ -217,6 +217,11 @@ export function AgentPerformance() {
   const sorted = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {
+      if (sortField === "rating") {
+        // Rating is A/B/C/D/F — sort alphabetically (A < B < ... < F)
+        // desc = best first (A before F), asc = worst first (F before A)
+        return dir * a.rating.localeCompare(b.rating);
+      }
       const av = a[sortField] ?? -1;
       const bv = b[sortField] ?? -1;
       return dir * ((av as number) - (bv as number));
@@ -246,7 +251,11 @@ export function AgentPerformance() {
             Evaluate agent efficiency, throughput, and cost effectiveness.
           </p>
         </div>
-        <div className="flex items-center gap-1 border border-border rounded-md overflow-hidden">
+        <div
+          className="flex items-center gap-1 border border-border rounded-md overflow-hidden"
+          role="group"
+          aria-label="Time range"
+        >
           {(["7d", "30d", "all"] as const).map((r) => (
             <button
               key={r}
@@ -254,6 +263,7 @@ export function AgentPerformance() {
                 "px-3 py-1.5 text-xs transition-colors",
                 range === r ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
+              aria-pressed={range === r}
               onClick={() => setRange(r)}
             >
               {r === "all" ? "All time" : r === "7d" ? "7 days" : "30 days"}

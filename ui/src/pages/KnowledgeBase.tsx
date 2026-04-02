@@ -9,6 +9,14 @@ import { MarkdownBody } from "../components/MarkdownBody";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn, formatDate } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import {
@@ -26,8 +34,6 @@ import {
   X,
 } from "lucide-react";
 
-const KB_QUERY_KEY = (companyId: string) => ["knowledge", companyId] as const;
-
 /* ── Main component ── */
 
 export function KnowledgeBase() {
@@ -43,14 +49,15 @@ export function KnowledgeBase() {
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [showHistory, setShowHistory] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const editBodyRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Knowledge Base" }]);
   }, [setBreadcrumbs]);
 
-  const { data: pages, isLoading } = useQuery({
-    queryKey: KB_QUERY_KEY(selectedCompanyId!),
+  const { data: pages, isLoading, error: pagesError } = useQuery({
+    queryKey: queryKeys.knowledge.list(selectedCompanyId!),
     queryFn: () => knowledgeApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
@@ -75,7 +82,7 @@ export function KnowledgeBase() {
   const createPage = useMutation({
     mutationFn: () => knowledgeApi.create(selectedCompanyId!, { title: newTitle.trim() }),
     onSuccess: (page) => {
-      queryClient.invalidateQueries({ queryKey: KB_QUERY_KEY(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
       setSelectedPageId(page.id);
       setCreating(false);
       setNewTitle("");
@@ -88,7 +95,7 @@ export function KnowledgeBase() {
   const updatePage = useMutation({
     mutationFn: () => knowledgeApi.update(selectedPageId!, { title: editTitle, body: editBody }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: KB_QUERY_KEY(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
       setEditing(false);
     },
   });
@@ -96,7 +103,7 @@ export function KnowledgeBase() {
   const deletePage = useMutation({
     mutationFn: () => knowledgeApi.remove(selectedPageId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: KB_QUERY_KEY(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
       setSelectedPageId(null);
       setEditing(false);
     },
@@ -105,7 +112,7 @@ export function KnowledgeBase() {
   const revertPage = useMutation({
     mutationFn: (revisionNumber: number) => knowledgeApi.revert(selectedPageId!, revisionNumber),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: KB_QUERY_KEY(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: ["knowledge", "revisions", selectedPageId] });
       setShowHistory(false);
     },
@@ -174,7 +181,12 @@ export function KnowledgeBase() {
         )}
 
         <div className="flex-1 overflow-y-auto">
-          {filteredPages.length === 0 ? (
+          {pagesError && (
+            <div className="p-4 text-xs text-destructive text-center">
+              Failed to load pages. Please try again.
+            </div>
+          )}
+          {!pagesError && filteredPages.length === 0 ? (
             <div className="p-4 text-xs text-muted-foreground text-center">
               {search.trim() ? "No pages match your search." : "No pages yet. Create one to get started."}
             </div>
@@ -245,7 +257,7 @@ export function KnowledgeBase() {
                       size="sm"
                       variant="ghost"
                       className="h-7 text-xs text-destructive"
-                      onClick={() => { if (confirm("Delete this page?")) deletePage.mutate(); }}
+                      onClick={() => setShowDeleteConfirm(true)}
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -308,6 +320,35 @@ export function KnowledgeBase() {
           </>
         )}
       </div>
+
+      {/* Delete page confirmation dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete page?</DialogTitle>
+            <DialogDescription>
+              {selectedPage
+                ? `"${selectedPage.title}" will be permanently deleted along with all its revision history. This cannot be undone.`
+                : "This page will be permanently deleted. This cannot be undone."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deletePage.isPending}
+              onClick={() => {
+                deletePage.mutate();
+                setShowDeleteConfirm(false);
+              }}
+            >
+              {deletePage.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

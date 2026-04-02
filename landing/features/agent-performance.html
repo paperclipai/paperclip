@@ -98,7 +98,7 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
@@ -133,69 +133,74 @@
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
         IronWorks assigns A-F letter grades to every agent based on four measured dimensions: cost per task, average completion time, issues completed per week, and first-try completion rate. Performance reviews happen automatically, not when you remember to check.
       </p>
-      <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-        Get Started
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
-      </a>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Grade your agents now
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          All Features
+        </a>
+      </div>
     </div>
   </section>
 
   <!-- Performance Card Preview -->
-  <section class="py-16 border-b border-white/[0.06]">
+  <section class="py-24 md:py-32 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 md:p-12">
-        <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-8">Agent Performance — This Month</div>
+        <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-8">Agent Performance — This Month</div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
 
-          <div class="bg-surface-2 rounded-xl p-5 border border-white/[0.04]">
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-sm text-zinc-400">CTO Agent</span>
+          <div class="bg-surface-2 rounded-xl p-6 border border-white/[0.06] hover:border-white/10 transition-all duration-300 card-hover">
+            <div class="flex items-center justify-between mb-4">
+              <span class="text-sm text-zinc-300">CTO Agent</span>
               <span class="text-2xl font-bold grade-a font-mono">A</span>
             </div>
             <div class="space-y-2 text-xs">
-              <div class="flex justify-between"><span class="text-zinc-600">Cost/task</span><span class="text-zinc-400">$0.18</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Avg time</span><span class="text-zinc-400">22 min</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Throughput</span><span class="text-zinc-400">14/wk</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Completion</span><span class="text-emerald-400">96%</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Cost/task</span><span class="text-zinc-300">$0.18</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Avg time</span><span class="text-zinc-300">22 min</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Throughput</span><span class="text-zinc-300">14/wk</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Completion</span><span class="text-emerald-400">96%</span></div>
             </div>
           </div>
 
-          <div class="bg-surface-2 rounded-xl p-5 border border-white/[0.04]">
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-sm text-zinc-400">CMO Agent</span>
+          <div class="bg-surface-2 rounded-xl p-6 border border-white/[0.06] hover:border-white/10 transition-all duration-300 card-hover">
+            <div class="flex items-center justify-between mb-4">
+              <span class="text-sm text-zinc-300">CMO Agent</span>
               <span class="text-2xl font-bold grade-b font-mono">B</span>
             </div>
             <div class="space-y-2 text-xs">
-              <div class="flex justify-between"><span class="text-zinc-600">Cost/task</span><span class="text-zinc-400">$0.31</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Avg time</span><span class="text-zinc-400">38 min</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Throughput</span><span class="text-zinc-400">9/wk</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Completion</span><span class="text-emerald-400">88%</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Cost/task</span><span class="text-zinc-300">$0.31</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Avg time</span><span class="text-zinc-300">38 min</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Throughput</span><span class="text-zinc-300">9/wk</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Completion</span><span class="text-emerald-400">88%</span></div>
             </div>
           </div>
 
-          <div class="bg-surface-2 rounded-xl p-5 border border-white/[0.04]">
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-sm text-zinc-400">Engineer #2</span>
+          <div class="bg-surface-2 rounded-xl p-6 border border-white/[0.06] hover:border-white/10 transition-all duration-300 card-hover">
+            <div class="flex items-center justify-between mb-4">
+              <span class="text-sm text-zinc-300">Engineer #2</span>
               <span class="text-2xl font-bold grade-c font-mono">C</span>
             </div>
             <div class="space-y-2 text-xs">
-              <div class="flex justify-between"><span class="text-zinc-600">Cost/task</span><span class="text-zinc-400">$0.62</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Avg time</span><span class="text-zinc-400">71 min</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Throughput</span><span class="text-zinc-400">6/wk</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Completion</span><span class="text-amber-400">74%</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Cost/task</span><span class="text-zinc-300">$0.62</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Avg time</span><span class="text-zinc-300">71 min</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Throughput</span><span class="text-zinc-300">6/wk</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Completion</span><span class="text-amber-400">74%</span></div>
             </div>
           </div>
 
-          <div class="bg-surface-2 rounded-xl p-5 border border-white/[0.04]">
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-sm text-zinc-400">HR Agent</span>
+          <div class="bg-surface-2 rounded-xl p-6 border border-white/[0.06] hover:border-white/10 transition-all duration-300 card-hover">
+            <div class="flex items-center justify-between mb-4">
+              <span class="text-sm text-zinc-300">HR Agent</span>
               <span class="text-2xl font-bold grade-a font-mono">A</span>
             </div>
             <div class="space-y-2 text-xs">
-              <div class="flex justify-between"><span class="text-zinc-600">Cost/task</span><span class="text-zinc-400">$0.14</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Avg time</span><span class="text-zinc-400">18 min</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Throughput</span><span class="text-zinc-400">18/wk</span></div>
-              <div class="flex justify-between"><span class="text-zinc-600">Completion</span><span class="text-emerald-400">98%</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Cost/task</span><span class="text-zinc-300">$0.14</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Avg time</span><span class="text-zinc-300">18 min</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Throughput</span><span class="text-zinc-300">18/wk</span></div>
+              <div class="flex justify-between"><span class="text-zinc-500">Completion</span><span class="text-emerald-400">98%</span></div>
             </div>
           </div>
 
@@ -221,29 +226,29 @@
           </p>
         </div>
         <div class="grid grid-cols-2 gap-4">
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300 card-hover">
             <div class="text-sm font-semibold text-white mb-2">Cost Efficiency</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Cost per completed task measured in USD. Compares token usage per outcome, not raw token count. Agents who ramble or retry excessively score lower.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Cost per completed task measured in USD. Compares token usage per outcome, not raw token count. Agents who ramble or retry excessively score lower.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300 card-hover">
             <div class="text-sm font-semibold text-white mb-2">Speed</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Average clock time from task assignment to task completion. Includes idle time between steps. Agents that stall or request unnecessary clarification score lower.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Average clock time from task assignment to task completion. Includes idle time between steps. Agents that stall or request unnecessary clarification score lower.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300 card-hover">
             <div class="text-sm font-semibold text-white mb-2">Throughput</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Issues closed and tasks completed per week. Normalized by task complexity so a single complex task is not penalized against five simple ones.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Issues closed and tasks completed per week. Normalized by task complexity so a single complex task is not penalized against five simple ones.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 hover:border-white/10 transition-all duration-300 card-hover">
             <div class="text-sm font-semibold text-white mb-2">Completion Rate</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Percentage of assigned tasks completed successfully on the first attempt without human intervention. Rewrites, re-assignments, and escalations reduce this score.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Percentage of assigned tasks completed successfully on the first attempt without human intervention. Rewrites, re-assignments, and escalations reduce this score.</p>
           </div>
         </div>
       </div>
 
       <!-- Per-Project Breakdown -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">CTO Agent — Project Breakdown</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">CTO Agent — Project Breakdown</div>
           <div class="space-y-4">
             <div>
               <div class="flex items-center justify-between mb-1">
@@ -312,8 +317,8 @@
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Alerts via Telegram or email when an agent drops more than one grade level</li>
           </ul>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6 space-y-4">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide">Performance Insight</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 space-y-4">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide">Performance Insight</div>
           <div class="p-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">
             <div class="flex items-center gap-2 mb-2">
               <span class="text-xs font-medium text-amber-400 uppercase tracking-wide">Recommendation</span>
@@ -340,18 +345,40 @@
     </div>
   </section>
 
+  <!-- Related Features -->
+  <section class="py-20 md:py-24 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="font-display text-xl font-semibold text-white mb-8 tracking-tight">Related Features</h2>
+      <div class="grid sm:grid-cols-3 gap-5">
+        <a href="/features/war-room" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">War Room</div>
+          <p class="text-sm text-zinc-400">Command center for real-time agent operations. Performance grades surface directly in the War Room dashboard.</p>
+        </a>
+        <a href="/features/org-chart" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">Org Chart</div>
+          <p class="text-sm text-zinc-400">The reporting structure that determines how work flows. Performance ratings roll up through the org chart hierarchy.</p>
+        </a>
+        <a href="/docs/api-keys-and-costs" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">Cost Tracking</div>
+          <p class="text-sm text-zinc-400">Per-agent LLM cost data feeds directly into the A-F grading formula. High cost, low output = lower grade.</p>
+        </a>
+      </div>
+      <p class="text-sm text-zinc-400 mt-6">Performance ratings are included on all plans. <a href="/pricing" class="text-blue-400 hover:text-blue-300 transition-all duration-300">View IronWorks pricing</a> starting at $79/month.</p>
+    </div>
+  </section>
+
   <!-- CTA -->
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Know which agents earn their keep.</h2>
-        <p class="text-zinc-400 text-lg mb-8">Performance ratings are included in every IronWorks plan. No analytics add-ons, no premium tier required.</p>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Stop guessing which agents deliver. Start reading the grade.</h2>
+        <p class="text-zinc-300 text-lg mb-8">Performance ratings are included in every IronWorks plan. No analytics add-ons. No premium tier required.</p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-            View Pricing
+          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
+            See the plans
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
-          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-white/10 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
             All Features
           </a>
         </div>

@@ -89,119 +89,132 @@
         <a href="/docs/" class="text-white transition-colors" aria-current="page">Docs</a>
       </div>
       <div class="flex items-center gap-3">
-        <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
-        <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
+        <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-all duration-300 hidden sm:block">Log in</a>
+        <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-all duration-300 hidden sm:inline-flex">Get Started</a>
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="mobile-nav" class="hidden md:hidden border-t border-white/[0.06] bg-surface-0/95 backdrop-blur-xl">
+      <div class="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-3 text-sm">
+        <a href="/#features" class="text-zinc-400 hover:text-white py-2 transition-colors">Features</a>
+        <a href="/#pricing" class="text-zinc-400 hover:text-white py-2 transition-colors">Pricing</a>
+        <a href="/#security" class="text-zinc-400 hover:text-white py-2 transition-colors">Security</a>
+        <a href="/docs/" class="text-white py-2 transition-colors" aria-current="page">Docs</a>
+        <a href="/auth" class="text-zinc-400 hover:text-white py-2 transition-colors">Log in</a>
+        <a href="/#pricing" class="bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-4 py-3 rounded-lg text-center transition-all duration-300">Get Started</a>
       </div>
     </div>
   </nav>
 
   <main id="main-content">
-  <div class="pt-24 pb-16 max-w-6xl mx-auto px-6">
+  <div class="pt-32 pb-24 md:pt-40 md:pb-32 max-w-6xl mx-auto px-6">
 
     <!-- Breadcrumbs -->
-    <div class="text-sm text-zinc-500 mb-8">
-      <a href="/" class="hover:text-zinc-300">Home</a>
-      <span class="mx-2">/</span>
-      <span class="text-zinc-300">Documentation</span>
+    <div class="text-sm text-zinc-400 mb-10">
+      <a href="/" class="hover:text-zinc-200 transition-all duration-300">Home</a>
+      <span class="mx-2 text-zinc-600">/</span>
+      <span class="text-zinc-200">Documentation</span>
     </div>
 
     <h1 class="font-display text-5xl md:text-6xl font-extrabold tracking-tighter leading-[0.9] mb-6">
       <span class="gradient-text">Documentation</span>
     </h1>
-    <p class="text-lg text-zinc-400 max-w-2xl mb-12">
+    <p class="text-lg text-zinc-300 max-w-2xl mb-16">
       Everything you need to deploy, configure, and run your AI workforce with IronWorks.
     </p>
 
     <!-- New to IronWorks callout -->
-    <div class="bg-surface-1 border border-blue-500/20 rounded-xl p-8 mb-16">
-      <h2 class="text-lg font-semibold text-white mb-2">New to IronWorks? Start here.</h2>
-      <p class="text-zinc-400 text-sm mb-4">Pick the guide that matches how you plan to use IronWorks.</p>
+    <div class="bg-surface-1 border border-blue-500/20 rounded-xl p-8 mb-20 hover:border-blue-500/30 transition-all duration-300">
+      <h2 class="font-display text-xl font-semibold text-white mb-2 tracking-tight">New to IronWorks? Start here.</h2>
+      <p class="text-zinc-300 text-sm mb-5">Pick the guide that matches how you plan to use IronWorks.</p>
       <div class="flex flex-wrap gap-3">
-        <a href="/docs/getting-started-founder.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 transition-colors">I'm a Solo Founder</a>
-        <a href="/docs/getting-started-agency.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 transition-colors">I run an Agency</a>
-        <a href="/docs/getting-started-technical.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 transition-colors">I'm a Developer</a>
+        <a href="/docs/getting-started-founder.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 hover:border-blue-500/40 transition-all duration-300">I'm a Solo Founder</a>
+        <a href="/docs/getting-started-agency.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 hover:border-blue-500/40 transition-all duration-300">I run an Agency</a>
+        <a href="/docs/getting-started-technical.html" class="text-sm bg-blue-600/10 border border-blue-500/20 text-blue-400 px-4 py-2 rounded-lg hover:bg-blue-600/20 hover:border-blue-500/40 transition-all duration-300">I'm a Developer</a>
       </div>
     </div>
 
     <!-- Getting Started -->
-    <section class="mb-16">
-      <h2 class="font-display text-xl font-semibold text-white mb-6">Getting Started</h2>
-      <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/getting-started-founder.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Solo Founder Guide</h3>
-          <p class="text-sm text-zinc-400">Pick a plan, deploy the Startup pack, set your first goal, and watch your AI team work.</p>
+    <section class="mb-20">
+      <h2 class="font-display text-2xl font-bold text-white mb-8 tracking-tight">Getting Started</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+        <a href="/docs/getting-started-founder.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Solo Founder Guide</h3>
+          <p class="text-sm text-zinc-300">Pick a plan, deploy the Startup pack, set your first goal, and watch your AI team work.</p>
         </a>
-        <a href="/docs/getting-started-agency.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Agency Guide</h3>
-          <p class="text-sm text-zinc-400">Manage AI workforces for multiple clients with tenant isolation and playbook-driven onboarding.</p>
+        <a href="/docs/getting-started-agency.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Agency Guide</h3>
+          <p class="text-sm text-zinc-300">Manage AI workforces for multiple clients with tenant isolation and playbook-driven onboarding.</p>
         </a>
-        <a href="/docs/getting-started-technical.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Developer Guide</h3>
-          <p class="text-sm text-zinc-400">API keys, heartbeat system, issue lifecycle, workspace configuration, custom skills.</p>
+        <a href="/docs/getting-started-technical.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Developer Guide</h3>
+          <p class="text-sm text-zinc-300">API keys, heartbeat system, issue lifecycle, workspace configuration, custom skills.</p>
         </a>
       </div>
     </section>
 
     <!-- Core Concepts -->
-    <section class="mb-16">
-      <h2 class="font-display text-xl font-semibold text-white mb-6">Core Concepts</h2>
-      <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/agents-and-roles.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Agents and Roles</h3>
-          <p class="text-sm text-zinc-400">9 role templates, default capabilities, org chart delegation, SOUL.md customization.</p>
+    <section class="mb-20">
+      <h2 class="font-display text-2xl font-bold text-white mb-8 tracking-tight">Core Concepts</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+        <a href="/docs/agents-and-roles.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Agents and Roles</h3>
+          <p class="text-sm text-zinc-300">9 role templates, default capabilities, org chart delegation, SOUL.md customization.</p>
         </a>
-        <a href="/docs/team-packs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Team Packs</h3>
-          <p class="text-sm text-zinc-400">Startup, Agency, and Enterprise packs. Pre-built rosters matched to your use case.</p>
+        <a href="/docs/team-packs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Team Packs</h3>
+          <p class="text-sm text-zinc-300">Startup, Agency, and Enterprise packs. Pre-built rosters matched to your use case.</p>
         </a>
-        <a href="/docs/war-room.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">War Room Dashboard</h3>
-          <p class="text-sm text-zinc-400">Real-time operational overview: agent status, blocked items, spend metrics, goal progress.</p>
+        <a href="/docs/war-room.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">War Room Dashboard</h3>
+          <p class="text-sm text-zinc-300">Real-time operational overview: agent status, blocked items, spend metrics, goal progress.</p>
         </a>
       </div>
     </section>
 
     <!-- Features -->
-    <section class="mb-16">
-      <h2 class="font-display text-xl font-semibold text-white mb-6">Features</h2>
-      <div class="grid md:grid-cols-3 gap-4">
-        <a href="/docs/playbooks-and-routines.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Playbooks and Routines</h3>
-          <p class="text-sm text-zinc-400">Multi-step workflows with dependencies. 7 seed playbooks, 5 seed routines, AI-generated custom playbooks.</p>
+    <section class="mb-20">
+      <h2 class="font-display text-2xl font-bold text-white mb-8 tracking-tight">Features</h2>
+      <div class="grid md:grid-cols-3 gap-5">
+        <a href="/docs/playbooks-and-routines.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Playbooks and Routines</h3>
+          <p class="text-sm text-zinc-300">Multi-step workflows with dependencies. 7 seed playbooks, 5 seed routines, AI-generated custom playbooks.</p>
         </a>
-        <a href="/docs/knowledge-base.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Knowledge Base</h3>
-          <p class="text-sm text-zinc-400">Shared company wiki with 9 seed pages, markdown editor, cross-linking, revision history.</p>
+        <a href="/docs/knowledge-base.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Knowledge Base</h3>
+          <p class="text-sm text-zinc-300">Shared company wiki with 9 seed pages, markdown editor, cross-linking, revision history.</p>
         </a>
-        <a href="/docs/messaging-integrations.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Messaging Integrations</h3>
-          <p class="text-sm text-zinc-400">Telegram, email bridge, Slack, and Discord. Talk to your agents where you already work.</p>
+        <a href="/docs/messaging-integrations.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Messaging Integrations</h3>
+          <p class="text-sm text-zinc-300">Telegram, email bridge, Slack, and Discord. Talk to your agents where you already work.</p>
         </a>
       </div>
     </section>
 
     <!-- Operations and Security -->
-    <section class="mb-16">
-      <h2 class="font-display text-xl font-semibold text-white mb-6">Operations and Security</h2>
-      <div class="grid md:grid-cols-2 gap-4">
-        <a href="/docs/api-keys-and-costs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">API Keys, Costs, and Budgets</h3>
-          <p class="text-sm text-zinc-400">BYOK model explained, API key vs OAuth, budget thresholds, cost tracking per agent and task.</p>
+    <section class="mb-20">
+      <h2 class="font-display text-2xl font-bold text-white mb-8 tracking-tight">Operations and Security</h2>
+      <div class="grid md:grid-cols-2 gap-5">
+        <a href="/docs/api-keys-and-costs.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">API Keys, Costs, and Budgets</h3>
+          <p class="text-sm text-zinc-300">BYOK model explained, API key vs OAuth, budget thresholds, cost tracking per agent and task.</p>
         </a>
-        <a href="/docs/security-and-privacy.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Security and Privacy</h3>
-          <p class="text-sm text-zinc-400">Tenant isolation, AES-256-GCM encryption, prompt injection protection, RBAC, GDPR.</p>
+        <a href="/docs/security-and-privacy.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Security and Privacy</h3>
+          <p class="text-sm text-zinc-300">Tenant isolation, AES-256-GCM encryption, prompt injection protection, RBAC, GDPR.</p>
         </a>
       </div>
     </section>
 
     <!-- Reference -->
-    <section class="mb-16">
-      <h2 class="font-display text-xl font-semibold text-white mb-6">Reference</h2>
-      <div class="grid md:grid-cols-2 gap-4">
-        <a href="/docs/faq.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all hover:border-white/[0.1]">
-          <h3 class="font-medium text-white mb-1">Frequently Asked Questions</h3>
-          <p class="text-sm text-zinc-400">20+ questions organized by topic. Pricing, agents, security, integrations, and more.</p>
+    <section class="mb-20">
+      <h2 class="font-display text-2xl font-bold text-white mb-8 tracking-tight">Reference</h2>
+      <div class="grid md:grid-cols-2 gap-5">
+        <a href="/docs/faq.html" class="bg-surface-1 border border-white/[0.06] rounded-xl p-8 card-glow card-hover transition-all duration-300 hover:border-white/10">
+          <h3 class="font-semibold text-white mb-2">Frequently Asked Questions</h3>
+          <p class="text-sm text-zinc-300">20+ questions organized by topic. Pricing, agents, security, integrations, and more.</p>
         </a>
       </div>
     </section>
@@ -235,5 +248,6 @@
     </div>
   </footer>
 
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
 </body>
 </html>

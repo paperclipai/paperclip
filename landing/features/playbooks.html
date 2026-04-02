@@ -94,7 +94,7 @@
       <div class="flex items-center gap-3">
         <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
         <a href="/#pricing" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
-        <button id="nav-toggle" class="md:hidden p-2 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
       </div>
@@ -129,15 +129,20 @@
       <p class="text-lg text-zinc-400 leading-relaxed max-w-2xl mb-10">
         Playbooks are reusable workflows made up of ordered steps, assigned roles, and dependency rules. When you trigger a Playbook run, IronWorks assigns each step to the right agent, tracks dependencies, and keeps you informed of progress. No manual coordination required.
       </p>
-      <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-        Get Started
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
-      </a>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          Run your first playbook
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          All Features
+        </a>
+      </div>
     </div>
   </section>
 
   <!-- Playbook Run Preview -->
-  <section class="py-16 border-b border-white/[0.06]">
+  <section class="py-24 md:py-32 border-b border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8 md:p-10">
         <div class="flex items-center justify-between mb-6">
@@ -223,33 +228,33 @@
           Each template is fully configured with steps, recommended role assignments, and dependency rules. Customize them for your org or run them as-is. You can also build Playbooks from scratch or ask an agent to generate one from a plain-English description.
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Client Onboarding</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Welcome email, contract, project setup, access provisioning, kickoff brief, finance recording. 6 steps across 4 agent roles.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Welcome email, contract, project setup, access provisioning, kickoff brief, finance recording. 6 steps across 4 agent roles.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Security Audit</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Dependency scan, secret rotation check, access review, infrastructure review, report generation. Runs monthly by default.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Dependency scan, secret rotation check, access review, infrastructure review, report generation. Runs monthly by default.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Product Launch</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Pre-launch checklist, content creation, social scheduling, announcement email, support FAQ update. 8 steps.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Pre-launch checklist, content creation, social scheduling, announcement email, support FAQ update. 8 steps.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Content Campaign</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Topic research, outline, drafting, editing, SEO review, publishing, performance tracking. Fully handled by CMO Agent.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Topic research, outline, drafting, editing, SEO review, publishing, performance tracking. Fully handled by CMO Agent.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Sprint Planning</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Backlog grooming, capacity estimate, issue prioritization, sprint goal definition, team assignment. CTO-led.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Backlog grooming, capacity estimate, issue prioritization, sprint goal definition, team assignment. CTO-led.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10">
             <div class="text-sm font-semibold text-white mb-1">Incident Response</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Alert triage, severity classification, engineering escalation, stakeholder communication, post-mortem. Always available.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Alert triage, severity classification, engineering escalation, stakeholder communication, post-mortem. Always available.</p>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5 card-glow transition-all sm:col-span-2 lg:col-span-1">
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6 card-glow card-hover transition-all duration-300 hover:border-white/10 sm:col-span-2 lg:col-span-1">
             <div class="text-sm font-semibold text-white mb-1">New Hire Onboarding</div>
-            <p class="text-xs text-zinc-500 leading-relaxed">Role briefing, system access, KB reading assignment, first-week task list, check-in schedule. HR Agent-led.</p>
+            <p class="text-xs text-zinc-400 leading-relaxed">Role briefing, system access, KB reading assignment, first-week task list, check-in schedule. HR Agent-led.</p>
           </div>
         </div>
       </div>
@@ -269,8 +274,8 @@
             <li class="flex items-start gap-2"><svg class="w-4 h-4 text-violet-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>Retry failed steps individually without rerunning the entire playbook</li>
           </ul>
         </div>
-        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-6">
-          <div class="text-xs text-zinc-500 font-medium uppercase tracking-wide mb-4">Execution Graph — Client Onboarding</div>
+        <div class="bg-surface-1 border border-white/[0.06] rounded-2xl p-8">
+          <div class="text-xs text-zinc-400 font-medium uppercase tracking-wide mb-4">Execution Graph — Client Onboarding</div>
           <div class="space-y-2">
             <div class="flex justify-center">
               <div class="px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-400 font-medium">Step 1: Welcome email</div>
@@ -301,16 +306,16 @@
       <!-- AI Generation + Scheduling -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
         <div class="order-2 md:order-1 space-y-4">
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
-            <div class="text-xs text-zinc-500 font-medium mb-3">AI Playbook Generation</div>
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6">
+            <div class="text-xs text-zinc-400 font-medium mb-3">AI Playbook Generation</div>
             <div class="bg-surface-2 rounded-lg p-3 mb-3">
               <div class="text-xs text-zinc-500 mb-1">Your prompt</div>
               <div class="text-sm text-zinc-300">"Create a playbook for our monthly financial close process. Finance agent handles reconciliation, CEO approves, then CMO sends the summary to stakeholders."</div>
             </div>
             <div class="text-xs text-violet-400">Generating 6-step playbook...</div>
           </div>
-          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-5">
-            <div class="text-xs text-zinc-500 font-medium mb-3">Scheduled Runs</div>
+          <div class="bg-surface-1 border border-white/[0.06] rounded-xl p-6">
+            <div class="text-xs text-zinc-400 font-medium mb-3">Scheduled Runs</div>
             <div class="space-y-2 text-sm">
               <div class="flex items-center justify-between">
                 <span class="text-zinc-400">Security Audit</span>
@@ -345,18 +350,40 @@
     </div>
   </section>
 
+  <!-- Related Features -->
+  <section class="py-20 md:py-24 border-t border-white/[0.06]">
+    <div class="max-w-6xl mx-auto px-6">
+      <h2 class="font-display text-xl font-semibold text-white mb-8 tracking-tight">Related Features</h2>
+      <div class="grid sm:grid-cols-3 gap-5">
+        <a href="/features/war-room" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">War Room</div>
+          <p class="text-sm text-zinc-400">Playbook runs and step completions show up in the War Room activity feed. Monitor progress across all active playbooks in one place.</p>
+        </a>
+        <a href="/features/org-chart" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">Org Chart</div>
+          <p class="text-sm text-zinc-400">Playbook steps are assigned to agent roles. The org chart determines which agent picks up each step based on their role.</p>
+        </a>
+        <a href="/features/knowledge-base" class="block p-6 bg-surface-1 border border-white/[0.06] rounded-xl hover:border-white/10 transition-all duration-300 card-hover">
+          <div class="text-sm font-semibold text-white mb-1">Knowledge Base</div>
+          <p class="text-sm text-zinc-400">Agents read KB pages during playbook execution. Keep your onboarding and procedure docs updated for best results.</p>
+        </a>
+      </div>
+      <p class="text-sm text-zinc-400 mt-6">Playbooks are included on all plans. <a href="/pricing" class="text-blue-400 hover:text-blue-300 transition-all duration-300">View IronWorks pricing</a> — Starter at $79/mo includes 50 playbook runs/month.</p>
+    </div>
+  </section>
+
   <!-- CTA -->
   <section class="py-24 md:py-32 border-t border-white/[0.06]">
     <div class="max-w-6xl mx-auto px-6">
       <div class="max-w-2xl">
-        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Stop rebuilding the same workflow every time.</h2>
-        <p class="text-zinc-400 text-lg mb-8">Playbooks are included on all plans. Starter allows 50 runs per month. Growth and Business are unlimited.</p>
+        <h2 class="font-display text-3xl md:text-4xl font-bold tracking-tight mb-4">Define the process once. Your team runs it every time, without you.</h2>
+        <p class="text-zinc-300 text-lg mb-8">Playbooks are included on all plans. Starter gets 50 runs per month. Growth and Business are unlimited.</p>
         <div class="flex flex-col sm:flex-row gap-4">
-          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-colors">
-            View Pricing
+          <a href="/#pricing" class="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
+            Automate your first workflow
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
           </a>
-          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-zinc-500 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-colors">
+          <a href="/features/" class="inline-flex items-center justify-center gap-2 border border-zinc-700 hover:border-white/10 text-zinc-300 hover:text-white font-medium px-6 py-3 rounded-lg transition-all duration-300">
             All Features
           </a>
         </div>
