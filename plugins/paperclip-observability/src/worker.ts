@@ -56,6 +56,17 @@ interface IssueSnapshot {
 }
 let issueSnapshots: IssueSnapshot[] = [];
 
+// Governance gauge snapshot data — written by the collect-metrics job
+interface GovernanceSnapshot {
+  companyId: string;
+  approvalsPending: number;
+  budgetIncidentsActive: number;
+  companyBudgetUtilPct: number;
+  pausedAgentCount: number;
+  pausedProjectCount: number;
+}
+let governanceSnapshots: GovernanceSnapshot[] = [];
+
 // ---------------------------------------------------------------------------
 // Provider name mapping (adapter type → OTel well-known value)
 // ---------------------------------------------------------------------------
@@ -344,6 +355,7 @@ async function handleApprovalDecided(
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+  const companyId = String(p.companyId ?? "");
 
   const approvalCounter = otel.meter.createCounter(
     METRIC_NAMES.approvalsDecided,
@@ -351,8 +363,20 @@ async function handleApprovalDecided(
   );
   approvalCounter.add(1, {
     decision: String(p.decision ?? "unknown"),
-    company_id: String(p.companyId ?? ""),
+    company_id: companyId,
   });
+
+  // Track pending approval count in plugin state (decrement)
+  if (ctx && companyId) {
+    const stateKey = `approvals:pending:${companyId}`;
+    const current = await ctx.state
+      .get({ scopeKind: "instance", stateKey })
+      .catch(() => null);
+    const count = Math.max(0, (typeof current === "number" ? current : 0) - 1);
+    await ctx.state
+      .set({ scopeKind: "instance", stateKey }, count)
+      .catch(() => {});
+  }
 }
 
 async function handleIssueCreated(event: PluginEvent<unknown>): Promise<void> {
@@ -377,14 +401,27 @@ async function handleApprovalCreated(
   eventsProcessed++;
 
   const p = event.payload as Record<string, unknown>;
+  const companyId = String(p.companyId ?? "");
 
   const approvalCounter = otel.meter.createCounter(
     METRIC_NAMES.approvalsCreated,
     { description: "Count of approvals created" },
   );
   approvalCounter.add(1, {
-    company_id: String(p.companyId ?? ""),
+    company_id: companyId,
   });
+
+  // Track pending approval count in plugin state (increment)
+  if (ctx && companyId) {
+    const stateKey = `approvals:pending:${companyId}`;
+    const current = await ctx.state
+      .get({ scopeKind: "instance", stateKey })
+      .catch(() => null);
+    const count = (typeof current === "number" ? current : 0) + 1;
+    await ctx.state
+      .set({ scopeKind: "instance", stateKey }, count)
+      .catch(() => {});
+  }
 }
 
 async function handleGenericEvent(event: PluginEvent<unknown>): Promise<void> {
@@ -531,6 +568,62 @@ const plugin: PaperclipPlugin = definePlugin({
         });
       }
     });
+    // --- Governance & budget gauges (read from governanceSnapshots) ---
+
+    const approvalsPendingGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.approvalsPending,
+      { description: "Number of pending approvals" },
+    );
+    approvalsPendingGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.approvalsPending, { company_id: snap.companyId });
+      }
+    });
+
+    const budgetIncidentsGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.budgetIncidentsActive,
+      { description: "Number of active budget incidents" },
+    );
+    budgetIncidentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.budgetIncidentsActive, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const companyBudgetUtilGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.companyBudgetUtilization,
+      { description: "Company-level budget utilization percentage" },
+    );
+    companyBudgetUtilGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.companyBudgetUtilPct, {
+          company_id: snap.companyId,
+        });
+      }
+    });
+
+    const pausedAgentsGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedAgents,
+      { description: "Number of agents paused due to budget" },
+    );
+    pausedAgentsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedAgentCount, { company_id: snap.companyId });
+      }
+    });
+
+    const pausedProjectsGauge = otel.meter.createObservableGauge(
+      METRIC_NAMES.budgetPausedProjects,
+      { description: "Number of projects paused due to budget" },
+    );
+    pausedProjectsGauge.addCallback((obs) => {
+      for (const snap of governanceSnapshots) {
+        obs.observe(snap.pausedProjectCount, { company_id: snap.companyId });
+      }
+    });
+
     } // end if (otel) — gauge registration
 
     // ----- Register collect-metrics job (refreshes agentSnapshots) -----
@@ -625,9 +718,70 @@ const plugin: PaperclipPlugin = definePlugin({
           buckets: issueSnapshots.length,
         });
 
+        // --- Collect governance & budget gauges ---
+
+        const govSnapshots: GovernanceSnapshot[] = [];
+
+        for (const company of companies) {
+          // Pending approvals — read from event-driven state counter
+          const pendingCount = await ctx.state
+            .get({
+              scopeKind: "instance",
+              stateKey: `approvals:pending:${company.id}`,
+            })
+            .catch(() => null);
+          const approvalsPending =
+            typeof pendingCount === "number" ? Math.max(0, pendingCount) : 0;
+
+          // Company-level budget utilization
+          const companyBudgetUtilPct =
+            company.budgetMonthlyCents > 0
+              ? (company.spentMonthlyCents / company.budgetMonthlyCents) * 100
+              : 0;
+
+          // Budget incidents: agents whose spend has reached or exceeded budget
+          const companyAgents = snapshots.filter(
+            (s) => s.companyId === company.id,
+          );
+          const budgetIncidentsActive = companyAgents.filter(
+            (a) =>
+              a.budgetMonthlyCents > 0 &&
+              a.spentMonthlyCents >= a.budgetMonthlyCents,
+          ).length;
+
+          // Paused agent/project counts
+          const pausedAgentCount = companyAgents.filter(
+            (a) => a.status === "paused",
+          ).length;
+
+          // Projects paused due to budget — check project status
+          const companyProjects = await ctx.projects.list({
+            companyId: company.id,
+            limit: 200,
+            offset: 0,
+          });
+          const pausedProjectCount = (companyProjects as Project[]).filter(
+            (p) => p.pauseReason != null,
+          ).length;
+
+          govSnapshots.push({
+            companyId: company.id,
+            approvalsPending,
+            budgetIncidentsActive,
+            companyBudgetUtilPct: Number(companyBudgetUtilPct.toFixed(2)),
+            pausedAgentCount,
+            pausedProjectCount,
+          });
+        }
+
+        governanceSnapshots = govSnapshots;
+        ctx.logger.info("Governance snapshots updated", {
+          companyCount: govSnapshots.length,
+        });
+
         await ctx.activity.log({
           companyId: "",
-          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${eventsProcessed} events processed since startup`,
+          message: `Metrics collection — ${snapshots.length} agents, ${issueSnapshots.length} issue buckets, ${govSnapshots.length} governance snapshots, ${eventsProcessed} events processed since startup`,
         });
       },
     );
