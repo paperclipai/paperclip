@@ -1,8 +1,8 @@
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..c6a5259d67717d872bec3d81283c6b5e0403890f 100644
+index 93cddf8243271f5fb3ab101617f9114257e41328..ca4ccabb819dd1c66f09f5b29cbdc8fd13a6bb01 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -41,6 +41,28 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
+@@ -41,6 +41,32 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
  
  IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
  
@@ -16,22 +16,26 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c6a5259d67717d872bec3d81283c6b5e
 +- Do not print full scripts unless explicitly requested.
 +- Summarize results in a few lines with key outcomes only.
 +- Emit one final summary block only; do not repeat the same summary text.
++- Prefer jq over inline Python for JSON reading/filtering.
++- In jq strings, use interpolation like \`"\\(.field)"\` (never literal \`"(.field)"\`).
 +
 +Auth + headers (mandatory):
 +- Bootstrap auth once per run, then reuse it for every API call.
 +- Use injected \`$PAPERCLIP_API_KEY\` directly when present (preferred).
-+- Assume \`$PAPERCLIP_API_KEY\` is available; do not regenerate JWT preemptively.
-+- Only use JWT fallback if the API key is absent/invalid and a request fails with auth error.
++- Keep auth logic minimal: do NOT emit large shell conditionals or combined fallback scripts.
++- First attempt calls with API key only using short commands.
++- Only if that request fails with 401/403, run a separate second command for JWT fallback.
 +- Reuse headers instead of rebuilding auth each command:
 +  \`AUTH=(-H "Authorization: Bearer <token>")\`
 +  \`RUN=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")\`
 +- If fallback is needed, generate token once, store in \`$TOKEN\`, set \`AUTH\` once, and reuse it for all calls in the run.
++- After fallback succeeds, continue using the same \`$TOKEN\` for subsequent API calls (do not remint each command).
 +- Never print secrets/tokens to output.
 +
  Your Paperclip identity:
    Agent ID: {{agentId}}
    Company ID: {{companyId}}
-@@ -58,18 +80,19 @@ Title: {{taskTitle}}
+@@ -58,18 +84,19 @@ Title: {{taskTitle}}
  
  1. Work on the task using your tools
  2. When done, mark the issue as completed:
@@ -56,7 +60,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c6a5259d67717d872bec3d81283c6b5e
  
  Address the comment, POST a reply if needed, then continue working.
  {{/commentId}}
-@@ -77,18 +100,20 @@ Address the comment, POST a reply if needed, then continue working.
+@@ -77,18 +104,21 @@ Address the comment, POST a reply if needed, then continue working.
  {{#noTask}}
  ## Heartbeat Wake — Check for Work
  
@@ -68,7 +72,8 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c6a5259d67717d872bec3d81283c6b5e
  
  2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
 -   - Read the issue details: \`curl -s "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
-+   - Read the issue details: \`curl -s "\${AUTH[@]}" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
++   - Resolve the canonical issue id from the list result (prefer \`.id\`; do not assume identifier works on every endpoint).
++   - Read details with canonical id: \`curl -s "\${AUTH[@]}" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
     - Do the work in the project directory: {{projectName}}
     - When done, mark complete and post a comment (see Workflow steps 2-4 above)
  
@@ -83,7 +88,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..c6a5259d67717d872bec3d81283c6b5e
  
  4. If truly nothing to do, report briefly what you checked.
  {{/noTask}}`;
-@@ -293,6 +318,11 @@ export async function execute(ctx) {
+@@ -293,6 +323,11 @@ export async function execute(ctx) {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
      };
