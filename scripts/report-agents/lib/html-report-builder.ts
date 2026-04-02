@@ -452,16 +452,28 @@ export function singleTokenLayout(db: Database.Database, symbol: string): string
   `).get(sym) as { exits: number; total: number };
   const exitPct = exit.total ? (exit.exits / exit.total * 100) : 0;
 
+  // 3-way user classification: new to platform, new to this token, returning
+  const tokenId = db.prepare(
+    `SELECT id FROM token WHERE symbol = ? AND deleted_at IS NULL LIMIT 1`
+  ).get(sym) as { id: string } | undefined;
   const traders = db.prepare(`
     WITH w AS (
       SELECT DISTINCT buyer_id AS uid FROM _order_flat WHERE token_symbol = ?
       UNION SELECT DISTINCT seller_id FROM _order_flat WHERE token_symbol = ?
     )
     SELECT
-      COUNT(DISTINCT CASE WHEN ufo.first_order_at >= datetime('now','-30 days') THEN w.uid END) AS new_traders,
-      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now','-30 days') THEN w.uid END) AS ret_users
-    FROM w LEFT JOIN _user_first_order ufo ON w.uid = ufo.user_id
-  `).get(sym, sym) as { new_traders: number; ret_users: number };
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at >= datetime('now','-30 days')
+        THEN w.uid END) AS new_platform,
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now','-30 days')
+        AND utf.first_token_order_at >= datetime('now','-30 days')
+        THEN w.uid END) AS new_token,
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now','-30 days')
+        AND (utf.first_token_order_at IS NULL OR utf.first_token_order_at < datetime('now','-30 days'))
+        THEN w.uid END) AS ret_users
+    FROM w
+    LEFT JOIN _user_first_order ufo ON w.uid = ufo.user_id
+    LEFT JOIN _user_token_first utf ON w.uid = utf.user_id AND utf.token_id = ?
+  `).get(sym, sym, tokenId?.id ?? "") as { new_platform: number; new_token: number; ret_users: number };
 
   const trend = db.prepare(`
     SELECT strftime('%Y-%m-%d', created_at) AS date,
@@ -499,15 +511,16 @@ export function singleTokenLayout(db: Database.Database, symbol: string): string
       ])
     ),
 
-    section("gn", "\uD83D\uDC65", "Traders", `${traders.new_traders + traders.ret_users} total`,
+    section("gn", "\uD83D\uDC65", "Traders", `${traders.new_platform + traders.new_token + traders.ret_users} total`,
       `<div class="pg">
         <div>${chartCanvas("traderChart", 180)}</div>
         <div>${dataTable(
           ["Metric", "Value"],
           [
-            ["New Traders (30d)", `<span class="g">${traders.new_traders}</span>`],
+            ["New to Platform (30d)", `<span class="g">${traders.new_platform}</span>`],
+            ["New to $${sym}", `<span class="o">${traders.new_token}</span>`],
             ["Returning", `<span class="cy">${traders.ret_users}</span>`],
-            ["Acq. Rate", `${(traders.new_traders + traders.ret_users) ? fmtPct(traders.new_traders / (traders.new_traders + traders.ret_users) * 100) : "0%"}`],
+            ["Platform Acq. Rate", `${(traders.new_platform + traders.new_token + traders.ret_users) ? fmtPct(traders.new_platform / (traders.new_platform + traders.new_token + traders.ret_users) * 100) : "0%"}`],
           ]
         )}</div>
       </div>`
@@ -569,8 +582,8 @@ new Chart(document.getElementById('trendChart'), {
 new Chart(document.getElementById('traderChart'), {
   type: 'doughnut',
   data: {
-    labels: ['New', 'Returning'],
-    datasets: [{ data: [${traders.new_traders}, ${traders.ret_users}], backgroundColor: ['#00ff88', '#a78bfa'], borderWidth: 0 }]
+    labels: ['New Platform', 'New Token', 'Returning'],
+    datasets: [{ data: [${traders.new_platform}, ${traders.new_token}, ${traders.ret_users}], backgroundColor: ['#00ff88', '#ff9d00', '#a78bfa'], borderWidth: 0 }]
   },
   options: { plugins: { legend: { position: 'bottom' } } }
 });`;
@@ -717,49 +730,63 @@ new Chart(document.getElementById('wowChart'), {
 export function usersLayout(db: Database.Database): string {
   const today = new Date().toISOString().slice(0, 10);
 
+  // 3-way: new to platform, returning but new to token, returning same token
   const perToken = db.prepare(`
     WITH w AS (
       SELECT DISTINCT token_symbol, buyer_id AS uid FROM _order_flat WHERE created_at >= datetime('now', '-7 days')
       UNION SELECT DISTINCT token_symbol, seller_id FROM _order_flat WHERE created_at >= datetime('now', '-7 days')
     )
     SELECT w.token_symbol AS symbol,
-      COUNT(DISTINCT CASE WHEN ufo.first_order_at >= datetime('now', '-7 days') THEN w.uid END) AS new_users,
-      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now', '-7 days') THEN w.uid END) AS ret_users
-    FROM w JOIN _user_first_order ufo ON w.uid = ufo.user_id
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at >= datetime('now', '-7 days')
+        THEN w.uid END) AS new_platform,
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now', '-7 days')
+        AND utf.first_token_order_at >= datetime('now', '-7 days')
+        THEN w.uid END) AS new_token,
+      COUNT(DISTINCT CASE WHEN ufo.first_order_at < datetime('now', '-7 days')
+        AND (utf.first_token_order_at IS NULL OR utf.first_token_order_at < datetime('now', '-7 days'))
+        THEN w.uid END) AS ret_users
+    FROM w
+    JOIN _user_first_order ufo ON w.uid = ufo.user_id
+    LEFT JOIN token tk ON w.token_symbol = tk.symbol AND tk.deleted_at IS NULL
+    LEFT JOIN _user_token_first utf ON w.uid = utf.user_id AND utf.token_id = tk.id
     GROUP BY w.token_symbol
-    ORDER BY (new_users + ret_users) DESC LIMIT 10
-  `).all() as Array<{ symbol: string; new_users: number; ret_users: number }>;
+    ORDER BY (new_platform + new_token + ret_users) DESC LIMIT 10
+  `).all() as Array<{ symbol: string; new_platform: number; new_token: number; ret_users: number }>;
 
-  const totalNew = perToken.reduce((s, t) => s + t.new_users, 0);
+  const totalNewPlatform = perToken.reduce((s, t) => s + t.new_platform, 0);
+  const totalNewToken = perToken.reduce((s, t) => s + t.new_token, 0);
   const totalRet = perToken.reduce((s, t) => s + t.ret_users, 0);
-  const acqRate = (totalNew + totalRet) ? (totalNew / (totalNew + totalRet) * 100) : 0;
+  const totalAll = totalNewPlatform + totalNewToken + totalRet;
+  const acqRate = totalAll ? (totalNewPlatform / totalAll * 100) : 0;
 
   const body = [
     header("User Analysis", `7-day breakdown \u2022 ${today}`, "Users"),
     kpiGrid([
-      { label: "New Users", value: fmtNum(totalNew), color: "var(--green)" },
+      { label: "New Platform", value: fmtNum(totalNewPlatform), color: "var(--green)" },
+      { label: "New Token", value: fmtNum(totalNewToken), color: "var(--orange)" },
       { label: "Returning", value: fmtNum(totalRet), color: "var(--purple)" },
-      { label: "Total", value: fmtNum(totalNew + totalRet), color: "var(--cyan)" },
+      { label: "Total", value: fmtNum(totalAll), color: "var(--cyan)" },
       { label: "Acq. Rate", value: fmtPct(acqRate), color: acqRate > 20 ? "var(--green)" : "var(--orange)" },
     ]),
 
-    section("gn", "\uD83D\uDC65", "New vs Returning by Token", "7 DAYS",
+    section("gn", "\uD83D\uDC65", "User Breakdown by Token", "7 DAYS",
       chartCanvas("usersChart", 280) +
       dataTable(
-        ["Token", "New", "Returning", "Total", "Acq %"],
+        ["Token", "New Platform", "New Token", "Returning", "Total"],
         perToken.map(t => {
-          const total = t.new_users + t.ret_users;
+          const total = t.new_platform + t.new_token + t.ret_users;
           return [
             `<span class="nm">$${t.symbol}</span>`,
-            `<span class="g">${t.new_users}</span>`,
+            `<span class="g">${t.new_platform}</span>`,
+            `<span class="o">${t.new_token}</span>`,
             `<span class="cy">${t.ret_users}</span>`,
             `${total}`,
-            `${total ? fmtPct(t.new_users / total * 100) : "0%"}`,
           ];
         })
       ) +
       analysisBox([
-        `Top token for new users: $${perToken[0]?.symbol ?? "N/A"} (${perToken[0]?.new_users ?? 0} new)`,
+        `Top token for new platform users: $${perToken[0]?.symbol ?? "N/A"} (${perToken[0]?.new_platform ?? 0} new)`,
+        `${totalNewToken} users are existing traders trying new tokens`,
         acqRate > 30 ? `Strong acquisition rate (${fmtPct(acqRate)})` : `Low acquisition \u2014 focus on attracting new traders`,
       ])
     ),
@@ -771,7 +798,8 @@ new Chart(document.getElementById('usersChart'), {
   data: {
     labels: ${JSON.stringify(perToken.map(t => '$' + t.symbol))},
     datasets: [
-      { label: 'New', data: ${JSON.stringify(perToken.map(t => t.new_users))}, backgroundColor: '#00ff8888', borderRadius: 4 },
+      { label: 'New Platform', data: ${JSON.stringify(perToken.map(t => t.new_platform))}, backgroundColor: '#00ff8888', borderRadius: 4 },
+      { label: 'New Token', data: ${JSON.stringify(perToken.map(t => t.new_token))}, backgroundColor: '#ff9d0088', borderRadius: 4 },
       { label: 'Returning', data: ${JSON.stringify(perToken.map(t => t.ret_users))}, backgroundColor: '#a78bfa88', borderRadius: 4 }
     ]
   },
