@@ -46,7 +46,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Join traefik-net network in compose + update PAPERCLIP_PUBLIC_URL on docker-001
+- [x] 02-01-PLAN.md — Join traefik-net network in compose + update PAPERCLIP_PUBLIC_URL on docker-001
 - [ ] 02-02-PLAN.md — Add paperclip router + service to Traefik's dynamic services.yml
 - [ ] 02-03-PLAN.md — Create Technitium A record + human verification of HTTPS dashboard access
 

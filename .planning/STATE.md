@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 2 context gathered
-last_updated: "2026-04-02T05:07:01.569Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-04-02T05:30:17.697Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 6
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-01)
 
 **Core value:** The Paperclip dashboard is running and accessible, with agents able to connect and receive tasks.
-**Current focus:** Phase 01 — compose-foundation
+**Current focus:** Phase 02 — network-exposure
 
 ## Current Position
 
-Phase: 999.1
-Plan: Not started
+Phase: 02 (network-exposure) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
 Last activity: 2026-04-02
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 | Phase 01 P01 | 43s | 2 tasks | 2 files |
 | Phase 01-compose-foundation P02 | 2 | 1 tasks | 1 files |
+| Phase 02-network-exposure P01 | 3m | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Bind mounts at /mnt/paperclip/pgdata and /mnt/paperclip/data instead of named Docker volumes
 - [Phase 01-compose-foundation]: Blank values for secrets in .env.template prevent accidental placeholder usage; :? guards produce clear errors on missing values
 - [Phase 01-compose-foundation]: Optional AI provider keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN) included in .env.template proactively for Phase 3 readiness
+- [Phase 02-network-exposure]: D-02: server container joined traefik-net external network; db service intentionally excluded
+- [Phase 02-network-exposure]: D-07: PAPERCLIP_PUBLIC_URL updated to https://pc.thelaljis.com on docker-001
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T05:07:01.567Z
-Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-network-exposure/02-CONTEXT.md
+Last session: 2026-04-02T05:30:17.694Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None

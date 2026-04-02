@@ -24,9 +24,9 @@ Requirements for initial production deployment. Each maps to roadmap phases.
 ### Networking
 
 - [ ] **NET-01**: Traefik file provider config routes traffic to the Paperclip server container
-- [ ] **NET-02**: Cloudflare DNS challenge configured for Let's Encrypt SSL via Traefik
+- [x] **NET-02**: Cloudflare DNS challenge configured for Let's Encrypt SSL via Traefik
 - [ ] **NET-03**: Technitium internal DNS record points to Paperclip on docker-001
-- [ ] **NET-04**: Paperclip is accessible via its subdomain with valid HTTPS
+- [x] **NET-04**: Paperclip is accessible via its subdomain with valid HTTPS
 
 ### Agent Connectivity
 
@@ -77,9 +77,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-03 | Phase 1 | Complete |
 | SEC-04 | Phase 1 | Complete |
 | NET-01 | Phase 2 | Pending |
-| NET-02 | Phase 2 | Pending |
+| NET-02 | Phase 2 | Complete |
 | NET-03 | Phase 2 | Pending |
-| NET-04 | Phase 2 | Pending |
+| NET-04 | Phase 2 | Complete |
 | AGENT-01 | Phase 3 | Pending |
 | AGENT-02 | Phase 3 | Pending |
 
