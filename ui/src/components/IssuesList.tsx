@@ -21,8 +21,9 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, Network, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
+import { IssuesGraph } from "./IssuesGraph";
 import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
@@ -45,7 +46,7 @@ export type IssueViewState = {
   sortField: "status" | "priority" | "title" | "created" | "updated";
   sortDir: "asc" | "desc";
   groupBy: "status" | "priority" | "assignee" | "none";
-  viewMode: "list" | "board";
+  viewMode: "list" | "board" | "graph";
   collapsedGroups: string[];
 };
 
@@ -395,6 +396,13 @@ export function IssuesList({
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
+            <button
+              className={`p-1.5 transition-colors ${viewState.viewMode === "graph" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => updateView({ viewMode: "graph" })}
+              title="Graph view"
+            >
+              <Network className="h-3.5 w-3.5" />
+            </button>
           </div>
 
           {/* Filter */}
@@ -568,7 +576,7 @@ export function IssuesList({
           </Popover>
 
           {/* Sort (list view only) */}
-          {viewState.viewMode === "list" && (
+          {viewState.viewMode !== "board" && viewState.viewMode !== "graph" && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
@@ -612,7 +620,7 @@ export function IssuesList({
           )}
 
           {/* Group (list view only) */}
-          {viewState.viewMode === "list" && (
+          {viewState.viewMode !== "board" && viewState.viewMode !== "graph" && (
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-xs">
@@ -649,7 +657,7 @@ export function IssuesList({
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && filtered.length === 0 && viewState.viewMode !== "graph" && viewState.viewMode !== "board" && (
         <EmptyState
           icon={CircleDot}
           message="No issues match the current filters or search."
@@ -658,7 +666,13 @@ export function IssuesList({
         />
       )}
 
-      {viewState.viewMode === "board" ? (
+      {viewState.viewMode === "graph" ? (
+        <IssuesGraph
+          issues={filtered}
+          agents={agents}
+          liveIssueIds={liveIssueIds}
+        />
+      ) : viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
           agents={agents}

@@ -1,0 +1,1 @@
+export { IssuesGraph } from "./IssuesGraph";

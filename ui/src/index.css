@@ -779,6 +779,13 @@ a.paperclip-project-mention-chip {
   white-space: nowrap;
 }
 
+/* ── Issues Graph: live edge animations ── */
+
+@keyframes avatarGlow {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.4); }
+}
+
 /* Keep MDXEditor popups above app dialogs, even when they portal to <body>. */
 [class*="_popupContainer_"] {
   z-index: 81 !important;
