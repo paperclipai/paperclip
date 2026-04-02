@@ -90,7 +90,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250c
  
  4. If truly nothing to do, report briefly what you checked.
  {{/noTask}}`;
-@@ -293,6 +325,11 @@ export async function execute(ctx) {
+@@ -293,6 +325,13 @@ export async function execute(ctx) {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
      };
