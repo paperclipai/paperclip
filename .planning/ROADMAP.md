@@ -43,7 +43,12 @@ Plans:
   1. Navigating to the Paperclip subdomain in a browser loads the dashboard login page over HTTPS
   2. The browser shows a valid certificate (no warnings)
   3. The subdomain resolves correctly from the internal network via Technitium
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Join traefik-net network in compose + update PAPERCLIP_PUBLIC_URL on docker-001
+- [ ] 02-02-PLAN.md — Add paperclip router + service to Traefik's dynamic services.yml
+- [ ] 02-03-PLAN.md — Create Technitium A record + human verification of HTTPS dashboard access
 
 ### Phase 3: Agent Connectivity
 **Goal**: At least one AI agent connects and is visible and working in the Paperclip dashboard
@@ -62,7 +67,7 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compose Foundation | 2/3 | In Progress|  |
-| 2. Network Exposure | 0/? | Not started | - |
+| 2. Network Exposure | 0/3 | Not started | - |
 | 3. Agent Connectivity | 0/? | Not started | - |
 
 ## Backlog
