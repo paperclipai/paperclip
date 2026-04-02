@@ -17,10 +17,12 @@ export const METRIC_NAMES = {
   agentStatusChanges: "paperclip.agent.status_changes",
   approvalsCreated: "paperclip.approvals.created",
   approvalsDecided: "paperclip.approvals.decided",
+  issuesCompleted: "paperclip.issues.completed",
   eventsTotal: "paperclip.events.total",
 
   // Gauge metrics (scheduled job)
   agentsCount: "paperclip.agents.count",
+  issuesCount: "paperclip.issues.count",
   agentsHeartbeatAge: "paperclip.agents.heartbeat.age_seconds",
   budgetUtilization: "paperclip.budget.utilization",
   budgetRemaining: "paperclip.budget.remaining_cents",
