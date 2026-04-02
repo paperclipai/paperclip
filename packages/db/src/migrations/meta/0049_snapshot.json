@@ -1079,6 +1079,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"status\" <> 'skipped'",
           "concurrently": false,
           "method": "btree",
           "with": {}
