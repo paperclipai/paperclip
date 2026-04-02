@@ -40,7 +40,7 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const { data: convoIssues } = useQuery({
-    queryKey: queryKeys.conversations.list(selectedCompanyId!),
+    queryKey: queryKeys.conversations.ids(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!, { kind: "conversation" }),
     enabled: !!selectedCompanyId,
   });

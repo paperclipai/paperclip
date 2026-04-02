@@ -139,6 +139,7 @@ export const queryKeys = {
   org: (companyId: string) => ["org", companyId] as const,
   conversations: {
     list: (companyId: string) => ["conversations", companyId] as const,
+    ids: (companyId: string) => ["conversations", companyId, "ids"] as const,
     unread: (companyId: string) => ["conversations", companyId, "unread"] as const,
     liveRuns: (companyId: string) => ["conversations", companyId, "live-runs"] as const,
   },
