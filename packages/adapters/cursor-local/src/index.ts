@@ -66,7 +66,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Cursor model id (for example auto or gpt-5.3-codex)
 - mode (string, optional): Cursor execution mode passed as --mode (plan|ask). Leave unset for normal autonomous runs.
-- command (string, optional): defaults to "agent"
+- command (string, optional): executable name only, defaults to "agent" (do not enter "agent login" here; run login in a terminal)
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 

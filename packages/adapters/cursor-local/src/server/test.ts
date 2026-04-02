@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
+import { normalizeCursorCliCommand } from "../shared/command.js";
 import { parseCursorJsonl } from "./parse.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
@@ -94,7 +95,8 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "agent");
+  const rawCommand = asString(config.command, "agent");
+  const command = normalizeCursorCliCommand(rawCommand);
   const cwd = asString(config.cwd, process.cwd());
 
   try {
@@ -119,6 +121,14 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  if (rawCommand.trim() !== command) {
+    checks.push({
+      code: "cursor_command_normalized",
+      level: "info",
+      message: `Command field was interpreted as "${rawCommand.trim()}"; using executable "${command}" only.`,
+      hint: "Put only the CLI binary name here (usually `agent`). Run `agent login` in a terminal for auth, not in this field.",
+    });
+  }
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({

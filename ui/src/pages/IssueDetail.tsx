@@ -50,6 +50,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity as ActivityIcon,
   Check,
+  ClipboardCheck,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -1056,6 +1057,35 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+
+        {currentUserId &&
+          issue.status !== "done" &&
+          issue.status !== "cancelled" &&
+          !(
+            issue.status === "in_review" &&
+            issue.assigneeUserId === currentUserId &&
+            !issue.assigneeAgentId
+          ) && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shadow-none"
+                disabled={updateIssue.isPending}
+                onClick={() =>
+                  updateIssue.mutate({
+                    status: "in_review",
+                    assigneeUserId: currentUserId,
+                    assigneeAgentId: null,
+                  })
+                }
+              >
+                <ClipboardCheck className="h-3.5 w-3.5 mr-1.5" />
+                Take for review
+              </Button>
+            </div>
+          )}
 
         <InlineEditor
           value={issue.title}

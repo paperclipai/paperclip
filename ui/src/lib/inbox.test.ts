@@ -7,6 +7,7 @@ import {
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
+  partitionMineInboxWorkItems,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   isMineInboxTab,
@@ -442,5 +443,33 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(-1, 3, "previous")).toBe(0);
     expect(getInboxKeyboardSelectionIndex(0, 3, "next")).toBe(1);
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
+  });
+
+  it("partitions Mine inbox into Action vs Updates using unread + read state", () => {
+    const unreadIssue = makeIssue("u1", true);
+    const readIssue = makeIssue("r1", false);
+    const pendingApproval = makeApprovalWithTimestamps("ap1", "pending", "2026-03-11T02:00:00.000Z");
+    const approvedApproval = makeApprovalWithTimestamps("ap2", "approved", "2026-03-11T03:00:00.000Z");
+    const merged = getInboxWorkItems({
+      issues: [readIssue, unreadIssue],
+      approvals: [pendingApproval, approvedApproval],
+    });
+    const readItems = new Set<string>([`approval:${pendingApproval.id}`]);
+    const { action, rest } = partitionMineInboxWorkItems(merged, readItems);
+
+    expect(
+      action.map((i) => {
+        if (i.kind === "issue") return `issue:${i.issue.id}`;
+        if (i.kind === "approval") return `approval:${i.approval.id}`;
+        return i.kind;
+      }),
+    ).toEqual(["issue:u1"]);
+    expect(
+      rest.map((i) => {
+        if (i.kind === "issue") return `issue:${i.issue.id}`;
+        if (i.kind === "approval") return `approval:${i.approval.id}`;
+        return i.kind;
+      }),
+    ).toEqual(["approval:ap2", "approval:ap1", "issue:r1"]);
   });
 });

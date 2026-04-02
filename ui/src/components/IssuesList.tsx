@@ -663,6 +663,7 @@ export function IssuesList({
           issues={filtered}
           agents={agents}
           liveIssueIds={liveIssueIds}
+          currentUserId={currentUserId}
           onUpdateIssue={onUpdateIssue}
         />
       ) : (

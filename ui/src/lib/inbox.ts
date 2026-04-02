@@ -192,6 +192,55 @@ export function approvalActivityTimestamp(approval: Approval): number {
   return normalizeTimestamp(approval.createdAt);
 }
 
+/**
+ * Mine inbox: split merged feed into **Action** (needs attention) vs **Updates** (caught up),
+ * per v1 IA (single grouped list; Action/Watching tabs deferred — see OPD-79 / OPD-76).
+ *
+ * - Issues: unread → Action.
+ * - Approvals: actionable status and not locally marked read → Action.
+ * - Failed runs / join requests: not locally marked read → Action.
+ */
+export function partitionMineInboxWorkItems(
+  items: InboxWorkItem[],
+  readItems: Set<string>,
+): { action: InboxWorkItem[]; rest: InboxWorkItem[] } {
+  const action: InboxWorkItem[] = [];
+  const rest: InboxWorkItem[] = [];
+
+  for (const item of items) {
+    let inAction = false;
+    if (item.kind === "issue") {
+      inAction = Boolean(item.issue.isUnreadForMe);
+    } else if (item.kind === "approval") {
+      const key = `approval:${item.approval.id}`;
+      inAction =
+        ACTIONABLE_APPROVAL_STATUSES.has(item.approval.status) && !readItems.has(key);
+    } else if (item.kind === "failed_run") {
+      const key = `run:${item.run.id}`;
+      inAction = !readItems.has(key);
+    } else {
+      const key = `join:${item.joinRequest.id}`;
+      inAction = !readItems.has(key);
+    }
+    (inAction ? action : rest).push(item);
+  }
+
+  const sortFn = (a: InboxWorkItem, b: InboxWorkItem) => {
+    const timestampDiff = b.timestamp - a.timestamp;
+    if (timestampDiff !== 0) return timestampDiff;
+    if (a.kind === "issue" && b.kind === "issue") {
+      return sortIssuesByMostRecentActivity(a.issue, b.issue);
+    }
+    if (a.kind === "approval" && b.kind === "approval") {
+      return approvalActivityTimestamp(b.approval) - approvalActivityTimestamp(a.approval);
+    }
+    return a.kind === "approval" ? -1 : 1;
+  };
+  action.sort(sortFn);
+  rest.sort(sortFn);
+  return { action, rest };
+}
+
 export function getInboxWorkItems({
   issues,
   approvals,
