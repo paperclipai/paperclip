@@ -55,6 +55,7 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
+import { goalService } from "./goals.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
@@ -2302,6 +2303,9 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
+      goals: Array.isArray(companyFrontmatter.goals)
+        ? companyFrontmatter.goals.filter((g: unknown): g is string => typeof g === "string")
+        : [],
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
       requireBoardApprovalForNewAgents:
@@ -2624,6 +2628,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const goals = goalService(db);
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -2930,12 +2935,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     });
 
     const companyPath = "COMPANY.md";
+    const companyGoals = await goals.list(company.id);
+    const companyLevelGoals = companyGoals
+      .filter((g) => g.level === "company")
+      .map((g) => g.title);
     files[companyPath] = buildMarkdown(
       {
         name: company.name,
         description: company.description ?? null,
         schema: "agentcompanies/v1",
         slug: rootPath,
+        ...(companyLevelGoals.length > 0 ? { goals: companyLevelGoals } : {}),
       },
       "",
     );
@@ -4221,6 +4231,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
           labelIds: [],
+        });
+      }
+    }
+
+    // Import company-level goals from manifest
+    if (include.company && sourceManifest.company?.goals && sourceManifest.company.goals.length > 0) {
+      const existingGoals = await goals.list(targetCompany.id);
+      const existingTitles = new Set(
+        existingGoals.filter((g) => g.level === "company").map((g) => g.title)
+      );
+      for (const goalTitle of sourceManifest.company.goals) {
+        if (existingTitles.has(goalTitle)) continue;
+        await goals.create(targetCompany.id, {
+          title: goalTitle,
+          level: "company",
+          status: "active",
         });
       }
     }

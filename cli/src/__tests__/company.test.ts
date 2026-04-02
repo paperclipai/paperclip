@@ -163,6 +163,7 @@ describe("renderCompanyImportPreview", () => {
           brandColor: null,
           logoPath: null,
           requireBoardApprovalForNewAgents: false,
+          goals: [],
         },
         sidebar: {
           agents: ["ceo"],
@@ -371,6 +372,7 @@ describe("import selection catalog", () => {
           brandColor: null,
           logoPath: "images/company-logo.png",
           requireBoardApprovalForNewAgents: false,
+          goals: [],
         },
         sidebar: {
           agents: ["ceo"],
