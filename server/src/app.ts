@@ -145,11 +145,11 @@ export async function createApp(
   // Stricter rate limit for auth write endpoints only (sign-in, sign-up, password reset).
   // Read-only endpoints like get-session and OAuth callbacks use the global limiter.
   const authLimiter = await createAuthRateLimit();
-  app.post("/api/auth/sign-in/*", authLimiter);
-  app.post("/api/auth/sign-up/*", authLimiter);
-  app.post("/api/auth/forget-password", authLimiter);
-  app.post("/api/auth/reset-password", authLimiter);
-  app.post("/api/auth/change-password", authLimiter);
+  app.use("/api/auth/sign-in", authLimiter);
+  app.use("/api/auth/sign-up", authLimiter);
+  app.use("/api/auth/forget-password", authLimiter);
+  app.use("/api/auth/reset-password", authLimiter);
+  app.use("/api/auth/change-password", authLimiter);
 
   // Mount Stripe webhook route before auth middleware (needs raw body for signature verification)
   if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET) {
