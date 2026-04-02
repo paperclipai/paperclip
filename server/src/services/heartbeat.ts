@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -899,18 +899,11 @@ export function heartbeatService(db: Db) {
 
   async function getAgent(agentId: string) {
     return db
-      .select()
+      .select({ ...getTableColumns(agents), companyIssuePrefix: companies.issuePrefix })
       .from(agents)
+      .leftJoin(companies, eq(companies.id, agents.companyId))
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
-  }
-
-  async function getCompanyIssuePrefix(companyId: string): Promise<string | null> {
-    return db
-      .select({ issuePrefix: companies.issuePrefix })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0]?.issuePrefix ?? null);
   }
 
   async function getRun(runId: string) {
@@ -2663,10 +2656,9 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
-      const companyIssuePrefix = await getCompanyIssuePrefix(agent.companyId);
       const adapterResult = await adapter.execute({
         runId: run.id,
-        agent: { ...agent, companyIssuePrefix },
+        agent,
         runtime: runtimeForAdapter,
         config: runtimeConfig,
         context,
