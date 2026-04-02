@@ -13,6 +13,8 @@ import {
   Settings,
   ShieldCheck,
   ActivitySquare,
+  Telescope,
+  CalendarClock,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -107,6 +109,8 @@ export function Sidebar() {
             icon={ShieldCheck}
             badge={inboxBadge.approvals}
           />
+          <SidebarNavItem to="/publishing-queue" label="Publishing Queue" icon={CalendarClock} />
+          <SidebarNavItem to="/intelligence" label="Intelligence" icon={Telescope} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
