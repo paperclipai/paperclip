@@ -13,6 +13,7 @@ import {
   startClaudeLoginSession,
   getClaudeLoginSession,
   cancelClaudeLoginSession,
+  submitAuthCode,
 } from "../services/claude-login-sessions.js";
 
 export function credentialRoutes(db: Db) {
@@ -133,9 +134,10 @@ export function credentialRoutes(db: Db) {
       throw forbidden("Board access required");
     }
 
-    const result = await svc.remove(id);
+    const force = req.query.force === "true";
+    const result = await svc.remove(id, force);
     if (result && "error" in result) {
-      res.status(409).json({ error: "Credential is in use by one or more agents. Remove the credential from those agents first." });
+      res.status(409).json({ error: "Credential is in use by one or more agents. Delete with ?force=true to remove anyway." });
       return;
     }
     if (!result) {
@@ -262,6 +264,27 @@ export function credentialRoutes(db: Db) {
       credentialId: session.credentialId,
       error: session.error,
     });
+  });
+
+  // Submit auth code to a pending login session
+  router.post("/companies/:companyId/credentials/claude-login/:sessionId/code", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing auth code" });
+      return;
+    }
+
+    const ok = submitAuthCode(req.params.sessionId as string, code);
+    if (!ok) {
+      res.status(400).json({ error: "Session not waiting for code or already completed" });
+      return;
+    }
+
+    res.json({ ok: true });
   });
 
   // Cancel a login session

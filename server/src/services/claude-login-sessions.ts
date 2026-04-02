@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { Db } from "@paperclipai/db";
-import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { credentialService } from "./credentials.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
@@ -19,7 +20,7 @@ export interface ClaudeLoginSession {
   credentialName: string;
   tempHome: string;
   loginUrl: string | null;
-  status: "pending" | "complete" | "failed" | "expired";
+  status: "pending" | "waiting_for_code" | "exchanging" | "complete" | "failed" | "expired";
   credentialId: string | null;
   error: string | null;
   startedAt: number;
@@ -39,16 +40,16 @@ interface StartClaudeLoginOpts {
 const MAX_CONCURRENT_PER_COMPANY = 3;
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const POLL_INTERVAL_MS = 2_000;
-const SESSION_RETAIN_MS = 60_000; // keep completed sessions for 60s
+const SESSION_RETAIN_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // In-memory session store
 // ---------------------------------------------------------------------------
 
 const sessions = new Map<string, ClaudeLoginSession>();
+const sessionProcesses = new Map<string, ChildProcess>();
 const sessionTimers = new Map<string, NodeJS.Timeout>();
 const sessionPollers = new Map<string, NodeJS.Timeout>();
-const sessionAbortControllers = new Map<string, AbortController>();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,7 +66,7 @@ function defaultCredentialName(): string {
 function countPendingForCompany(companyId: string): number {
   let count = 0;
   for (const s of sessions.values()) {
-    if (s.companyId === companyId && s.status === "pending") count++;
+    if (s.companyId === companyId && (s.status === "pending" || s.status === "waiting_for_code" || s.status === "exchanging")) count++;
   }
   return count;
 }
@@ -77,7 +78,6 @@ function scheduleRetention(sessionId: string) {
     sessions.delete(sessionId);
     sessionTimers.delete(sessionId);
   }, SESSION_RETAIN_MS);
-  // Prevent the timer from keeping the process alive
   if (timer.unref) timer.unref();
   sessionTimers.set(sessionId, timer);
 }
@@ -89,10 +89,10 @@ function cleanupSession(sessionId: string) {
     sessionPollers.delete(sessionId);
   }
 
-  const ac = sessionAbortControllers.get(sessionId);
-  if (ac) {
-    ac.abort();
-    sessionAbortControllers.delete(sessionId);
+  const proc = sessionProcesses.get(sessionId);
+  if (proc && !proc.killed) {
+    proc.kill();
+    sessionProcesses.delete(sessionId);
   }
 
   const session = sessions.get(sessionId);
@@ -107,7 +107,7 @@ function finalizeSession(
   patch: Partial<Pick<ClaudeLoginSession, "credentialId" | "error">>,
 ) {
   const session = sessions.get(sessionId);
-  if (!session || session.status !== "pending") return;
+  if (!session || (session.status !== "pending" && session.status !== "waiting_for_code" && session.status !== "exchanging")) return;
   session.status = status;
   if (patch.credentialId !== undefined) session.credentialId = patch.credentialId;
   if (patch.error !== undefined) session.error = patch.error;
@@ -119,20 +119,16 @@ function finalizeSession(
 // Credential file polling
 // ---------------------------------------------------------------------------
 
-function startPolling(
-  db: Db,
-  sessionId: string,
-  isDefault: boolean | undefined,
-) {
+function startPolling(db: Db, sessionId: string, isDefault: boolean | undefined) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
   const credFilePath = path.join(session.tempHome, ".claude", ".credentials.json");
+  const svc = credentialService(db);
 
   const poller = setInterval(async () => {
-    // Guard: stop if session is no longer pending
     const current = sessions.get(sessionId);
-    if (!current || current.status !== "pending") {
+    if (!current || (current.status !== "pending" && current.status !== "waiting_for_code" && current.status !== "exchanging")) {
       clearInterval(poller);
       sessionPollers.delete(sessionId);
       return;
@@ -142,60 +138,45 @@ function startPolling(
       const raw = await fs.readFile(credFilePath, "utf-8");
       const parsed = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
       const accessToken = parsed?.claudeAiOauth?.accessToken;
-      if (!accessToken) return; // File exists but no token yet
+      if (!accessToken || typeof accessToken !== "string" || accessToken.trim().length === 0) return;
 
       logger.info({ sessionId }, "claude login: credentials.json found, creating credential");
 
-      const creds = credentialService(db);
-      const created = await creds.create(current.companyId, {
-        name: current.credentialName,
-        type: "claude_oauth",
-        credential: { accessToken },
-        isDefault,
-      });
+      clearInterval(poller);
+      sessionPollers.delete(sessionId);
 
-      finalizeSession(sessionId, "complete", { credentialId: created.id });
-
-      await logActivity(db, {
-        companyId: current.companyId,
-        actorType: "user",
-        actorId: current.userId,
-        action: "credential.created",
-        entityType: "provider_credential",
-        entityId: created.id,
-        details: {
+      try {
+        const created = await svc.create(current.companyId, {
           name: current.credentialName,
           type: "claude_oauth",
-          method: "claude_login",
-          sessionId,
-        },
-      }).catch((err) => {
-        logger.warn({ err, sessionId }, "claude login: failed to log activity");
-      });
+          credential: { accessToken },
+          isDefault,
+        });
+        finalizeSession(sessionId, "complete", { credentialId: created.id });
+
+        await logActivity(db, {
+          companyId: current.companyId,
+          actorType: "user",
+          actorId: current.userId,
+          action: "credential.created",
+          entityType: "provider_credential",
+          entityId: created.id,
+          details: { name: current.credentialName, type: "claude_oauth", method: "claude_login" },
+        }).catch((err) => {
+          logger.warn({ err, sessionId }, "claude login: failed to log activity");
+        });
+      } catch (err) {
+        finalizeSession(sessionId, "failed", {
+          error: err instanceof Error ? err.message : "Failed to save credential",
+        });
+      }
     } catch {
-      // File doesn't exist yet or isn't valid JSON — keep polling
+      // File doesn't exist yet
     }
   }, POLL_INTERVAL_MS);
 
   if (poller.unref) poller.unref();
   sessionPollers.set(sessionId, poller);
-}
-
-// ---------------------------------------------------------------------------
-// Timeout watcher
-// ---------------------------------------------------------------------------
-
-function scheduleExpiry(sessionId: string) {
-  const timer = setTimeout(() => {
-    const session = sessions.get(sessionId);
-    if (session && session.status === "pending") {
-      logger.info({ sessionId }, "claude login: session expired");
-      finalizeSession(sessionId, "expired", { error: "Session timed out after 5 minutes" });
-    }
-  }, SESSION_TIMEOUT_MS);
-  if (timer.unref) timer.unref();
-  // Store in a secondary map so we can clear on cancel
-  sessionTimers.set(`expiry:${sessionId}`, timer);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,17 +190,13 @@ export async function startClaudeLoginSession(
   const { companyId, userId, isDefault } = opts;
   const credentialName = opts.credentialName?.trim() || defaultCredentialName();
 
-  // Enforce concurrency limit
   if (countPendingForCompany(companyId) >= MAX_CONCURRENT_PER_COMPANY) {
-    throw new Error(
-      `Too many pending Claude login sessions for this company (max ${MAX_CONCURRENT_PER_COMPANY})`,
-    );
+    throw new Error(`Too many pending Claude login sessions (max ${MAX_CONCURRENT_PER_COMPANY})`);
   }
 
-  // Create temp HOME
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-login-"));
-
   const sessionId = randomUUID();
+
   const session: ClaudeLoginSession = {
     id: sessionId,
     companyId,
@@ -234,80 +211,104 @@ export async function startClaudeLoginSession(
   };
   sessions.set(sessionId, session);
 
-  // Abort controller so we can kill the child process on cancel
-  const ac = new AbortController();
-  sessionAbortControllers.set(sessionId, ac);
-
-  // Start polling for credentials file
+  // Start polling for credentials file (in case CLI auto-completes)
   startPolling(db, sessionId, isDefault);
 
   // Schedule expiry
-  scheduleExpiry(sessionId);
+  const expiryTimer = setTimeout(() => {
+    const s = sessions.get(sessionId);
+    if (s && s.status !== "complete" && s.status !== "failed") {
+      finalizeSession(sessionId, "expired", { error: "Session timed out after 5 minutes" });
+    }
+  }, SESSION_TIMEOUT_MS);
+  if (expiryTimer.unref) expiryTimer.unref();
+  sessionTimers.set(`expiry:${sessionId}`, expiryTimer);
 
-  // Launch claude login in background — don't await it (it blocks until user completes)
-  const loginPromise = runClaudeLogin({
-    runId: `claude-login-${sessionId}`,
-    agent: {
-      id: "system",
-      companyId,
-      name: "Claude Login",
-      adapterType: "claude_local",
-      adapterConfig: {},
-    },
-    config: {
-      command: "claude",
-      env: { HOME: tempHome },
-      timeoutSec: 300,
-    },
-    onLog: async (stream, chunk) => {
-      // Capture login URL from any output stream
-      const current = sessions.get(sessionId);
-      if (!current) return;
+  // Spawn claude auth login with a pipe to stdin
+  const env = { ...process.env, HOME: tempHome };
+  const proc = spawn("claude", ["auth", "login"], {
+    cwd: tempHome,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  sessionProcesses.set(sessionId, proc);
 
-      logger.debug({ sessionId, stream, chunk: chunk.slice(0, 200) }, "claude login: output");
+  let stdout = "";
+  let stderr = "";
 
-      if (!current.loginUrl) {
-        const urlMatch = chunk.match(/https:\/\/[^\s]+/);
-        if (urlMatch) {
-          current.loginUrl = urlMatch[0].replace(/[\])}.!,?;:'"]+$/g, "");
-          logger.info({ sessionId, loginUrl: current.loginUrl }, "claude login: captured login URL");
-        }
+  proc.stdout?.on("data", (data: Buffer) => {
+    const chunk = data.toString();
+    stdout += chunk;
+    logger.debug({ sessionId, stream: "stdout", chunk: chunk.slice(0, 300) }, "claude login output");
+
+    // Capture login URL
+    if (!session.loginUrl) {
+      const urlMatch = chunk.match(/https:\/\/[^\s]+/);
+      if (urlMatch) {
+        session.loginUrl = urlMatch[0].replace(/[\])}.!,?;:'"]+$/g, "");
+        session.status = "waiting_for_code";
+        logger.info({ sessionId, loginUrl: session.loginUrl }, "claude login: captured login URL");
       }
-    },
+    }
   });
 
-  loginPromise
-    .then((result) => {
-      const current = sessions.get(sessionId);
-      if (!current || current.status !== "pending") return;
+  proc.stderr?.on("data", (data: Buffer) => {
+    const chunk = data.toString();
+    stderr += chunk;
+    logger.debug({ sessionId, stream: "stderr", chunk: chunk.slice(0, 300) }, "claude login output");
 
-      // If runClaudeLogin returned a loginUrl and we haven't captured one yet, use it
-      if (result.loginUrl && !current.loginUrl) {
-        current.loginUrl = result.loginUrl;
+    // Also check stderr for URL
+    if (!session.loginUrl) {
+      const urlMatch = chunk.match(/https:\/\/[^\s]+/);
+      if (urlMatch) {
+        session.loginUrl = urlMatch[0].replace(/[\])}.!,?;:'"]+$/g, "");
+        session.status = "waiting_for_code";
+        logger.info({ sessionId, loginUrl: session.loginUrl }, "claude login: captured login URL from stderr");
       }
+    }
+  });
 
-      // If the process exited with an error and we haven't completed, mark failed
-      if (result.exitCode !== 0 && current.status === "pending") {
-        const detail = [result.stderr?.trim(), result.stdout?.trim()].filter(Boolean).join(" | ");
-        const errMsg = detail || `claude login exited with code ${result.exitCode}`;
-        logger.warn({ sessionId, exitCode: result.exitCode, stderr: result.stderr?.slice(0, 500), stdout: result.stdout?.slice(0, 500) }, "claude login: failed");
-        finalizeSession(sessionId, "failed", { error: errMsg });
-      }
-      // If exitCode is 0, the polling should pick up the credentials file
-    })
-    .catch((err) => {
-      const current = sessions.get(sessionId);
-      if (!current || current.status !== "pending") return;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err, sessionId }, "claude login: process error");
+  proc.on("close", (code) => {
+    const current = sessions.get(sessionId);
+    if (!current || current.status === "complete") return;
+
+    if (code === 0) {
+      // Success — polling should pick up the credentials file
+      logger.info({ sessionId }, "claude login: process exited successfully");
+    } else if (current.status !== "failed" && current.status !== "expired") {
+      const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join(" | ");
+      const errMsg = detail || `claude auth login exited with code ${code}`;
+      logger.warn({ sessionId, code, stderr: stderr.slice(0, 500) }, "claude login: process failed");
       finalizeSession(sessionId, "failed", { error: errMsg });
-    });
+    }
+  });
 
-  // Wait briefly for the URL to appear from stdout streaming
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  proc.on("error", (err) => {
+    logger.error({ sessionId, err }, "claude login: spawn error");
+    finalizeSession(sessionId, "failed", { error: err.message });
+  });
 
-  // Also try to extract from the result if loginUrl was populated via the sync return
+  // Wait for URL to appear
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
   return session;
+}
+
+/**
+ * Submit the authentication code from the browser back to the running
+ * `claude auth login` process via stdin.
+ */
+export function submitAuthCode(sessionId: string, code: string): boolean {
+  const session = sessions.get(sessionId);
+  if (!session || session.status !== "waiting_for_code") return false;
+
+  const proc = sessionProcesses.get(sessionId);
+  if (!proc || proc.killed || !proc.stdin?.writable) return false;
+
+  session.status = "exchanging";
+  proc.stdin.write(code.trim() + "\n");
+  logger.info({ sessionId }, "claude login: auth code submitted to stdin");
+  return true;
 }
 
 export function getClaudeLoginSession(sessionId: string): ClaudeLoginSession | null {
@@ -318,11 +319,10 @@ export function cancelClaudeLoginSession(sessionId: string): boolean {
   const session = sessions.get(sessionId);
   if (!session) return false;
 
-  if (session.status === "pending") {
+  if (session.status !== "complete" && session.status !== "failed") {
     finalizeSession(sessionId, "failed", { error: "Cancelled by user" });
   }
 
-  // Clear the expiry timer
   const expiryTimer = sessionTimers.get(`expiry:${sessionId}`);
   if (expiryTimer) {
     clearTimeout(expiryTimer);

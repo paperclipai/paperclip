@@ -24,7 +24,8 @@ export const credentialsApi = {
     },
   ) => api.patch<ProviderCredential>(`/credentials/${id}`, data),
 
-  remove: (id: string) => api.delete<{ ok: true }>(`/credentials/${id}`),
+  remove: (id: string, force?: boolean) =>
+    api.delete<{ ok: true }>(`/credentials/${id}${force ? "?force=true" : ""}`),
 
   reveal: (id: string) =>
     api.get<{ credential: Record<string, unknown> }>(`/credentials/${id}/reveal`),
@@ -46,6 +47,12 @@ export const credentialsApi = {
       credentialId?: string;
       error?: string;
     }>(`/companies/${companyId}/credentials/claude-login/${sessionId}/status`),
+
+  submitClaudeLoginCode: (companyId: string, sessionId: string, code: string) =>
+    api.post<{ ok: boolean }>(
+      `/companies/${companyId}/credentials/claude-login/${sessionId}/code`,
+      { code },
+    ),
 
   cancelClaudeLogin: (companyId: string, sessionId: string) =>
     api.delete<{ ok: boolean }>(

@@ -101,16 +101,22 @@ export function credentialService(db: Db) {
       return updated ?? null;
     },
 
-    async remove(id: string) {
+    async remove(id: string, force?: boolean) {
       // Check if any agents reference this credential
-      const [agentRef] = await db
+      const agentRefs = await db
         .select({ id: agents.id })
         .from(agents)
-        .where(eq(agents.credentialId, id))
-        .limit(1);
+        .where(eq(agents.credentialId, id));
 
-      if (agentRef) {
-        return { error: "credential_in_use" as const };
+      if (agentRefs.length > 0) {
+        if (!force) {
+          return { error: "credential_in_use" as const };
+        }
+        // Force: clear credential reference from all agents first
+        await db
+          .update(agents)
+          .set({ credentialId: null, updatedAt: new Date() })
+          .where(eq(agents.credentialId, id));
       }
 
       const [removed] = await db

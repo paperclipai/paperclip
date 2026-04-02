@@ -1007,8 +1007,9 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   // Claude login flow state
   const [loginSessionId, setLoginSessionId] = useState<string | null>(null);
   const [loginUrl, setLoginUrl] = useState<string | null>(null);
-  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "pending" | "complete" | "failed" | "expired">("idle");
+  const [loginStatus, setLoginStatus] = useState<"idle" | "starting" | "pending" | "waiting_for_code" | "exchanging" | "complete" | "failed" | "expired">("idle");
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [authCode, setAuthCode] = useState("");
 
   const resetAddForm = () => {
     setShowAddForm(false);
@@ -1087,7 +1088,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => credentialsApi.remove(id),
+    mutationFn: (id: string) => credentialsApi.remove(id, true),
     onSuccess: () => {
       invalidate();
       setConfirmDeleteId(null);
@@ -1114,8 +1115,9 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     onSuccess: (data) => {
       setLoginSessionId(data.loginSessionId);
       setLoginUrl(data.loginUrl);
-      setLoginStatus("pending");
+      setLoginStatus(data.loginUrl ? "waiting_for_code" : "pending");
       setLoginError(null);
+      setAuthCode("");
       if (data.loginUrl) {
         window.open(data.loginUrl, "_blank", "noopener");
       }
@@ -1126,13 +1128,27 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     },
   });
 
+  const submitCodeMutation = useMutation({
+    mutationFn: () =>
+      credentialsApi.submitClaudeLoginCode(companyId, loginSessionId!, authCode.trim()),
+    onSuccess: () => {
+      setLoginStatus("exchanging");
+    },
+    onError: (err) => {
+      setLoginStatus("failed");
+      setLoginError(err instanceof Error ? err.message : "Failed to submit code");
+    },
+  });
+
+  // Poll for login status changes (URL appearing, completion, failure)
   useEffect(() => {
-    if (loginStatus !== "pending" || !loginSessionId) return;
+    if (!loginSessionId || loginStatus === "idle" || loginStatus === "complete" || loginStatus === "failed" || loginStatus === "expired") return;
     const interval = setInterval(async () => {
       try {
         const result = await credentialsApi.pollClaudeLogin(companyId, loginSessionId);
         if (result.loginUrl && !loginUrl) {
           setLoginUrl(result.loginUrl);
+          setLoginStatus("waiting_for_code");
           window.open(result.loginUrl, "_blank", "noopener");
         }
         if (result.status === "complete") {
@@ -1143,9 +1159,10 @@ function CredentialsSection({ companyId }: { companyId: string }) {
             setLoginSessionId(null);
             setLoginUrl(null);
             setLoginStatus("idle");
+            setAuthCode("");
           }, 3000);
         } else if (result.status === "failed" || result.status === "expired") {
-          setLoginStatus(result.status);
+          setLoginStatus(result.status as typeof loginStatus);
           setLoginError(result.error ?? "Login failed");
           clearInterval(interval);
         }
@@ -1154,7 +1171,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
       }
     }, 2500);
     return () => clearInterval(interval);
-  }, [loginStatus, loginSessionId, companyId, loginUrl]);
+  }, [loginStatus, loginSessionId, companyId, loginUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetLogin = () => {
     if (loginSessionId) {
@@ -1164,6 +1181,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
     setLoginUrl(null);
     setLoginStatus("idle");
     setLoginError(null);
+    setAuthCode("");
   };
 
   return (
@@ -1415,21 +1433,97 @@ function CredentialsSection({ companyId }: { companyId: string }) {
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5"
-              onClick={() => {
-                setAddType("claude_oauth");
-                setAddName(`Claude (${new Date().toLocaleDateString("en-CA")})`);
-                setShowAddForm(true);
-              }}
-            >
-              <KeyRound className="h-3.5 w-3.5" />
-              Add Claude Login
-            </Button>
+            {loginStatus === "idle" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => {
+                  setLoginStatus("starting");
+                  startLoginMutation.mutate();
+                }}
+                disabled={startLoginMutation.isPending}
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                Login with Claude
+              </Button>
+            ) : loginStatus === "starting" ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                Starting login...
+              </div>
+            ) : loginStatus === "pending" || loginStatus === "waiting_for_code" ? (
+              <div className="w-full space-y-2 rounded-md border border-border bg-muted/30 px-3 py-3">
+                {loginUrl ? (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      1. Open the login page and authenticate:
+                    </p>
+                    <a
+                      href={loginUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 underline underline-offset-2 break-all"
+                    >
+                      {loginUrl.length > 60 ? loginUrl.slice(0, 60) + "..." : loginUrl}
+                    </a>
+                    <p className="text-xs text-muted-foreground pt-1">
+                      2. After authenticating, paste the code you receive:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        className="flex-1 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                        type="text"
+                        placeholder="Paste authentication code here..."
+                        value={authCode}
+                        onChange={(e) => setAuthCode(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && authCode.trim()) {
+                            submitCodeMutation.mutate();
+                          }
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => submitCodeMutation.mutate()}
+                        disabled={!authCode.trim() || submitCodeMutation.isPending}
+                      >
+                        {submitCodeMutation.isPending ? "..." : "Submit"}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                    Waiting for login URL...
+                  </div>
+                )}
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
+                  Cancel
+                </Button>
+              </div>
+            ) : loginStatus === "exchanging" ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="h-3 w-3 rounded-full border-2 border-muted-foreground border-t-transparent animate-spin" />
+                Authenticating...
+              </div>
+            ) : loginStatus === "complete" ? (
+              <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
+                <Check className="h-3.5 w-3.5" />
+                Claude login successful!
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-destructive">
+                  {loginError ?? "Login failed"}
+                </span>
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={resetLogin}>
+                  Retry
+                </Button>
+              </div>
+            )}
             <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setShowAddForm(true)}>
-              Add other credential
+              Add manually
             </Button>
           </div>
         )}
