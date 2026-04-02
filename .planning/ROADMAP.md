@@ -64,3 +64,14 @@ Phases execute in numeric order: 1 → 2 → 3
 | 1. Compose Foundation | 0/3 | Not started | - |
 | 2. Network Exposure | 0/? | Not started | - |
 | 3. Agent Connectivity | 0/? | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Integrate Front End with Authentik (BACKLOG)
+
+**Goal:** Integrate Paperclip's frontend authentication with Authentik identity provider
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
