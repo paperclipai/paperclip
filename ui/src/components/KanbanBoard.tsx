@@ -17,6 +17,8 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { User } from "lucide-react";
+import { formatAssigneeUserLabel } from "@/lib/assignees";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -45,6 +47,8 @@ interface KanbanBoardProps {
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  /** When set, dropping a card into **In review** assigns the issue to this user and clears agent assignee (governance default). */
+  currentUserId?: string | null;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -55,11 +59,13 @@ function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
 }: {
   status: string;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
+  currentUserId?: string | null;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -89,6 +95,7 @@ function KanbanColumn({
               key={issue.id}
               issue={issue}
               agents={agents}
+              currentUserId={currentUserId}
               isLive={liveIssueIds?.has(issue.id)}
             />
           ))}
@@ -103,11 +110,13 @@ function KanbanColumn({
 function KanbanCard({
   issue,
   agents,
+  currentUserId,
   isLive,
   isOverlay,
 }: {
   issue: Issue;
   agents?: Agent[];
+  currentUserId?: string | null;
   isLive?: boolean;
   isOverlay?: boolean;
 }) {
@@ -129,6 +138,10 @@ function KanbanCard({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   };
+
+  const userAssigneeLabel = issue.assigneeUserId
+    ? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId)
+    : null;
 
   return (
     <div
@@ -160,7 +173,7 @@ function KanbanCard({
           )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {
             const name = agentName(issue.assigneeAgentId);
@@ -172,6 +185,12 @@ function KanbanCard({
               </span>
             );
           })()}
+          {!issue.assigneeAgentId && userAssigneeLabel && (
+            <span className="inline-flex items-center gap-1 min-w-0 text-xs text-muted-foreground">
+              <User className="h-3 w-3 shrink-0" />
+              <span className="truncate">{userAssigneeLabel}</span>
+            </span>
+          )}
         </div>
       </Link>
     </div>
@@ -184,6 +203,7 @@ export function KanbanBoard({
   issues,
   agents,
   liveIssueIds,
+  currentUserId,
   onUpdateIssue,
 }: KanbanBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -238,7 +258,15 @@ export function KanbanBoard({
     }
 
     if (targetStatus && targetStatus !== issue.status) {
-      onUpdateIssue(issueId, { status: targetStatus });
+      if (targetStatus === "in_review" && currentUserId) {
+        onUpdateIssue(issueId, {
+          status: "in_review",
+          assigneeUserId: currentUserId,
+          assigneeAgentId: null,
+        });
+      } else {
+        onUpdateIssue(issueId, { status: targetStatus });
+      }
     }
   }
 
@@ -261,12 +289,13 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            currentUserId={currentUserId}
           />
         ))}
       </div>
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay />
+          <KanbanCard issue={activeIssue} agents={agents} currentUserId={currentUserId} isOverlay />
         ) : null}
       </DragOverlay>
     </DndContext>
