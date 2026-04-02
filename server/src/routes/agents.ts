@@ -1940,6 +1940,7 @@ export function agentRoutes(
         projectId: issue.projectId,
         goalId: issue.goalId,
         parentId: issue.parentId,
+        lastActivityAt: (issue as typeof issue & { lastActivityAt?: Date | null }).lastActivityAt ?? issue.updatedAt,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
