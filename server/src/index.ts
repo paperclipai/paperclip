@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -617,6 +617,24 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Clear issue execution locks referencing terminal heartbeat runs
+      void db
+        .execute(
+          sql`
+            UPDATE issues
+            SET execution_run_id = NULL,
+                execution_agent_name_key = NULL,
+                execution_locked_at = NULL,
+                updated_at = NOW()
+            WHERE execution_run_id IS NOT NULL
+              AND execution_run_id IN (
+                SELECT id FROM heartbeat_runs
+                WHERE status IN ('succeeded', 'failed', 'cancelled', 'timed_out')
+              )
+          `,
+        )
+        .catch((err) => logger.error({ err }, "stale execution lock cleanup failed"));
     }, config.heartbeatSchedulerIntervalMs);
   }
   
