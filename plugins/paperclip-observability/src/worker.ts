@@ -408,7 +408,6 @@ const plugin: PaperclipPlugin = definePlugin({
         obs.observe(snap.count, {
           status: snap.status,
           project_id: snap.projectId,
-          project_name: snap.projectName,
           company_id: snap.companyId,
         });
       }

@@ -12,6 +12,27 @@ import { METRIC_NAMES } from "../constants.js";
 import { mapProvider } from "../provider-map.js";
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Normalize raw error strings to bounded categories for metric dimensions. */
+function normalizeErrorType(error: unknown): string {
+  if (!error) return "unknown";
+  const msg = String(error).toLowerCase();
+  if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
+  if (msg.includes("auth") || msg.includes("401") || msg.includes("403"))
+    return "auth_failure";
+  if (msg.includes("rate") || msg.includes("429") || msg.includes("throttl"))
+    return "rate_limited";
+  if (msg.includes("cancel")) return "cancelled";
+  if (msg.includes("connect") || msg.includes("econnrefused") || msg.includes("enotfound"))
+    return "connection_error";
+  if (msg.includes("oom") || msg.includes("out of memory"))
+    return "oom";
+  return "unknown";
+}
+
+// ---------------------------------------------------------------------------
 // agent.run.started — run counter
 // ---------------------------------------------------------------------------
 
@@ -85,7 +106,7 @@ export async function handleRunFailedMetrics(
   errorCounter.add(1, {
     agent_id: String(p.agentId ?? ""),
     agent_name: String(p.agentName ?? "unknown"),
-    error: String(p.error ?? "unknown"),
+    error_type: normalizeErrorType(p.error),
   });
 }
 
