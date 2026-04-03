@@ -3770,16 +3770,7 @@ export function heartbeatService(db: Db) {
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
 
-    const running = runningProcesses.get(run.id);
-    if (running) {
-      running.child.kill("SIGTERM");
-      const graceMs = Math.max(1, running.graceSec) * 1000;
-      setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
-        }
-      }, graceMs);
-    }
+    terminateRunProcess(run, reason, 5);
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
@@ -3826,11 +3817,8 @@ export function heartbeatService(db: Db) {
         error: reason,
       });
 
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        running.child.kill("SIGTERM");
-        runningProcesses.delete(run.id);
-      }
+      terminateRunProcess(run, reason, 5);
+      runningProcesses.delete(run.id);
       await releaseIssueExecutionAndPromote(run);
     }
 
