@@ -107,13 +107,12 @@ describe("codex_local environment diagnostics", () => {
     const binDir = path.join(root, "extra-bin");
     const cwd = path.join(root, "workspace");
     const fakeCodex = path.join(binDir, "codex");
-    const previousExtraPaths = process.env.PAPERCLIP_EXTRA_COMMAND_PATHS;
 
     try {
       await fs.mkdir(binDir, { recursive: true });
       await fs.writeFile(fakeCodex, "#!/bin/sh\nexit 0\n", "utf8");
       await fs.chmod(fakeCodex, 0o755);
-      process.env.PAPERCLIP_EXTRA_COMMAND_PATHS = binDir;
+      vi.stubEnv("PAPERCLIP_EXTRA_COMMAND_PATHS", binDir);
 
       const result = await testEnvironment({
         companyId: "company-1",
@@ -131,8 +130,6 @@ describe("codex_local environment diagnostics", () => {
       expect(result.checks.some((check) => check.code === "codex_command_resolvable")).toBe(true);
       expect(result.checks.some((check) => check.code === "codex_command_unresolvable")).toBe(false);
     } finally {
-      if (previousExtraPaths === undefined) delete process.env.PAPERCLIP_EXTRA_COMMAND_PATHS;
-      else process.env.PAPERCLIP_EXTRA_COMMAND_PATHS = previousExtraPaths;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
