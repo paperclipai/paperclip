@@ -35,6 +35,7 @@ function commonAttributes(
 
 function entityType(eventType: string): string {
   if (eventType.startsWith("agent.run.")) return "run";
+  if (eventType.startsWith("agent.session.")) return "session";
   if (eventType.startsWith("agent.")) return "agent";
   if (eventType.startsWith("issue.")) return "issue";
   if (eventType.startsWith("approval.")) return "approval";

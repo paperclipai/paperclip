@@ -58,6 +58,8 @@ import {
   handleRunCancelledTraces,
   handleCostTraces,
   handleIssueUpdatedTraces,
+  handleApprovalCreatedTraces,
+  handleApprovalDecidedTraces,
 } from "./telemetry/trace-handlers.js";
 
 // Log handlers
@@ -73,6 +75,22 @@ import {
   handleCostEventLogs,
 } from "./telemetry/log-handlers.js";
 
+// Session handlers
+import {
+  handleSessionCreatedTraces,
+  handleSessionCreatedMetrics,
+  handleSessionCreatedLogs,
+  handleSessionChunkTraces,
+  handleSessionChunkMetrics,
+  handleSessionStatusTraces,
+  handleSessionDoneTraces,
+  handleSessionDoneMetrics,
+  handleSessionDoneLogs,
+  handleSessionErrorTraces,
+  handleSessionErrorMetrics,
+  handleSessionErrorLogs,
+} from "./telemetry/session-handlers.js";
+
 // ---------------------------------------------------------------------------
 // Module-level state
 // ---------------------------------------------------------------------------
@@ -87,6 +105,8 @@ let lastError: string | null = null;
 // Active span maps — shared across handler modules via TelemetryContext
 const activeRunSpans = new Map<string, Span>();
 const activeIssueSpans = new Map<string, Span>();
+const activeApprovalSpans = new Map<string, Span>();
+const activeSessionSpans = new Map<string, Span>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
@@ -187,14 +207,38 @@ function createRouter(): EventTelemetryRouter {
 
   // approval.created
   router.register("approval.created", handleApprovalCreatedMetrics);
+  router.register("approval.created", handleApprovalCreatedTraces);
   router.register("approval.created", handleApprovalCreatedLogs);
 
   // approval.decided
   router.register("approval.decided", handleApprovalDecidedMetrics);
+  router.register("approval.decided", handleApprovalDecidedTraces);
   router.register("approval.decided", handleApprovalDecidedLogs);
 
   // activity.logged (generic)
   router.register("activity.logged", handleGenericMetrics);
+
+  // agent.session.created
+  router.register("agent.session.created", handleSessionCreatedTraces);
+  router.register("agent.session.created", handleSessionCreatedMetrics);
+  router.register("agent.session.created", handleSessionCreatedLogs);
+
+  // agent.session.chunk
+  router.register("agent.session.chunk", handleSessionChunkTraces);
+  router.register("agent.session.chunk", handleSessionChunkMetrics);
+
+  // agent.session.status
+  router.register("agent.session.status", handleSessionStatusTraces);
+
+  // agent.session.done
+  router.register("agent.session.done", handleSessionDoneTraces);
+  router.register("agent.session.done", handleSessionDoneMetrics);
+  router.register("agent.session.done", handleSessionDoneLogs);
+
+  // agent.session.error
+  router.register("agent.session.error", handleSessionErrorTraces);
+  router.register("agent.session.error", handleSessionErrorMetrics);
+  router.register("agent.session.error", handleSessionErrorLogs);
 
   return router;
 }
@@ -242,6 +286,12 @@ const plugin: PaperclipPlugin = definePlugin({
           otelLogger: otel.otelLogger,
           activeRunSpans,
           activeIssueSpans,
+          activeApprovalSpans,
+          activeSessionSpans,
+          getTracerForAgent(agentId: string, agentName: string) {
+            if (!agentId || !otel) return otel!.tracer;
+            return otel!.agentTracers.getTracer(agentId, agentName);
+          },
         }
       : null;
 
@@ -259,6 +309,12 @@ const plugin: PaperclipPlugin = definePlugin({
       "approval.created",
       "approval.decided",
       "activity.logged",
+      // Session lifecycle events (emitted when server supports them)
+      "agent.session.created",
+      "agent.session.chunk",
+      "agent.session.status",
+      "agent.session.done",
+      "agent.session.error",
     ] as const;
 
     for (const eventType of eventTypes) {
@@ -789,6 +845,24 @@ const plugin: PaperclipPlugin = definePlugin({
       ctx?.logger.info("Ended orphaned issue span on shutdown", { issueId });
     }
     activeIssueSpans.clear();
+
+    // End any active approval lifecycle spans before shutdown
+    for (const [approvalId, span] of activeApprovalSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.approval.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned approval span on shutdown", { approvalId });
+    }
+    activeApprovalSpans.clear();
+
+    // End any active session lifecycle spans before shutdown
+    for (const [sessionId, span] of activeSessionSpans) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: "plugin_shutdown" });
+      span.setAttribute("paperclip.session.interrupted", true);
+      span.end();
+      ctx?.logger.info("Ended orphaned session span on shutdown", { sessionId });
+    }
+    activeSessionSpans.clear();
 
     if (otel) {
       try {

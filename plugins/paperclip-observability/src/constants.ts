@@ -17,6 +17,7 @@ export const METRIC_NAMES = {
   agentStatusChanges: "paperclip.agent.status_changes",
   approvalsCreated: "paperclip.approvals.created",
   approvalsDecided: "paperclip.approvals.decided",
+  approvalDecisionTime: "paperclip.approval.decision_time_ms",
   issuesCompleted: "paperclip.issues.completed",
   eventsTotal: "paperclip.events.total",
 
@@ -39,4 +40,10 @@ export const METRIC_NAMES = {
 
   // Server health gauge (scheduled job)
   serverHealthScore: "paperclip.health.server.score",
+
+  // Session streaming metrics
+  sessionDuration: "paperclip.agent.session.duration_ms",
+  sessionTtft: "paperclip.agent.session.ttft_ms",
+  sessionChunks: "paperclip.agent.session.chunks",
+  sessionErrors: "paperclip.agent.session.errors",
 } as const;

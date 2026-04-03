@@ -21,6 +21,7 @@ import type {
 
 export interface TelemetryContext {
   meter: Meter;
+  /** Default tracer (service.name = "paperclip"). Use getTracerForAgent for per-agent tracers. */
   tracer: Tracer;
   state: PluginStateClient;
   logger: PluginLogger;
@@ -33,6 +34,18 @@ export interface TelemetryContext {
 
   /** Active issue lifecycle spans — keyed by issueId. */
   activeIssueSpans: Map<string, Span>;
+
+  /** Active approval lifecycle spans — keyed by approvalId. */
+  activeApprovalSpans: Map<string, Span>;
+
+  /** Active session lifecycle spans — keyed by sessionId. */
+  activeSessionSpans: Map<string, Span>;
+
+  /**
+   * Get a per-agent tracer with service.name = paperclip.agent.<agentName>.
+   * Falls back to the default tracer if agentId/agentName are empty.
+   */
+  getTracerForAgent(agentId: string, agentName: string): Tracer;
 }
 
 // ---------------------------------------------------------------------------
