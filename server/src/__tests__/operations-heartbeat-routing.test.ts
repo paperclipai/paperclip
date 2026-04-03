@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentRuntimeState,
+  agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -27,10 +32,23 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.status, ["queued", "running"]));
+      if (activeRuns.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -406,6 +424,82 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
     expect([coma204IssueId, coma205IssueId]).toContain(target?.issueId);
+    expect(target?.mode).toBe("cross_agent_recovery");
+    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+  });
+
+  it("suppresses repetitive watchdog lane after recent successful watchdog verification and prefers stuck assigned recovery", async () => {
+    const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
+    const watchdogIssueId = randomUUID();
+    const watchdogSuccessRunIdA = randomUUID();
+    const watchdogSuccessRunIdB = randomUUID();
+    const coma204IssueId = randomUUID();
+    const coma204RunId = randomUUID();
+
+    const now = Date.now();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: coma204RunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+        contextSnapshot: { issueId: coma204IssueId },
+      },
+      {
+        id: watchdogSuccessRunIdA,
+        companyId,
+        agentId: opsAgentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "succeeded",
+        startedAt: new Date(now - 40 * 60 * 1000),
+        finishedAt: new Date(now - 35 * 60 * 1000),
+        contextSnapshot: { issueId: watchdogIssueId },
+      },
+      {
+        id: watchdogSuccessRunIdB,
+        companyId,
+        agentId: opsAgentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "completed",
+        startedAt: new Date(now - 20 * 60 * 1000),
+        finishedAt: new Date(now - 15 * 60 * 1000),
+        contextSnapshot: { issueId: watchdogIssueId },
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: watchdogIssueId,
+        companyId,
+        title: "Queue-lock watchdog recurring cleanup",
+        status: "blocked",
+        priority: "urgent",
+        assigneeAgentId: opsAgentId,
+        issueNumber: 181,
+        identifier: "COMA-181",
+      },
+      {
+        id: coma204IssueId,
+        companyId,
+        title: "Product trust issue: incomplete assigned follow-through",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: coma204RunId,
+        issueNumber: 204,
+        identifier: "COMA-204",
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target?.issueId).toBe(coma204IssueId);
     expect(target?.mode).toBe("cross_agent_recovery");
     expect(target?.reason).toContain("incomplete/false-complete assigned work");
   });

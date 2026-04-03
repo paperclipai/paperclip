@@ -79,6 +79,8 @@ const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
+const WATCHDOG_RECOVERY_COOLDOWN_HOURS = 12;
+const WATCHDOG_RECOVERY_REPEAT_THRESHOLD = 1;
 const execFile = promisify(execFileCallback);
 
 function normalizePriorityRank(priority: string | null | undefined) {
@@ -190,6 +192,41 @@ export async function resolveOperationsHeartbeatTarget(
         : [];
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
 
+    const watchdogIssueIds = openAssignedIssues
+      .filter((issue) => {
+        const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
+        return /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/.test(watchdogLabel);
+      })
+      .map((issue) => issue.id);
+
+    const watchdogCooldownCutoff = new Date(now - WATCHDOG_RECOVERY_COOLDOWN_HOURS * 60 * 60 * 1000);
+    const recentWatchdogSuccessCount =
+      watchdogIssueIds.length > 0
+        ? await db
+            .select({
+              id: heartbeatRuns.id,
+              finishedAt: heartbeatRuns.finishedAt,
+              contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, input.companyId),
+                eq(heartbeatRuns.agentId, input.operationsAgentId),
+                inArray(heartbeatRuns.status, ["succeeded", "completed"]),
+                sql`${heartbeatRuns.finishedAt} is not null`,
+              ),
+            )
+            .then((rows) => rows.filter((row) => {
+              if (!row.contextIssueId || !watchdogIssueIds.includes(row.contextIssueId) || !row.finishedAt) {
+                return false;
+              }
+              return new Date(row.finishedAt).getTime() >= watchdogCooldownCutoff.getTime();
+            }).length)
+        : 0;
+
+    const watchdogCooldownActive = recentWatchdogSuccessCount > WATCHDOG_RECOVERY_REPEAT_THRESHOLD;
+
     const ranked = openAssignedIssues
       .map((issue) => {
         const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
@@ -208,11 +245,19 @@ export async function resolveOperationsHeartbeatTarget(
         let score = 0;
         const reasons: string[] = [];
 
+        const hasFreshBlockerOrHandoffTruth =
+          (truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6;
         const hasStuckAssignedSignals =
           (issue.status === "in_progress" && !issue.executionRunId)
           || issue.status === "blocked"
           || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
-        const hasFalseCompleteSignals = Boolean(run && run.status === "completed" && truthType !== "completion");
+        const hasFalseCompleteSignals = Boolean(
+          run
+          && run.status === "completed"
+          && truthType !== "completion"
+          && truthType !== "blocker"
+          && truthType !== "handoff",
+        );
         const hasContradictoryTruthSignals =
           (truthType === "completion" && issue.status !== "in_review")
           || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
@@ -232,7 +277,7 @@ export async function resolveOperationsHeartbeatTarget(
 
         if (hasFalseCompleteSignals) {
           score += 280;
-          reasons.push("incomplete/false-complete assigned work: completed run without completion truth");
+          reasons.push("incomplete/false-complete assigned work: run completed without completion/blocker/handoff truth");
         }
 
         if (truthType === "completion" && issue.status !== "in_review") {
@@ -264,10 +309,19 @@ export async function resolveOperationsHeartbeatTarget(
             score += 80;
             reasons.push("watchdog issue has active recovery signals");
           }
+          if (
+            watchdogCooldownActive
+            && !hasFalseCompleteSignals
+            && !hasStuckAssignedSignals
+            && !hasContradictoryTruthSignals
+          ) {
+            score -= 260;
+            reasons.push("watchdog cooldown active after recent successful verification runs");
+          }
         }
 
         score += normalizePriorityRank(issue.priority) * 18;
-        if ((truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6) {
+        if (hasFreshBlockerOrHandoffTruth) {
           score -= 120;
           reasons.push(`fresh ${truthType} truth already present`);
         }
@@ -296,6 +350,7 @@ export async function resolveOperationsHeartbeatTarget(
       const strongestAssignedRecovery = ranked.find(
         (entry) =>
           !entry.isWatchdogIssue
+          && !entry.reasons.some((reason) => /fresh (blocker|handoff) truth already present/.test(reason))
           && (entry.hasFalseCompleteSignals || entry.hasStuckAssignedSignals || entry.hasContradictoryTruthSignals),
       );
 
