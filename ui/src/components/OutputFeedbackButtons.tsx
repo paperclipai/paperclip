@@ -20,12 +20,14 @@ export function OutputFeedbackButtons({
   sharingPreference = "prompt",
   termsUrl = null,
   onVote,
+  rightSlot,
 }: {
   activeVote?: FeedbackVoteValue | null;
   disabled?: boolean;
   sharingPreference?: FeedbackDataSharingPreference;
   termsUrl?: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
+  rightSlot?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const [pendingVote, setPendingVote] = useState<{
@@ -132,6 +134,7 @@ export function OutputFeedbackButtons({
           <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
           {t("outputFeedback.needsWork")}
         </Button>
+        {rightSlot ? <div className="ml-auto">{rightSlot}</div> : null}
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
@@ -209,6 +212,7 @@ export function OutputFeedbackButtons({
           <DialogFooter>
             <Button
               type="button"
+              variant="outline"
               disabled={!pendingVote || isSaving}
               onClick={() => {
                 if (!pendingVote) return;
