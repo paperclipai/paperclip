@@ -1,10 +1,12 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult, CompanyPortabilityPreviewResult } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, CompanyPortabilityPreviewResult, CompanyPortabilityFileEntry } from "@paperclipai/shared";
+import { readZipArchive } from "../lib/zip";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import type { OrgNode } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -62,6 +64,7 @@ import {
   GitBranch,
   Network,
   Download,
+  Upload,
   X
 } from "lucide-react";
 import { HermesIcon } from "./HermesIcon";
@@ -124,7 +127,14 @@ export function OnboardingWizard() {
 
   // Step 1
   const [setupMode, setSetupMode] = useState<SetupMode>("fresh");
+  const [importSourceMode, setImportSourceMode] = useState<"github" | "local">("github");
   const [importUrl, setImportUrl] = useState("");
+  const [localPackage, setLocalPackage] = useState<{
+    name: string;
+    rootPath: string | null;
+    files: Record<string, CompanyPortabilityFileEntry>;
+  } | null>(null);
+  const zipInputRef = useRef<HTMLInputElement | null>(null);
   const [importPreview, setImportPreview] = useState<CompanyPortabilityPreviewResult | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [companyName, setCompanyName] = useState("");
@@ -179,6 +189,10 @@ export function OnboardingWizard() {
     null
   );
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+  const [importedAgents, setImportedAgents] = useState(false);
+  const [importedAgentList, setImportedAgentList] = useState<Array<{ id: string; slug: string; name: string; role: string; title: string | null }>>([]);
+  const [agentOverrides, setAgentOverrides] = useState<Record<string, { adapterType?: AdapterType; model?: string }>>({});
+  const [expandedAgentSlug, setExpandedAgentSlug] = useState<string | null>(null);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(null);
 
@@ -237,6 +251,22 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+
+  // Models for the expanded agent's override adapter (when different from default)
+  const expandedOverrideAdapter = expandedAgentSlug
+    ? agentOverrides[expandedAgentSlug]?.adapterType
+    : undefined;
+  const overrideAdapterForQuery = expandedOverrideAdapter && expandedOverrideAdapter !== adapterType
+    ? expandedOverrideAdapter
+    : null;
+  const { data: overrideAdapterModels } = useQuery({
+    queryKey: createdCompanyId && overrideAdapterForQuery
+      ? queryKeys.agents.adapterModels(createdCompanyId, overrideAdapterForQuery)
+      : ["agents", "none", "override-adapter-models"],
+    queryFn: () => agentsApi.adapterModels(createdCompanyId!, overrideAdapterForQuery!),
+    enabled: Boolean(createdCompanyId) && Boolean(overrideAdapterForQuery) && step === 2
+  });
+
   const isLocalAdapter =
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
@@ -318,9 +348,15 @@ export function OnboardingWizard() {
     setLoading(false);
     setError(null);
     setSetupMode("fresh");
+    setImportSourceMode("github");
     setImportUrl("");
+    setLocalPackage(null);
     setImportPreview(null);
     setImportLoading(false);
+    setImportedAgents(false);
+    setImportedAgentList([]);
+    setAgentOverrides({});
+    setExpandedAgentSlug(null);
     setCompanyName("");
     setCompanyGoal("");
     setAgentName("CEO");
@@ -512,16 +548,55 @@ export function OnboardingWizard() {
     }
   }
 
+  function buildImportSource() {
+    if (importSourceMode === "local" && localPackage) {
+      return { type: "inline" as const, rootPath: localPackage.rootPath, files: localPackage.files };
+    }
+    if (importSourceMode === "github" && importUrl.trim()) {
+      return { type: "github" as const, url: importUrl.trim() };
+    }
+    return null;
+  }
+
+  async function handleZipUpload(fileList: FileList | null) {
+    if (!fileList?.length) return;
+    const file = fileList[0]!;
+    if (!/\.zip$/i.test(file.name)) {
+      setError("Please select a .zip file.");
+      return;
+    }
+    setImportLoading(true);
+    setError(null);
+    try {
+      const archive = await readZipArchive(await file.arrayBuffer());
+      if (Object.keys(archive.files).length === 0) {
+        throw new Error("No package files found in zip.");
+      }
+      setLocalPackage({ name: file.name, rootPath: archive.rootPath, files: archive.files });
+      setImportPreview(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to read zip");
+    } finally {
+      setImportLoading(false);
+    }
+  }
+
   async function handleImportPreview() {
-    if (!importUrl.trim()) return;
+    const source = buildImportSource();
+    if (!source) return;
     setImportLoading(true);
     setError(null);
     try {
       const preview = await companiesApi.importPreview({
-        source: { type: "github", url: importUrl.trim() },
+        source,
         target: { mode: "new_company" },
       });
       setImportPreview(preview);
+      // Pre-fill company name and goal from manifest
+      const manifestName = preview.targetCompanyName ?? preview.manifest.company?.name;
+      if (manifestName && !companyName) setCompanyName(manifestName);
+      const manifestDesc = preview.manifest.company?.description;
+      if (manifestDesc && !companyGoal) setCompanyGoal(manifestDesc);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to preview import");
     } finally {
@@ -530,13 +605,17 @@ export function OnboardingWizard() {
   }
 
   async function handleImportApply() {
-    if (!importUrl.trim()) return;
+    const source = buildImportSource();
+    if (!source) return;
     setLoading(true);
     setError(null);
     try {
       const result = await companiesApi.importBundle({
-        source: { type: "github", url: importUrl.trim() },
-        target: { mode: "new_company" },
+        source,
+        target: {
+          mode: "new_company",
+          ...(companyName.trim() ? { newCompanyName: companyName.trim() } : {}),
+        },
         collisionStrategy: "rename",
       });
       setCreatedCompanyId(result.company.id);
@@ -544,11 +623,32 @@ export function OnboardingWizard() {
       setSelectedCompanyId(result.company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
+      // Create goal if provided (same as fresh flow)
+      if (companyGoal.trim()) {
+        const parsedGoal = parseOnboardingGoalInput(companyGoal);
+        await goalsApi.create(result.company.id, {
+          title: parsedGoal.title,
+          ...(parsedGoal.description ? { description: parsedGoal.description } : {}),
+        });
+      }
+
       // If agents were imported, use the first CEO agent or first agent
-      const ceoAgent = result.agents.find((a) => a.action === "created" && a.name.toLowerCase().includes("ceo"));
-      const firstAgent = result.agents.find((a) => a.action === "created");
+      const createdAgents = result.agents.filter((a) => a.action === "created");
+      const ceoAgent = createdAgents.find((a) => a.name.toLowerCase().includes("ceo"));
+      const firstAgent = createdAgents[0];
       if (ceoAgent?.id) setCreatedAgentId(ceoAgent.id);
       else if (firstAgent?.id) setCreatedAgentId(firstAgent.id);
+      setImportedAgents(createdAgents.length > 0);
+      // Build agent list with roles from the manifest
+      const manifestAgents = importPreview?.manifest.agents ?? [];
+      setImportedAgentList(
+        createdAgents
+          .filter((a) => a.id)
+          .map((a) => {
+            const ma = manifestAgents.find((m) => m.slug === a.slug);
+            return { id: a.id!, slug: a.slug, name: a.name, role: ma?.role ?? "employee", title: ma?.title ?? null };
+          })
+      );
 
       setStep(2);
     } catch (err) {
@@ -642,31 +742,77 @@ export function OnboardingWizard() {
         }
       }
 
-      if (isLocalAdapter) {
+      if (importedAgents) {
+        // Test all unique adapter types used across agents
+        const uniqueAdapters = new Set<string>([adapterType]);
+        for (const o of Object.values(agentOverrides)) {
+          if (o.adapterType) uniqueAdapters.add(o.adapterType);
+        }
+        for (const at of uniqueAdapters) {
+          const localTypes = ["claude_local", "codex_local", "gemini_local", "hermes_local", "opencode_local", "pi_local", "cursor"];
+          if (!localTypes.includes(at)) continue;
+          if (at === adapterType && adapterEnvResult) continue; // already tested
+          const result = await agentsApi.testEnvironment(createdCompanyId, at, { adapterConfig: {} });
+          if (result.status === "fail") {
+            setError(`Adapter environment check failed for ${at}: ${result.checks?.map((c) => c.message).join(", ") ?? "unknown error"}`);
+            return;
+          }
+        }
+      } else if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
       }
 
-      const agent = await agentsApi.create(createdCompanyId, {
-        name: agentName.trim(),
-        role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
-        runtimeConfig: {
-          heartbeat: {
-            enabled: true,
-            intervalSec: 3600,
-            wakeOnDemand: true,
-            cooldownSec: 10,
-            maxConcurrentRuns: 1
+      if (importedAgents) {
+        // Update all imported agents — apply default adapter/model,
+        // then per-agent adapter + model overrides
+        const defaultConfig = buildAdapterConfig();
+        await Promise.all(
+          importedAgentList.map((a) => {
+            const override = agentOverrides[a.slug];
+            const agentAdapter = override?.adapterType ?? adapterType;
+            const agentModel = override?.model;
+            // Build config for this agent's adapter type
+            let config: Record<string, unknown>;
+            if (override?.adapterType && override.adapterType !== adapterType) {
+              // Different adapter — build a fresh config for that adapter
+              config = agentModel ? { model: agentModel } : {};
+            } else {
+              // Same adapter as default — use default config with optional model override
+              config = agentModel ? { ...defaultConfig, model: agentModel } : defaultConfig;
+            }
+            return agentsApi.update(a.id, {
+              adapterType: agentAdapter,
+              adapterConfig: config,
+            }, createdCompanyId!);
+          })
+        );
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(3);
+      } else {
+        const agent = await agentsApi.create(createdCompanyId, {
+          name: agentName.trim(),
+          role: "ceo",
+          adapterType,
+          adapterConfig: buildAdapterConfig(),
+          runtimeConfig: {
+            heartbeat: {
+              enabled: true,
+              intervalSec: 3600,
+              wakeOnDemand: true,
+              cooldownSec: 10,
+              maxConcurrentRuns: 1
+            }
           }
-        }
-      });
-      setCreatedAgentId(agent.id);
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.agents.list(createdCompanyId)
-      });
-      setStep(3);
+        });
+        setCreatedAgentId(agent.id);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(3);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
@@ -853,7 +999,7 @@ export function OnboardingWizard() {
       if (step === 1 && showLinearConnect && !importingIssues) handleStep1Continue();
       else if (step === 1 && setupMode === "fresh" && companyName.trim()) handleStep1Next();
       else if (step === 1 && setupMode === "import" && importPreview) handleStep1Next();
-      else if (step === 2 && agentName.trim()) handleStep2Next();
+      else if (step === 2 && (importedAgents || agentName.trim())) handleStep2Next();
       else if (step === 3) handleStep3Next();
       else if (step === 4) handleStep4Next();
       else if (step === 5) handleLaunch();
@@ -1010,27 +1156,115 @@ export function OnboardingWizard() {
 
                   {setupMode === "import" && (
                     <>
-                      <div className="group">
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          GitHub URL or companies.sh package
-                        </label>
-                        <input
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                          placeholder="https://github.com/org/company-package"
-                          value={importUrl}
-                          onChange={(e) => {
-                            setImportUrl(e.target.value);
+                      {/* Source mode toggle */}
+                      <div className="flex rounded-md border border-border overflow-hidden">
+                        <button
+                          className={cn(
+                            "flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm transition-colors",
+                            importSourceMode === "github"
+                              ? "bg-muted text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          onClick={() => {
+                            setImportSourceMode("github");
+                            setLocalPackage(null);
                             setImportPreview(null);
                           }}
-                          autoFocus
-                        />
+                        >
+                          <GitBranch className="h-3.5 w-3.5" />
+                          GitHub repo
+                        </button>
+                        <button
+                          className={cn(
+                            "flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm transition-colors border-l border-border",
+                            importSourceMode === "local"
+                              ? "bg-muted text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          onClick={() => {
+                            setImportSourceMode("local");
+                            setImportUrl("");
+                            setImportPreview(null);
+                          }}
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          Local zip
+                        </button>
                       </div>
 
+                      {/* GitHub URL input */}
+                      {importSourceMode === "github" && (
+                        <div className="group">
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            GitHub URL or companies.sh package
+                          </label>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="https://github.com/org/company-package"
+                            value={importUrl}
+                            onChange={(e) => {
+                              setImportUrl(e.target.value);
+                              setImportPreview(null);
+                            }}
+                            autoFocus
+                          />
+                        </div>
+                      )}
+
+                      {/* Local zip upload */}
+                      {importSourceMode === "local" && (
+                        <div className="group">
+                          <input
+                            ref={zipInputRef}
+                            type="file"
+                            accept=".zip,application/zip"
+                            className="hidden"
+                            onChange={(e) => handleZipUpload(e.target.files)}
+                          />
+                          {!localPackage ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full"
+                              onClick={() => zipInputRef.current?.click()}
+                              disabled={importLoading}
+                            >
+                              {importLoading ? (
+                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                              ) : (
+                                <Upload className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              {importLoading ? "Reading..." : "Choose zip file"}
+                            </Button>
+                          ) : (
+                            <div className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                              <Upload className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              <span className="text-sm truncate flex-1">{localPackage.name}</span>
+                              <button
+                                className="text-muted-foreground hover:text-foreground"
+                                onClick={() => {
+                                  setLocalPackage(null);
+                                  setImportPreview(null);
+                                  if (zipInputRef.current) zipInputRef.current.value = "";
+                                }}
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Preview button */}
                       {!importPreview && (
                         <Button
                           size="sm"
                           variant="outline"
-                          disabled={!importUrl.trim() || importLoading}
+                          disabled={
+                            (importSourceMode === "github" && !importUrl.trim()) ||
+                            (importSourceMode === "local" && !localPackage) ||
+                            importLoading
+                          }
                           onClick={handleImportPreview}
                         >
                           {importLoading ? (
@@ -1042,24 +1276,46 @@ export function OnboardingWizard() {
                         </Button>
                       )}
 
+                      {/* Preview result + name/goal */}
                       {importPreview && (
-                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Check className="h-4 w-4 text-green-500" />
-                            <span className="text-sm font-medium">
-                              {importPreview.targetCompanyName ?? "Company package"}
-                            </span>
+                        <>
+                          <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Check className="h-4 w-4 text-green-500" />
+                              <span className="text-sm font-medium">
+                                {importPreview.targetCompanyName ?? "Company package"}
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted-foreground space-y-0.5">
+                              <p>{importPreview.plan.agentPlans.length} agent{importPreview.plan.agentPlans.length !== 1 ? "s" : ""}</p>
+                              {importPreview.plan.projectPlans.length > 0 && (
+                                <p>{importPreview.plan.projectPlans.length} project{importPreview.plan.projectPlans.length !== 1 ? "s" : ""}</p>
+                              )}
+                              {importPreview.plan.issuePlans.length > 0 && (
+                                <p>{importPreview.plan.issuePlans.length} task{importPreview.plan.issuePlans.length !== 1 ? "s" : ""}</p>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-xs text-muted-foreground space-y-0.5">
-                            <p>{importPreview.plan.agentPlans.length} agent{importPreview.plan.agentPlans.length !== 1 ? "s" : ""}</p>
-                            {importPreview.plan.projectPlans.length > 0 && (
-                              <p>{importPreview.plan.projectPlans.length} project{importPreview.plan.projectPlans.length !== 1 ? "s" : ""}</p>
-                            )}
-                            {importPreview.plan.issuePlans.length > 0 && (
-                              <p>{importPreview.plan.issuePlans.length} task{importPreview.plan.issuePlans.length !== 1 ? "s" : ""}</p>
-                            )}
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Company name</label>
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                              placeholder="Company name"
+                              value={companyName}
+                              onChange={(e) => setCompanyName(e.target.value)}
+                            />
                           </div>
-                        </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Mission / goal (optional)</label>
+                            <textarea
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none"
+                              rows={2}
+                              placeholder="What is this company trying to achieve?"
+                              value={companyGoal}
+                              onChange={(e) => setCompanyGoal(e.target.value)}
+                            />
+                          </div>
+                        </>
                       )}
                     </>
                   )}
@@ -1265,13 +1521,13 @@ export function OnboardingWizard() {
                       <Bot className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Create your first agent</h3>
+                      <h3 className="font-medium">{importedAgents ? "Configure your agents" : "Create your first agent"}</h3>
                       <p className="text-xs text-muted-foreground">
-                        Choose how this agent will run tasks.
+                        {importedAgents ? "Choose the adapter and model for your agents." : "Choose how this agent will run tasks."}
                       </p>
                     </div>
                   </div>
-                  <div>
+                  {!importedAgents && (<div>
                     <label className="text-xs text-muted-foreground mb-1 block">
                       Agent name
                     </label>
@@ -1282,12 +1538,12 @@ export function OnboardingWizard() {
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
                     />
-                  </div>
+                  </div>)}
 
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
-                      Adapter type
+                      {importedAgents ? "Default adapter type" : "Adapter type"}
                     </label>
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -1549,6 +1805,124 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
+                  {/* Per-agent overrides (import mode only) */}
+                  {importedAgents && importedAgentList.length > 0 && (
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground block">
+                        Per-agent configuration
+                      </label>
+                      <div className="rounded-md border border-border divide-y divide-border">
+                        {importedAgentList.map((agent) => {
+                          const isExpanded = expandedAgentSlug === agent.slug;
+                          const override = agentOverrides[agent.slug];
+                          const effectiveAdapter = override?.adapterType ?? adapterType;
+                          const effectiveModel = override?.model;
+                          const adapterLabel: Record<string, string> = {
+                            claude_local: "Claude", codex_local: "Codex", gemini_local: "Gemini",
+                            opencode_local: "OpenCode", pi_local: "Pi", cursor: "Cursor",
+                            hermes_local: "Hermes", openclaw_gateway: "OpenClaw",
+                          };
+                          const summaryParts: string[] = [];
+                          if (override?.adapterType) summaryParts.push(adapterLabel[override.adapterType] ?? override.adapterType);
+                          if (effectiveModel) summaryParts.push(effectiveModel);
+                          const summary = summaryParts.length > 0 ? summaryParts.join(" · ") : "Default";
+                          // Models for this agent's adapter
+                          const agentModels = override?.adapterType && override.adapterType !== adapterType
+                            ? (overrideAdapterModels ?? [])
+                            : filteredModels;
+
+                          return (
+                            <div key={agent.slug}>
+                              <button
+                                className="flex items-center w-full px-3 py-2 gap-2.5 hover:bg-accent/30 transition-colors text-left"
+                                onClick={() => setExpandedAgentSlug(isExpanded ? null : agent.slug)}
+                              >
+                                <ChevronDown className={cn("h-3 w-3 text-muted-foreground transition-transform shrink-0", !isExpanded && "-rotate-90")} />
+                                <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center shrink-0">
+                                  <Bot className="h-3 w-3 text-foreground/70" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-xs font-medium">{agent.name}</span>
+                                  {agent.title && (
+                                    <span className="text-[10px] text-muted-foreground ml-1.5">{agent.title}</span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-muted-foreground shrink-0 max-w-[120px] truncate">
+                                  {summary}
+                                </span>
+                              </button>
+                              {isExpanded && (
+                                <div className="px-3 pb-3 pt-1 space-y-2.5">
+                                  {/* Adapter type */}
+                                  <div>
+                                    <label className="text-[10px] text-muted-foreground mb-1 block">Adapter</label>
+                                    <select
+                                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                      value={override?.adapterType ?? ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value as AdapterType | "";
+                                        setAgentOverrides((prev) => {
+                                          const next = { ...prev };
+                                          if (val) {
+                                            next[agent.slug] = { ...next[agent.slug], adapterType: val as AdapterType, model: undefined };
+                                          } else {
+                                            if (next[agent.slug]) {
+                                              delete next[agent.slug].adapterType;
+                                              delete next[agent.slug].model;
+                                              if (Object.keys(next[agent.slug]).length === 0) delete next[agent.slug];
+                                            }
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                    >
+                                      <option value="">Default ({adapterLabel[adapterType] ?? adapterType})</option>
+                                      <option value="claude_local">Claude Code</option>
+                                      <option value="codex_local">Codex</option>
+                                      <option value="gemini_local">Gemini CLI</option>
+                                      <option value="opencode_local">OpenCode</option>
+                                      <option value="pi_local">Pi</option>
+                                      <option value="cursor">Cursor</option>
+                                      <option value="hermes_local">Hermes</option>
+                                    </select>
+                                  </div>
+                                  {/* Model */}
+                                  <div>
+                                    <label className="text-[10px] text-muted-foreground mb-1 block">Model</label>
+                                    <select
+                                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                      value={effectiveModel ?? ""}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setAgentOverrides((prev) => {
+                                          const next = { ...prev };
+                                          if (val) {
+                                            next[agent.slug] = { ...next[agent.slug], model: val };
+                                          } else {
+                                            if (next[agent.slug]) {
+                                              delete next[agent.slug].model;
+                                              if (Object.keys(next[agent.slug]).length === 0) delete next[agent.slug];
+                                            }
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                    >
+                                      <option value="">Default</option>
+                                      {agentModels.map((m) => (
+                                        <option key={m.id} value={m.id}>{m.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {isLocalAdapter && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       <div className="flex items-center justify-between gap-2">
@@ -1566,7 +1940,38 @@ export function OnboardingWizard() {
                           variant="outline"
                           className="h-7 px-2.5 text-xs"
                           disabled={adapterEnvLoading}
-                          onClick={() => void runAdapterEnvironmentTest()}
+                          onClick={async () => {
+                            if (importedAgents) {
+                              // Test all unique adapters
+                              const uniqueAdapters = new Set<string>([adapterType]);
+                              for (const o of Object.values(agentOverrides)) {
+                                if (o.adapterType) uniqueAdapters.add(o.adapterType);
+                              }
+                              setAdapterEnvLoading(true);
+                              setAdapterEnvError(null);
+                              try {
+                                const results: AdapterEnvironmentTestResult[] = [];
+                                for (const at of uniqueAdapters) {
+                                  const r = await agentsApi.testEnvironment(createdCompanyId!, at, { adapterConfig: {} });
+                                  results.push(r);
+                                }
+                                // Show worst result
+                                const worst = results.find((r) => r.status === "fail") ?? results.find((r) => r.status === "warn") ?? results[0];
+                                if (worst) setAdapterEnvResult(worst);
+                                // Report any failures
+                                const failed = results.filter((r) => r.status === "fail");
+                                if (failed.length > 0) {
+                                  setAdapterEnvError(`${failed.length} adapter(s) failed environment check`);
+                                }
+                              } catch (err) {
+                                setAdapterEnvError(err instanceof Error ? err.message : "Test failed");
+                              } finally {
+                                setAdapterEnvLoading(false);
+                              }
+                            } else {
+                              void runAdapterEnvironmentTest();
+                            }
+                          }}
                         >
                           {adapterEnvLoading ? "Testing..." : "Test now"}
                         </Button>
@@ -1934,7 +2339,7 @@ export function OnboardingWizard() {
                     <Button
                       size="sm"
                       disabled={
-                        !agentName.trim() || loading || adapterEnvLoading
+                        (!importedAgents && !agentName.trim()) || loading || adapterEnvLoading
                       }
                       onClick={handleStep2Next}
                     >
@@ -1943,7 +2348,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? (importedAgents ? "Configuring..." : "Creating...") : "Next"}
                     </Button>
                   )}
                   {step === 3 && (
@@ -1984,18 +2389,215 @@ export function OnboardingWizard() {
             </div>
           </div>
 
-          {/* Right half — ASCII art (hidden on mobile) */}
+          {/* Right half — org preview or ASCII art (hidden on mobile) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out relative",
               step === 1 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
             <AsciiArtAnimation />
+            {setupMode === "import" && importPreview && (
+              <div className="absolute inset-0 flex flex-col bg-gradient-to-b from-[#1d1d1d]/80 via-transparent to-[#1d1d1d]/60 z-10">
+                <div className="text-center pt-6 pb-2 space-y-1 shrink-0">
+                  <Network className="h-5 w-5 text-white/90 mx-auto" />
+                  <h3 className="text-sm font-semibold text-white">
+                    {importPreview.targetCompanyName ?? importPreview.manifest.company?.name ?? "Company"}
+                  </h3>
+                  <p className="text-xs text-white/60">
+                    {importPreview.plan.agentPlans.length} agent{importPreview.plan.agentPlans.length !== 1 ? "s" : ""}
+                    {importPreview.manifest.skills.length > 0 &&
+                      ` · ${importPreview.manifest.skills.length} skill${importPreview.manifest.skills.length !== 1 ? "s" : ""}`}
+                    {importPreview.plan.projectPlans.length > 0 &&
+                      ` · ${importPreview.plan.projectPlans.length} project${importPreview.plan.projectPlans.length !== 1 ? "s" : ""}`}
+                  </p>
+                </div>
+                <div className="flex-1 min-h-0">
+                  <ImportOrgChartPreview
+                    roots={buildPreviewOrgTree(importPreview.manifest)}
+                    manifest={importPreview.manifest}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </DialogPortal>
     </Dialog>
+  );
+}
+
+function buildPreviewOrgTree(
+  manifest: CompanyPortabilityPreviewResult["manifest"]
+): OrgNode[] {
+  const agents = manifest.agents;
+  const nodeMap = new Map<string, OrgNode>();
+  for (const a of agents) {
+    nodeMap.set(a.slug, {
+      id: a.slug,
+      name: a.name,
+      role: a.role ?? "employee",
+      status: "idle",
+      reports: [],
+    });
+  }
+  const roots: OrgNode[] = [];
+  for (const a of agents) {
+    const node = nodeMap.get(a.slug)!;
+    if (a.reportsToSlug && nodeMap.has(a.reportsToSlug)) {
+      nodeMap.get(a.reportsToSlug)!.reports.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+// ── Mini org chart (same card style as /org page) ────────────────────────
+
+const PREVIEW_CARD_W = 160;
+const PREVIEW_CARD_H = 56;
+const PREVIEW_GAP_X = 20;
+const PREVIEW_GAP_Y = 48;
+const PREVIEW_PAD = 20;
+
+interface PreviewLayoutNode {
+  id: string; name: string; role: string; title: string | null;
+  x: number; y: number; children: PreviewLayoutNode[];
+}
+
+function previewSubtreeWidth(node: OrgNode): number {
+  if (node.reports.length === 0) return PREVIEW_CARD_W;
+  const cw = node.reports.reduce((s, c) => s + previewSubtreeWidth(c), 0);
+  return Math.max(PREVIEW_CARD_W, cw + (node.reports.length - 1) * PREVIEW_GAP_X);
+}
+
+function previewLayoutTree(node: OrgNode, x: number, y: number, titleMap: Map<string, string | null>): PreviewLayoutNode {
+  const totalW = previewSubtreeWidth(node);
+  const children: PreviewLayoutNode[] = [];
+  if (node.reports.length > 0) {
+    const cw = node.reports.reduce((s, c) => s + previewSubtreeWidth(c), 0);
+    const gaps = (node.reports.length - 1) * PREVIEW_GAP_X;
+    let cx = x + (totalW - cw - gaps) / 2;
+    for (const child of node.reports) {
+      const w = previewSubtreeWidth(child);
+      children.push(previewLayoutTree(child, cx, y + PREVIEW_CARD_H + PREVIEW_GAP_Y, titleMap));
+      cx += w + PREVIEW_GAP_X;
+    }
+  }
+  return { id: node.id, name: node.name, role: node.role, title: titleMap.get(node.id) ?? null, x: x + (totalW - PREVIEW_CARD_W) / 2, y, children };
+}
+
+function previewLayoutForest(roots: OrgNode[], titleMap: Map<string, string | null>): PreviewLayoutNode[] {
+  let x = PREVIEW_PAD;
+  return roots.map((r) => {
+    const w = previewSubtreeWidth(r);
+    const node = previewLayoutTree(r, x, PREVIEW_PAD, titleMap);
+    x += w + PREVIEW_GAP_X;
+    return node;
+  });
+}
+
+function flattenPreview(nodes: PreviewLayoutNode[]): PreviewLayoutNode[] {
+  const out: PreviewLayoutNode[] = [];
+  function walk(n: PreviewLayoutNode) { out.push(n); n.children.forEach(walk); }
+  nodes.forEach(walk);
+  return out;
+}
+
+function collectPreviewEdges(nodes: PreviewLayoutNode[]) {
+  const edges: Array<{ parent: PreviewLayoutNode; child: PreviewLayoutNode }> = [];
+  function walk(n: PreviewLayoutNode) { for (const c of n.children) { edges.push({ parent: n, child: c }); walk(c); } }
+  nodes.forEach(walk);
+  return edges;
+}
+
+function ImportOrgChartPreview({ roots, manifest }: { roots: OrgNode[]; manifest: CompanyPortabilityPreviewResult["manifest"] }) {
+  const titleMap = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const a of manifest.agents) m.set(a.slug, a.title);
+    return m;
+  }, [manifest]);
+
+  const layout = useMemo(() => previewLayoutForest(roots, titleMap), [roots, titleMap]);
+  const allNodes = useMemo(() => flattenPreview(layout), [layout]);
+  const edges = useMemo(() => collectPreviewEdges(layout), [layout]);
+
+  const bounds = useMemo(() => {
+    if (allNodes.length === 0) return { width: 400, height: 300 };
+    let maxX = 0, maxY = 0;
+    for (const n of allNodes) {
+      maxX = Math.max(maxX, n.x + PREVIEW_CARD_W);
+      maxY = Math.max(maxY, n.y + PREVIEW_CARD_H);
+    }
+    return { width: maxX + PREVIEW_PAD, height: maxY + PREVIEW_PAD };
+  }, [allNodes]);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || allNodes.length === 0) return;
+    const sx = el.clientWidth / bounds.width;
+    const sy = el.clientHeight / bounds.height;
+    setScale(Math.min(sx, sy, 1));
+  }, [allNodes, bounds]);
+
+  if (allNodes.length === 0) return null;
+
+  return (
+    <div ref={containerRef} className="w-full h-full relative overflow-hidden">
+      <div
+        className="absolute inset-0 flex items-center justify-center"
+      >
+        <div className="relative" style={{ width: bounds.width * scale, height: bounds.height * scale }}>
+          <svg className="absolute inset-0 pointer-events-none" width="100%" height="100%">
+            <g transform={`scale(${scale})`}>
+              {edges.map(({ parent, child }) => {
+                const x1 = parent.x + PREVIEW_CARD_W / 2;
+                const y1 = parent.y + PREVIEW_CARD_H;
+                const x2 = child.x + PREVIEW_CARD_W / 2;
+                const y2 = child.y;
+                const midY = (y1 + y2) / 2;
+                return (
+                  <path
+                    key={`${parent.id}-${child.id}`}
+                    d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
+                    fill="none"
+                    stroke="rgba(161,161,170,0.4)"
+                    strokeWidth={1.5}
+                  />
+                );
+              })}
+            </g>
+          </svg>
+          <div style={{ transform: `scale(${scale})`, transformOrigin: "0 0" }}>
+            {allNodes.map((node) => (
+              <div
+                key={node.id}
+                className="absolute bg-zinc-800/90 border border-zinc-600/50 rounded-lg shadow-md select-none"
+                style={{ left: node.x, top: node.y, width: PREVIEW_CARD_W, minHeight: PREVIEW_CARD_H }}
+              >
+                <div className="flex items-center px-3 py-2 gap-2.5">
+                  <div className="relative shrink-0">
+                    <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center">
+                      <Bot className="h-3.5 w-3.5 text-zinc-300" />
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-start min-w-0 flex-1">
+                    <span className="text-xs font-semibold text-zinc-100 leading-tight">{node.name}</span>
+                    {node.title && (
+                      <span className="text-[10px] text-zinc-400 leading-tight mt-0.5 truncate max-w-full">{node.title}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
