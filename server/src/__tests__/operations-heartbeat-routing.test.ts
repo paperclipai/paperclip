@@ -335,6 +335,101 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
   });
 
+  it("prefers COMA-204/205 class stuck assigned false-complete over generic audit issues", async () => {
+    const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
+    const coma204IssueId = randomUUID();
+    const coma205IssueId = randomUUID();
+    const auditIssueId = randomUUID();
+    const coma204RunId = randomUUID();
+    const coma205RunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: coma204RunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+        contextSnapshot: { issueId: coma204IssueId },
+      },
+      {
+        id: coma205RunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T00:20:00.000Z"),
+        finishedAt: new Date("2026-04-01T00:30:00.000Z"),
+        contextSnapshot: { issueId: coma205IssueId },
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: coma204IssueId,
+        companyId,
+        title: "Product trust issue: incomplete assigned follow-through",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: coma204RunId,
+        issueNumber: 204,
+        identifier: "COMA-204",
+      },
+      {
+        id: coma205IssueId,
+        companyId,
+        title: "Product trust issue: unresolved assigned deliverable",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: coma205RunId,
+        issueNumber: 205,
+        identifier: "COMA-205",
+      },
+      {
+        id: auditIssueId,
+        companyId,
+        title: "Audit: workflow verification sweep",
+        status: "todo",
+        priority: "urgent",
+        assigneeAgentId: opsAgentId,
+        issueNumber: 500,
+        identifier: "COMA-500",
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: coma205IssueId,
+      authorAgentId: workerAgentId,
+      body: "Checked this quickly; needs follow-up soon.",
+    });
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect([coma204IssueId, coma205IssueId]).toContain(target?.issueId);
+    expect(target?.mode).toBe("cross_agent_recovery");
+    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      opsAgentId,
+      "on_demand",
+      {},
+      "manual",
+      { actorType: "user", actorId: "board-user" },
+    );
+
+    expect([coma204IssueId, coma205IssueId]).toContain(run?.contextSnapshot?.issueId as string | undefined);
+    expect(run?.contextSnapshot?.wakeReason).toBe("operations_workflow_recovery");
+    expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
+  });
+
   it("returns null when there is no actionable work", async () => {
     const { companyId, opsAgentId } = await seedCompanyWithOpsAgent();
 
