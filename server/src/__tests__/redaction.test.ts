@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeLogValue,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -61,6 +67,38 @@ describe("redaction", () => {
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({
       password: REDACTED_EVENT_VALUE,
       safe: "value",
+    });
+  });
+
+  it("redacts bearer tokens and shell exports from log text", () => {
+    const input = [
+      'authorization: "Bearer abc.def.ghi"',
+      "export PAPERCLIP_API_KEY=run-jwt-token",
+      "normal=value",
+    ].join("\n");
+
+    expect(redactSensitiveText(input)).toBe([
+      `authorization: "Bearer ${REDACTED_EVENT_VALUE}"`,
+      `export PAPERCLIP_API_KEY=${REDACTED_EVENT_VALUE}`,
+      "normal=value",
+    ].join("\n"));
+  });
+
+  it("sanitizes nested log objects and inline sensitive strings", () => {
+    const result = sanitizeLogValue({
+      headers: {
+        authorization: "Bearer abc.def.ghi",
+      },
+      command: 'curl -H "Authorization: Bearer abc.def.ghi"',
+      nested: [{ token: "top-secret" }],
+    });
+
+    expect(result).toEqual({
+      headers: {
+        authorization: REDACTED_EVENT_VALUE,
+      },
+      command: `curl -H "Authorization: Bearer ${REDACTED_EVENT_VALUE}"`,
+      nested: [{ token: REDACTED_EVENT_VALUE }],
     });
   });
 });

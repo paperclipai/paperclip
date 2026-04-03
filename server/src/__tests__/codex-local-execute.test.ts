@@ -7,6 +7,7 @@ import { execute } from "@paperclipai/adapter-codex-local/server";
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
+const path = require("node:path");
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
@@ -19,6 +20,36 @@ const payload = {
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
+}
+if (process.env.PAPERCLIP_TEST_WRITE_ARTIFACTS === "1" && process.env.CODEX_HOME) {
+  const codexHome = process.env.CODEX_HOME;
+  fs.mkdirSync(path.join(codexHome, "shell_snapshots"), { recursive: true });
+  fs.mkdirSync(path.join(codexHome, "sessions", "2026", "04", "03"), { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, "shell_snapshots", "snapshot.sh"),
+    [
+      "export PAPERCLIP_API_KEY=" + (process.env.PAPERCLIP_API_KEY || ""),
+      "export PAPERCLIP_AGENT_JWT_SECRET=" + (process.env.PAPERCLIP_AGENT_JWT_SECRET || ""),
+      "export SAFE=value",
+      "",
+    ].join("\\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(codexHome, "sessions", "2026", "04", "03", "session.jsonl"),
+    [
+      JSON.stringify({
+        type: "tool_call",
+        headers: { authorization: "Bearer " + (process.env.PAPERCLIP_API_KEY || "") },
+        env: {
+          PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY || "",
+          PAPERCLIP_AGENT_JWT_SECRET: process.env.PAPERCLIP_AGENT_JWT_SECRET || "",
+        },
+      }),
+      "",
+    ].join("\\n"),
+    "utf8",
+  );
 }
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
@@ -255,6 +286,106 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scrubs sensitive values from managed Codex artifacts after execution", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-scrub-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const result = await execute({
+        runId: "run-scrub",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_WRITE_ARTIFACTS: "1",
+            PAPERCLIP_AGENT_JWT_SECRET: "super-secret-agent-jwt",
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const snapshot = await fs.readFile(
+        path.join(managedCodexHome, "shell_snapshots", "snapshot.sh"),
+        "utf8",
+      );
+      const session = await fs.readFile(
+        path.join(managedCodexHome, "sessions", "2026", "04", "03", "session.jsonl"),
+        "utf8",
+      );
+      const snapshotStat = await fs.stat(path.join(managedCodexHome, "shell_snapshots", "snapshot.sh"));
+      const sessionStat = await fs.stat(path.join(managedCodexHome, "sessions", "2026", "04", "03", "session.jsonl"));
+
+      expect(snapshot).toContain("export PAPERCLIP_API_KEY=***REDACTED***");
+      expect(snapshot).toContain("export PAPERCLIP_AGENT_JWT_SECRET=***REDACTED***");
+      expect(snapshot).not.toContain("run-jwt-token");
+      expect(snapshot).not.toContain("super-secret-agent-jwt");
+
+      expect(session).toContain('"authorization":"***REDACTED***"');
+      expect(session).toContain('"PAPERCLIP_API_KEY":"***REDACTED***"');
+      expect(session).toContain('"PAPERCLIP_AGENT_JWT_SECRET":"***REDACTED***"');
+      expect(session).not.toContain("run-jwt-token");
+      expect(session).not.toContain("super-secret-agent-jwt");
+
+      expect(snapshotStat.mode & 0o777).toBe(0o600);
+      expect(sessionStat.mode & 0o777).toBe(0o600);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
