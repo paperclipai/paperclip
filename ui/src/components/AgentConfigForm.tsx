@@ -730,7 +730,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         : adapterType === "pi_local"
                           ? "pi"
                         : adapterType === "cursor"
-                          ? "agent"
+                          ? "cursor"
                         : adapterType === "opencode_local"
                           ? "opencode"
                           : "claude"

@@ -11,7 +11,6 @@ import {
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
-  ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
@@ -26,6 +25,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
+import { describeCursorCommand, resolveCursorCommand } from "./command.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -164,7 +164,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const command = asString(config.command, "agent");
+  const configuredCommand = asString(config.command, "");
   const model = asString(config.model, DEFAULT_CURSOR_LOCAL_MODEL).trim();
   const mode = normalizeMode(asString(config.mode, ""));
 
@@ -271,8 +271,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const billingType = resolveCursorBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
-  await ensureCommandResolvable(command, cwd, runtimeEnv);
-  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const resolvedCursorCommand = await resolveCursorCommand({
+    configuredCommand,
+    cwd,
+    env: runtimeEnv,
+  });
+  const resolvedCommand = await resolveCommandForLogs(resolvedCursorCommand.command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
@@ -382,7 +386,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (mode) args.push("--mode", mode);
     if (autoTrustEnabled) args.push("--yolo");
     if (extraArgs.length > 0) args.push(...extraArgs);
-    return args;
+    return [...resolvedCursorCommand.baseArgs, ...args];
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
@@ -390,7 +394,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "cursor",
-        command: resolvedCommand,
+        command: describeCursorCommand({
+          command: resolvedCommand,
+          baseArgs: resolvedCursorCommand.baseArgs,
+        }),
         cwd,
         commandNotes,
         commandArgs: args,
@@ -425,7 +432,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
-    const proc = await runChildProcess(runId, command, args, {
+    const proc = await runChildProcess(runId, resolvedCursorCommand.command, args, {
       cwd,
       env,
       timeoutSec,

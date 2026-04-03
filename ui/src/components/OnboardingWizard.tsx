@@ -225,7 +225,7 @@ export function OnboardingWizard() {
       : adapterType === "pi_local"
       ? "pi"
       : adapterType === "cursor"
-      ? "agent"
+      ? "cursor agent"
       : adapterType === "opencode_local"
       ? "opencode"
       : "claude");
@@ -1113,9 +1113,9 @@ export function OnboardingWizard() {
                                     : "OPENAI_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
-                              <span className="font-mono">
+                                <span className="font-mono">
                                 {adapterType === "cursor"
-                                  ? "agent login"
+                                  ? "cursor agent login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
                                     : adapterType === "gemini_local"
