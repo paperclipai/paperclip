@@ -335,6 +335,81 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
   });
 
+  it("prefers COMA-204/205 class stuck assigned false-complete over recurring watchdog bias", async () => {
+    const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
+    const watchdogIssueId = randomUUID();
+    const coma204IssueId = randomUUID();
+    const coma205IssueId = randomUUID();
+    const coma204RunId = randomUUID();
+    const coma205RunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: coma204RunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+        contextSnapshot: { issueId: coma204IssueId },
+      },
+      {
+        id: coma205RunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "completed",
+        startedAt: new Date("2026-04-01T00:20:00.000Z"),
+        finishedAt: new Date("2026-04-01T00:30:00.000Z"),
+        contextSnapshot: { issueId: coma205IssueId },
+      },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: watchdogIssueId,
+        companyId,
+        title: "Queue-lock watchdog recurring cleanup",
+        status: "blocked",
+        priority: "urgent",
+        assigneeAgentId: opsAgentId,
+        issueNumber: 179,
+        identifier: "COMA-179",
+      },
+      {
+        id: coma204IssueId,
+        companyId,
+        title: "Product trust issue: incomplete assigned follow-through",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: coma204RunId,
+        issueNumber: 204,
+        identifier: "COMA-204",
+      },
+      {
+        id: coma205IssueId,
+        companyId,
+        title: "Product trust issue: unresolved assigned deliverable",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: coma205RunId,
+        issueNumber: 205,
+        identifier: "COMA-205",
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect([coma204IssueId, coma205IssueId]).toContain(target?.issueId);
+    expect(target?.mode).toBe("cross_agent_recovery");
+    expect(target?.reason).toContain("incomplete/false-complete assigned work");
+  });
+
   it("prefers COMA-204/205 class stuck assigned false-complete over generic audit issues", async () => {
     const { companyId, opsAgentId, workerAgentId } = await seedCompanyWithOpsAgent();
     const coma204IssueId = randomUUID();

@@ -282,6 +282,10 @@ export async function resolveOperationsHeartbeatTarget(
           reasons,
           issueAgeHours,
           isOperationsOwned,
+          isWatchdogIssue,
+          hasStuckAssignedSignals,
+          hasFalseCompleteSignals,
+          hasContradictoryTruthSignals,
         };
       })
       .filter((entry) => entry.score > 0)
@@ -289,10 +293,28 @@ export async function resolveOperationsHeartbeatTarget(
 
     const top = ranked[0];
     if (top) {
+      const strongestAssignedRecovery = ranked.find(
+        (entry) =>
+          !entry.isWatchdogIssue
+          && (entry.hasFalseCompleteSignals || entry.hasStuckAssignedSignals || entry.hasContradictoryTruthSignals),
+      );
+
+      let selected = top;
+      if (
+        top.isWatchdogIssue
+        && strongestAssignedRecovery
+        && (
+          !top.hasFalseCompleteSignals
+          || top.score - strongestAssignedRecovery.score <= 180
+        )
+      ) {
+        selected = strongestAssignedRecovery;
+      }
+
       return {
-        issueId: top.issue.id,
-        mode: top.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
-        reason: top.reasons.join("; "),
+        issueId: selected.issue.id,
+        mode: selected.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
+        reason: selected.reasons.join("; "),
       };
     }
   }
