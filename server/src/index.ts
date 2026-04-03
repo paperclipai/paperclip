@@ -721,9 +721,9 @@ export async function startServer(): Promise<StartedServer> {
         fs.unlinkSync(pluginsSdkDir);
       }
       fs.mkdirSync(pluginsSdkDir, { recursive: true });
-      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
+      fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true, force: true });
       if (fs.existsSync(workspaceSdkPkg)) {
-        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
+        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"), { force: true });
       }
       logger.info("Copied workspace plugin SDK dist to local plugins directory");
     }
