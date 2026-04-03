@@ -72,7 +72,19 @@ function CloudAccessGate() {
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
+    retry: (failureCount, error) => {
+      // Don't retry on definitive client errors (4xx except 408/429)
+      if (error instanceof Error) {
+        const match = error.message.match(/\((\d{3})\)$/);
+        const status = match ? parseInt(match[1], 10) : 0;
+        if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+          return false;
+        }
+      }
+      // Retry on network/server errors (e.g. 502/503 at first boot) up to 10 times
+      return failureCount < 10;
+    },
+    retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 15000),
     refetchInterval: (query) => {
       const data = query.state.data as
         | { deploymentMode?: "local_trusted" | "authenticated"; bootstrapStatus?: "ready" | "bootstrap_pending" }
@@ -93,7 +105,13 @@ function CloudAccessGate() {
   });
 
   if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+        {healthQuery.isLoading && healthQuery.failureCount > 0
+          ? "Connecting to server…"
+          : "Loading…"}
+      </div>
+    );
   }
 
   if (healthQuery.error) {
