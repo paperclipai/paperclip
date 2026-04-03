@@ -28,6 +28,7 @@ import {
   detectClaudeLoginRequired,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeRateLimitError,
 } from "./parse.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
@@ -404,16 +405,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    renderedBootstrapPrompt,
-    sessionHandoffNote,
-    renderedPrompt,
-  ]);
+  const nudgeMessage = asString(context.nudgeMessage, "").trim();
+  const isNudgeRun = nudgeMessage.length > 0 && !!sessionId;
+  const prompt = isNudgeRun
+    ? [
+        "[FOLLOW-UP] This is a direct follow-up message from the user on the same task.",
+        "Do NOT re-run the heartbeat protocol, do NOT call GET /agents/me or check assignments.",
+        "Simply respond to the request below using context already in this session.\n",
+        nudgeMessage,
+      ].join("\n")
+    : joinPromptSections([
+        renderedBootstrapPrompt,
+        sessionHandoffNote,
+        renderedPrompt,
+      ]);
   const promptMetrics = {
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
+    heartbeatPromptChars: isNudgeRun ? 0 : renderedPrompt.length,
   };
 
   const buildClaudeArgs = (resumeSessionId: string | null) => {
@@ -424,10 +434,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
-      args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+    // Nudge runs resume an existing session that already has instructions and
+    // skills loaded — re-injecting them would duplicate system prompt content
+    // and cause the agent to re-run its heartbeat protocol.
+    if (!isNudgeRun) {
+      if (effectiveInstructionsFilePath) {
+        args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
+      }
+      args.push("--add-dir", skillsDir);
     }
-    args.push("--add-dir", skillsDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -578,15 +593,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const maxRateLimitRetries = asNumber(config.maxRateLimitRetries, 3);
+  const rateLimitRetryDelaySec = asNumber(config.rateLimitRetryDelaySec, 10);
+
+  const checkRateLimit = (attempt: { proc: RunProcessResult; parsedStream: ReturnType<typeof parseClaudeStreamJson>; parsed: Record<string, unknown> | null }) =>
+    !attempt.proc.timedOut &&
+    isClaudeRateLimitError({
+      parsed: attempt.parsed,
+      summary: attempt.parsedStream.summary ?? "",
+      stdout: attempt.proc.stdout,
+    });
+
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    let current = await runAttempt(sessionId ?? null);
+
     if (
       sessionId &&
-      !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
+      !current.proc.timedOut &&
+      (current.proc.exitCode ?? 0) !== 0 &&
+      current.parsed &&
+      isClaudeUnknownSessionError(current.parsed)
     ) {
+      // Nudge runs depend on the existing session — can't fall back to fresh
+      if (isNudgeRun) {
+        return toAdapterResult(current, {
+          fallbackSessionId: sessionId,
+          clearSessionOnMissingSession: true,
+        });
+      }
       await onLog(
         "stdout",
         `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
@@ -595,7 +629,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    for (let attempt = 1; attempt <= maxRateLimitRetries; attempt++) {
+      if (!checkRateLimit(current)) break;
+      const delaySec = rateLimitRetryDelaySec * attempt;
+      await onLog(
+        "stdout",
+        `[paperclip] Rate limit detected; waiting ${delaySec}s before retry ${attempt}/${maxRateLimitRetries}.\n`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
+      current = await runAttempt(sessionId ?? null);
+    }
+
+    return toAdapterResult(current, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
   }
