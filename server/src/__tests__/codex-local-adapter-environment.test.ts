@@ -107,7 +107,6 @@ describe("codex_local environment diagnostics", () => {
     const binDir = path.join(root, "extra-bin");
     const cwd = path.join(root, "workspace");
     const fakeCodex = path.join(binDir, "codex");
-
     try {
       await fs.mkdir(binDir, { recursive: true });
       await fs.writeFile(fakeCodex, "#!/bin/sh\nexit 0\n", "utf8");
