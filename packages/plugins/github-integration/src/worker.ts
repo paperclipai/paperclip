@@ -148,6 +148,34 @@ async function markDelivery(deliveryId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// CI issue dedup — find existing open issue by title prefix
+// ---------------------------------------------------------------------------
+
+const OPEN_STATUSES = new Set(["backlog", "todo", "in_progress", "in_review"]);
+
+async function findExistingCIIssue(
+  companyId: string,
+  titlePrefix: string,
+): Promise<{ id: string; title: string } | null> {
+  if (!ctx) return null;
+  try {
+    const issues = await ctx.issues.list({
+      companyId,
+      limit: 50,
+      offset: 0,
+    });
+    return (
+      issues.find(
+        (i) => OPEN_STATUSES.has(i.status) && i.title.startsWith(titlePrefix),
+      ) ?? null
+    );
+  } catch (err) {
+    ctx.logger.warn(`Failed to check for existing CI issue: ${err}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Event handlers
 // ---------------------------------------------------------------------------
 
@@ -180,8 +208,16 @@ async function handleWorkflowRun(payload: GitHubWorkflowRunEvent): Promise<void>
     if (commented) return;
   }
 
-  const title = `CI failure: ${run.name} #${run.run_number} on ${repo}`;
+  const titlePrefix = `CI failure: ${run.name}`;
+  const title = `${titlePrefix} #${run.run_number} on ${repo}`;
   const description = buildWorkflowRunDescription(payload);
+
+  const existing = await findExistingCIIssue(config.companyId, titlePrefix);
+  if (existing) {
+    ctx?.logger.info(`Commenting on existing issue ${existing.id} instead of creating duplicate`);
+    await ctx!.issues.createComment(existing.id, `**Re-occurrence:** ${title}\n\n${description}`, config.companyId);
+    return;
+  }
 
   ctx?.logger.info(`Creating issue: ${title}`);
 
@@ -227,8 +263,16 @@ async function handleCheckRun(payload: GitHubCheckRunEvent): Promise<void> {
     if (commented) return;
   }
 
-  const title = `PR gate failure: ${check.name} on ${repo}`;
+  const titlePrefix = `PR gate failure: ${check.name} on ${repo}`;
+  const title = titlePrefix;
   const description = buildCheckRunDescription(payload);
+
+  const existing = await findExistingCIIssue(config.companyId, titlePrefix);
+  if (existing) {
+    ctx?.logger.info(`Commenting on existing issue ${existing.id} instead of creating duplicate`);
+    await ctx!.issues.createComment(existing.id, `**Re-occurrence:** ${title}\n\n${description}`, config.companyId);
+    return;
+  }
 
   ctx?.logger.info(`Creating issue: ${title}`);
 
