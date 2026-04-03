@@ -158,6 +158,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return null;
   }
 
+  async function resolveAssignmentScopedRunContext(req: Request, companyId: string) {
+    if (req.actor.type !== "agent") return null;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return null;
+    const run = await heartbeat.getRun(runId);
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
+    if (!run.contextSnapshot || typeof run.contextSnapshot !== "object") return null;
+    const snapshot = run.contextSnapshot as Record<string, unknown>;
+    const wakeReason = typeof snapshot.wakeReason === "string" ? snapshot.wakeReason : null;
+    const issueId = typeof snapshot.issueId === "string" ? snapshot.issueId : null;
+    if (wakeReason !== "issue_assigned" || !issueId) return null;
+    return { runId, issueId };
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -287,6 +301,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    const assignmentScopedRun = await resolveAssignmentScopedRunContext(req, companyId);
+    if (assignmentScopedRun) {
+      res.status(409).json({
+        error: "assignment mode forbids discovery queries; fetch /issues/:id directly",
+        code: "assignment_mode_forbids_discovery",
+        issueId: assignmentScopedRun.issueId,
+      });
+      return;
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
