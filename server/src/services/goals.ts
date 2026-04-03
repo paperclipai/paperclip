@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
-import { goals } from "@ironworksai/db";
+import { goals, goalKeyResults } from "@ironworksai/db";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -74,6 +74,41 @@ export function goalService(db: Db) {
       db
         .delete(goals)
         .where(eq(goals.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null),
+
+    // Key Results
+    listKeyResults: (goalId: string) =>
+      db
+        .select()
+        .from(goalKeyResults)
+        .where(eq(goalKeyResults.goalId, goalId)),
+
+    createKeyResult: (goalId: string, companyId: string, data: { description: string; targetValue?: string; unit?: string }) =>
+      db
+        .insert(goalKeyResults)
+        .values({
+          goalId,
+          companyId,
+          description: data.description,
+          targetValue: data.targetValue ?? "100",
+          unit: data.unit ?? "%",
+        })
+        .returning()
+        .then((rows) => rows[0]),
+
+    updateKeyResult: (krId: string, data: { description?: string; targetValue?: string; currentValue?: string; unit?: string }) =>
+      db
+        .update(goalKeyResults)
+        .set({ ...data, updatedAt: new Date() })
+        .where(eq(goalKeyResults.id, krId))
+        .returning()
+        .then((rows) => rows[0] ?? null),
+
+    removeKeyResult: (krId: string) =>
+      db
+        .delete(goalKeyResults)
+        .where(eq(goalKeyResults.id, krId))
         .returning()
         .then((rows) => rows[0] ?? null),
   };

@@ -449,6 +449,13 @@
       "when": 1775872800000,
       "tag": "0063_knowledge_page_agent_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1775959200000,
+      "tag": "0064_goal_key_results",
+      "breakpoints": true
     }
   ]
 }

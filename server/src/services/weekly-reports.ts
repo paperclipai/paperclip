@@ -454,6 +454,607 @@ export async function generateCompanyWeeklyReport(
   return markdown;
 }
 
+// ── Sprint Retrospective ──────────────────────────────────────────────────
+
+/**
+ * Generate a retrospective analysis for the given period (default 14 days).
+ * Saves the document to the CEO agent's workspace and returns the markdown.
+ */
+export async function generateRetrospective(
+  db: Db,
+  companyId: string,
+  periodDays: number = 14,
+): Promise<string> {
+  const now = new Date();
+  const periodStart = new Date(now.getTime() - periodDays * 24 * 60 * 60 * 1000);
+  const startStr = formatDateCT(periodStart);
+  const endStr = formatDateCT(now);
+
+  // 1. Completed vs cancelled issues
+  const statusCounts = await db
+    .select({
+      done: sql<number>`count(*) filter (where ${issues.status} = 'done')::int`,
+      cancelled: sql<number>`count(*) filter (where ${issues.status} = 'cancelled')::int`,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        gte(issues.createdAt, periodStart),
+      ),
+    );
+  const doneCount = Number(statusCounts[0]?.done ?? 0);
+  const cancelledCount = Number(statusCounts[0]?.cancelled ?? 0);
+  const totalResolved = doneCount + cancelledCount;
+  const completionRatio = totalResolved > 0
+    ? `${Math.round((doneCount / totalResolved) * 100)}%`
+    : "N/A";
+
+  // 2. Average completion time (hours between createdAt and completedAt)
+  const avgCompletionResult = await db
+    .select({
+      avgHours: sql<number>`coalesce(avg(extract(epoch from (${issues.completedAt} - ${issues.createdAt})) / 3600), 0)::float`,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.status, "done"),
+        gte(issues.completedAt, periodStart),
+      ),
+    );
+  const avgCompletionHours = Number(avgCompletionResult[0]?.avgHours ?? 0);
+
+  // 3. Agents with most cancellations
+  const cancellationsByAgent = await db
+    .select({
+      agentId: issues.assigneeAgentId,
+      agentName: agents.name,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(issues)
+    .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.status, "cancelled"),
+        gte(issues.cancelledAt, periodStart),
+      ),
+    )
+    .groupBy(issues.assigneeAgentId, agents.name)
+    .orderBy(sql`count(*) desc`)
+    .limit(5);
+
+  // 4. Recurring failure patterns (same agent, similar title keywords in cancelled issues)
+  const cancelledIssueDetails = await db
+    .select({
+      agentName: agents.name,
+      title: issues.title,
+    })
+    .from(issues)
+    .innerJoin(agents, eq(issues.assigneeAgentId, agents.id))
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.status, "cancelled"),
+        gte(issues.cancelledAt, periodStart),
+      ),
+    )
+    .limit(50);
+
+  // Group by agent to detect repeated topics
+  const patternMap = new Map<string, string[]>();
+  for (const row of cancelledIssueDetails) {
+    const key = row.agentName;
+    if (!patternMap.has(key)) patternMap.set(key, []);
+    patternMap.get(key)!.push(row.title);
+  }
+  const recurringPatterns: string[] = [];
+  for (const [agentName, titles] of patternMap.entries()) {
+    if (titles.length >= 2) {
+      recurringPatterns.push(
+        `- ${agentName}: ${titles.length} cancelled issues (${titles.slice(0, 3).join(", ")})`,
+      );
+    }
+  }
+
+  // 5. Budget overruns
+  const overrunAgents = await db
+    .select({
+      name: agents.name,
+      budgetMonthlyCents: agents.budgetMonthlyCents,
+      spentMonthlyCents: agents.spentMonthlyCents,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+        sql`${agents.spentMonthlyCents} > ${agents.budgetMonthlyCents}`,
+        sql`${agents.budgetMonthlyCents} > 0`,
+      ),
+    );
+
+  // 6. Total cost for the period
+  const periodCostResult = await db
+    .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, periodStart),
+      ),
+    );
+  const periodCostCents = Number(periodCostResult[0]?.total ?? 0);
+
+  // Build recommendations
+  const recommendations: string[] = [];
+  if (cancelledCount > doneCount * 0.3) {
+    recommendations.push("- High cancellation rate detected. Review issue scoping and assignment criteria.");
+  }
+  if (avgCompletionHours > 48) {
+    recommendations.push("- Average completion time exceeds 48 hours. Consider breaking down large issues.");
+  }
+  if (overrunAgents.length > 0) {
+    recommendations.push(`- ${overrunAgents.length} agent(s) over budget. Review cost governance policies.`);
+  }
+  if (recurringPatterns.length > 0) {
+    recommendations.push("- Recurring cancellation patterns detected. Investigate root causes for affected agents.");
+  }
+  if (recommendations.length === 0) {
+    recommendations.push("- No critical concerns this period. Continue current operating cadence.");
+  }
+
+  const markdown = [
+    `# Sprint Retrospective`,
+    `**Period:** ${startStr} to ${endStr} (${periodDays} days)`,
+    `**Generated:** ${now.toLocaleString("en-US", { timeZone: "America/Chicago" })}`,
+    "",
+    "## Completion Metrics",
+    `- Issues Completed: ${doneCount}`,
+    `- Issues Cancelled: ${cancelledCount}`,
+    `- Completion Ratio: ${completionRatio}`,
+    `- Average Completion Time: ${avgCompletionHours.toFixed(1)} hours`,
+    `- Total Cost: $${centsToDollars(periodCostCents)}`,
+    "",
+    "## Cancellation Leaderboard",
+    ...(cancellationsByAgent.length > 0
+      ? cancellationsByAgent.map(
+          (r, i) => `${i + 1}. ${r.agentName} - ${r.count} cancelled`,
+        )
+      : ["No cancellations this period."]),
+    "",
+    "## Recurring Failure Patterns",
+    ...(recurringPatterns.length > 0
+      ? recurringPatterns
+      : ["No recurring patterns detected."]),
+    "",
+    "## Budget Overruns",
+    ...(overrunAgents.length > 0
+      ? overrunAgents.map(
+          (a) =>
+            `- ${a.name}: spent $${centsToDollars(a.spentMonthlyCents)} of $${centsToDollars(a.budgetMonthlyCents)} budget`,
+        )
+      : ["All agents within budget."]),
+    "",
+    "## Recommendations",
+    ...recommendations,
+  ].join("\n");
+
+  // Save to CEO workspace
+  const [ceoAgent] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        sql`lower(${agents.role}) like '%ceo%'`,
+        ne(agents.status, "terminated"),
+      ),
+    )
+    .limit(1);
+
+  if (ceoAgent) {
+    const slug = `retrospective-${slugDate(periodStart)}-${slugDate(now)}`;
+    await createAgentDocument(db, {
+      agentId: ceoAgent.id,
+      companyId,
+      title: `Sprint Retrospective: ${startStr} to ${endStr}`,
+      content: markdown,
+      documentType: "retrospective",
+      slug,
+      visibility: "private",
+      autoGenerated: true,
+      createdByUserId: "system",
+    });
+  }
+
+  logger.info(
+    { companyId, periodDays, startStr, endStr },
+    "generated sprint retrospective",
+  );
+
+  return markdown;
+}
+
+// ── HR Weekly Report ──────────────────────────────────────────────────────
+
+/**
+ * Generate a weekly HR report covering personnel changes.
+ * Saves to VP HR agent's workspace and returns the markdown.
+ */
+export async function generateHRWeeklyReport(
+  db: Db,
+  companyId: string,
+): Promise<string> {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const periodStart = formatDateCT(sevenDaysAgo);
+  const periodEnd = formatDateCT(now);
+
+  // New hires in the period
+  const newHires = await db
+    .select({
+      name: agents.name,
+      role: agents.role,
+      department: agents.department,
+      employmentType: agents.employmentType,
+      hiredAt: agents.hiredAt,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        gte(agents.hiredAt, sevenDaysAgo),
+      ),
+    );
+
+  // Terminations in the period
+  const terminations = await db
+    .select({
+      name: agents.name,
+      role: agents.role,
+      terminationReason: agents.terminationReason,
+      terminatedAt: agents.terminatedAt,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        eq(agents.status, "terminated"),
+        gte(agents.terminatedAt, sevenDaysAgo),
+      ),
+    );
+
+  // All active agents with performance scores
+  const activeAgents = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      department: agents.department,
+      status: agents.status,
+      performanceScore: agents.performanceScore,
+      employmentType: agents.employmentType,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+      ),
+    );
+
+  const totalHeadcount = activeAgents.length;
+  const fteCount = activeAgents.filter((a) => a.employmentType === "full_time").length;
+  const contractorCount = activeAgents.filter((a) => a.employmentType !== "full_time").length;
+
+  // Performance distribution
+  const withScores = activeAgents.filter((a) => a.performanceScore != null);
+  const highPerformers = withScores.filter((a) => a.performanceScore! >= 80).length;
+  const midPerformers = withScores.filter((a) => a.performanceScore! >= 50 && a.performanceScore! < 80).length;
+  const lowPerformers = withScores.filter((a) => a.performanceScore! < 50);
+
+  // Onboarding status: agents hired in last 30 days still active
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const recentHires = activeAgents.filter(
+    (a) => a.status !== "terminated" && a.employmentType === "full_time",
+  );
+  const onboardingAgents = await db
+    .select({
+      name: agents.name,
+      role: agents.role,
+      hiredAt: agents.hiredAt,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+        gte(agents.hiredAt, thirtyDaysAgo),
+      ),
+    );
+
+  // Department headcount
+  const deptCounts = new Map<string, number>();
+  for (const a of activeAgents) {
+    const dept = a.department ?? "Unassigned";
+    deptCounts.set(dept, (deptCounts.get(dept) ?? 0) + 1);
+  }
+
+  const markdown = [
+    "# HR Weekly Report",
+    `**Period:** ${periodStart} to ${periodEnd}`,
+    `**Generated:** ${now.toLocaleString("en-US", { timeZone: "America/Chicago" })}`,
+    "",
+    "## Headcount Summary",
+    `- Total Active: ${totalHeadcount}`,
+    `- Full-Time: ${fteCount}`,
+    `- Contractors: ${contractorCount}`,
+    "",
+    "## Department Breakdown",
+    "| Department | Headcount |",
+    "|---|---|",
+    ...[...deptCounts.entries()].map(([dept, count]) => `| ${dept} | ${count} |`),
+    "",
+    "## New Hires",
+    ...(newHires.length > 0
+      ? newHires.map(
+          (h) => `- ${h.name} (${h.role}, ${h.department ?? "Unassigned"}) - ${h.employmentType === "full_time" ? "FTE" : "Contractor"}`,
+        )
+      : ["No new hires this period."]),
+    "",
+    "## Terminations",
+    ...(terminations.length > 0
+      ? terminations.map(
+          (t) => `- ${t.name} (${t.role}) - Reason: ${t.terminationReason ?? "Not specified"}`,
+        )
+      : ["No terminations this period."]),
+    "",
+    "## Performance Distribution",
+    `- High performers (80+): ${highPerformers}`,
+    `- Mid performers (50-79): ${midPerformers}`,
+    `- Low performers (<50): ${lowPerformers.length}`,
+    ...(lowPerformers.length > 0
+      ? lowPerformers.map((a) => `  - ${a.name}: ${a.performanceScore}/100`)
+      : []),
+    "",
+    "## Onboarding (Last 30 Days)",
+    ...(onboardingAgents.length > 0
+      ? onboardingAgents.map((a) => `- ${a.name} (${a.role}) - hired ${formatDateCT(a.hiredAt!)}`)
+      : ["No agents onboarded in the last 30 days."]),
+  ].join("\n");
+
+  // Save to VP HR workspace
+  const [hrAgent] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        sql`(lower(${agents.role}) like '%vp%hr%' or lower(${agents.role}) like '%hr%' or lower(${agents.role}) like '%people%')`,
+        ne(agents.status, "terminated"),
+      ),
+    )
+    .limit(1);
+
+  if (hrAgent) {
+    const slug = `hr-weekly-report-${slugDate(sevenDaysAgo)}-${slugDate(now)}`;
+    await createAgentDocument(db, {
+      agentId: hrAgent.id,
+      companyId,
+      title: `HR Weekly Report: ${periodStart} to ${periodEnd}`,
+      content: markdown,
+      documentType: "weekly-report",
+      slug,
+      visibility: "private",
+      autoGenerated: true,
+      createdByUserId: "system",
+    });
+  }
+
+  logger.info(
+    { companyId, periodStart, periodEnd },
+    "generated HR weekly report",
+  );
+
+  return markdown;
+}
+
+// ── CFO Weekly Report ─────────────────────────────────────────────────────
+
+/**
+ * Generate a weekly CFO financial report.
+ * Saves to CFO agent's workspace and returns the markdown.
+ */
+export async function generateCFOWeeklyReport(
+  db: Db,
+  companyId: string,
+): Promise<string> {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+  const periodStart = formatDateCT(sevenDaysAgo);
+  const periodEnd = formatDateCT(now);
+
+  // Total spend this week
+  const currentWeekCost = await db
+    .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, sevenDaysAgo),
+      ),
+    );
+  const currentWeekCents = Number(currentWeekCost[0]?.total ?? 0);
+
+  // Total spend last week (for trend comparison)
+  const lastWeekCost = await db
+    .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, fourteenDaysAgo),
+        sql`${costEvents.occurredAt} < ${sevenDaysAgo}`,
+      ),
+    );
+  const lastWeekCents = Number(lastWeekCost[0]?.total ?? 0);
+
+  const weekOverWeekChange = lastWeekCents > 0
+    ? Math.round(((currentWeekCents - lastWeekCents) / lastWeekCents) * 100)
+    : 0;
+
+  // Spend by department
+  const deptSpend = await db
+    .select({
+      department: agents.department,
+      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+    })
+    .from(costEvents)
+    .innerJoin(agents, eq(costEvents.agentId, agents.id))
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, sevenDaysAgo),
+      ),
+    )
+    .groupBy(agents.department)
+    .orderBy(sql`sum(${costEvents.costCents}) desc`);
+
+  // Spend by agent (top 10)
+  const agentSpend = await db
+    .select({
+      agentName: agents.name,
+      agentRole: agents.role,
+      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+    })
+    .from(costEvents)
+    .innerJoin(agents, eq(costEvents.agentId, agents.id))
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, sevenDaysAgo),
+      ),
+    )
+    .groupBy(agents.name, agents.role)
+    .orderBy(sql`sum(${costEvents.costCents}) desc`)
+    .limit(10);
+
+  // Budget vs actual (company level)
+  const [company] = await db
+    .select({ budgetMonthlyCents: companies.budgetMonthlyCents })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+  const monthlyBudgetCents = company?.budgetMonthlyCents ?? 0;
+
+  // Month-to-date spend
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const mtdCost = await db
+    .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, monthStart),
+      ),
+    );
+  const mtdCents = Number(mtdCost[0]?.total ?? 0);
+  const budgetUtilization = monthlyBudgetCents > 0
+    ? `${Math.round((mtdCents / monthlyBudgetCents) * 100)}%`
+    : "No budget set";
+
+  // Cost per issue this week
+  const issuesDoneThisWeek = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.status, "done"),
+        gte(issues.completedAt, sevenDaysAgo),
+      ),
+    );
+  const doneThisWeek = Number(issuesDoneThisWeek[0]?.count ?? 0);
+  const costPerIssue = doneThisWeek > 0 ? currentWeekCents / doneThisWeek : 0;
+
+  const markdown = [
+    "# CFO Weekly Financial Report",
+    `**Period:** ${periodStart} to ${periodEnd}`,
+    `**Generated:** ${now.toLocaleString("en-US", { timeZone: "America/Chicago" })}`,
+    "",
+    "## Summary",
+    `- Total Spend This Week: $${centsToDollars(currentWeekCents)}`,
+    `- Total Spend Last Week: $${centsToDollars(lastWeekCents)}`,
+    `- Week-over-Week Change: ${weekOverWeekChange > 0 ? "+" : ""}${weekOverWeekChange}%`,
+    `- Month-to-Date Spend: $${centsToDollars(mtdCents)}`,
+    `- Monthly Budget: ${monthlyBudgetCents > 0 ? `$${centsToDollars(monthlyBudgetCents)}` : "Unlimited"}`,
+    `- Budget Utilization: ${budgetUtilization}`,
+    `- Cost per Issue: ${doneThisWeek > 0 ? `$${centsToDollars(Math.round(costPerIssue))}` : "N/A (0 issues completed)"}`,
+    "",
+    "## Spend by Department",
+    "| Department | Spend |",
+    "|---|---|",
+    ...(deptSpend.length > 0
+      ? deptSpend.map((r) => `| ${r.department ?? "Unassigned"} | $${centsToDollars(Number(r.total))} |`)
+      : ["| No spend data | - |"]),
+    "",
+    "## Top Spenders by Agent",
+    "| Agent | Role | Spend |",
+    "|---|---|---|",
+    ...(agentSpend.length > 0
+      ? agentSpend.map((r) => `| ${r.agentName} | ${r.agentRole} | $${centsToDollars(Number(r.total))} |`)
+      : ["| No spend data | - | - |"]),
+    "",
+    "## Budget Health",
+    `- Issues Completed This Week: ${doneThisWeek}`,
+    `- Cost per Completed Issue: ${doneThisWeek > 0 ? `$${centsToDollars(Math.round(costPerIssue))}` : "N/A"}`,
+    ...(weekOverWeekChange > 25
+      ? ["- WARNING: Spend increased more than 25% week-over-week. Review agent cost controls."]
+      : []),
+    ...(monthlyBudgetCents > 0 && mtdCents > monthlyBudgetCents * 0.8
+      ? ["- WARNING: Month-to-date spend exceeds 80% of monthly budget."]
+      : []),
+  ].join("\n");
+
+  // Save to CFO workspace
+  const [cfoAgent] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        sql`lower(${agents.role}) like '%cfo%'`,
+        ne(agents.status, "terminated"),
+      ),
+    )
+    .limit(1);
+
+  if (cfoAgent) {
+    const slug = `cfo-weekly-report-${slugDate(sevenDaysAgo)}-${slugDate(now)}`;
+    await createAgentDocument(db, {
+      agentId: cfoAgent.id,
+      companyId,
+      title: `CFO Weekly Report: ${periodStart} to ${periodEnd}`,
+      content: markdown,
+      documentType: "weekly-report",
+      slug,
+      visibility: "private",
+      autoGenerated: true,
+      createdByUserId: "system",
+    });
+  }
+
+  logger.info(
+    { companyId, periodStart, periodEnd },
+    "generated CFO weekly report",
+  );
+
+  return markdown;
+}
+
 // ── Run All Weekly Reports ─────────────────────────────────────────────────
 
 /**
@@ -485,6 +1086,18 @@ export async function runWeeklyReports(
     await generateCompanyWeeklyReport(db, companyId);
   } catch (err) {
     logger.error({ err, companyId }, "failed to generate company weekly report");
+  }
+
+  try {
+    await generateHRWeeklyReport(db, companyId);
+  } catch (err) {
+    logger.error({ err, companyId }, "failed to generate HR weekly report");
+  }
+
+  try {
+    await generateCFOWeeklyReport(db, companyId);
+  } catch (err) {
+    logger.error({ err, companyId }, "failed to generate CFO weekly report");
   }
 }
 

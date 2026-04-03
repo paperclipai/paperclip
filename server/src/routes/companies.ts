@@ -19,6 +19,7 @@ import {
   logActivity,
   playbookService,
   routineService,
+  seedSystemRoleTemplates,
 } from "../services/index.js";
 import { knowledgeService } from "../services/knowledge.js";
 import type { StorageService } from "../storage/types.js";
@@ -245,13 +246,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         req.actor.userId ?? "board",
       );
     }
-    // Auto-seed default playbooks, routines, and knowledge base for every new company
+    // Auto-seed default playbooks, routines, knowledge base, and role templates for every new company
     try {
       await playbooksvc.seedDefaults(company.id);
       await routinesvc.seedDefaults(company.id);
       await knowledgesvc.seedDefaults(company.id);
+      await seedSystemRoleTemplates(db, company.id);
     } catch {
-      // Non-fatal — company is created even if seeding fails
+      // Non-fatal -- company is created even if seeding fails
     }
 
     res.status(201).json(company);

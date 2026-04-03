@@ -70,3 +70,4 @@ export { supportTickets, supportTicketComments } from "./support_tickets.js";
 export { agentMemoryEntries } from "./agent_memory_entries.js";
 export { hiringRequests } from "./hiring_requests.js";
 export { agentRoleTemplates } from "./agent_role_templates.js";
+export { goalKeyResults } from "./goal_key_results.js";

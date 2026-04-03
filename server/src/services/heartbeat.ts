@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import type { BillingType } from "@ironworksai/shared";
 import {
@@ -16,6 +16,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@ironworksai/db";
+import { DEFAULT_ITERATION_LIMITS } from "@ironworksai/shared";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -1629,6 +1630,93 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countAgentRunsToday(agentId: string): Promise<number> {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          gte(heartbeatRuns.createdAt, startOfDay),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function countAgentRunsForIssueToday(agentId: string, issueId: string): Promise<number> {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          gte(heartbeatRuns.createdAt, startOfDay),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function checkIterationLimits(
+    agentId: string,
+    companyId: string,
+    issueId: string | null,
+  ): Promise<string | null> {
+    // Check per-day limit for agent
+    const dailyCount = await countAgentRunsToday(agentId);
+    if (dailyCount >= DEFAULT_ITERATION_LIMITS.perDay) {
+      await pauseAgentForIterationLimit(agentId, companyId, "daily");
+      return `Agent exceeded daily iteration limit (${DEFAULT_ITERATION_LIMITS.perDay} runs/day)`;
+    }
+
+    // Check per-task limit (runs against same issue today)
+    if (issueId) {
+      const taskCount = await countAgentRunsForIssueToday(agentId, issueId);
+      if (taskCount >= DEFAULT_ITERATION_LIMITS.perTask) {
+        await pauseAgentForIterationLimit(agentId, companyId, "per_task");
+        return `Agent exceeded per-task iteration limit (${DEFAULT_ITERATION_LIMITS.perTask} runs/task/day)`;
+      }
+    }
+
+    return null;
+  }
+
+  async function pauseAgentForIterationLimit(agentId: string, companyId: string, kind: "daily" | "per_task") {
+    const now = new Date();
+    await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: "iteration_limit",
+        pausedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agents.id, agentId),
+          inArray(agents.status, ["active", "idle", "running", "error"]),
+        ),
+      );
+
+    await logActivity(db, {
+      companyId,
+      actorType: "system",
+      actorId: "iteration_guard",
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: agentId,
+      details: {
+        reason: "iteration_limit",
+        kind,
+        limit: kind === "daily" ? DEFAULT_ITERATION_LIMITS.perDay : DEFAULT_ITERATION_LIMITS.perTask,
+      },
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -1648,6 +1736,17 @@ export function heartbeatService(db: Db) {
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    // Iteration / loop cap check
+    const iterationBlock = await checkIterationLimits(
+      run.agentId,
+      run.companyId,
+      readNonEmptyString(context.issueId),
+    );
+    if (iterationBlock) {
+      await cancelRunInternal(run.id, iterationBlock);
       return null;
     }
 
@@ -3119,6 +3218,13 @@ export function heartbeatService(db: Db) {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+    }
+
+    // Iteration / loop cap check
+    const iterationBlock = await checkIterationLimits(agentId, agent.companyId, issueId);
+    if (iterationBlock) {
+      await writeSkippedRequest("iteration_limit.blocked");
+      throw conflict(iterationBlock);
     }
 
     if (

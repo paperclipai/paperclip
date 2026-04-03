@@ -38,6 +38,7 @@ import { knowledgeRoutes } from "./routes/knowledge.js";
 import { setupRoutes } from "./routes/setup.js";
 import { hiringRoutes } from "./routes/hiring.js";
 import { agentMemoryRoutes } from "./routes/agent-memory.js";
+import { announcementRoutes } from "./routes/announcements.js";
 import { roleTemplateRoutes } from "./routes/role-templates.js";
 import { teamTemplateRoutes } from "./routes/team-templates.js";
 import { aiGenerateRoutes } from "./routes/ai-generate.js";
@@ -289,6 +290,7 @@ export async function createApp(
   api.use(knowledgeRoutes(db));
   api.use(hiringRoutes(db));
   api.use(agentMemoryRoutes(db));
+  api.use(announcementRoutes(db));
   api.use(roleTemplateRoutes(db));
   api.use(teamTemplateRoutes(db));
   api.use(aiGenerateRoutes(db));

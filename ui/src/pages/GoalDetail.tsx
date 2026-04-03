@@ -6,6 +6,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { goalProgressApi } from "../api/goalProgress";
+import { goalKeyResultsApi, type GoalKeyResult } from "../api/goalKeyResults";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -19,8 +20,9 @@ import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CheckCircle2, Circle, Loader2, PanelRightClose, PanelRightOpen, Plus, ShieldAlert } from "lucide-react";
+import { CheckCircle2, Circle, Loader2, PanelRightClose, PanelRightOpen, Plus, ShieldAlert, Target, Trash2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { Goal, Issue, Project } from "@ironworksai/shared";
 
@@ -66,6 +68,44 @@ export function GoalDetail() {
   });
 
   const goalIssues = (allIssues ?? []).filter((i: Issue) => i.goalId === goalId);
+
+  // Key Results
+  const { data: keyResults } = useQuery({
+    queryKey: queryKeys.goals.keyResults(resolvedCompanyId!, goalId!),
+    queryFn: () => goalKeyResultsApi.list(resolvedCompanyId!, goalId!),
+    enabled: !!resolvedCompanyId && !!goalId,
+  });
+
+  const createKeyResult = useMutation({
+    mutationFn: (data: { description: string; targetValue?: string; unit?: string }) =>
+      goalKeyResultsApi.create(resolvedCompanyId!, goalId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.keyResults(resolvedCompanyId!, goalId!) });
+    },
+  });
+
+  const updateKeyResult = useMutation({
+    mutationFn: ({ krId, data }: { krId: string; data: { currentValue?: string; description?: string } }) =>
+      goalKeyResultsApi.update(resolvedCompanyId!, goalId!, krId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.keyResults(resolvedCompanyId!, goalId!) });
+    },
+  });
+
+  const deleteKeyResult = useMutation({
+    mutationFn: (krId: string) =>
+      goalKeyResultsApi.remove(resolvedCompanyId!, goalId!, krId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.keyResults(resolvedCompanyId!, goalId!) });
+    },
+  });
+
+  const [showKrForm, setShowKrForm] = useState(false);
+  const [krDescription, setKrDescription] = useState("");
+  const [krTarget, setKrTarget] = useState("100");
+  const [krUnit, setKrUnit] = useState("%");
+  const [editingKrId, setEditingKrId] = useState<string | null>(null);
+  const [editingKrValue, setEditingKrValue] = useState("");
 
   // Goal progress stats
   const { data: progress } = useQuery({
@@ -225,6 +265,9 @@ export function GoalDetail() {
           <TabsTrigger value="issues">
             Issues ({goalIssues.length})
           </TabsTrigger>
+          <TabsTrigger value="key-results">
+            Key Results ({(keyResults ?? []).length})
+          </TabsTrigger>
           <TabsTrigger value="children">
             Sub-Goals ({childGoals.length})
           </TabsTrigger>
@@ -251,6 +294,137 @@ export function GoalDetail() {
                   }
                 />
               ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="key-results" className="mt-4 space-y-3">
+          <div className="flex items-center justify-start">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowKrForm(true)}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              Add Key Result
+            </Button>
+          </div>
+
+          {showKrForm && (
+            <div className="border border-border rounded-lg p-3 space-y-2">
+              <Input
+                placeholder="Key result description..."
+                value={krDescription}
+                onChange={(e) => setKrDescription(e.target.value)}
+                autoFocus
+              />
+              <div className="flex items-center gap-2">
+                <Input
+                  placeholder="Target"
+                  type="number"
+                  value={krTarget}
+                  onChange={(e) => setKrTarget(e.target.value)}
+                  className="w-24"
+                />
+                <Input
+                  placeholder="Unit"
+                  value={krUnit}
+                  onChange={(e) => setKrUnit(e.target.value)}
+                  className="w-20"
+                />
+                <Button
+                  size="sm"
+                  disabled={!krDescription.trim() || createKeyResult.isPending}
+                  onClick={() => {
+                    createKeyResult.mutate(
+                      { description: krDescription, targetValue: krTarget, unit: krUnit },
+                      {
+                        onSuccess: () => {
+                          setKrDescription("");
+                          setKrTarget("100");
+                          setKrUnit("%");
+                          setShowKrForm(false);
+                        },
+                      },
+                    );
+                  }}
+                >
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => { setShowKrForm(false); setKrDescription(""); }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {(keyResults ?? []).length === 0 && !showKrForm ? (
+            <p className="text-sm text-muted-foreground">No key results defined yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {(keyResults ?? []).map((kr: GoalKeyResult) => {
+                const target = Number(kr.targetValue) || 100;
+                const current = Number(kr.currentValue) || 0;
+                const pct = target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+
+                return (
+                  <div key={kr.id} className="border border-border rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Target className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm font-medium">{kr.description}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {editingKrId === kr.id ? (
+                          <div className="flex items-center gap-1">
+                            <Input
+                              type="number"
+                              value={editingKrValue}
+                              onChange={(e) => setEditingKrValue(e.target.value)}
+                              className="w-20 h-7 text-xs"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  updateKeyResult.mutate({ krId: kr.id, data: { currentValue: editingKrValue } });
+                                  setEditingKrId(null);
+                                }
+                                if (e.key === "Escape") setEditingKrId(null);
+                              }}
+                            />
+                            <span className="text-xs text-muted-foreground">/ {kr.targetValue} {kr.unit}</span>
+                          </div>
+                        ) : (
+                          <button
+                            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => { setEditingKrId(kr.id); setEditingKrValue(kr.currentValue); }}
+                          >
+                            {current} / {kr.targetValue} {kr.unit} ({pct}%)
+                          </button>
+                        )}
+                        <button
+                          className="text-muted-foreground hover:text-destructive transition-colors"
+                          onClick={() => deleteKeyResult.mutate(kr.id)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-[width] duration-300",
+                          pct === 100 ? "bg-emerald-500" : pct > 50 ? "bg-blue-500" : "bg-amber-500",
+                        )}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </TabsContent>

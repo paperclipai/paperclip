@@ -102,5 +102,55 @@ export function goalRoutes(db: Db) {
     res.json(goal);
   });
 
+  // ── Key Results ──────────────────────────────────────────────────
+
+  router.get("/companies/:companyId/goals/:goalId/key-results", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const results = await svc.listKeyResults(req.params.goalId as string);
+    res.json(results);
+  });
+
+  router.post("/companies/:companyId/goals/:goalId/key-results", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const goalId = req.params.goalId as string;
+    await assertCanWrite(req, companyId, db);
+    const kr = await svc.createKeyResult(goalId, companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "goal.key_result_created",
+      entityType: "goal",
+      entityId: goalId,
+      details: { description: kr.description },
+    });
+    res.status(201).json(kr);
+  });
+
+  router.patch("/companies/:companyId/goals/:goalId/key-results/:krId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanWrite(req, companyId, db);
+    const kr = await svc.updateKeyResult(req.params.krId as string, req.body);
+    if (!kr) {
+      res.status(404).json({ error: "Key result not found" });
+      return;
+    }
+    res.json(kr);
+  });
+
+  router.delete("/companies/:companyId/goals/:goalId/key-results/:krId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanWrite(req, companyId, db);
+    const kr = await svc.removeKeyResult(req.params.krId as string);
+    if (!kr) {
+      res.status(404).json({ error: "Key result not found" });
+      return;
+    }
+    res.json(kr);
+  });
+
   return router;
 }

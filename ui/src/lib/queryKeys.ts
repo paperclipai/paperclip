@@ -68,6 +68,8 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+    keyResults: (companyId: string, goalId: string) =>
+      ["goals", "key-results", companyId, goalId] as const,
   },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,
@@ -141,6 +143,9 @@ export const queryKeys = {
   },
   knowledge: {
     list: (companyId: string) => ["companies", companyId, "knowledge"] as const,
+  },
+  announcements: {
+    list: (companyId: string) => ["announcements", companyId] as const,
   },
   library: {
     tree: (companyId: string, dirPath: string) =>
