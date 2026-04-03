@@ -9,6 +9,8 @@ const LEGACY_DRAFT_REVIEW_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline
 const LEGACY_DRAFT_POLISH_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline/lib/draft/run-draft-polish-step.js";
 const LEGACY_FINAL_REVIEW_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline/lib/draft/run-final-review-step.js";
 const LEGACY_VALIDATE_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline/lib/validate/run-validate-step.js";
+const LEGACY_IMAGE_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline/lib/image/run-image-step.js";
+const LEGACY_PUBLIC_VERIFY_PATH = "/Users/daehan/.openclaw/workspace/mac-pipeline/lib/verify/run-public-verify-step.js";
 
 type LegacyStepRunner = (input: BlogPipelineStepInput) => Promise<BlogPipelineStepResult>;
 
@@ -43,6 +45,14 @@ export async function runFinalReviewStep(input: BlogPipelineStepInput): Promise<
 
 export async function runValidateStep(input: BlogPipelineStepInput): Promise<BlogPipelineStepResult> {
   return getLegacyStepRunner(LEGACY_VALIDATE_PATH, "runValidateStep")(input);
+}
+
+export async function runImageStep(input: BlogPipelineStepInput): Promise<BlogPipelineStepResult> {
+  return getLegacyStepRunner(LEGACY_IMAGE_PATH, "runImageStep")(input);
+}
+
+export async function runPublicVerifyStep(input: BlogPipelineStepInput): Promise<BlogPipelineStepResult> {
+  return getLegacyStepRunner(LEGACY_PUBLIC_VERIFY_PATH, "runPublicVerifyStep")(input);
 }
 
 export type {

@@ -31,5 +31,15 @@ export function summarizeHeartbeatRunResultJson(
     }
   }
 
+  const identityFieldAliases = ["blogRunId", "currentStep", "status", "publishedUrl", "postId"] as const;
+  for (const key of identityFieldAliases) {
+    const value = resultJson[key];
+    if (typeof value === "string" && value.length > 0) {
+      summary[key] = truncateSummaryText(value, 200);
+    } else if (typeof value === "number") {
+      summary[key] = value;
+    }
+  }
+
   return Object.keys(summary).length > 0 ? summary : null;
 }

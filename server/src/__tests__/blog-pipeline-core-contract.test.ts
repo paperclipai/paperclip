@@ -4,6 +4,8 @@ import {
   runDraftReviewStep,
   runDraftStep,
   runFinalReviewStep,
+  runImageStep,
+  runPublicVerifyStep,
   runResearchStep,
   runValidateStep,
 } from "@paperclipai/blog-pipeline-core";
@@ -16,5 +18,7 @@ describe("blog pipeline core contract", () => {
     expect(typeof runDraftPolishStep).toBe("function");
     expect(typeof runFinalReviewStep).toBe("function");
     expect(typeof runValidateStep).toBe("function");
+    expect(typeof runImageStep).toBe("function");
+    expect(typeof runPublicVerifyStep).toBe("function");
   });
 });

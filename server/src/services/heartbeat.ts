@@ -42,6 +42,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { blogRunWorkerService } from "./blog-run-worker.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
@@ -878,7 +879,12 @@ function resolveNextSessionState(input: {
   };
 }
 
-export function heartbeatService(db: Db) {
+export function heartbeatService(
+  db: Db,
+  deps?: {
+    blogRunWorkerFactory?: (db: Db) => Pick<ReturnType<typeof blogRunWorkerService>, "runNext">;
+  },
+) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -891,6 +897,7 @@ export function heartbeatService(db: Db) {
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const blogRunWorker = deps?.blogRunWorkerFactory?.(db) ?? blogRunWorkerService(db);
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -4000,5 +4007,7 @@ export function heartbeatService(db: Db) {
         .limit(1);
       return run ?? null;
     },
+
+    runBlogRunStep: (runId: string) => blogRunWorker.runNext(runId),
   };
 }
