@@ -211,6 +211,39 @@ export function isAllowedDevHost(hostname: string, allowedHostnames: string[]): 
 }
 
 // ---------------------------------------------------------------------------
+// CORS origin resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine the value for the `Access-Control-Allow-Origin` response
+ * header given the request's `Origin` header and the configured
+ * `allowedHostnames`.
+ *
+ * - When `allowedHostnames` is empty (local_trusted deployment mode)
+ *   the function returns `"*"` to preserve the current permissive
+ *   behaviour.
+ * - When the origin's hostname appears in `allowedHostnames`, the
+ *   full origin (scheme + host + port) is echoed back.
+ * - Otherwise `null` is returned, meaning no CORS header should be set.
+ */
+export function resolvePluginCorsOrigin(
+  origin: string | undefined,
+  allowedHostnames: string[],
+): string | null {
+  if (!origin) return null;
+  if (allowedHostnames.length === 0) return "*";
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    if (allowedHostnames.some((h) => h.toLowerCase() === hostname)) {
+      return origin;
+    }
+  } catch {
+    // malformed origin
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Route factory
 // ---------------------------------------------------------------------------
 
@@ -507,7 +540,10 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 9: Set CORS headers (plugin UI may be loaded from different origin in dev)
-    res.set("Access-Control-Allow-Origin", "*");
+    const corsOrigin = resolvePluginCorsOrigin(req.headers.origin, options.allowedHostnames);
+    if (corsOrigin) {
+      res.set("Access-Control-Allow-Origin", corsOrigin);
+    }
 
     // Step 10: Send the file
     // The plugin source can live in Git worktrees (e.g. ".worktrees/...").
