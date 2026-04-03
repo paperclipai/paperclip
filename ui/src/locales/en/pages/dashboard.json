@@ -1,0 +1,31 @@
+{
+  "welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+  "getStarted": "Get Started",
+  "selectCompany": "Create or select a company to view the dashboard.",
+  "noAgents": "You have no agents.",
+  "createOneHere": "Create one here",
+  "budgetIncidents": "{{count}} active budget incident",
+  "budgetIncidents_other": "{{count}} active budget incidents",
+  "budgetIncidentDetail": "{{pausedAgents}} agents paused \u00b7 {{pausedProjects}} projects paused \u00b7 {{pendingApprovals}} pending budget approvals",
+  "openBudgets": "Open budgets",
+  "agentsEnabled": "Agents Enabled",
+  "agentBreakdown": "{{running}} running, {{paused}} paused, {{errors}} errors",
+  "tasksInProgress": "Tasks In Progress",
+  "taskBreakdown": "{{open}} open, {{blocked}} blocked",
+  "monthSpend": "Month Spend",
+  "budgetUtilization": "{{percent}}% of {{budget}} budget",
+  "unlimitedBudget": "Unlimited budget",
+  "pendingApprovals": "Pending Approvals",
+  "budgetOverridesAwaiting": "{{count}} budget overrides awaiting board review",
+  "awaitingBoardReview": "Awaiting board review",
+  "charts": {
+    "runActivity": "Run Activity",
+    "issuesByPriority": "Issues by Priority",
+    "issuesByStatus": "Issues by Status",
+    "successRate": "Success Rate",
+    "last14Days": "Last 14 days"
+  },
+  "recentActivity": "Recent Activity",
+  "recentTasks": "Recent Tasks",
+  "noTasksYet": "No tasks yet."
+}

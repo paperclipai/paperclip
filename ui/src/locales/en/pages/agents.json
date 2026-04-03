@@ -1,0 +1,13 @@
+{
+  "selectCompany": "Select a company to view agents.",
+  "filters": "Filters",
+  "showTerminated": "Show terminated",
+  "newAgent": "New Agent",
+  "agentCount": "{{count}} agent",
+  "agentCount_other": "{{count}} agents",
+  "createFirst": "Create your first agent to get started.",
+  "noMatchingFilter": "No agents match the selected filter.",
+  "noOrgHierarchy": "No organizational hierarchy defined.",
+  "live": "Live",
+  "liveCount": "Live ({{count}})"
+}
