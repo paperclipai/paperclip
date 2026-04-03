@@ -169,15 +169,22 @@ function detectMention(container: HTMLElement): MentionState | null {
   };
 }
 
+function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
+  if (!node || !container.contains(node)) return false;
+  const el = node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : node.parentElement;
+  return Boolean(el?.closest("pre, code"));
+}
+
 function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
   if (!container) return false;
   const selection = window.getSelection();
-  const anchorNode = selection?.anchorNode;
-  if (!anchorNode || !container.contains(anchorNode)) return false;
-  const anchorElement = anchorNode.nodeType === Node.ELEMENT_NODE
-    ? anchorNode as HTMLElement
-    : anchorNode.parentElement;
-  return Boolean(anchorElement?.closest("pre, code"));
+  if (!selection) return false;
+  for (const node of [selection.anchorNode, selection.focusNode]) {
+    if (nodeInsideCodeLike(container, node)) return true;
+  }
+  return false;
 }
 
 function mentionMarkdown(option: MentionOption): string {
@@ -213,7 +220,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const latestValueRef = useRef(value);
+  const initialChildOnChangeRef = useRef(true);
+  /** Suppresses the next child onChange when it only echoes an imperative setMarkdown (avoids parent loops). */
+  const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -247,6 +259,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState?.query, mentions]);
 
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (instance) {
+      const v = valueRef.current;
+      echoIgnoreMarkdownRef.current = v;
+      instance.setMarkdown(v);
+      latestValueRef.current = v;
+    }
+  }, []);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
@@ -276,6 +298,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
+                echoIgnoreMarkdownRef.current = updated;
                 ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
@@ -315,8 +338,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
-      latestValueRef.current = value;
+      if (ref.current) {
+        echoIgnoreMarkdownRef.current = value;
+        ref.current.setMarkdown(value);
+        latestValueRef.current = value;
+      }
     }
   }, [value]);
 
@@ -407,6 +433,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
+        echoIgnoreMarkdownRef.current = next;
         ref.current?.setMarkdown(next);
         onChange(next);
       }
@@ -570,10 +597,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={ref}
+        ref={setEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
+          const echo = echoIgnoreMarkdownRef.current;
+          if (echo !== null && next === echo) {
+            echoIgnoreMarkdownRef.current = null;
+            latestValueRef.current = next;
+            return;
+          }
+          if (echo !== null) {
+            echoIgnoreMarkdownRef.current = null;
+          }
+
+          if (initialChildOnChangeRef.current) {
+            initialChildOnChangeRef.current = false;
+            if (next === "" && value !== "") {
+              echoIgnoreMarkdownRef.current = value;
+              ref.current?.setMarkdown(value);
+              return;
+            }
+          }
           latestValueRef.current = next;
           onChange(next);
         }}
