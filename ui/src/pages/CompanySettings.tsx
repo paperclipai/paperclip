@@ -14,7 +14,7 @@ import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
   ToggleField,
-  HintIcon
+  HintIcon,
 } from "../components/agent-config-primitives";
 
 type AgentSnippetInput = {
@@ -23,14 +23,16 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
-const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
+const FEEDBACK_TERMS_URL =
+  import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() ||
+  "https://paperclip.ing/tos";
 
 export function CompanySettings() {
   const {
     companies,
     selectedCompany,
     selectedCompanyId,
-    setSelectedCompanyId
+    setSelectedCompanyId,
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -70,17 +72,17 @@ export function CompanySettings() {
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
   });
 
   const settingsMutation = useMutation({
     mutationFn: (requireApproval: boolean) =>
       companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
+        requireBoardApprovalForNewAgents: requireApproval,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-    }
+    },
   });
 
   const feedbackSharingMutation = useMutation({
@@ -91,7 +93,9 @@ export function CompanySettings() {
     onSuccess: (_company, enabled) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({
-        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        title: enabled
+          ? "Feedback sharing enabled"
+          : "Feedback sharing disabled",
         tone: "success",
       });
     },
@@ -105,8 +109,7 @@ export function CompanySettings() {
   });
 
   const inviteMutation = useMutation({
-    mutationFn: () =>
-      accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
+    mutationFn: () => accessApi.createOpenClawInvitePrompt(selectedCompanyId!),
     onSuccess: async (invite) => {
       setInviteError(null);
       const base = window.location.origin.replace(/\/+$/, "");
@@ -128,13 +131,13 @@ export function CompanySettings() {
             manifest.onboarding.connectivity?.connectionCandidates ?? null,
           testResolutionUrl:
             manifest.onboarding.connectivity?.testResolutionEndpoint?.url ??
-            null
+            null,
         });
       } catch {
         snippet = buildAgentSnippet({
           onboardingTextUrl: absoluteUrl,
           connectionCandidates: null,
-          testResolutionUrl: null
+          testResolutionUrl: null,
         });
       }
       setInviteSnippet(snippet);
@@ -147,14 +150,14 @@ export function CompanySettings() {
         /* clipboard may not be available */
       }
       queryClient.invalidateQueries({
-        queryKey: queryKeys.sidebarBadges(selectedCompanyId!)
+        queryKey: queryKeys.sidebarBadges(selectedCompanyId!),
       });
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : "Failed to create invite",
       );
-    }
+    },
   });
 
   const syncLogoState = (nextLogoUrl: string | null) => {
@@ -164,21 +167,24 @@ export function CompanySettings() {
 
   const logoUploadMutation = useMutation({
     mutationFn: (file: File) =>
-      assetsApi
-        .uploadCompanyLogo(selectedCompanyId!, file)
-        .then((asset) => companiesApi.update(selectedCompanyId!, { logoAssetId: asset.assetId })),
+      assetsApi.uploadCompanyLogo(selectedCompanyId!, file).then((asset) =>
+        companiesApi.update(selectedCompanyId!, {
+          logoAssetId: asset.assetId,
+        }),
+      ),
     onSuccess: (company) => {
       syncLogoState(company.logoUrl);
       setLogoUploadError(null);
-    }
+    },
   });
 
   const clearLogoMutation = useMutation({
-    mutationFn: () => companiesApi.update(selectedCompanyId!, { logoAssetId: null }),
+    mutationFn: () =>
+      companiesApi.update(selectedCompanyId!, { logoAssetId: null }),
     onSuccess: (company) => {
       setLogoUploadError(null);
       syncLogoState(company.logoUrl);
-    }
+    },
   });
 
   function handleLogoFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -203,7 +209,7 @@ export function CompanySettings() {
   const archiveMutation = useMutation({
     mutationFn: ({
       companyId,
-      nextCompanyId
+      nextCompanyId,
     }: {
       companyId: string;
       nextCompanyId: string | null;
@@ -213,18 +219,81 @@ export function CompanySettings() {
         setSelectedCompanyId(nextCompanyId);
       }
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.all
+        queryKey: queryKeys.companies.all,
       });
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.companies.stats
+        queryKey: queryKeys.companies.stats,
       });
-    }
+    },
+  });
+
+  const [resetConfirmName, setResetConfirmName] = useState("");
+  const [resetShowConfirm, setResetShowConfirm] = useState(false);
+
+  const resetMutation = useMutation({
+    mutationFn: (confirmName: string) =>
+      companiesApi.reset(selectedCompanyId!, {
+        confirmCompanyName: confirmName,
+      }),
+    onSuccess: async () => {
+      setResetShowConfirm(false);
+      setResetConfirmName("");
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.stats,
+      });
+      pushToast({
+        title: "Company org reset complete",
+        body: "All agents, projects, issues, and other org data has been removed.",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Reset failed",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+  const [deleteShowConfirm, setDeleteShowConfirm] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: (confirmName: string) =>
+      companiesApi.remove(selectedCompanyId!).then(() => ({ confirmName })),
+    onSuccess: async ({ confirmName }) => {
+      setDeleteShowConfirm(false);
+      setDeleteConfirmName("");
+      const nextCompany = companies.find((c) => c.id !== selectedCompanyId);
+      if (nextCompany) {
+        setSelectedCompanyId(nextCompany.id);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all,
+      });
+      pushToast({
+        title: "Company deleted",
+        body: `Company "${confirmName}" has been permanently deleted.`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: "Settings" },
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
@@ -240,7 +309,7 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      brandColor: brandColor || null
+      brandColor: brandColor || null,
     });
   }
 
@@ -315,7 +384,9 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending
+                          ? "Removing..."
+                          : "Remove logo"}
                       </Button>
                     </div>
                   )}
@@ -333,7 +404,9 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">
+                      Uploading logo...
+                    </span>
                   )}
                 </div>
               </Field>
@@ -393,8 +466,8 @@ export function CompanySettings() {
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
-                  ? generalMutation.error.message
-                  : "Failed to save"}
+                ? generalMutation.error.message
+                : "Failed to save"}
             </span>
           )}
         </div>
@@ -428,15 +501,21 @@ export function CompanySettings() {
             onChange={(enabled) => feedbackSharingMutation.mutate(enabled)}
           />
           <p className="text-sm text-muted-foreground">
-            Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.
+            Votes are always saved locally. This setting controls whether voted
+            AI outputs may also be marked for sharing with Paperclip Labs.
           </p>
           <div className="space-y-1 text-xs text-muted-foreground">
             <div>
-              Terms version: {selectedCompany.feedbackDataSharingTermsVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
+              Terms version:{" "}
+              {selectedCompany.feedbackDataSharingTermsVersion ??
+                DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION}
             </div>
             {selectedCompany.feedbackDataSharingConsentAt ? (
               <div>
-                Enabled {new Date(selectedCompany.feedbackDataSharingConsentAt).toLocaleString()}
+                Enabled{" "}
+                {new Date(
+                  selectedCompany.feedbackDataSharingConsentAt,
+                ).toLocaleString()}
                 {selectedCompany.feedbackDataSharingConsentByUserId
                   ? ` by ${selectedCompany.feedbackDataSharingConsentByUserId}`
                   : ""}
@@ -544,7 +623,10 @@ export function CompanySettings() {
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            <a href="/org" className="underline hover:text-foreground">
+              Org Chart
+            </a>{" "}
+            header.
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
@@ -584,26 +666,26 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`,
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
                   companies.find(
                     (company) =>
                       company.id !== selectedCompanyId &&
-                      company.status !== "archived"
+                      company.status !== "archived",
                   )?.id ?? null;
                 archiveMutation.mutate({
                   companyId: selectedCompanyId,
-                  nextCompanyId
+                  nextCompanyId,
                 });
               }}
             >
               {archiveMutation.isPending
                 ? "Archiving..."
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                  ? "Already archived"
+                  : "Archive company"}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
@@ -611,6 +693,140 @@ export function CompanySettings() {
                   ? archiveMutation.error.message
                   : "Failed to archive company"}
               </span>
+            )}
+          </div>
+
+          {/* Reset Org Section */}
+          <div className="mt-4 border-t border-destructive/20 pt-4">
+            <p className="text-sm text-muted-foreground">
+              Reset the company org to start fresh. This removes all agents,
+              projects, issues, goals, routines, and skills while preserving the
+              company itself.
+            </p>
+            {!resetShowConfirm ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="mt-3"
+                onClick={() => setResetShowConfirm(true)}
+              >
+                Reset company org
+              </Button>
+            ) : (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Type <strong>{selectedCompany.name}</strong> to confirm:
+                </p>
+                <input
+                  type="text"
+                  value={resetConfirmName}
+                  onChange={(e) => setResetConfirmName(e.target.value)}
+                  placeholder={selectedCompany.name}
+                  className="w-full rounded-md border border-destructive/40 bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={
+                      resetMutation.isPending ||
+                      resetConfirmName !== selectedCompany.name
+                    }
+                    onClick={() => {
+                      if (resetConfirmName === selectedCompany.name) {
+                        resetMutation.mutate(resetConfirmName);
+                      }
+                    }}
+                  >
+                    {resetMutation.isPending ? "Resetting..." : "Confirm reset"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setResetShowConfirm(false);
+                      setResetConfirmName("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {resetMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {resetMutation.error instanceof Error
+                      ? resetMutation.error.message
+                      : "Failed to reset company"}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Delete Company Section */}
+          <div className="mt-4 border-t border-destructive/20 pt-4">
+            <p className="text-sm text-muted-foreground">
+              Permanently delete this company and all its data. This cannot be
+              undone.
+            </p>
+            {!deleteShowConfirm ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="mt-3"
+                onClick={() => setDeleteShowConfirm(true)}
+              >
+                Delete company
+              </Button>
+            ) : (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Type <strong>{selectedCompany.name}</strong> to confirm
+                  deletion:
+                </p>
+                <input
+                  type="text"
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  placeholder={selectedCompany.name}
+                  className="w-full rounded-md border border-destructive/40 bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={
+                      deleteMutation.isPending ||
+                      deleteConfirmName !== selectedCompany.name
+                    }
+                    onClick={() => {
+                      if (deleteConfirmName === selectedCompany.name) {
+                        deleteMutation.mutate(deleteConfirmName);
+                      }
+                    }}
+                  >
+                    {deleteMutation.isPending
+                      ? "Deleting..."
+                      : "Confirm delete"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setDeleteShowConfirm(false);
+                      setDeleteConfirmName("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {deleteMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {deleteMutation.error instanceof Error
+                      ? deleteMutation.error.message
+                      : "Failed to delete company"}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -725,7 +941,7 @@ function buildResolutionTestUrl(input: AgentSnippetInput): string | null {
     const onboardingUrl = new URL(input.onboardingTextUrl);
     const testPath = onboardingUrl.pathname.replace(
       /\/onboarding\.txt$/,
-      "/test-resolution"
+      "/test-resolution",
     );
     return `${onboardingUrl.origin}${testPath}`;
   } catch {
