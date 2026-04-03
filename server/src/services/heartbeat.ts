@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -61,6 +61,7 @@ import {
 } from "@paperclipai/adapter-utils";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
+const TERMINAL_RUN_STATUSES = ["skipped", "succeeded", "failed", "cancelled", "timed_out"] as const;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -1935,8 +1936,6 @@ export function heartbeatService(db: Db) {
    * Called on startup and on every heartbeat-scheduler tick.
    */
   async function reapStaleExecutionRunLocks() {
-    const TERMINAL_RUN_STATUSES = ["skipped", "succeeded", "failed", "cancelled", "timed_out"] as const;
-
     const stale = await db
       .select({
         issueId: issues.id,
@@ -1954,29 +1953,26 @@ export function heartbeatService(db: Db) {
 
     if (stale.length === 0) return { reaped: 0, issueIds: [] as string[] };
 
-    const reaped: string[] = [];
-    for (const row of stale) {
-      const updated = await db
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          // Only clear checkoutRunId when it belongs to the same terminal run;
-          // leave it untouched if it references a different (valid) run.
-          checkoutRunId: sql`CASE WHEN checkout_run_id = ${row.runId} THEN NULL ELSE checkout_run_id END`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(issues.id, row.issueId),
-            eq(issues.executionRunId, row.runId),
-          ),
-        )
-        .returning({ id: issues.id })
-        .then((rows) => rows[0] ?? null);
-      if (updated) reaped.push(row.issueId);
-    }
+    // Single bulk UPDATE — one round-trip for all stale locks.
+    // The OR predicate preserves the per-row (id, executionRunId) guard so
+    // a concurrent checkout that already moved to a live run is never cleared.
+    // The CASE on checkoutRunId mirrors the same guard: only clear it when it
+    // still points at the same terminal run being reaped.
+    const updated = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        checkoutRunId: sql`CASE WHEN checkout_run_id = execution_run_id THEN NULL ELSE checkout_run_id END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        or(...stale.map((r) => and(eq(issues.id, r.issueId), eq(issues.executionRunId, r.runId))))!,
+      )
+      .returning({ id: issues.id });
+
+    const reaped = updated.map((r) => r.id);
 
     if (reaped.length > 0) {
       logger.warn(
