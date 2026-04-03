@@ -35,9 +35,9 @@ const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT
 - **`local_trusted` mode** (default): Generate a deterministic secret derived from the `PAPERCLIP_HOME` path + a fixed salt constant. This preserves zero-config local usage without exposing a publicly-known secret.
 - **`authenticated` mode**: Throw a fatal error at startup if neither `BETTER_AUTH_SECRET` nor `PAPERCLIP_AGENT_JWT_SECRET` is defined. The error message must clearly state which variable to set.
 
-**Implementation**: New helper function `resolveAuthSecret(deploymentMode)` in the same file, called from `createBetterAuthInstance`.
+**Implementation**: New helper function `resolveAuthSecret(deploymentMode)` in the same file, called from `createBetterAuthInstance`. The `PAPERCLIP_HOME` path is resolved via the existing `resolvePaperclipHome()` function from `server/src/home-paths.ts` (or `process.env.PAPERCLIP_HOME` directly).
 
-**Note**: If `PAPERCLIP_HOME` changes (user moves data directory), the derived secret changes and existing sessions are invalidated. This is acceptable for `local_trusted` mode where sessions are ephemeral.
+**Note**: If `PAPERCLIP_HOME` changes (user moves data directory), the derived secret changes and existing sessions are invalidated. This is acceptable for `local_trusted` mode where sessions are ephemeral. In authenticated mode, a pre-existing startup check in `server/src/index.ts` (lines 478-484) already throws if no explicit secret is set — the `resolveAuthSecret` check provides defense-in-depth if the function is called outside that flow.
 
 **Tests**: Unit test in `server/src/__tests__/` covering both modes + missing secret error.
 
@@ -63,7 +63,11 @@ Three tiers:
 
 **Mounting**: Auth limiter applied on the `app` instance for `/api/auth/*` path (auth routes are mounted directly on `app`, not on the `api` Router). Write/Read limiters applied to the `api` Router (which handles `/api` business routes).
 
-**Note**: The server uses Express 5. Both `helmet` and `express-rate-limit` support Express 5. Path patterns in rate limiter configuration should use Express 5 syntax.
+**LLM routes**: `llmRoutes` are mounted directly on `app` (line 136 of `app.ts`), outside the `api` Router. They serve model listing/config and do not expose mutating or high-risk endpoints. They are intentionally excluded from write/read rate limiting but remain covered by the global auth rate limiter for `/api/auth/*` paths.
+
+**Note**: The server uses Express 5. Both `helmet` and `express-rate-limit` support Express 5. Path patterns in rate limiter configuration should use Express 5 syntax (named wildcards, e.g. `/api/auth/*path`).
+
+**Reverse proxy note**: When behind a reverse proxy, all requests may appear to come from the proxy's IP. In that case, either configure Express `trust proxy` setting for correct IP extraction, or disable application-level rate limiting (`PAPERCLIP_RATE_LIMIT_ENABLED=false`) and delegate to the proxy.
 
 **Tests**: Unit test verifying 429 response after threshold.
 
@@ -80,7 +84,7 @@ Three tiers:
 
 **Mounting**: First middleware in the chain, before `express.json()`.
 
-**Final middleware order**: `helmet -> express.json() -> httpLogger -> rateLimitAuth (on /api/auth/*) -> privateHostnameGuard -> actorMiddleware -> boardMutationGuard + rateLimitApiWrite/Read (on /api router) -> routes -> errorHandler`.
+**Final middleware order**: `helmet -> express.json() -> httpLogger -> rateLimitAuth (on /api/auth/*) -> privateHostnameGuard -> actorMiddleware -> auth routes (on app) -> llmRoutes (on app) -> boardMutationGuard + rateLimitApiWrite/Read (on /api router) -> business routes -> pluginUiStaticRoutes -> UI static/vite -> errorHandler`.
 
 **Tests**: Integration test asserting key headers are present in responses.
 
@@ -123,7 +127,7 @@ Minimum 5 minutes, maximum 30 days. Log a warning if the configured value was cl
 
 **New helper**: `redactSensitiveFields(obj)` — recursively replaces values of fields named `password`, `secret`, `token`, `apiKey`, `api_key`, `authorization`, `cookie` with `"[REDACTED]"`.
 
-**Applied** in `customProps` before returning `reqBody`, `reqParams`, `reqQuery`.
+**Applied** in `customProps` on both code paths: the error-context path (`ctx.reqBody` from `attachErrorContext`) and the direct-body path (`req.body` fallback). Both must be redacted before being returned as log props.
 
 **Tests**: Unit test with nested sensitive fields.
 
@@ -134,6 +138,8 @@ Minimum 5 minutes, maximum 30 days. Log a warning if the configured value was cl
 **Change**: Replace the blocklist approach (localhost, 127.0.0.1, ::1) with an allowlist:
 - The `devUiUrl` hostname must be in `allowedHostnames` OR be a recognized loopback address
 - Use `node:net` `isIP()` + expanded loopback detection covering IPv6 variations (`[::1]`, `0:0:0:0:0:0:0:1`, `0000:0000:0000:0000:0000:0000:0000:0001`)
+
+**Note**: This is an intentional relaxation of the current behavior. Currently, only loopback addresses are accepted. The new rule also permits non-loopback hostnames IF they are in `allowedHostnames`. This enables legitimate remote dev-UI setups in authenticated deployments while still blocking arbitrary SSRF targets.
 
 **Tests**: Unit test with IPv6 variations.
 
@@ -170,6 +176,8 @@ export function createDb(url: string, opts?: { maxConnections?: number; idleTime
 - `PAPERCLIP_DB_POOL_MAX` (default: `20`)
 - `PAPERCLIP_DB_POOL_IDLE_TIMEOUT` (default: `30`)
 
+Add `dbPoolMax: number` and `dbPoolIdleTimeout: number` fields to the `Config` interface and `loadConfig()` return value.
+
 **Caller**: `server/src/index.ts` passes the new options from config.
 
 The new `opts` parameter is optional; existing callers of `createDb` are unaffected. The `Db` type alias (`ReturnType<typeof createDb>`) remains unchanged.
@@ -189,7 +197,7 @@ Class component (required for `componentDidCatch`) that:
 - Displays a minimal fallback screen with error message + "Reload page" button
 - Logs the error to console
 
-**Mounting in `ui/src/main.tsx`**: Wraps `<App />` after `<StrictMode>`, before `<QueryClientProvider>`.
+**Mounting in `ui/src/main.tsx`**: Wraps `<App />` after `<StrictMode>`, before `<QueryClientProvider>`. Since the ErrorBoundary sits outside all context providers, its fallback UI must not depend on any provider (no `useQueryClient`, no `useToast`, etc.) — plain React only.
 
 **Secondary Error Boundary**: Inside `<Layout />` around `<Outlet />`. Page-level errors show in the content area without destroying the sidebar/navigation chrome. Fallback: error message + "Go to Dashboard" link.
 
@@ -213,7 +221,7 @@ Lightweight pages (Dashboard, Issues list, etc.) remain static imports.
 
 **Changes**:
 1. **New file** `ui/src/context/AppProviders.tsx` — centralizes all provider composition in one file, cleaning up `main.tsx` to a single `<AppProviders><App /></AppProviders>`
-2. **Move `BreadcrumbProvider`** inside `Layout` component, above `<Outlet />` (consumed by child pages rendered through Outlet, and by the BreadcrumbBar in Layout itself — no need to be in the global tree)
+2. **Move `BreadcrumbProvider`** inside `Layout` component, wrapping the content container that includes both `<BreadcrumbBar />` and `<Outlet />` (consumed by child pages rendered through Outlet, and by the BreadcrumbBar rendered as a sibling of Outlet — both must be inside the provider)
 
 `SidebarProvider` and `PanelProvider` remain separate — they have no shared state, use different persistence strategies (media query vs localStorage), and merging them would cause unnecessary cross-renders.
 
