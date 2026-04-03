@@ -166,7 +166,12 @@
     "error": "Erro",
     "running": "Em execução",
     "queued": "Na fila",
-    "cancelled": "Cancelada"
+    "cancelled": "Cancelada",
+    "backlog": "Backlog",
+    "todo": "A fazer",
+    "in_progress": "Em andamento",
+    "done": "Concluído",
+    "closed": "Fechado"
   },
   "page": {
     "dashboard": {
@@ -234,7 +239,8 @@
         "approve": "Aprovar",
         "reject": "Rejeitar",
         "retry": "Tentar novamente",
-        "dismiss": "Descartar"
+        "dismiss": "Descartar",
+        "dismiss_from_inbox": "Descartar da caixa de entrada"
       },
       "dialogs": {
         "mark_all_read_title": "Marcar tudo como lido?",
@@ -525,6 +531,14 @@
         "deleteDocument": "Excluir documento",
         "copyDocument": "Copiar documento",
         "copied": "Copiado",
+        "placeholder": {
+          "key": "Chave do documento",
+          "title": "Título opcional",
+          "body": "Conteúdo em Markdown"
+        },
+        "error": {
+          "invalidKeyPattern": "Use letras minúsculas, números, -, ou _, e comece com uma letra ou número."
+        },
         "documentActions": "Ações do documento",
         "revisionHistory": "Histórico de revisões",
         "loadingRevisions": "Carregando revisões...",
@@ -580,6 +594,12 @@
         "unassigned": "Não atribuído",
         "none": "Nenhum",
         "noLabels": "Sem etiquetas"
+      },
+      "selectors": {
+        "assignee": "Responsável",
+        "no_assignee": "Sem responsável",
+        "search_assignees": "Buscar responsáveis...",
+        "no_assignees_found": "Nenhum responsável encontrado"
       }
     }
   }

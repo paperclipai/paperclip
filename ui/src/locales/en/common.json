@@ -167,7 +167,12 @@
     "error": "Error",
     "running": "Running",
     "queued": "Queued",
-    "cancelled": "Cancelled"
+    "cancelled": "Cancelled",
+    "backlog": "Backlog",
+    "todo": "Todo",
+    "in_progress": "In Progress",
+    "done": "Done",
+    "closed": "Closed"
   },
   "page": {
     "dashboard": {
@@ -235,7 +240,8 @@
         "approve": "Approve",
         "reject": "Reject",
         "retry": "Retry",
-        "dismiss": "Dismiss"
+        "dismiss": "Dismiss",
+        "dismiss_from_inbox": "Dismiss from inbox"
       },
       "dialogs": {
         "mark_all_read_title": "Mark all as read?",
@@ -252,17 +258,37 @@
         "updated": "Updated {{time}}",
         "requested_by": "requested by {{name}}",
         "requested_time_from_ip": "requested {{time}} from IP {{ip}}",
+        "all_empty_description": "No notifications found",
+        "unread_empty_description": "Checking notifications is a great way to start your day",
+        "recent_empty_description": "Checking notifications is a great way to start your day",
+        "mine_empty_description": "Checking notifications is a great way to start your day",
         "adapter": "adapter: {{type}}",
         "unassigned": "Unassigned",
         "no_project": "No project",
         "user": "User",
-        "alerts_header": "Alerts",
-        "agent_errors": {
-          "one": "{{count}} agent has errors",
-          "other": "{{count}} agents have errors"
-        },
-        "budget_utilization": "Budget at {{percent}}% utilization this month"
-      }
+        "alerts_header": "Alerts"
+      },
+      "tabs": {
+        "mine": "Mine",
+        "recent": "Recent",
+        "unread": "Unread",
+        "all": "All"
+      },
+      "empty": {
+        "selectCompany": "Select a company to view inbox."
+      },
+      "errors": {
+        "approve_failed": "Failed to approve",
+        "reject_failed": "Failed to reject",
+        "approve_join_failed": "Failed to approve join request",
+        "reject_join_failed": "Failed to reject join request",
+        "archive_failed": "Failed to archive issue"
+      },
+      "agent_errors": {
+        "one": "{{count}} agent has errors",
+        "other": "{{count}} agents have errors"
+      },
+      "budget_utilization": "Budget at {{percent}}% utilization this month"
     },
     "approvals": {
       "title": "Approvals",
@@ -522,6 +548,14 @@
         "deleteDocument": "Delete document",
         "copyDocument": "Copy document",
         "copied": "Copied",
+        "placeholder": {
+          "key": "Document key",
+          "title": "Optional title",
+          "body": "Markdown body"
+        },
+        "error": {
+          "invalidKeyPattern": "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+        },
         "documentActions": "Document actions",
         "revisionHistory": "Revision history",
         "loadingRevisions": "Loading revisions...",
@@ -577,6 +611,12 @@
         "unassigned": "Unassigned",
         "none": "None",
         "noLabels": "No labels"
+      },
+      "selectors": {
+        "assignee": "Assignee",
+        "no_assignee": "No assignee",
+        "search_assignees": "Search assignees...",
+        "no_assignees_found": "No assignees found"
       }
     }
   }

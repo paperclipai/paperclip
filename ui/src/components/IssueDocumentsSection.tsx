@@ -292,7 +292,7 @@ export function IssueDocumentsSection({
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? t("page.issueDetail.documents.error.invalidKeyPattern", "Use lowercase letters, numbers, -, or _, and start with a letter or number.")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -719,7 +719,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={t("page.issueDetail.documents.placeholder.key", "Document key")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -1066,7 +1066,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={t("page.issueDetail.documents.placeholder.title", "Optional title")}
                     />
                   )}
                   <div
@@ -1090,7 +1090,7 @@ export function IssueDocumentsSection({
                             return current;
                           });
                         }}
-                        placeholder="Markdown body"
+                        placeholder={t("page.issueDetail.documents.placeholder.body", "Markdown body")}
                         bordered={false}
                         className="bg-transparent"
                         contentClassName={documentBodyContentClassName}
