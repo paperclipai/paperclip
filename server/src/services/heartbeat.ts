@@ -1994,7 +1994,9 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
-          checkoutRunId: null,
+          // Only clear checkoutRunId when it belongs to the same terminal run;
+          // leave it untouched if it references a different (valid) run.
+          checkoutRunId: sql`CASE WHEN checkout_run_id = ${row.runId} THEN NULL ELSE checkout_run_id END`,
           updatedAt: new Date(),
         })
         .where(
