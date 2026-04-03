@@ -218,6 +218,14 @@ describe("agent permission routes", () => {
   });
 
   it("uses the team lead default bundle for root agents in team mode", async () => {
+    mockAgentService.create.mockResolvedValue({
+      ...baseAgent,
+      name: "Team Lead",
+      role: "ceo",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+
     const app = createApp({
       type: "board",
       userId: "board-user",
