@@ -64,7 +64,7 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   },
   {
     kind: "phone",
-    regex: /(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)/g,
+    regex: /(?<![A-Fa-f0-9-])(?:\+?\d[\d ()-]{8,}\d)(?![A-Fa-f0-9-])/g,
     replacement: "[REDACTED_PHONE]",
   },
 ];
