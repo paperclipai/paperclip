@@ -1634,6 +1634,7 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
         // Fix B: also clear the execution lock when leaving in_progress
         patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
       if (
@@ -1643,6 +1644,7 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
         // Fix B: clear execution lock on reassignment, matching checkoutRunId clear
         patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
 
@@ -1742,21 +1744,27 @@ export function issueService(db: Db) {
       // Fix C: staleness detection — if executionRunId references a run that is no
       // longer queued or running, clear it before applying the execution lock condition
       // so a dead lock can't produce a spurious 409.
-      const preCheckRow = await db
-        .select({ executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
-      if (preCheckRow?.executionRunId) {
-        const lockRun = await db
+      // Wrapped in a transaction with SELECT FOR UPDATE to make the read + clear atomic,
+      // matching the existing pattern in enqueueWakeup().
+      await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where id = ${id} for update`,
+        );
+        const preCheckRow = await tx
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!preCheckRow?.executionRunId) return;
+        const lockRun = await tx
           .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, preCheckRow.executionRunId))
           .then((rows) => rows[0] ?? null);
         if (!lockRun || (lockRun.status !== "queued" && lockRun.status !== "running")) {
-          await db
+          await tx
             .update(issues)
-            .set({ executionRunId: null, executionLockedAt: null, updatedAt: now })
+            .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
             .where(
               and(
                 eq(issues.id, id),
@@ -1764,7 +1772,7 @@ export function issueService(db: Db) {
               ),
             );
         }
-      }
+      });
 
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
