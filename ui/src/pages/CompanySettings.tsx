@@ -225,8 +225,8 @@ export function CompanySettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? t("common.company"), href: "/dashboard" },
-      { label: t("common.settings") }
+      { label: selectedCompany?.name ?? t("sidebar.company_menu.select"), href: "/dashboard" },
+      { label: t("sidebar.settings") }
     ]);
   }, [setBreadcrumbs, selectedCompany?.name, t]);
 

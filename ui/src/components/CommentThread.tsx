@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import type {
   Agent,
@@ -167,13 +168,8 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
+function formatRunStatusLabel(status: string, t: (key: string, fallback: string) => string) {
+  return t(`status.${status}`, status.replace(/_/g, " "));
 }
 
 function runTimestamp(run: LinkedRunItem) {
@@ -202,12 +198,13 @@ function runStatusClass(status: string) {
 }
 
 function CopyMarkdownButton({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
       className="text-muted-foreground hover:text-foreground transition-colors"
-      title="Copy as markdown"
+      title={t("page.issueDetail.commentThread.copyMarkdown", "Copy as markdown")}
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
@@ -248,6 +245,7 @@ function CommentCard({
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
+  const { t } = useTranslation();
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
@@ -278,7 +276,7 @@ function CommentCard({
         <span className="flex items-center gap-1.5">
           {isQueued ? (
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-              Queued
+              {t("page.issueDetail.commentThread.queued", "Queued")}
             </span>
           ) : null}
           {companyId && !isPending ? (
@@ -298,7 +296,7 @@ function CommentCard({
             />
           ) : null}
           {isPending ? (
-            <span className="text-xs text-muted-foreground">{isQueued ? "Queueing..." : "Sending..."}</span>
+            <span className="text-xs text-muted-foreground">{isQueued ? t("page.issueDetail.commentThread.queueing", "Queueing...") : t("page.issueDetail.commentThread.sending", "Sending...")}</span>
           ) : (
             <a
               href={`#comment-${comment.id}`}
@@ -386,6 +384,7 @@ function TimelineEventCard({
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
 }) {
+  const { t } = useTranslation();
   const actorName = formatTimelineActorName(event.actorType, event.actorId, agentMap, currentUserId);
 
   return (
@@ -397,7 +396,7 @@ function TimelineEventCard({
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
           <span className="font-medium text-foreground">{actorName}</span>
-          <span className="text-muted-foreground">updated this task</span>
+          <span className="text-muted-foreground">{t("page.issueDetail.commentThread.updatedTask", "updated this task")}</span>
           <a
             href={`#activity-${event.id}`}
             className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -469,8 +468,9 @@ const TimelineList = memo(function TimelineList({
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
 }) {
+  const { t } = useTranslation();
   if (timeline.length === 0) {
-    return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
+    return <p className="text-sm text-muted-foreground">{t("page.issueDetail.commentThread.noTimeline", "No timeline entries yet.")}</p>;
   }
 
   return (
@@ -501,7 +501,7 @@ const TimelineList = memo(function TimelineList({
                   <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
                     {actorName}
                   </Link>
-                  <span className="text-muted-foreground">run</span>
+                  <span className="text-muted-foreground">{t("page.issueDetail.commentThread.run", "run")}</span>
                   <Link
                     to={`/agents/${run.agentId}/runs/${run.runId}`}
                     className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -509,7 +509,7 @@ const TimelineList = memo(function TimelineList({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span className={cn("font-medium", runStatusClass(run.status))}>
-                    {formatRunStatusLabel(run.status)}
+                    {formatRunStatusLabel(run.status, t)}
                   </span>
                   <a
                     href={`#run-${run.runId}`}
@@ -570,6 +570,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
 }: CommentThreadProps) {
+  const { t } = useTranslation();
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -744,7 +745,7 @@ export function CommentThread({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
+      <h3 className="text-sm font-semibold">{t("page.issueDetail.commentThread.title", "Timeline")} ({timeline.length + queuedComments.length})</h3>
 
       <TimelineList
         timeline={timeline}
@@ -766,7 +767,7 @@ export function CommentThread({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
+              {t("page.issueDetail.commentThread.queuedComments", "Queued Comments ({{count}})", { count: queuedComments.length })}
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
@@ -776,7 +777,7 @@ export function CommentThread({
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? t("page.issueDetail.commentThread.interrupting", "Interrupting...") : t("page.issueDetail.commentThread.interrupt", "Interrupt")}
               </Button>
             ) : null}
           </div>
@@ -801,7 +802,7 @@ export function CommentThread({
           ref={editorRef}
           value={body}
           onChange={setBody}
-          placeholder="Leave a comment..."
+          placeholder={t("page.issueDetail.commentThread.placeholder", "Leave a comment...")}
           mentions={mentions}
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
@@ -822,8 +823,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
-              >
+                title={t("page.issueDetail.commentThread.attachImage", "Attach image")}>
                 <Paperclip className="h-4 w-4" />
               </Button>
             </div>
@@ -835,7 +835,7 @@ export function CommentThread({
               onChange={(e) => setReopen(e.target.checked)}
               className="rounded border-border"
             />
-            Re-open
+            {t("page.issueDetail.commentThread.reopen", "Re-open")}
           </label>
           {enableReassign && reassignOptions.length > 0 && (
             <InlineEntitySelector
@@ -876,7 +876,7 @@ export function CommentThread({
             />
           )}
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
+            {submitting ? t("page.issueDetail.commentThread.posting", "Posting...") : t("page.issueDetail.commentThread.submit", "Comment")}
           </Button>
         </div>
       </div>

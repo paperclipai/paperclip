@@ -80,7 +80,22 @@
     },
     "recent_activity": "Atividade Recente",
     "recent_tasks": "Tarefas Recentes",
-    "no_tasks": "Nenhuma tarefa recente."
+    "no_tasks": "Nenhuma tarefa recente.",
+    "agents_panel": {
+      "title": "Agentes",
+      "no_runs": "Nenhuma execução recente de agente.",
+      "live_now": "Ao vivo agora",
+      "finished": "Finalizado {{time}}",
+      "started": "Iniciado {{time}}",
+      "waiting_transcript": "Aguardando análise do transcript...",
+      "waiting_output": "Aguardando saída...",
+      "no_transcript": "Nenhum transcript capturado."
+    }
+  },
+  "transcript": {
+    "stdout": "saída",
+    "collapse_stdout": "Recolher saída",
+    "expand_stdout": "Expandir saída"
   },
   "activity": {
     "title": "Atividade",
@@ -146,7 +161,12 @@
     "timed_out": "Tempo esgotado",
     "completed": "Concluído",
     "active": "Ativo",
-    "paused": "Pausado"
+    "paused": "Pausado",
+    "succeeded": "Concluída",
+    "error": "Erro",
+    "running": "Em execução",
+    "queued": "Na fila",
+    "cancelled": "Cancelada"
   },
   "page": {
     "dashboard": {
@@ -373,13 +393,43 @@
     },
     "issueDetail": {
       "breadcrumbs": {
-        "issues": "Chamados"
+        "issues": "Chamados",
+        "issue": "Chamado"
       },
       "tabs": {
         "comments": "Comentários",
         "subissues": "Sub-chamados",
         "activity": "Atividade"
       },
+      "actions": {
+        "showProperties": "Mostrar propriedades",
+        "hideIssue": "Ocultar este Chamado",
+        "deleteAttachment": "Excluir anexo",
+        "uploadAttachment": "Anexar arquivo",
+        "upload": "Enviar",
+        "copyMarkdown": "Copiar chamado como markdown",
+        "labels": {
+          "created": "criou a tarefa",
+          "updated": "atualizou a tarefa",
+          "commented": "comentou",
+          "status_changed": "alterou o status",
+          "assigned": "atribuiu a tarefa",
+          "unassigned": "removeu o responsável",
+          "depth_changed": "alterou a profundidade",
+          "reassigned": "reatribuiu a tarefa",
+          "from": "de",
+          "to": "para"
+        },
+        "actors": {
+          "system": "Sistema",
+          "board": "Quadro"
+        }
+      },
+      "placeholders": {
+        "addDescription": "Adicionar uma descrição...",
+        "description": "Adicionar uma descrição..."
+      },
+      "attachments": "Anexos",
       "toasts": {
         "copySuccess": {
           "title": "Copiado para a área de transferência"
@@ -399,49 +449,30 @@
           "title": "Falha na interrupção",
           "body": "Não foi possível interromper a execução ativa"
         },
+        "interruptRequested": {
+          "title": "Interrupção solicitada",
+          "body": "A execução ativa está parando para que os comentários na fila possam continuar em seguida."
+        },
         "feedbackSuccess": {
-          "savingPrompt": "Feedback salvo. Votos futuros serão compartilhados",
-          "savingLocal": "Feedback salvo. Votos futuros permanecerão locais",
+          "savingPromptShare": "Feedback salvo. Votos futuros serão compartilhados",
+          "savingPromptLocal": "Feedback salvo. Votos futuros permanecerão locais",
           "savedAndSharing": "Feedback salvo e compartilhamento ativado",
           "saved": "Feedback salvo"
         },
         "feedbackError": {
-        "commentFailed": "Falha ao comentar",
-        "unableToPost": "Não foi possível postar o comentário",
-        "interruptRequested": "Interrupção solicitada",
-        "stoppingQueued": "A execução ativa está parando para que os comentários na fila possam continuar em seguida.",
-        "interruptFailed": "Falha na interrupção",
-        "unableToInterrupt": "Não foi possível interromper a execução ativa",
-        "feedbackSaved": "Feedback salvo",
-        "feedbackSavedFutureShare": "Feedback salvo. Futuros votos serão compartilhados",
-        "feedbackSavedFutureLocal": "Feedback salvo. Futuros votos permanecerão locais",
-        "feedbackSavedSharingEnabled": "Feedback salvo e compartilhamento ativado",
-        "failedFeedback": "Falha ao salvar feedback",
-        "archivedFromInbox": "Tarefa arquivada da caixa de entrada",
-        "archiveFailed": "Falha ao arquivar",
-        "unableToArchive": "Não foi possível arquivar esta tarefa da caixa de entrada"
-      },
-      "actions": {
-        "labels": {
-          "created": "criou a tarefa",
-          "updated": "atualizou a tarefa",
-          "commented": "comentou",
-          "status_changed": "alterou o status",
-          "assigned": "atribuiu a tarefa",
-          "unassigned": "removeu o responsável",
-          "depth_changed": "alterou a profundidade",
-          "reassigned": "reatribuiu a tarefa",
-          "from": "de",
-          "to": "para"
+          "title": "Falha ao salvar feedback"
         },
-        "actors": {
-          "system": "Sistema",
-          "board": "Quadro"
-        }
-      },
-      "placeholders": {
-        "description": "Adicione uma descrição..."
-      },
+          "commentError": {
+            "title": "Falha ao comentar",
+            "body": "Não foi possível postar o comentário"
+          },
+          "attachmentError": {
+            "uploading": "Enviando...",
+            "uploadFailed": "Falha no upload",
+            "importFailed": "Falha na importação do documento",
+            "deleteFailed": "Falha ao excluir"
+          }
+        },
       "status": {
         "hidden": "Este chamado está oculto",
         "live": "Ao vivo"
@@ -455,8 +486,62 @@
       "approvals": {
         "linked": "Aprovações Vinculadas ({{count}})"
       },
+      "origin": {
+        "routine": "Rotina"
+      },
+      "subissues": {
+        "none": "Nenhum sub-chamado."
+      },
       "properties": {
         "title": "Propriedades"
+      },
+      "commentThread": {
+        "title": "Linha do Tempo",
+        "placeholder": "Deixe um comentário...",
+        "submit": "Comentar",
+        "posting": "Enviando...",
+        "reopen": "Reabrir",
+        "queued": "Na fila",
+        "queueing": "Enfileirando...",
+        "sending": "Enviando...",
+        "noTimeline": "Nenhuma entrada na linha do tempo ainda.",
+        "queuedComments": "Comentários na fila ({{count}})",
+        "interrupt": "Interromper",
+        "interrupting": "Interrompendo...",
+        "updatedTask": "atualizou esta tarefa",
+        "attachImage": "Anexar imagem",
+        "copyMarkdown": "Copiar como markdown",
+        "run": "execução"
+      },
+      "documents": {
+        "title": "Documentos",
+        "newDocument": "Novo documento",
+        "new": "Novo",
+        "cancel": "Cancelar",
+        "createDocument": "Criar documento",
+        "saving": "Salvando...",
+        "editDocument": "Editar documento",
+        "downloadDocument": "Baixar documento",
+        "deleteDocument": "Excluir documento",
+        "copyDocument": "Copiar documento",
+        "copied": "Copiado",
+        "documentActions": "Ações do documento",
+        "revisionHistory": "Histórico de revisões",
+        "loadingRevisions": "Carregando revisões...",
+        "noRevisions": "Nenhuma revisão ainda",
+        "current": "Atual",
+        "returnToLatest": "Voltar para a mais recente",
+        "restoreRevision": "Restaurar esta revisão",
+        "restoring": "Restaurando...",
+        "viewingRevision": "Visualizando revisão {{number}}",
+        "outOfDate": "Desatualizado",
+        "hideRemote": "Ocultar remoto",
+        "reviewRemote": "Revisar remoto",
+        "keepMyDraft": "Manter meu rascunho",
+        "reloadRemote": "Recarregar remoto",
+        "overwriteRemote": "Sobrescrever remoto",
+        "historicalPreviewDescription": "Esta é uma visualização histórica. Restaurá-la cria uma nova revisão mais recente e mantém o histórico imutável.",
+        "outOfDateDescription": "Este documento foi alterado enquanto você editava. Seu rascunho local foi preservado e o salvamento automático está pausado."
       }
     },
     "issueProperties": {
@@ -493,7 +578,8 @@
       },
       "status": {
         "unassigned": "Não atribuído",
-        "none": "Nenhum"
+        "none": "Nenhum",
+        "noLabels": "Sem etiquetas"
       }
     }
   }

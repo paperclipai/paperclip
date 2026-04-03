@@ -81,7 +81,22 @@
     },
     "recent_activity": "Recent Activity",
     "recent_tasks": "Recent Tasks",
-    "no_tasks": "No recent tasks."
+    "no_tasks": "No recent tasks.",
+    "agents_panel": {
+      "title": "Agents",
+      "no_runs": "No recent agent runs.",
+      "live_now": "Live now",
+      "finished": "Finished {{time}}",
+      "started": "Started {{time}}",
+      "waiting_transcript": "Waiting for transcript parsing...",
+      "waiting_output": "Waiting for output...",
+      "no_transcript": "No transcript captured."
+    }
+  },
+  "transcript": {
+    "stdout": "stdout",
+    "collapse_stdout": "Collapse stdout",
+    "expand_stdout": "Expand stdout"
   },
   "activity": {
     "title": "Activity",
@@ -147,7 +162,12 @@
     "timed_out": "Timed out",
     "completed": "Completed",
     "active": "Active",
-    "paused": "Paused"
+    "paused": "Paused",
+    "succeeded": "Succeeded",
+    "error": "Error",
+    "running": "Running",
+    "queued": "Queued",
+    "cancelled": "Cancelled"
   },
   "page": {
     "dashboard": {
@@ -374,13 +394,43 @@
     },
     "issueDetail": {
       "breadcrumbs": {
-        "issues": "Issues"
+        "issues": "Issues",
+        "issue": "Issue"
       },
       "tabs": {
         "comments": "Comments",
         "subissues": "Sub-issues",
         "activity": "Activity"
       },
+      "actions": {
+        "showProperties": "Show properties",
+        "hideIssue": "Hide this Issue",
+        "deleteAttachment": "Delete attachment",
+        "uploadAttachment": "Upload attachment",
+        "upload": "Upload",
+        "copyMarkdown": "Copy issue as markdown",
+        "labels": {
+          "created": "created the issue",
+          "updated": "updated the issue",
+          "commented": "commented",
+          "status_changed": "changed the status",
+          "assigned": "assigned the issue",
+          "unassigned": "removed the assignee",
+          "depth_changed": "changed the depth",
+          "reassigned": "reassigned the issue",
+          "from": "from",
+          "to": "to"
+        },
+        "actors": {
+          "system": "System",
+          "board": "Board"
+        }
+      },
+      "placeholders": {
+        "addDescription": "Add a description...",
+        "description": "Add a description..."
+      },
+      "attachments": "Attachments",
       "toasts": {
         "copySuccess": {
           "title": "Copied to clipboard"
@@ -401,35 +451,24 @@
           "body": "Unable to interrupt the active run"
         },
         "feedbackSuccess": {
-          "savingPrompt": "Feedback saved. Future votes will share",
-          "savingLocal": "Feedback saved. Future votes will stay local",
+          "savingPromptShare": "Feedback saved. Future votes will share",
+          "savingPromptLocal": "Feedback saved. Future votes will stay local",
           "savedAndSharing": "Feedback saved and sharing enabled",
           "saved": "Feedback saved"
         },
         "feedbackError": {
           "title": "Failed to save feedback"
-        }
-      },
-      "actions": {
-        "labels": {
-          "created": "created the issue",
-          "updated": "updated the issue",
-          "commented": "commented",
-          "status_changed": "changed the status",
-          "assigned": "assigned the issue",
-          "unassigned": "removed the assignee",
-          "depth_changed": "changed the depth",
-          "reassigned": "reassigned the issue",
-          "from": "from",
-          "to": "to"
         },
-        "actors": {
-          "system": "System",
-          "board": "Board"
+        "commentError": {
+          "title": "Comment failed",
+          "body": "Unable to post comment"
+        },
+        "attachmentError": {
+          "uploading": "Uploading...",
+          "uploadFailed": "Upload failed",
+          "importFailed": "Document import failed",
+          "deleteFailed": "Delete failed"
         }
-      },
-      "placeholders": {
-        "description": "Add a description..."
       },
       "status": {
         "hidden": "This issue is hidden",
@@ -444,8 +483,62 @@
       "approvals": {
         "linked": "Linked Approvals ({{count}})"
       },
+      "origin": {
+        "routine": "Routine"
+      },
+      "subissues": {
+        "none": "No sub-issues."
+      },
       "properties": {
         "title": "Properties"
+      },
+      "commentThread": {
+        "title": "Timeline",
+        "placeholder": "Leave a comment...",
+        "submit": "Comment",
+        "posting": "Posting...",
+        "reopen": "Re-open",
+        "queued": "Queued",
+        "queueing": "Queueing...",
+        "sending": "Sending...",
+        "noTimeline": "No timeline entries yet.",
+        "queuedComments": "Queued Comments ({{count}})",
+        "interrupt": "Interrupt",
+        "interrupting": "Interrupting...",
+        "updatedTask": "updated this task",
+        "attachImage": "Attach image",
+        "copyMarkdown": "Copy as markdown",
+        "run": "run"
+      },
+      "documents": {
+        "title": "Documents",
+        "newDocument": "New document",
+        "new": "New",
+        "cancel": "Cancel",
+        "createDocument": "Create document",
+        "saving": "Saving...",
+        "editDocument": "Edit document",
+        "downloadDocument": "Download document",
+        "deleteDocument": "Delete document",
+        "copyDocument": "Copy document",
+        "copied": "Copied",
+        "documentActions": "Document actions",
+        "revisionHistory": "Revision history",
+        "loadingRevisions": "Loading revisions...",
+        "noRevisions": "No revisions yet",
+        "current": "Current",
+        "returnToLatest": "Return to latest",
+        "restoreRevision": "Restore this revision",
+        "restoring": "Restoring...",
+        "viewingRevision": "Viewing revision {{number}}",
+        "outOfDate": "Out of date",
+        "hideRemote": "Hide remote",
+        "reviewRemote": "Review remote",
+        "keepMyDraft": "Keep my draft",
+        "reloadRemote": "Reload remote",
+        "overwriteRemote": "Overwrite remote",
+        "historicalPreviewDescription": "This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.",
+        "outOfDateDescription": "This document changed while you were editing. Your local draft is preserved and autosave is paused."
       }
     },
     "issueProperties": {
@@ -482,7 +575,8 @@
       },
       "status": {
         "unassigned": "Unassigned",
-        "none": "None"
+        "none": "None",
+        "noLabels": "No labels"
       }
     }
   }

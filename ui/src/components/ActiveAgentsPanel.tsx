@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -23,6 +24,7 @@ interface ActiveAgentsPanelProps {
 }
 
 export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
+  const { t } = useTranslation();
   const { data: liveRuns } = useQuery({
     queryKey: [...queryKeys.liveRuns(companyId), "dashboard"],
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, MIN_DASHBOARD_RUNS),
@@ -52,11 +54,11 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Agents
+        {t("dashboard.agents_panel.title")}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">No recent agent runs.</p>
+          <p className="text-sm text-muted-foreground">{t("dashboard.agents_panel.no_runs")}</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4">
@@ -89,6 +91,20 @@ function AgentRunCard({
   hasOutput: boolean;
   isActive: boolean;
 }) {
+  const { t } = useTranslation();
+
+  const timeLabel = isActive
+    ? t("dashboard.agents_panel.live_now")
+    : run.finishedAt
+      ? t("dashboard.agents_panel.finished", { time: relativeTime(run.finishedAt) })
+      : t("dashboard.agents_panel.started", { time: relativeTime(run.createdAt) });
+
+  const emptyMessage = hasOutput
+    ? t("dashboard.agents_panel.waiting_transcript")
+    : isActive
+      ? t("dashboard.agents_panel.waiting_output")
+      : t("dashboard.agents_panel.no_transcript");
+
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -111,7 +127,7 @@ function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{timeLabel}</span>
             </div>
           </div>
 
@@ -148,7 +164,7 @@ function AgentRunCard({
           streaming={isActive}
           collapseStdout
           thinkingClassName="!text-[10px] !leading-4"
-          emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
+          emptyMessage={emptyMessage}
         />
       </div>
     </div>

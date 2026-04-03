@@ -128,7 +128,7 @@ export function PluginPage() {
 
   if (!pageSlot) {
     if (pluginRoutePath) {
-      return <NotFoundPage scope="board" />;
+      return <NotFoundPage />;
     }
     // No page slot: redirect to plugin settings where plugin info is always shown
     const settingsPath = pluginId ? `/instance/settings/plugins/${pluginId}` : "/instance/settings/plugins";

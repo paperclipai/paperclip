@@ -176,7 +176,7 @@ function boardRoutes() {
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
-      <Route path="*" element={<NotFoundPage scope="board" />} />
+      <Route path="*" element={<NotFoundPage />} />
     </>
   );
 }

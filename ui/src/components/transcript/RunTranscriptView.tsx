@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -1130,19 +1131,20 @@ function TranscriptStdoutRow({
   density: TranscriptDensity;
   collapseByDefault: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(!collapseByDefault);
 
   return (
     <div>
       <div className="flex items-center gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-          stdout
+          {t("transcript.stdout")}
         </span>
         <button
           type="button"
           className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? "Collapse stdout" : "Expand stdout"}
+          aria-label={open ? t("transcript.collapse_stdout") : t("transcript.expand_stdout")}
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
