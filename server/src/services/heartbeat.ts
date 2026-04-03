@@ -66,10 +66,15 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
+const HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS = 30 * 1000;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
-const startLocksByAgent = new Map<string, Promise<void>>();
+type AgentStartLock = {
+  promise: Promise<void>;
+  startedAt: number;
+};
+const startLocksByAgent = new Map<string, AgentStartLock>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -89,6 +94,32 @@ function normalizePriorityRank(priority: string | null | undefined) {
     default:
       return 0;
   }
+}
+
+function classifyIssueTruthFromCommentBody(body: string | null | undefined): "completion" | "blocker" | "handoff" | null {
+  if (!body) return null;
+  const text = body.toLowerCase();
+
+  const completionSignals = [
+    /\b(status|outcome)\s*:\s*(done|completed|resolved)\b/,
+    /\bissue\s+resolved\b/,
+    /\bcompleted\b/,
+  ];
+  const blockerSignals = [
+    /\b(status|outcome)\s*:\s*(blocked|needs[_ -]?help|blocked_on_external)\b/,
+    /\bblocked\b/,
+    /\bwaiting on\b/,
+  ];
+  const handoffSignals = [
+    /\b(status|outcome)\s*:\s*(handoff|needs_review|needs_handoff)\b/,
+    /\bhandoff\b/,
+    /\bready for review\b/,
+  ];
+
+  if (completionSignals.some((rx) => rx.test(text))) return "completion";
+  if (blockerSignals.some((rx) => rx.test(text))) return "blocker";
+  if (handoffSignals.some((rx) => rx.test(text))) return "handoff";
+  return null;
 }
 
 export function isOperationsOrchestratorAgent(agent: { role?: string | null; name?: string | null }) {
@@ -178,6 +209,7 @@ export async function resolveOperationsHeartbeatTarget(
               issueId: issueComments.issueId,
               createdAt: issueComments.createdAt,
               authorAgentId: issueComments.authorAgentId,
+              body: issueComments.body,
             })
             .from(issueComments)
             .where(and(eq(issueComments.companyId, input.companyId), inArray(issueComments.issueId, issueIds)))
@@ -193,6 +225,7 @@ export async function resolveOperationsHeartbeatTarget(
         const latestCommentAgeHours = latestComment
           ? Math.floor((now - latestComment.createdAt.getTime()) / (60 * 60 * 1000))
           : Number.POSITIVE_INFINITY;
+        const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
 
         let score = 0;
         const reasons: string[] = [];
@@ -205,21 +238,30 @@ export async function resolveOperationsHeartbeatTarget(
           score += 110;
           reasons.push(`latest run ended ${run.status}`);
         }
-        if (run && run.status === "completed" && !latestComment) {
+        if (run && run.status === "completed" && !truthType) {
           score += 100;
-          reasons.push("run completed without issue-level evidence comment");
+          reasons.push("run completed without completion/blocker/handoff truth");
         }
         if (!latestComment) {
           score += 80;
           reasons.push("no issue comments found");
         }
-        if (latestCommentAgeHours >= 24) {
+        if (latestComment && !truthType && latestCommentAgeHours >= 12) {
           score += 70;
-          reasons.push(`stale comments (${latestCommentAgeHours}h)`);
+          reasons.push(`stale comment without explicit truth (${latestCommentAgeHours}h)`);
         }
         if (issueAgeHours >= 24) {
           score += 60;
           reasons.push(`stale issue updates (${issueAgeHours}h)`);
+        }
+
+        if (truthType === "blocker" || truthType === "handoff") {
+          score -= 80;
+          reasons.push(`explicit ${truthType} truth present`);
+        }
+        if (truthType === "completion" && run?.status === "completed") {
+          score -= 120;
+          reasons.push("completion truth present with completed run");
         }
 
         score += normalizePriorityRank(issue.priority) * 5;
@@ -473,21 +515,43 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
-  const previous = startLocksByAgent.get(agentId) ?? Promise.resolve();
+  const existing = startLocksByAgent.get(agentId);
+  if (existing) {
+    const ageMs = Date.now() - existing.startedAt;
+    if (ageMs >= HEARTBEAT_QUEUE_START_LOCK_WATCHDOG_MS) {
+      logger.warn({ agentId, ageMs }, "clearing stale queued-run start lock");
+      startLocksByAgent.delete(agentId);
+    }
+  }
+
+  const previous = startLocksByAgent.get(agentId)?.promise ?? Promise.resolve();
   const run = previous.then(fn);
   const marker = run.then(
     () => undefined,
     () => undefined,
   );
-  startLocksByAgent.set(agentId, marker);
+  const lock: AgentStartLock = {
+    promise: marker,
+    startedAt: Date.now(),
+  };
+  startLocksByAgent.set(agentId, lock);
   try {
     return await run;
   } finally {
-    if (startLocksByAgent.get(agentId) === marker) {
+    if (startLocksByAgent.get(agentId) === lock) {
       startLocksByAgent.delete(agentId);
     }
   }
 }
+
+export const heartbeatServiceTestInternals = {
+  clearStartLocks() {
+    startLocksByAgent.clear();
+  },
+  seedStartLock(agentId: string, startedAt: number, promise: Promise<void> = new Promise<void>(() => {})) {
+    startLocksByAgent.set(agentId, { promise, startedAt });
+  },
+};
 
 interface WakeupOptions {
   source?: "timer" | "assignment" | "on_demand" | "automation";

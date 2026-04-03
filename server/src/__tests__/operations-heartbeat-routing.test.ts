@@ -163,22 +163,56 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
 
     expect(target?.issueId).toBe(staleIssueId);
     expect(target?.mode).toBe("cross_agent_recovery");
-    expect(target?.reason).toContain("run completed without issue-level evidence comment");
+    expect(target?.reason).toContain("run completed without completion/blocker/handoff truth");
   });
 
-  it("falls back to one ready unassigned issue when no recovery target exists", async () => {
-    const { companyId, opsAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+  it("ignores assigned issues with explicit blocker/handoff truth and falls back correctly", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const assignedIssueId = randomUUID();
+    const assignedRunId = randomUUID();
     const backlogIssueId = randomUUID();
 
-    await db.insert(issues).values({
-      id: backlogIssueId,
+    await db.insert(heartbeatRuns).values({
+      id: assignedRunId,
       companyId,
-      title: "Unassigned TODO",
-      status: "backlog",
-      priority: "medium",
-      assigneeAgentId: null,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: assignedIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: assignedIssueId,
+        companyId,
+        title: "Assigned issue with explicit blocker truth",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: assignedRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: backlogIssueId,
+        companyId,
+        title: "Unassigned TODO",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: assignedIssueId,
+      authorAgentId: workerAgentId,
+      body: "Status: blocked\nWaiting on external dependency from vendor.",
     });
 
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
