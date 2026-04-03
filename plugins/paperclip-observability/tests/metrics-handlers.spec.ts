@@ -96,7 +96,7 @@ describe("handleRunFailedMetrics", () => {
     expect(counter!.add).toHaveBeenCalledWith(1, {
       agent_id: "a-1",
       agent_name: "unknown",
-      error: "timeout",
+      error_type: "timeout",
     });
   });
 });
