@@ -12,6 +12,75 @@
 // Types (mirrored from the adapter shared types — no cross-package import)
 // ---------------------------------------------------------------------------
 
+// --- Templates ---
+
+export interface FleetTemplate {
+  name: string;
+  label: string;
+  description?: string;
+}
+
+export interface FleetTemplateField {
+  name: string;
+  label: string;
+  type: "string" | "select" | "boolean" | "number" | "text";
+  required: boolean;
+  default?: string | number | boolean;
+  options?: { value: string; label: string }[];
+  description?: string;
+  group?: string;
+}
+
+export interface FleetTemplateDetail extends FleetTemplate {
+  fields: FleetTemplateField[];
+  default_memory?: string;
+  default_cpu?: string;
+  default_disk?: string;
+}
+
+// --- Provisioning ---
+
+export interface ProvisionValidateRequest {
+  template: string;
+  tenant_id: string;
+  agent_name: string;
+  agent_role: string;
+  model?: string;
+  memory?: string;
+  cpu?: string;
+  disk?: string;
+  extra_fields?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface ProvisionValidateResponse {
+  valid: boolean;
+  container_name?: string;
+  checks?: { name: string; status: string; detail?: string }[];
+  errors?: string[];
+  warnings?: string[];
+}
+
+export interface ProvisionRequest extends ProvisionValidateRequest {
+  test?: boolean;
+}
+
+export interface ProvisionJob {
+  id: string;
+  status: "running" | "complete" | "failed" | "cancelled" | "timeout";
+  template: string;
+  tenant_id: string;
+  agent_name: string;
+  container_name?: string;
+  steps?: { name: string; status: string; detail?: string; started_at?: string; completed_at?: string }[];
+  result?: Record<string, unknown>;
+  error?: string;
+  created_at?: string;
+  completed_at?: string;
+}
+
+// --- Containers ---
+
 export interface FleetContainer {
   id: string;
   name: string;
@@ -160,6 +229,32 @@ export class FleetOSProxyClient {
 
   async restartContainer(id: string): Promise<FleetContainer> {
     return this.request<FleetContainer>("POST", `/api/v1/containers/${encodeURIComponent(id)}/restart`);
+  }
+
+  // Templates
+  async listTemplates(): Promise<FleetTemplate[]> {
+    return this.request<FleetTemplate[]>("GET", "/api/templates");
+  }
+
+  async getTemplate(name: string): Promise<FleetTemplateDetail> {
+    return this.request<FleetTemplateDetail>("GET", `/api/templates/${encodeURIComponent(name)}`);
+  }
+
+  // Provisioning
+  async validateProvision(body: ProvisionValidateRequest): Promise<ProvisionValidateResponse> {
+    return this.request<ProvisionValidateResponse>("POST", "/api/provision/validate", body);
+  }
+
+  async startProvision(body: ProvisionRequest): Promise<ProvisionJob> {
+    return this.request<ProvisionJob>("POST", "/api/provision", body);
+  }
+
+  async getProvisionJob(jobId: string): Promise<ProvisionJob> {
+    return this.request<ProvisionJob>("GET", `/api/provision/${encodeURIComponent(jobId)}`);
+  }
+
+  async listProvisionJobs(): Promise<ProvisionJob[]> {
+    return this.request<ProvisionJob[]>("GET", "/api/provision");
   }
 }
 

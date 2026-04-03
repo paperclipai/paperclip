@@ -17,6 +17,8 @@ import {
   FleetOSProxyError,
   type FleetContainer,
   type FleetHealth,
+  type ProvisionValidateRequest,
+  type ProvisionRequest,
 } from "../services/fleetos-client.js";
 import { logActivity } from "../services/activity-log.js";
 import { logger } from "../middleware/logger.js";
@@ -261,6 +263,155 @@ export function fleetosProxyRoutes(db: Db, fleetosApiUrl?: string) {
       }
 
       res.json(container);
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  // --- Templates ---
+  router.get("/fleetos/templates", async (req, res) => {
+    assertBoard(req);
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const templates = await client.listTemplates();
+      res.json({ templates });
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  router.get("/fleetos/templates/:name", async (req, res) => {
+    assertBoard(req);
+    const { name } = req.params;
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const template = await client.getTemplate(name!);
+      res.json(template);
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  // --- Provisioning ---
+  router.post("/fleetos/provision/validate", async (req, res) => {
+    assertBoard(req);
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const body = req.body as ProvisionValidateRequest;
+      const result = await client.validateProvision(body);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  router.post("/fleetos/provision", async (req, res) => {
+    assertBoard(req);
+
+    // Explicit FleetOS actor check — board auth alone isn't sufficient for mutations
+    if (!req.actor.fleetosApiKey) {
+      res.status(403).json({ error: "FleetOS actor required for provisioning" });
+      return;
+    }
+
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const body = req.body as ProvisionRequest;
+      const job = await client.startProvision(body);
+
+      // Audit log for provisioning
+      const companyId = req.actor.companyId;
+      if (companyId) {
+        logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "unknown",
+          action: "fleetos.provision.start",
+          entityType: "fleetos_provision_job",
+          entityId: job.id,
+          details: {
+            template: body.template,
+            tenant_id: body.tenant_id,
+            agent_name: body.agent_name,
+            agent_role: body.agent_role,
+            container_name: job.container_name,
+          },
+        }).catch((err) => {
+          logger.warn({ err, jobId: job.id }, "Failed to log FleetOS provision audit entry");
+        });
+      } else {
+        logger.warn(
+          { action: "fleetos.provision.start", jobId: job.id, actorType: req.actor.type, userId: req.actor.userId },
+          "Skipped FleetOS audit log: actor has no companyId",
+        );
+      }
+
+      res.json(job);
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  router.get("/fleetos/provision/:jobId", async (req, res) => {
+    assertBoard(req);
+    const { jobId } = req.params;
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const job = await client.getProvisionJob(jobId!);
+      res.json(job);
+    } catch (err) {
+      if (err instanceof FleetOSProxyError) {
+        res.status(err.statusCode || 502).json({
+          error: err.message,
+          detail: err.detail,
+        });
+        return;
+      }
+      res.status(502).json({ error: "Failed to reach FleetOS" });
+    }
+  });
+
+  router.get("/fleetos/provision", async (req, res) => {
+    assertBoard(req);
+    try {
+      const client = getClientFromRequest(req, fleetosApiUrl);
+      const jobs = await client.listProvisionJobs();
+      res.json({ jobs });
     } catch (err) {
       if (err instanceof FleetOSProxyError) {
         res.status(err.statusCode || 502).json({
