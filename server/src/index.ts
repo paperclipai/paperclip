@@ -709,37 +709,56 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
-  // Copy workspace SDK dist (with fork extensions) to the plugins directory.
-  // Must be called after any npm install that might overwrite the SDK.
-  function copyWorkspaceSdk() {
+  // Overwrite only the SDK JS files that contain our fork extensions.
+  // We must NOT delete the whole SDK dir or its package.json — the npm-installed
+  // SDK has proper dependency resolution for @paperclipai/shared that we need.
+  function copyWorkspaceSdkFiles() {
     try {
-      const pluginsSdkDir = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk");
+      const pluginsSdkDist = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk", "dist");
       const thisDir = path.dirname(new URL(import.meta.url).pathname);
       const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
-      const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
-      if (!fs.existsSync(workspaceSdkDist)) return;
+      if (!fs.existsSync(workspaceSdkDist) || !fs.existsSync(pluginsSdkDist)) return;
 
-      // If it's a symlink (from a previous version), remove it
-      if (fs.existsSync(pluginsSdkDir) && fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
-        fs.rmSync(pluginsSdkDir, { force: true });
+      // Only overwrite the specific files we changed (fork extensions)
+      const filesToCopy = [
+        "worker-rpc-host.js",
+        "worker-rpc-host.js.map",
+        "worker-rpc-host.d.ts",
+        "worker-rpc-host.d.ts.map",
+        "host-client-factory.js",
+        "host-client-factory.js.map",
+        "host-client-factory.d.ts",
+        "host-client-factory.d.ts.map",
+        "protocol.js",
+        "protocol.js.map",
+        "protocol.d.ts",
+        "protocol.d.ts.map",
+        "types.js",
+        "types.js.map",
+        "types.d.ts",
+        "types.d.ts.map",
+        "testing.js",
+        "testing.js.map",
+        "testing.d.ts",
+        "testing.d.ts.map",
+      ];
+      let copied = 0;
+      for (const file of filesToCopy) {
+        const src = path.join(workspaceSdkDist, file);
+        const dest = path.join(pluginsSdkDist, file);
+        if (fs.existsSync(src)) {
+          fs.cpSync(src, dest, { force: true });
+          copied++;
+        }
       }
-
-      // Remove existing dist and replace with fresh copy
-      const destDist = path.join(pluginsSdkDir, "dist");
-      if (fs.existsSync(destDist)) {
-        fs.rmSync(destDist, { recursive: true, force: true });
+      if (copied > 0) {
+        logger.info(`Patched ${copied} workspace SDK files into local plugins directory`);
       }
-      fs.mkdirSync(pluginsSdkDir, { recursive: true });
-      fs.cpSync(workspaceSdkDist, destDist, { recursive: true });
-      if (fs.existsSync(workspaceSdkPkg)) {
-        fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"), { force: true });
-      }
-      logger.info("Copied workspace plugin SDK dist to local plugins directory");
     } catch (err) {
-      logger.warn({ err }, "Failed to copy workspace SDK (non-fatal)");
+      logger.warn({ err }, "Failed to patch workspace SDK files (non-fatal)");
     }
   }
-  copyWorkspaceSdk();
+  copyWorkspaceSdkFiles();
 
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
@@ -949,8 +968,8 @@ export async function startServer(): Promise<StartedServer> {
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
   void autoInstallBundledPlugins(db as any).then(() => {
-    // Re-copy workspace SDK after plugin installs — npm install pulls the upstream SDK.
-    copyWorkspaceSdk();
+    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
+    copyWorkspaceSdkFiles();
   }).catch((err) => {
     logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
   });
