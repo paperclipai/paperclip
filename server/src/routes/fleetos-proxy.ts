@@ -246,6 +246,11 @@ export function fleetosProxyRoutes(db: Db) {
         }).catch((err) => {
           logger.warn({ err, containerId, action }, "Failed to log FleetOS lifecycle audit entry");
         });
+      } else {
+        logger.warn(
+          { action: `fleetos.container.${action}`, containerId, actorType: req.actor.type, userId: req.actor.userId },
+          "Skipped FleetOS audit log: actor has no companyId",
+        );
       }
 
       res.json(container);

@@ -96,9 +96,10 @@ export async function createApp(
     localPluginDir?: string;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    fleetosApiUrl?: string;
   },
 ) {
-  const fleetosApiUrl = process.env.FLEETOS_API_URL ?? "http://localhost:8400";
+  const fleetosApiUrl = opts.fleetosApiUrl ?? "http://localhost:8400";
 
   const app = express();
 

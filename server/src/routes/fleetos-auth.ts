@@ -56,13 +56,21 @@ async function validateFleetosApiKey(
   // Other non-OK (e.g. 404, 400) — treat as auth invalid
   if (!res.ok) return null;
 
-  const data = (await res.json()) as {
+  let data: {
     id?: string;
     tenant_id?: string;
     name?: string;
     tenant_name?: string;
     company_id?: string;
   };
+  try {
+    data = (await res.json()) as typeof data;
+  } catch (err) {
+    throw new FleetosUpstreamError(
+      `FleetOS returned unparseable JSON: ${err instanceof Error ? err.message : String(err)}`,
+      res.status,
+    );
+  }
   const tenantId = data.tenant_id ?? data.id;
   const tenantName = data.tenant_name ?? data.name ?? "FleetOS Tenant";
   // FleetOS tenant_id maps to a Paperclip companyId. If the response includes

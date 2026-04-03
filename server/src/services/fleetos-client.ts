@@ -115,9 +115,14 @@ export class FleetOSProxyClient {
       return JSON.parse(text) as T;
     } catch (err) {
       if (err instanceof FleetOSProxyError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      // Distinguish timeout from general network errors for callers
+      const isTimeout =
+        (err instanceof Error && err.name === "AbortError") ||
+        /timeout/i.test(message);
       throw new FleetOSProxyError(
-        `FleetOS ${method} ${path} failed: ${err instanceof Error ? err.message : String(err)}`,
-        0,
+        `FleetOS ${method} ${path} failed: ${message}`,
+        isTimeout ? 504 : 503,
         null,
       );
     } finally {

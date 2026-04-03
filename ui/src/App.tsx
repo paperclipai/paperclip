@@ -160,6 +160,9 @@ function boardRoutes() {
       <Route path="agents/:agentId" element={<AgentDetail />} />
       <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
       <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
+      {/* Fleet routes live under the company prefix because Layout requires
+          company context (sidebar, nav). Unprefixed /fleet paths are handled
+          by UnprefixedBoardRedirect above which prepends the active prefix. */}
       <Route path="fleet" element={<FleetOverview />} />
       <Route path="fleet/:containerId" element={<FleetAgentDetail />} />
       <Route path="projects" element={<Projects />} />

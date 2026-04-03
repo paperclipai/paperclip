@@ -13,6 +13,7 @@ import {
   Settings,
   Server,
 } from "lucide-react";
+import { useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -52,6 +53,11 @@ export function Sidebar() {
     staleTime: 60_000,
   });
   const isFleetosMode = health?.deploymentMode === "fleetos";
+  // Preserve last-known fleetos state so a transient health query failure
+  // doesn't hide the Fleet sidebar section mid-session.
+  const lastKnownFleetosRef = useRef(false);
+  if (health) lastKnownFleetosRef.current = isFleetosMode;
+  const showFleet = lastKnownFleetosRef.current;
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -123,7 +129,7 @@ export function Sidebar() {
 
         <SidebarAgents />
 
-        {isFleetosMode && (
+        {showFleet && (
           <SidebarSection label="Infrastructure">
             <SidebarNavItem to="/fleet" label="Fleet" icon={Server} />
           </SidebarSection>

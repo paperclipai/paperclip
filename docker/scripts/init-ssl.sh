@@ -129,7 +129,6 @@ obtain_letsencrypt() {
     -d "$DOMAIN"
 
   echo "Step 4: Copying certificates to nginx ssl directory..."
-  CERTBOT_LIVE="/etc/letsencrypt/live/$DOMAIN"
   # The certbot container mounts ./nginx/ssl:/etc/letsencrypt,
   # so certs are available at $SSL_DIR/live/$DOMAIN/
   if [[ -f "$SSL_DIR/live/$DOMAIN/fullchain.pem" ]]; then
