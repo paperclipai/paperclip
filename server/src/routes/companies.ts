@@ -263,7 +263,12 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw forbidden("Instance admin required");
     }
     const company = await svc.create(req.body);
-    await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
+    const creatorUserId = req.actor.userId ?? null;
+    await access.ensureMembership(company.id, "user", creatorUserId ?? "local-board", "owner", "active");
+    if (creatorUserId) {
+      await access.setPrincipalPermission(company.id, "user", creatorUserId, "tasks:assign", true, null);
+      await access.setPrincipalPermission(company.id, "user", creatorUserId, "agents:create", true, null);
+    }
     await logActivity(db, {
       companyId: company.id,
       actorType: "user",

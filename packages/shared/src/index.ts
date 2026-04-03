@@ -642,3 +642,16 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "./config-schema.js";
+
+export {
+  agentPermissionSchema,
+  agentPermissionGrantSchema,
+  createAgentPermissionGrantSchema,
+  agentPermissionDefaultsSchema,
+  patchAgentPermissionDefaultsSchema,
+  type AgentPermission,
+  type AgentPermissionGrant,
+  type CreateAgentPermissionGrant,
+  type AgentPermissionDefaults,
+  type PatchAgentPermissionDefaults,
+} from "./validators/agent-acl.js";

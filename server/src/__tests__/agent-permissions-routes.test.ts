@@ -36,6 +36,7 @@ const baseAgent = {
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   create: vi.fn(),
+  list: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -87,7 +88,14 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+const mockAgentAclService = vi.hoisted(() => ({
+  createGrant: vi.fn(),
+  listGrants: vi.fn(),
+  getDefaults: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
+  agentAclService: () => mockAgentAclService,
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
@@ -134,7 +142,11 @@ function createApp(actor: Record<string, unknown>) {
 describe("agent permission routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAgentAclService.createGrant.mockResolvedValue(undefined);
+    mockAgentAclService.listGrants.mockResolvedValue([]);
+    mockAgentAclService.getDefaults.mockResolvedValue(null);
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAgentService.list.mockResolvedValue([]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);

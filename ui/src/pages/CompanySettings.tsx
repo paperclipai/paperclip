@@ -1,10 +1,11 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
+import { agentPermissionsApi } from "../api/agentPermissions";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
@@ -103,6 +104,34 @@ export function CompanySettings() {
       });
     },
   });
+
+  const agentAclDefaultsQuery = useQuery({
+    queryKey: queryKeys.agentAcl.defaults(selectedCompanyId!),
+    queryFn: () => agentPermissionsApi.getDefaultsResult(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+
+  const patchAgentAclDefaults = useMutation({
+    mutationFn: (patch: { assignDefault?: boolean; commentDefault?: boolean }) =>
+      agentPermissionsApi.patchDefaults(selectedCompanyId!, patch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agentAcl.defaults(selectedCompanyId!),
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Could not save agent permission defaults",
+        body: err instanceof Error ? err.message : "Request failed",
+        tone: "error",
+      });
+    },
+  });
+
+  const agentAclDefaultsResult = agentAclDefaultsQuery.data;
+  const agentAclDefaultsResolved =
+    agentAclDefaultsResult?.kind === "ok" ? agentAclDefaultsResult.defaults : null;
 
   const inviteMutation = useMutation({
     mutationFn: () =>
@@ -399,6 +428,61 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      {/* Agent ACL defaults */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Agent permissions
+        </div>
+        <div className="rounded-md border border-border px-4 py-3 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Company-wide fallback when no explicit grant exists between two agents. Configure
+            per-agent matrices on each agent&apos;s Configure tab.
+          </p>
+          {agentAclDefaultsQuery.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading defaults…</p>
+          ) : agentAclDefaultsQuery.isError ? (
+            <p className="text-xs text-destructive">Could not load agent permission defaults.</p>
+          ) : agentAclDefaultsResult?.kind === "not_found" ||
+            agentAclDefaultsResult?.kind === "invalid" ? (
+            <p className="text-xs text-muted-foreground">
+              {agentAclDefaultsResult?.kind === "invalid"
+                ? "Agent permission defaults response was invalid."
+                : "Agent-to-agent permission APIs are not available on this Paperclip instance yet. Update the server to configure defaults."}
+            </p>
+          ) : agentAclDefaultsResolved ? (
+            <>
+              <ToggleField
+                label="Allow assigning tasks by default"
+                hint="When on, agents may assign work to others unless an explicit grant denies it."
+                checked={agentAclDefaultsResolved.assignDefault}
+                onChange={(v) =>
+                  patchAgentAclDefaults.mutate({
+                    assignDefault: v,
+                    commentDefault: agentAclDefaultsResolved.commentDefault,
+                  })
+                }
+              />
+              <ToggleField
+                label="Allow commenting on others' issues by default"
+                hint="When on, agents may comment on issues owned by other agents unless denied by a grant."
+                checked={agentAclDefaultsResolved.commentDefault}
+                onChange={(v) =>
+                  patchAgentAclDefaults.mutate({
+                    assignDefault: agentAclDefaultsResolved.assignDefault,
+                    commentDefault: v,
+                  })
+                }
+              />
+              {patchAgentAclDefaults.isPending && (
+                <span className="text-xs text-muted-foreground">Saving…</span>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-destructive">Could not load agent permission defaults.</p>
+          )}
+        </div>
+      </div>
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">

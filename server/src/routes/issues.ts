@@ -26,6 +26,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
+  agentAclService,
   agentService,
   executionWorkspaceService,
   feedbackService,
@@ -67,6 +68,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const agentAclSvc = agentAclService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -103,7 +105,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") return true;
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+      const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
+      if (!allowed) {
+        res.status(403).json({ error: "Missing permission to link approvals" });
+        return false;
+      }
+      return true;
+    }
     if (!req.actor.agentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
@@ -113,7 +123,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(403).json({ error: "Forbidden" });
       return false;
     }
-    if (actorAgent.role === "ceo" || Boolean(actorAgent.permissions?.canCreateAgents)) return true;
+    if (Boolean(actorAgent.permissions?.canCreateAgents)) return true;
     res.status(403).json({ error: "Missing permission to link approvals" });
     return false;
   }
@@ -126,7 +136,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
@@ -135,6 +144,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      if (!req.actor.userId) throw unauthorized();
       const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
       if (!allowed) throw forbidden("Missing permission: tasks:assign");
       return;
@@ -148,6 +158,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
+  }
+
+  async function assertAgentToAgentPermission(
+    granteeAgentId: string,
+    targetAgentId: string,
+    companyId: string,
+    permission: "assign" | "comment",
+  ) {
+    const [grants, defaults] = await Promise.all([
+      agentAclSvc.listGrants(companyId, {
+        granteeId: granteeAgentId,
+        agentId: targetAgentId,
+        permission,
+      }),
+      agentAclSvc.getDefaults(companyId),
+    ]);
+    if (grants.length > 0) return;
+
+    const defaultAllowed = permission === "assign" ? defaults?.assignDefault : defaults?.commentDefault;
+    if (defaultAllowed) return;
+
+    throw forbidden(`Agent does not have ${permission} permission for target agent`);
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -998,6 +1030,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    if (req.actor.type === "agent" && req.actor.agentId && req.body.assigneeAgentId) {
+      await assertAgentToAgentPermission(req.actor.agentId, req.body.assigneeAgentId, companyId, "assign");
+    }
 
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
@@ -1055,6 +1090,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+        if (req.actor.type === "agent" && req.actor.agentId && req.body.assigneeAgentId) {
+          await assertAgentToAgentPermission(
+            req.actor.agentId,
+            req.body.assigneeAgentId,
+            existing.companyId,
+            "assign",
+          );
+        }
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
@@ -1592,6 +1635,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (
+      req.actor.type === "agent" &&
+      req.actor.agentId &&
+      issue.assigneeAgentId !== null &&
+      req.actor.agentId !== issue.assigneeAgentId
+    ) {
+      await assertAgentToAgentPermission(req.actor.agentId, issue.assigneeAgentId, issue.companyId, "comment");
+    }
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);

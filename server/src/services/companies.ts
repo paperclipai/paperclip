@@ -25,6 +25,7 @@ import {
   invites,
   principalPermissionGrants,
   companyMemberships,
+  agentPermissionDefaults,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -168,6 +169,10 @@ export function companyService(db: Db) {
 
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
+      await db
+        .insert(agentPermissionDefaults)
+        .values({ companyId: created.id })
+        .onConflictDoNothing();
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

@@ -30,4 +30,6 @@ export interface UIAdapterModule {
   parseStdoutLine: (line: string, ts: string) => import("@paperclipai/adapter-utils").TranscriptEntry[];
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  models?: { id: string; label: string }[];
 }
+

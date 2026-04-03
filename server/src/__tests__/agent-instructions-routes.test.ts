@@ -7,7 +7,14 @@ import { errorHandler } from "../middleware/index.js";
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
+  list: vi.fn(),
   resolveByReference: vi.fn(),
+}));
+
+const mockAgentAclService = vi.hoisted(() => ({
+  createGrant: vi.fn(),
+  listGrants: vi.fn(),
+  getDefaults: vi.fn(),
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -34,6 +41,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  agentAclService: () => mockAgentAclService,
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
@@ -93,6 +101,10 @@ function makeAgent() {
 describe("agent instructions bundle routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAgentAclService.createGrant.mockResolvedValue(undefined);
+    mockAgentAclService.listGrants.mockResolvedValue([]);
+    mockAgentAclService.getDefaults.mockResolvedValue(null);
+    mockAgentService.list.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(makeAgent());
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent(),

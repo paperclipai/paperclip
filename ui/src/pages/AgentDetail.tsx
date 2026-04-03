@@ -37,6 +37,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { AgentAclMatrix } from "../components/AgentAclMatrix";
 import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
@@ -1493,15 +1494,13 @@ function ConfigurationTab({
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
-  const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
+  const taskAssignLocked = canCreateAgents;
   const taskAssignHint =
-    taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
-      : taskAssignSource === "agent_creator"
-        ? "Enabled automatically while this agent can create new agents."
-        : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
-          : "Disabled unless explicitly granted.";
+    taskAssignSource === "agent_creator"
+      ? "Enabled automatically while this agent can create new agents."
+      : taskAssignSource === "explicit_grant"
+        ? "Enabled via explicit company permission grant."
+        : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">
@@ -1589,6 +1588,23 @@ function ConfigurationTab({
           </div>
         </div>
       </div>
+
+      {companyId ? (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium mb-3">Agent-to-agent permissions</h3>
+          {!canAssignTasks ? (
+            <p className="text-xs text-muted-foreground mb-2">
+              Assignment targets are hidden because this agent cannot assign tasks. You can still
+              configure who may receive comments from this agent.
+            </p>
+          ) : null}
+          <AgentAclMatrix
+            companyId={companyId}
+            granteeAgent={agent}
+            showAssignMatrix={canAssignTasks}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

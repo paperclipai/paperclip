@@ -97,9 +97,24 @@ export function parseCursorModelsOutput(stdout: string, stderr: string): Adapter
   for (const lineRaw of combined.split(/\r?\n/)) {
     const line = lineRaw.trim();
     if (!line) continue;
+    
+    if (/^available models/i.test(line)) continue;
+    
     const bullet = line.replace(/^[-*]\s+/, "").trim();
-    if (!bullet || bullet.includes(" ")) continue;
-    pushModelId(models, bullet);
+    if (!bullet) continue;
+    
+    if (bullet.toLowerCase().startsWith("tip:")) continue;
+    if (bullet.toLowerCase().startsWith("loading models")) continue;
+    
+    const match = bullet.match(/^([A-Za-z0-9._/-]+)\s+-\s+(.+)$/);
+    if (match) {
+      const id = match[1];
+      if (isLikelyModelId(id)) {
+        models.push({ id, label: match[2] || id });
+      }
+    } else if (!bullet.includes(" ")) {
+      pushModelId(models, bullet);
+    }
   }
 
   return dedupeModels(models);

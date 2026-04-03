@@ -8,7 +8,14 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
+  list: vi.fn(),
   resolveByReference: vi.fn(),
+}));
+
+const mockAgentAclService = vi.hoisted(() => ({
+  createGrant: vi.fn(),
+  listGrants: vi.fn(),
+  getDefaults: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -58,6 +65,7 @@ const mockAdapter = vi.hoisted(() => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  agentAclService: () => mockAgentAclService,
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
@@ -131,7 +139,11 @@ function makeAgent(adapterType: string) {
 
 describe("agent skill routes", () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    mockAgentAclService.createGrant.mockResolvedValue(undefined);
+    mockAgentAclService.listGrants.mockResolvedValue([]);
+    mockAgentAclService.getDefaults.mockResolvedValue(null);
+    mockAgentService.list.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({
       ambiguous: false,
       agent: makeAgent("claude_local"),

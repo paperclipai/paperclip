@@ -29,6 +29,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { validate } from "../middleware/validate.js";
 import {
+  agentAclService,
   agentService,
   agentInstructionsService,
   accessService,
@@ -85,6 +86,7 @@ export function agentRoutes(db: Db) {
   const router = Router();
   const svc = agentService(db);
   const access = accessService(db);
+  const agentAclSvc = agentAclService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
@@ -113,15 +115,6 @@ export function agentRoutes(db: Db) {
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
-
-    if (agent.role === "ceo") {
-      return {
-        canAssignTasks: true,
-        taskAssignSource: "ceo_role" as const,
-        membership,
-        grants,
-      };
-    }
 
     if (canCreateAgents(agent)) {
       return {
@@ -179,6 +172,17 @@ export function agentRoutes(db: Db) {
       true,
       grantedByUserId,
     );
+  }
+
+  async function applyFullMeshGrantsForNewAgent(companyId: string, newAgentId: string) {
+    const allAgents = await svc.list(companyId);
+    const others = allAgents.filter((a) => a.id !== newAgentId);
+    for (const other of others) {
+      for (const permission of ["assign", "comment"] as const) {
+        await agentAclSvc.createGrant(companyId, other.id, newAgentId, permission);
+        await agentAclSvc.createGrant(companyId, newAgentId, other.id, permission);
+      }
+    }
   }
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
@@ -1393,6 +1397,7 @@ export function agentRoutes(db: Db) {
       agent.id,
       actor.actorType === "user" ? actor.actorId : null,
     );
+    await applyFullMeshGrantsForNewAgent(companyId, agent.id);
 
     if (approval) {
       await logActivity(db, {
@@ -1475,6 +1480,7 @@ export function agentRoutes(db: Db) {
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    await applyFullMeshGrantsForNewAgent(companyId, agent.id);
 
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(
@@ -1520,7 +1526,7 @@ export function agentRoutes(db: Db) {
     }
 
     const effectiveCanAssignTasks =
-      agent.role === "ceo" || Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
+      Boolean(agent.permissions?.canCreateAgents) || req.body.canAssignTasks;
     await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
     await access.setPrincipalPermission(
       agent.companyId,

@@ -101,7 +101,7 @@ describe("adapter model listing", () => {
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
-    expect(first.some((model) => model.id === "composer-1")).toBe(true);
+    expect(first.some((model) => model.id === "composer-2-fast")).toBe(true);
   });
 
 });

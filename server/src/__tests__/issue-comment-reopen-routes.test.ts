@@ -32,6 +32,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
+  agentAclService: () => ({ listGrants: vi.fn(async () => []), getDefaults: vi.fn(async () => null) }),
   agentService: () => mockAgentService,
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
@@ -95,6 +96,7 @@ function makeIssue(status: "todo" | "done") {
 describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",

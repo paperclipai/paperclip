@@ -1,4 +1,17 @@
 export {
+  agentPermissionSchema,
+  agentPermissionGrantSchema,
+  createAgentPermissionGrantSchema,
+  agentPermissionDefaultsSchema,
+  patchAgentPermissionDefaultsSchema,
+  type AgentPermission,
+  type AgentPermissionGrant,
+  type CreateAgentPermissionGrant,
+  type AgentPermissionDefaults,
+  type PatchAgentPermissionDefaults,
+} from "./agent-acl.js";
+
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,

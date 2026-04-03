@@ -441,14 +441,21 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[ENTRY_KEY];
     return next;
   }
-  const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
-  const rootPath = path.dirname(resolvedPath);
-  const entryFile = path.basename(resolvedPath);
-  const mode: BundleMode = resolvedPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)
-    || resolvedPath === path.join(resolveManagedInstructionsRoot(agent), entryFile)
-    ? "managed"
-    : "external";
-  return applyBundleConfig(next, { mode, rootPath, entryFile });
+  try {
+    const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
+    const rootPath = path.dirname(resolvedPath);
+    const entryFile = path.basename(resolvedPath);
+    const mode: BundleMode = resolvedPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)
+      || resolvedPath === path.join(resolveManagedInstructionsRoot(agent), entryFile)
+      ? "managed"
+      : "external";
+    return applyBundleConfig(next, { mode, rootPath, entryFile });
+  } catch {
+    delete next[MODE_KEY];
+    delete next[ROOT_KEY];
+    delete next[ENTRY_KEY];
+    return next;
+  }
 }
 
 export function agentInstructionsService() {
