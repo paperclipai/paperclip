@@ -142,6 +142,11 @@
   label {
     touch-action: manipulation;
   }
+  /* Let font-mono (utilities layer) override for monospace editors */
+  .paperclip-mdxeditor [class*="_placeholder_"],
+  .paperclip-mdxeditor-content {
+    font-family: inherit;
+  }
 }
 
 @media (pointer: coarse) {
@@ -319,14 +324,12 @@
 }
 
 .paperclip-mdxeditor [class*="_placeholder_"] {
-  font-family: inherit;
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--muted-foreground);
 }
 
 .paperclip-mdxeditor-content {
-  font-family: inherit;
   font-size: inherit;
   line-height: inherit;
   color: inherit;

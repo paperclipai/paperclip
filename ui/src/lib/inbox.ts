@@ -217,6 +217,9 @@ export function normalizeTimestamp(value: string | Date | null | undefined): num
 }
 
 export function issueLastActivityTimestamp(issue: Issue): number {
+  const lastActivityAt = normalizeTimestamp(issue.lastActivityAt);
+  if (lastActivityAt > 0) return lastActivityAt;
+
   const lastExternalCommentAt = normalizeTimestamp(issue.lastExternalCommentAt);
   if (lastExternalCommentAt > 0) return lastExternalCommentAt;
 

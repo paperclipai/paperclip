@@ -56,6 +56,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     labelIds: [],
     myLastTouchAt: null,
     lastExternalCommentAt: null,
+    lastActivityAt: new Date("2026-03-11T00:00:00.000Z"),
     isUnreadForMe: false,
     ...overrides,
   };

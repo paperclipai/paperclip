@@ -180,6 +180,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     labelIds: [],
     myLastTouchAt: new Date("2026-03-11T00:00:00.000Z"),
     lastExternalCommentAt: new Date("2026-03-11T01:00:00.000Z"),
+    lastActivityAt: new Date("2026-03-11T01:00:00.000Z"),
     isUnreadForMe,
   };
 }
@@ -372,10 +373,10 @@ describe("inbox helpers", () => {
 
   it("mixes approvals into the inbox feed by most recent activity", () => {
     const newerIssue = makeIssue("1", true);
-    newerIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    newerIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
 
     const olderIssue = makeIssue("2", false);
-    olderIssue.lastExternalCommentAt = new Date("2026-03-11T02:00:00.000Z");
+    olderIssue.lastActivityAt = new Date("2026-03-11T02:00:00.000Z");
 
     const approval = makeApprovalWithTimestamps(
       "approval-between",
@@ -400,19 +401,21 @@ describe("inbox helpers", () => {
     ]);
   });
 
-  it("sorts touched issues by latest external comment timestamp", () => {
-    const newerIssue = makeIssue("1", true);
-    newerIssue.lastExternalCommentAt = new Date("2026-03-11T05:00:00.000Z");
+  it("prefers canonical lastActivityAt over comment-only timestamps", () => {
+    const activityIssue = makeIssue("1", true);
+    activityIssue.lastExternalCommentAt = new Date("2026-03-11T01:00:00.000Z");
+    activityIssue.lastActivityAt = new Date("2026-03-11T05:00:00.000Z");
 
-    const olderIssue = makeIssue("2", true);
-    olderIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    const commentIssue = makeIssue("2", true);
+    commentIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    commentIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
 
-    expect(getRecentTouchedIssues([olderIssue, newerIssue]).map((issue) => issue.id)).toEqual(["1", "2"]);
+    expect(getRecentTouchedIssues([commentIssue, activityIssue]).map((issue) => issue.id)).toEqual(["1", "2"]);
   });
 
   it("mixes join requests into the inbox feed by most recent activity", () => {
     const issue = makeIssue("1", true);
-    issue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    issue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
 
     const joinRequest = makeJoinRequest("join-1");
     joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
@@ -497,7 +500,7 @@ describe("inbox helpers", () => {
   it("limits recent touched issues before unread badge counting", () => {
     const issues = Array.from({ length: RECENT_ISSUES_LIMIT + 5 }, (_, index) => {
       const issue = makeIssue(String(index + 1), index < 3);
-      issue.lastExternalCommentAt = new Date(Date.UTC(2026, 2, 31, 0, 0, 0, 0) - index * 60_000);
+      issue.lastActivityAt = new Date(Date.UTC(2026, 2, 31, 0, 0, 0, 0) - index * 60_000);
       return issue;
     });
 

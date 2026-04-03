@@ -1,10 +1,7 @@
 /// <reference path="./types/express.d.ts" />
-import fs from "node:fs";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import path from "node:path";
 import { resolve } from "node:path";
-import os from "node:os";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -42,12 +39,12 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
-import { initTelemetry, getTelemetryClient } from "./telemetry.js";
-// plugins import removed — Linear tunnel no longer managed here
+import { plugins } from "@paperclipai/db";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
 /**
  * Bundled plugins that should be auto-installed on startup.
@@ -56,9 +53,6 @@ import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
-  "@lucitra/paperclip-plugin-updater",
-  "@lucitra/paperclip-plugin-secrets",
-  "paperclip-plugin-slack",
 ];
 
 async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
@@ -97,71 +91,6 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
     }
   }
 
-  // Auto-upgrade bundled plugins if a newer version is available on npm
-  // Set PAPERCLIP_AUTO_UPGRADE_PLUGINS=false to disable
-  if (process.env.PAPERCLIP_AUTO_UPGRADE_PLUGINS === "false") {
-    logger.info("auto-upgrade disabled via PAPERCLIP_AUTO_UPGRADE_PLUGINS=false");
-  } else try {
-    const listRes3 = await fetch(`${baseUrl}/api/plugins`);
-    if (listRes3.ok) {
-      const allPlugins = (await listRes3.json()) as Array<{
-        id: string; packageName: string; version: string; status: string;
-      }>;
-      for (const pkg of BUNDLED_PLUGINS) {
-        const installed = allPlugins.find((p) => p.packageName === pkg && p.status === "ready");
-        if (!installed) continue;
-
-        try {
-          // Check npm for latest version (abbreviated metadata for speed)
-          const npmRes = await fetch(
-            `https://registry.npmjs.org/${encodeURIComponent(pkg)}`,
-            { headers: { Accept: "application/vnd.npm.install-v1+json" } },
-          );
-          if (!npmRes.ok) continue;
-          const npmData = (await npmRes.json()) as { "dist-tags"?: { latest?: string } };
-          const latest = npmData["dist-tags"]?.latest;
-          if (!latest || latest === installed.version) continue;
-
-          // Simple semver comparison: split and compare numerically
-          const parse = (v: string) => v.replace(/^v/, "").split("-")[0].split(".").map(Number);
-          const cur = parse(installed.version);
-          const lat = parse(latest);
-          let isNewer = false;
-          for (let i = 0; i < 3; i++) {
-            if ((lat[i] ?? 0) > (cur[i] ?? 0)) { isNewer = true; break; }
-            if ((lat[i] ?? 0) < (cur[i] ?? 0)) break;
-          }
-          if (!isNewer) continue;
-
-          logger.info(
-            { package: pkg, current: installed.version, latest },
-            "auto-upgrading bundled plugin",
-          );
-          const upgradeRes = await fetch(`${baseUrl}/api/plugins/${installed.id}/upgrade`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ version: latest }),
-          });
-          if (upgradeRes.ok) {
-            logger.info({ package: pkg, latest }, "bundled plugin auto-upgraded");
-          } else {
-            const err = (await upgradeRes.json()) as { error?: string };
-            // Capability escalation is expected — log but don't fail
-            if (err.error?.includes("capability")) {
-              logger.info({ package: pkg, latest }, "auto-upgrade pending capability approval");
-            } else {
-              logger.warn({ package: pkg, error: err.error }, "auto-upgrade failed");
-            }
-          }
-        } catch (err) {
-          logger.warn({ package: pkg, err }, "failed to check/upgrade bundled plugin");
-        }
-      }
-    }
-  } catch (err) {
-    logger.warn({ err }, "auto-upgrade check failed (non-fatal)");
-  }
-
   // For dev: if npm install failed for chat plugin, try local path fallback
   {
     const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
@@ -184,46 +113,6 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
       } catch (err) {
         logger.warn({ err }, "local chat plugin install failed");
       }
-    }
-  }
-
-  // Auto-configure Linear plugin from env vars if credentials are set
-  const linearClientId = process.env.PAPERCLIP_LINEAR_CLIENT_ID;
-  const linearClientSecret = process.env.PAPERCLIP_LINEAR_CLIENT_SECRET;
-  if (linearClientId && linearClientSecret) {
-    try {
-      const listRes = await fetch(`${baseUrl}/api/plugins`);
-      if (listRes.ok) {
-        const allPlugins = (await listRes.json()) as Array<{ id: string; pluginKey: string; status: string }>;
-        const linearPlugin = allPlugins.find((p) => p.pluginKey === "paperclip-plugin-linear" && p.status === "ready");
-        if (linearPlugin) {
-          // Check if config already has credentials
-          const configRes = await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`);
-          if (configRes.ok) {
-            const config = (await configRes.json()) as { configJson?: Record<string, unknown> | null };
-            const existing = config?.configJson ?? {};
-            if (!existing.linearClientId || !existing.linearClientSecret) {
-              // Auto-populate from env
-              await fetch(`${baseUrl}/api/plugins/${linearPlugin.id}/config`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  configJson: {
-                    ...existing,
-                    linearClientId,
-                    linearClientSecret,
-                    syncComments: existing.syncComments ?? true,
-                    syncDirection: existing.syncDirection ?? "bidirectional",
-                  },
-                }),
-              });
-              logger.info("Auto-configured Linear plugin from env vars");
-            }
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, "failed to auto-configure Linear plugin from env");
     }
   }
 }
@@ -709,57 +598,6 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
-  // Overwrite only the SDK JS files that contain our fork extensions.
-  // We must NOT delete the whole SDK dir or its package.json — the npm-installed
-  // SDK has proper dependency resolution for @paperclipai/shared that we need.
-  function copyWorkspaceSdkFiles() {
-    try {
-      const pluginsSdkDist = path.join(os.homedir(), ".paperclip", "plugins", "node_modules", "@paperclipai", "plugin-sdk", "dist");
-      const thisDir = path.dirname(new URL(import.meta.url).pathname);
-      const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
-      if (!fs.existsSync(workspaceSdkDist) || !fs.existsSync(pluginsSdkDist)) return;
-
-      // Only overwrite the specific files we changed (fork extensions)
-      const filesToCopy = [
-        "worker-rpc-host.js",
-        "worker-rpc-host.js.map",
-        "worker-rpc-host.d.ts",
-        "worker-rpc-host.d.ts.map",
-        "host-client-factory.js",
-        "host-client-factory.js.map",
-        "host-client-factory.d.ts",
-        "host-client-factory.d.ts.map",
-        "protocol.js",
-        "protocol.js.map",
-        "protocol.d.ts",
-        "protocol.d.ts.map",
-        "types.js",
-        "types.js.map",
-        "types.d.ts",
-        "types.d.ts.map",
-        "testing.js",
-        "testing.js.map",
-        "testing.d.ts",
-        "testing.d.ts.map",
-      ];
-      let copied = 0;
-      for (const file of filesToCopy) {
-        const src = path.join(workspaceSdkDist, file);
-        const dest = path.join(pluginsSdkDist, file);
-        if (fs.existsSync(src)) {
-          fs.cpSync(src, dest, { force: true });
-          copied++;
-        }
-      }
-      if (copied > 0) {
-        logger.info(`Patched ${copied} workspace SDK files into local plugins directory`);
-      }
-    } catch (err) {
-      logger.warn({ err }, "Failed to patch workspace SDK files (non-fatal)");
-    }
-  }
-  copyWorkspaceSdkFiles();
-
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
@@ -967,20 +805,67 @@ export async function startServer(): Promise<StartedServer> {
   });
 
   // Auto-install bundled plugins (idempotent — skips if already installed)
-  void autoInstallBundledPlugins(db as any).then(() => {
-    // Re-patch workspace SDK after plugin installs — npm install pulls the upstream SDK.
-    copyWorkspaceSdkFiles();
-  }).catch((err) => {
+  void autoInstallBundledPlugins(db as any).catch((err) => {
     logger.warn({ err }, "auto-install of bundled plugins failed (non-fatal)");
   });
 
+  // Start Linear tunnel if Linear is connected and cloudflared is available
+  if (config.linearOAuthClientId) {
+    void (async () => {
+      try {
+        const { secretService } = await import("./services/index.js");
+        const svc = secretService(db as any);
+        // Find any company with a Linear token
+        const allCompanies = await (db as any).select().from(companies);
+        for (const company of allCompanies) {
+          const linearSecret = await svc.getByName(company.id, "linear-oauth-token");
+          if (linearSecret) {
+            const token = await svc.resolveSecretValue(company.id, linearSecret.id, "latest");
+            // Get teamId from plugin config
+            const [plugin] = await (db as any).select().from(plugins).where(eq(plugins.pluginKey, "paperclip-plugin-linear")).limit(1);
+            let teamId = "";
+            if (plugin) {
+              const { pluginConfig: pluginConfigTable } = await import("@paperclipai/db");
+              const [cfg] = await (db as any).select().from(pluginConfigTable).where(eq(pluginConfigTable.pluginId, plugin.id));
+              teamId = (cfg?.configJson as Record<string, unknown>)?.teamId as string ?? "";
+            }
+            if (token && teamId) {
+              const { startLinearTunnel } = await import("./linear-tunnel.js");
+              await startLinearTunnel({ port: listenPort, linearToken: token, teamId });
+            }
+            break; // Only need one company's token
+          }
+        }
+      } catch (err) {
+        logger.info("[linear-tunnel] skipped (not connected or cloudflared unavailable)");
+      }
+    })();
+  }
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      // Flush telemetry
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
       }
+
+      // Stop Linear tunnel and delete webhook
+      try {
+        const { stopLinearTunnel } = await import("./linear-tunnel.js");
+        let cleanupToken: string | undefined;
+        try {
+          const { secretService } = await import("./services/index.js");
+          const svc = secretService(db as any);
+          const allCompanies = await (db as any).select().from(companies);
+          for (const c of allCompanies) {
+            const s = await svc.getByName(c.id, "linear-oauth-token");
+            if (s) { cleanupToken = await svc.resolveSecretValue(c.id, s.id, "latest"); break; }
+          }
+        } catch { /* best effort */ }
+        await stopLinearTunnel(cleanupToken);
+      } catch { /* best effort */ }
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");

@@ -340,10 +340,24 @@ function CommentCard({
           sharingPreference={feedbackDataSharingPreference}
           termsUrl={feedbackTermsUrl}
           onVote={onVote}
+          rightSlot={comment.runId && !isPending ? (
+            comment.runAgentId ? (
+              <Link
+                to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
+                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+              >
+                run {comment.runId.slice(0, 8)}
+              </Link>
+            ) : (
+              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                run {comment.runId.slice(0, 8)}
+              </span>
+            )
+          ) : undefined}
         />
       ) : null}
-      {comment.runId && !isPending ? (
-        <div className="mt-2 pt-2 border-t border-border/60">
+      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+        <div className="mt-3 pt-3 border-t border-border/60">
           {comment.runAgentId ? (
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
