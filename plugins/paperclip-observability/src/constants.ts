@@ -41,9 +41,22 @@ export const METRIC_NAMES = {
   // Server health gauge (scheduled job)
   serverHealthScore: "paperclip.health.server.score",
 
+  // Project-level metrics
+  projectTokensInput: "paperclip.project.tokens.input",
+  projectTokensOutput: "paperclip.project.tokens.output",
+  projectCostCents: "paperclip.project.cost.cents",
+
+  // Issue-level metrics
+  issueTokensInput: "paperclip.issue.tokens.input",
+  issueTokensOutput: "paperclip.issue.tokens.output",
+
   // Session streaming metrics
   sessionDuration: "paperclip.agent.session.duration_ms",
   sessionTtft: "paperclip.agent.session.ttft_ms",
   sessionChunks: "paperclip.agent.session.chunks",
   sessionErrors: "paperclip.agent.session.errors",
+
+  // Activity observability metrics
+  activityCount: "paperclip.agent.activity.count",
+  activityActorCount: "paperclip.agent.activity.actor_count",
 } as const;

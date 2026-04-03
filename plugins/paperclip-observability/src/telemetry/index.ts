@@ -2,3 +2,4 @@ export { EventTelemetryRouter, type TelemetryContext, type EventHandler } from "
 export * from "./metrics-handlers.js";
 export * from "./trace-handlers.js";
 export * from "./log-handlers.js";
+export * from "./activity-handlers.js";
