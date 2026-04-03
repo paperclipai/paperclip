@@ -112,7 +112,7 @@ export function Org() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {data && data.length === 0 && (

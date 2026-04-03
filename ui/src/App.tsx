@@ -30,6 +30,7 @@ const GoalDetail = lazy(() => import("./pages/GoalDetail").then(m => ({ default:
 const ApprovalDetail = lazy(() => import("./pages/ApprovalDetail").then(m => ({ default: m.ApprovalDetail })));
 const Costs = lazy(() => import("./pages/Costs").then(m => ({ default: m.Costs })));
 const AgentPerformance = lazy(() => import("./pages/AgentPerformance").then(m => ({ default: m.AgentPerformance })));
+const BoardBriefing = lazy(() => import("./pages/BoardBriefing").then(m => ({ default: m.BoardBriefing })));
 const KnowledgeBase = lazy(() => import("./pages/KnowledgeBase").then(m => ({ default: m.KnowledgeBase })));
 const CompanySettings = lazy(() => import("./pages/CompanySettings").then(m => ({ default: m.CompanySettings })));
 const CompanySkills = lazy(() => import("./pages/CompanySkills").then(m => ({ default: m.CompanySkills })));
@@ -199,6 +200,7 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<LazyPage><ApprovalDetail /></LazyPage>} />
       <Route path="costs" element={<LazyPage variant="list"><Costs /></LazyPage>} />
       <Route path="performance" element={<LazyPage><AgentPerformance /></LazyPage>} />
+      <Route path="board-briefing" element={<LazyPage><BoardBriefing /></LazyPage>} />
       <Route path="knowledge" element={<LazyPage variant="list"><KnowledgeBase /></LazyPage>} />
       <Route path="activity" element={<Activity />} />
       <Route path="inbox" element={<InboxRootRedirect />} />

@@ -479,7 +479,7 @@ export function Routines() {
                 {createRoutine.isPending ? "Creating..." : "Create routine"}
               </Button>
               {createRoutine.isError ? (
-                <p className="text-sm text-destructive">
+                <p role="alert" className="text-sm text-destructive">
                   {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
                 </p>
               ) : null}
@@ -490,7 +490,7 @@ export function Routines() {
 
       {error ? (
         <Card>
-          <CardContent className="pt-6 text-sm text-destructive">
+          <CardContent role="alert" className="pt-6 text-sm text-destructive">
             {error instanceof Error ? error.message : "Failed to load routines"}
           </CardContent>
         </Card>

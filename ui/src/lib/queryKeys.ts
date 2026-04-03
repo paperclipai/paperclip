@@ -163,6 +163,8 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["role-templates", companyId, id] as const,
   },
   headcount: (companyId: string) => ["headcount", companyId] as const,
+  velocity: (companyId: string, weeks: number = 12) =>
+    ["velocity", companyId, weeks] as const,
   billing: {
     subscription: (companyId: string) => ["billing", "subscription", companyId] as const,
   },

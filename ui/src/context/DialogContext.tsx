@@ -35,6 +35,9 @@ interface DialogContextValue {
   newAgentOpen: boolean;
   openNewAgent: () => void;
   closeNewAgent: () => void;
+  hireAgentOpen: boolean;
+  openHireAgent: () => void;
+  closeHireAgent: () => void;
   onboardingOpen: boolean;
   onboardingOptions: OnboardingOptions;
   openOnboarding: (options?: OnboardingOptions) => void;
@@ -50,6 +53,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalDefaults, setNewGoalDefaults] = useState<NewGoalDefaults>({});
   const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const [hireAgentOpen, setHireAgentOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
 
@@ -89,6 +93,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setNewAgentOpen(false);
   }, []);
 
+  const openHireAgent = useCallback(() => {
+    setHireAgentOpen(true);
+  }, []);
+
+  const closeHireAgent = useCallback(() => {
+    setHireAgentOpen(false);
+  }, []);
+
   const openOnboarding = useCallback((options: OnboardingOptions = {}) => {
     setOnboardingOptions(options);
     setOnboardingOpen(true);
@@ -116,6 +128,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         newAgentOpen,
         openNewAgent,
         closeNewAgent,
+        hireAgentOpen,
+        openHireAgent,
+        closeHireAgent,
         onboardingOpen,
         onboardingOptions,
         openOnboarding,

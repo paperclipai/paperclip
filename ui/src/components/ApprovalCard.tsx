@@ -74,7 +74,7 @@ export function ApprovalCard({
         <div className="flex gap-2 mt-4 pt-3 border-t border-border">
           <Button
             size="sm"
-            className="bg-green-700 hover:bg-green-600 text-white"
+            className="bg-green-600 dark:bg-green-700 hover:bg-green-500 dark:hover:bg-green-600 text-white"
             onClick={onApprove}
             disabled={isPending}
           >

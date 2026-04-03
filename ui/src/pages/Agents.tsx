@@ -13,12 +13,12 @@ import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
+import { relativeTime, cn, agentRouteRef, agentUrl, formatCents } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, Plus, List, GitBranch, Search, SlidersHorizontal } from "lucide-react";
+import { Bot, Plus, List, LayoutGrid, GitBranch, Search, SlidersHorizontal, UserPlus } from "lucide-react";
 import { AGENT_ROLE_LABELS, DEPARTMENTS, DEPARTMENT_LABELS, type Agent, type Department } from "@ironworksai/shared";
 import { EmploymentBadge } from "../components/EmploymentBadge";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -68,20 +68,21 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
 
 export function Agents() {
   const { selectedCompanyId } = useCompany();
-  const { openNewAgent } = useDialog();
+  const { openNewAgent, openHireAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
-  const [view, setView] = useState<"list" | "org">("org");
+  const [view, setView] = useState<"list" | "grid" | "org">("org");
   const forceListView = isMobile;
-  const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const effectiveView: "list" | "grid" | "org" = forceListView ? "list" : view;
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [agentSearch, setAgentSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
+  const [employmentFilter, setEmploymentFilter] = useState<string>("all");
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -138,12 +139,14 @@ export function Agents() {
   const filtered = filterAgents(agents ?? [], tab, showTerminated).filter((a) => {
     if (agentSearch.trim() && !a.name.toLowerCase().includes(agentSearch.toLowerCase()) && !(a.title ?? "").toLowerCase().includes(agentSearch.toLowerCase())) return false;
     if (departmentFilter !== "all" && (a as unknown as Record<string, unknown>).department !== departmentFilter) return false;
+    const empType = ((a as unknown as Record<string, unknown>).employmentType as string) ?? "full_time";
+    if (employmentFilter !== "all" && empType !== employmentFilter) return false;
     return true;
   });
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
@@ -179,9 +182,9 @@ export function Agents() {
             >
               <SlidersHorizontal className="h-3 w-3" />
               Filters
-              {(showTerminated || departmentFilter !== "all") && (
+              {(showTerminated || departmentFilter !== "all" || employmentFilter !== "all") && (
                 <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">
-                  {(showTerminated ? 1 : 0) + (departmentFilter !== "all" ? 1 : 0)}
+                  {(showTerminated ? 1 : 0) + (departmentFilter !== "all" ? 1 : 0) + (employmentFilter !== "all" ? 1 : 0)}
                 </span>
               )}
             </button>
@@ -212,6 +215,18 @@ export function Agents() {
                     ))}
                   </select>
                 </div>
+                <div className="px-2 py-1.5">
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Employment Type</label>
+                  <select
+                    value={employmentFilter}
+                    onChange={(e) => setEmploymentFilter(e.target.value)}
+                    className="w-full text-xs bg-transparent border border-border rounded px-1.5 py-1"
+                  >
+                    <option value="all">All types</option>
+                    <option value="full_time">Full-Time</option>
+                    <option value="contractor">Contractor</option>
+                  </select>
+                </div>
               </div>
             )}
           </div>
@@ -224,8 +239,19 @@ export function Agents() {
                   effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
+                title="List view"
               >
                 <List className="h-3.5 w-3.5" />
+              </button>
+              <button
+                className={cn(
+                  "p-1.5 transition-colors",
+                  effectiveView === "grid" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                )}
+                onClick={() => setView("grid")}
+                title="Grid view"
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
               </button>
               <button
                 className={cn(
@@ -233,11 +259,16 @@ export function Agents() {
                   effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
+                title="Org chart view"
               >
                 <GitBranch className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
+          <Button size="sm" variant="outline" onClick={openHireAgent}>
+            <UserPlus className="h-3.5 w-3.5 mr-1.5" />
+            Hire Agent
+          </Button>
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
@@ -249,7 +280,7 @@ export function Agents() {
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
 
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
         <EmptyState
@@ -264,9 +295,10 @@ export function Agents() {
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
           {filtered.map((agent) => {
+            const isTerminated = agent.status === "terminated";
             return (
+              <div key={agent.id} className={cn(isTerminated && "opacity-50")}>
               <EntityRow
-                key={agent.id}
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
@@ -280,7 +312,7 @@ export function Agents() {
                           : getRoleLevel(agent.role) === "management"
                             ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                             : "bg-muted text-muted-foreground",
-                        getAgentRingClass(agent.role),
+                        getAgentRingClass(agent.role, (agent as unknown as Record<string, unknown>).employmentType as string | undefined),
                       )}
                     >
                       <AgentIcon icon={agent.icon} className="h-3.5 w-3.5" />
@@ -323,16 +355,104 @@ export function Agents() {
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
                       </span>
+                      {isTerminated && (
+                        <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground">
+                          Terminated
+                        </span>
+                      )}
                     </div>
                   </div>
                 }
               />
+              </div>
             );
           })}
         </div>
       )}
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
+        <p className="text-sm text-muted-foreground text-center py-8">
+          No agents match the selected filter.
+        </p>
+      )}
+
+      {/* Grid view */}
+      {effectiveView === "grid" && filtered.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          {filtered.map((agent) => {
+            const isTerminated = agent.status === "terminated";
+            const empType = ((agent as unknown as Record<string, unknown>).employmentType as string) ?? "full_time";
+            const dept = (agent as unknown as Record<string, unknown>).department as string | undefined;
+            const dotColor = agentStatusDot[agent.status] ?? agentStatusDotDefault;
+            const costCents = (agent as unknown as Record<string, unknown>).spentMonthlyCents as number | undefined;
+
+            return (
+              <Link
+                key={agent.id}
+                to={agentUrl(agent)}
+                className={cn(
+                  "flex flex-col gap-3 rounded-lg border border-border p-4 hover:bg-accent/30 transition-colors no-underline text-inherit",
+                  isTerminated && "opacity-50",
+                )}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={cn(
+                        "flex items-center justify-center h-9 w-9 rounded-lg",
+                        getRoleLevel(agent.role) === "executive"
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          : getRoleLevel(agent.role) === "management"
+                            ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                            : "bg-muted text-muted-foreground",
+                        getAgentRingClass(agent.role, empType),
+                      )}
+                    >
+                      <AgentIcon icon={agent.icon} className="h-4.5 w-4.5" />
+                    </span>
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className={`absolute inline-flex h-full w-full rounded-full ${dotColor}`} />
+                    </span>
+                  </div>
+                  {liveRunByAgent.has(agent.id) && (
+                    <LiveRunIndicator
+                      agentRef={agentRouteRef(agent)}
+                      runId={liveRunByAgent.get(agent.id)!.runId}
+                      liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+                    />
+                  )}
+                </div>
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-sm font-semibold truncate">{agent.name}</span>
+                  <span className="text-xs text-muted-foreground truncate">
+                    {roleLabels[agent.role] ?? agent.role}
+                    {agent.title ? ` - ${agent.title}` : ""}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {dept && (
+                    <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground">
+                      {(DEPARTMENT_LABELS as Record<string, string>)[dept] ?? dept}
+                    </span>
+                  )}
+                  <EmploymentBadge type={empType} />
+                </div>
+                {agent.spentMonthlyCents > 0 && (
+                  <div className="flex items-center justify-between text-xs text-muted-foreground border-t border-border/50 pt-2 mt-auto">
+                    <span>Cost to date</span>
+                    <span className="tabular-nums font-medium text-foreground">
+                      {formatCents(agent.spentMonthlyCents)}
+                    </span>
+                  </div>
+                )}
+                <StatusBadge status={agent.status} />
+              </Link>
+            );
+          })}
+        </div>
+      )}
+
+      {effectiveView === "grid" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
           No agents match the selected filter.
         </p>
@@ -376,9 +496,10 @@ function OrgTreeNode({
   const agent = agentMap.get(node.id);
 
   const statusColor = agentStatusDot[node.status] ?? agentStatusDotDefault;
+  const isTerminated = node.status === "terminated";
 
   return (
-    <div style={{ paddingLeft: depth * 24 }}>
+    <div style={{ paddingLeft: depth * 24 }} className={cn(isTerminated && "opacity-50")}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
@@ -392,7 +513,7 @@ function OrgTreeNode({
                 : getRoleLevel(node.role) === "management"
                   ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                   : "bg-muted text-muted-foreground",
-              getAgentRingClass(node.role),
+              getAgentRingClass(node.role, (agent as unknown as Record<string, unknown> | undefined)?.employmentType as string | undefined),
             )}
           >
             <AgentIcon icon={agent?.icon} className="h-3.5 w-3.5" />
@@ -442,6 +563,11 @@ function OrgTreeNode({
             <span className="w-20 flex justify-end">
               <StatusBadge status={node.status} />
             </span>
+            {isTerminated && (
+              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground">
+                Terminated
+              </span>
+            )}
           </div>
         </div>
       </Link>

@@ -313,21 +313,12 @@ export function Goals() {
 
       {/* Empty state */}
       {totalGoals === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="bg-muted/50 p-4 mb-4 rounded-full">
-            <Target className="h-10 w-10 text-muted-foreground/50" />
-          </div>
-          <h3 className="text-sm font-medium mb-1">No goals yet</h3>
-          <p className="text-xs text-muted-foreground max-w-sm mb-4">
-            Goals track what your agents are working toward. Create a goal, then add issues or run a playbook to break it into tasks.
-          </p>
-          <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => openNewGoal()}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" />
-              Create Goal
-            </Button>
-          </div>
-        </div>
+        <EmptyState
+          icon={Target}
+          message="Goals track what your agents are working toward. Create a goal, then add issues or run a playbook to break it into tasks."
+          action="Create Goal"
+          onAction={() => openNewGoal()}
+        />
       )}
 
       {/* Goal cards */}

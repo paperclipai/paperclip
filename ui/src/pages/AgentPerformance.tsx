@@ -5,6 +5,7 @@ import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { costsApi } from "../api/costs";
 import { projectsApi } from "../api/projects";
+import { velocityApi, type VelocityWeek } from "../api/velocity";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -209,6 +210,13 @@ export function AgentPerformance() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: velocity } = useQuery({
+    queryKey: queryKeys.velocity(selectedCompanyId!, 12),
+    queryFn: () => velocityApi.get(selectedCompanyId!, 12),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+
   const rows = useMemo(
     () => computeAgentPerformance(agents ?? [], issues ?? [], costsByAgent ?? [], range),
     [agents, issues, costsByAgent, range],
@@ -272,6 +280,17 @@ export function AgentPerformance() {
         </div>
       </div>
 
+      {/* Company-Level Aggregate KPIs */}
+      <CompanyKpiCards rows={rows} />
+
+      {/* Velocity Chart */}
+      {velocity && velocity.length > 0 && (
+        <div className="rounded-xl border border-border p-4 space-y-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Issue Velocity - Last 12 Weeks</h4>
+          <VelocityChart data={velocity} />
+        </div>
+      )}
+
       {/* Team summary */}
       <div className="flex items-center gap-4 rounded-xl border border-border p-4">
         <div className={cn("inline-flex items-center justify-center h-12 w-12 rounded-xl border text-xl font-bold", RATING_COLORS[teamRating])}>
@@ -284,6 +303,62 @@ export function AgentPerformance() {
           </p>
         </div>
       </div>
+
+      {/* Per-Agent KPI Cards */}
+      {sorted.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {sorted.slice(0, 6).map((row) => {
+            const successRate = row.tasksDone > 0 ? row.completionRate : null;
+            const successColor = successRate !== null
+              ? successRate >= 85 ? "text-emerald-400" : successRate >= 70 ? "text-amber-400" : "text-red-400"
+              : "text-muted-foreground";
+            return (
+              <div key={row.agentId} className="rounded-xl border border-border p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "inline-flex items-center justify-center h-7 w-7 rounded-lg border text-xs font-bold",
+                    RATING_COLORS[row.rating],
+                  )}>
+                    {row.rating}
+                  </span>
+                  <Link to={agentUrl({ id: row.agentId, urlKey: null } as any)} className="no-underline text-inherit font-medium truncate">
+                    {row.name}
+                  </Link>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Success</p>
+                    <p className={cn("text-lg font-bold tabular-nums", successColor)}>
+                      {successRate !== null ? `${successRate}%` : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">$/Task</p>
+                    <p className="text-lg font-bold tabular-nums text-muted-foreground">
+                      {row.costPerTask !== null ? formatCents(Math.round(row.costPerTask)) : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Score</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-lg font-bold tabular-nums">{row.ratingScore}</p>
+                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className={cn(
+                            "h-full rounded-full",
+                            row.ratingScore >= 80 ? "bg-emerald-500" : row.ratingScore >= 50 ? "bg-amber-500" : "bg-red-500",
+                          )}
+                          style={{ width: `${row.ratingScore}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Insights */}
       {rows.length > 0 && <PerformanceInsights rows={rows} />}
@@ -841,6 +916,148 @@ function PerformanceInsights({ rows }: { rows: AgentPerfRow[] }) {
       </div>
       )}
     </div>
+  );
+}
+
+/* ── Company KPI Cards ── */
+
+function CompanyKpiCards({ rows }: { rows: AgentPerfRow[] }) {
+  const activeRows = rows.filter((r) => r.tasksDone > 0);
+  const totalDone = rows.reduce((s, r) => s + r.tasksDone, 0);
+  const totalCancelled = rows.reduce(
+    (s, r) => s + (r.completionRate > 0 && r.tasksDone > 0 ? Math.round(r.tasksDone * (100 - r.completionRate) / r.completionRate) : 0),
+    0,
+  );
+  const overallSuccessRate = totalDone + totalCancelled > 0
+    ? Math.round((totalDone / (totalDone + totalCancelled)) * 100)
+    : 0;
+  const totalSpend = rows.reduce((s, r) => s + r.totalSpendCents, 0);
+  const avgCostPerTask = totalDone > 0 ? totalSpend / totalDone : 0;
+  const avgPerfScore = activeRows.length > 0
+    ? Math.round(activeRows.reduce((s, r) => s + r.ratingScore, 0) / activeRows.length)
+    : 0;
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <KpiCard
+        label="Overall Success Rate"
+        value={`${overallSuccessRate}%`}
+        color={overallSuccessRate >= 85 ? "text-emerald-400" : overallSuccessRate >= 70 ? "text-amber-400" : "text-red-400"}
+      />
+      <KpiCard
+        label="Avg Cost / Task"
+        value={avgCostPerTask > 0 ? formatCents(Math.round(avgCostPerTask)) : "-"}
+      />
+      <KpiCard
+        label="Avg Performance Score"
+        value={avgPerfScore > 0 ? String(avgPerfScore) : "-"}
+      />
+      <KpiCard
+        label="Tasks Completed"
+        value={String(totalDone)}
+        color="text-foreground"
+      />
+    </div>
+  );
+}
+
+function KpiCard({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-1">
+      <p className="text-xs text-muted-foreground uppercase tracking-wider">{label}</p>
+      <p className={cn("text-2xl font-bold tabular-nums", color)}>{value}</p>
+    </div>
+  );
+}
+
+/* ── Velocity SVG Bar Chart ── */
+
+const VEL_W = 600;
+const VEL_H = 160;
+const VEL_PAD = { top: 12, right: 16, bottom: 32, left: 40 };
+const VEL_INNER_W = VEL_W - VEL_PAD.left - VEL_PAD.right;
+const VEL_INNER_H = VEL_H - VEL_PAD.top - VEL_PAD.bottom;
+
+function VelocityChart({ data }: { data: VelocityWeek[] }) {
+  const maxVal = Math.max(...data.map((d) => d.issuesCompleted), 1);
+  const barCount = data.length;
+  const barGap = 4;
+  const barW = Math.max(8, (VEL_INNER_W - barGap * (barCount - 1)) / barCount);
+
+  const yTicks = 4;
+  const yStep = maxVal / yTicks;
+
+  return (
+    <svg
+      viewBox={`0 0 ${VEL_W} ${VEL_H}`}
+      className="w-full"
+      style={{ height: VEL_H }}
+      aria-hidden="true"
+    >
+      {/* Y grid lines */}
+      {Array.from({ length: yTicks + 1 }, (_, i) => {
+        const val = yStep * i;
+        const y = VEL_PAD.top + VEL_INNER_H - (val / maxVal) * VEL_INNER_H;
+        return (
+          <g key={i}>
+            <line
+              x1={VEL_PAD.left}
+              y1={y}
+              x2={VEL_W - VEL_PAD.right}
+              y2={y}
+              stroke="currentColor"
+              strokeOpacity={0.08}
+              strokeWidth={1}
+            />
+            <text
+              x={VEL_PAD.left - 4}
+              y={y + 4}
+              textAnchor="end"
+              fontSize={10}
+              className="fill-muted-foreground"
+              fontFamily="var(--font-sans)"
+            >
+              {Math.round(val)}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Bars */}
+      {data.map((d, i) => {
+        const x = VEL_PAD.left + i * (barW + barGap);
+        const barH = maxVal > 0 ? (d.issuesCompleted / maxVal) * VEL_INNER_H : 0;
+        const y = VEL_PAD.top + VEL_INNER_H - barH;
+        const labelDate = new Date(d.weekStart + "T12:00:00");
+        const label = `${labelDate.getMonth() + 1}/${labelDate.getDate()}`;
+
+        return (
+          <g key={i}>
+            <rect
+              x={x}
+              y={y}
+              width={barW}
+              height={barH}
+              fill="#3b82f6"
+              fillOpacity={0.75}
+              rx={2}
+            />
+            {(i === 0 || i === barCount - 1 || i % 2 === 0) && (
+              <text
+                x={x + barW / 2}
+                y={VEL_H - 4}
+                textAnchor="middle"
+                fontSize={10}
+                className="fill-muted-foreground"
+                fontFamily="var(--font-sans)"
+              >
+                {label}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 

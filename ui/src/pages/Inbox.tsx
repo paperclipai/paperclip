@@ -339,7 +339,7 @@ function ApprovalInboxRow({
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             <Button
               size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+              className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
               onClick={onApprove}
               disabled={isPending}
             >
@@ -361,7 +361,7 @@ function ApprovalInboxRow({
         <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -464,7 +464,7 @@ function JoinRequestInboxRow({
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -484,7 +484,7 @@ function JoinRequestInboxRow({
       <div className="mt-3 flex gap-2 sm:hidden">
         <Button
           size="sm"
-          className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+          className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
           onClick={onApprove}
           disabled={isPending}
         >
@@ -1116,8 +1116,8 @@ export function Inbox() {
         )}
       </div>
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsError && <p role="alert" className="text-sm text-destructive">{approvalsError.message}</p>}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {!allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />

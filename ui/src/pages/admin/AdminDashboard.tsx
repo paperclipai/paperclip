@@ -116,7 +116,7 @@ export default function AdminDashboard() {
       </div>
 
       {error && (
-        <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm text-red-400">
+        <div role="alert" className="rounded-lg border border-red-500/20 bg-red-500/[0.06] px-4 py-3 text-sm text-red-400">
           Failed to load dashboard: {error instanceof Error ? error.message : "Unknown error"}
         </div>
       )}

@@ -37,7 +37,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { EmploymentBadge } from "../components/EmploymentBadge";
+import { getRoleLevel, getAgentRingClass } from "../lib/role-icons";
 import {
+  DEPARTMENT_LABELS,
   isUuidLike,
   type BudgetPolicySummary,
   type HeartbeatRun,
@@ -391,15 +394,30 @@ export function AgentDetail() {
             value={agent.icon}
             onChange={(icon) => updateIcon.mutate(icon)}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
+            <button className={cn(
+              "shrink-0 flex items-center justify-center h-12 w-12 rounded-lg transition-colors",
+              getRoleLevel(agent.role) === "executive"
+                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : getRoleLevel(agent.role) === "management"
+                  ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  : "bg-accent text-muted-foreground",
+              getAgentRingClass(agent.role, (agent as unknown as Record<string, unknown>).employmentType as string | undefined),
+              "hover:opacity-80",
+            )}>
+              <AgentIcon icon={agent.icon} className="h-8 w-8" />
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+              <EmploymentBadge type={(agent as unknown as Record<string, unknown>).employmentType as string ?? "full_time"} />
+            </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
+              {(agent as unknown as Record<string, unknown>).department
+                ? ` · ${(DEPARTMENT_LABELS as Record<string, string>)[(agent as unknown as Record<string, unknown>).department as string] ?? (agent as unknown as Record<string, unknown>).department}`
+                : ""}
             </p>
           </div>
         </div>

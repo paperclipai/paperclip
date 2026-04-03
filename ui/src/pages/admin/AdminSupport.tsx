@@ -229,7 +229,7 @@ export default function AdminSupport() {
   }, [tickets, search, typeFilter, statusFilter]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
         <Headphones className="h-5 w-5 text-primary" />

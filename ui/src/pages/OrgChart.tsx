@@ -11,7 +11,9 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Network, Upload } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@ironworksai/shared";
+import { AGENT_ROLE_LABELS, DEPARTMENT_LABELS, type Agent } from "@ironworksai/shared";
+import { getRoleLevel, getAgentRingClass } from "../lib/role-icons";
+import { cn } from "../lib/utils";
 
 // Layout constants
 const CARD_W = 200;
@@ -136,6 +138,22 @@ const statusDotColor: Record<string, string> = {
   terminated: "#a3a3a3",
 };
 const defaultDotColor = "#a3a3a3";
+
+const departmentBorderColor: Record<string, string> = {
+  executive: "border-l-amber-500/40",
+  engineering: "border-l-blue-500/40",
+  design: "border-l-purple-500/40",
+  operations: "border-l-emerald-500/40",
+  finance: "border-l-green-500/40",
+  security: "border-l-red-500/40",
+  research: "border-l-cyan-500/40",
+  marketing: "border-l-pink-500/40",
+  support: "border-l-orange-500/40",
+  compliance: "border-l-indigo-500/40",
+  hr: "border-l-violet-500/40",
+};
+
+const departmentLabels = DEPARTMENT_LABELS as Record<string, string>;
 
 // ── Main component ──────────────────────────────────────────────────────
 
@@ -390,12 +408,19 @@ export function OrgChart() {
         {allNodes.map((node) => {
           const agent = agentMap.get(node.id);
           const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+          const empType = (agent as unknown as Record<string, unknown> | undefined)?.employmentType as string | undefined;
+          const dept = (agent as unknown as Record<string, unknown> | undefined)?.department as string | undefined;
+          const isContractor = empType === "contractor";
 
           return (
             <div
               key={node.id}
               data-org-card
-              className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+              className={cn(
+                "absolute bg-card rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px]",
+                isContractor ? "border border-dashed border-amber-400/50" : "border border-border",
+                dept && departmentBorderColor[dept] ? departmentBorderColor[dept] : "border-l-border",
+              )}
               style={{
                 left: node.x,
                 top: node.y,
@@ -407,15 +432,23 @@ export function OrgChart() {
               <div className="flex items-center px-4 py-3 gap-3">
                 {/* Agent icon + status dot */}
                 <div className="relative shrink-0">
-                  <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
-                    <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
+                  <div className={cn(
+                    "w-9 h-9 rounded-full flex items-center justify-center",
+                    getRoleLevel(node.role) === "executive"
+                      ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                      : getRoleLevel(node.role) === "management"
+                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                        : "bg-muted text-foreground/70",
+                    getAgentRingClass(node.role, empType),
+                  )}>
+                    <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5" />
                   </div>
                   <span
                     className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
                     style={{ backgroundColor: dotColor }}
                   />
                 </div>
-                {/* Name + role + adapter type */}
+                {/* Name + role + department + adapter type */}
                 <div className="flex flex-col items-start min-w-0 flex-1">
                   <span className="text-sm font-semibold text-foreground leading-tight">
                     {node.name}
@@ -423,6 +456,11 @@ export function OrgChart() {
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
+                  {dept && (
+                    <span className="text-[10px] text-muted-foreground/50 leading-tight mt-0.5">
+                      {departmentLabels[dept] ?? dept}
+                    </span>
+                  )}
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}

@@ -118,7 +118,7 @@ export function Issues() {
   const doneIssues = (issues ?? []).filter((i) => i.status === "done").length;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Consistent header */}
       <div className="flex items-center justify-between">
         <div>

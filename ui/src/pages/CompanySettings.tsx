@@ -13,7 +13,7 @@ import { memberApi } from "../api/userInvites";
 import { queryKeys } from "../lib/queryKeys";
 import { useMeAccess } from "../hooks/useMeAccess";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload, UserPlus, Key, Shield, Trash2, AlertTriangle, Database } from "lucide-react";
+import { Settings, Check, Download, Upload, UserPlus, Key, Shield, Trash2, AlertTriangle, Database, Users, Plus, Pencil, X } from "lucide-react";
 import { MessagingSetup } from "../components/MessagingSetup";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { InviteUserDialog } from "../components/InviteUserDialog";
@@ -24,7 +24,16 @@ import {
   HintIcon
 } from "../components/agent-config-primitives";
 import type { MembershipRole, CompanySecret } from "@ironworksai/shared";
-import { MEMBERSHIP_ROLES } from "@ironworksai/shared";
+import {
+  MEMBERSHIP_ROLES,
+  AGENT_ROLES,
+  AGENT_ROLE_LABELS,
+  DEPARTMENTS,
+  DEPARTMENT_LABELS,
+  EMPLOYMENT_TYPES,
+  EMPLOYMENT_TYPE_LABELS,
+} from "@ironworksai/shared";
+import { roleTemplatesApi, type RoleTemplate } from "../api/roleTemplates";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -302,9 +311,9 @@ export function CompanySettings() {
 
       {/* General */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           General
-        </div>
+        </h2>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <Field label="Company name" hint="The display name for your company.">
             <input
@@ -331,9 +340,9 @@ export function CompanySettings() {
 
       {/* Appearance */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Appearance
-        </div>
+        </h2>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
@@ -451,9 +460,9 @@ export function CompanySettings() {
 
       {/* Hiring */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
-        </div>
+        </h2>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
             label="Require board approval for new hires"
@@ -466,9 +475,9 @@ export function CompanySettings() {
 
       {/* Invites */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Invites
-        </div>
+        </h2>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
@@ -488,7 +497,7 @@ export function CompanySettings() {
             </Button>
           </div>
           {inviteError && (
-            <p className="text-sm text-destructive">{inviteError}</p>
+            <p role="alert" className="text-sm text-destructive">{inviteError}</p>
           )}
           {inviteSnippet && (
             <div className="rounded-md border border-border bg-muted/30 p-2">
@@ -541,9 +550,9 @@ export function CompanySettings() {
 
       {/* Import / Export */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Company Packages
-        </div>
+        </h2>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
@@ -568,9 +577,9 @@ export function CompanySettings() {
 
       {/* Danger Zone */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+        <h2 className="text-xs font-medium text-destructive uppercase tracking-wide">
           Danger Zone
-        </div>
+        </h2>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in
@@ -623,9 +632,9 @@ export function CompanySettings() {
       {canManageMembers && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Team Members
-            </div>
+            </h2>
             <Button size="sm" variant="outline" onClick={() => setInviteDialogOpen(true)}>
               <UserPlus className="h-3.5 w-3.5 mr-1.5" />
               Invite User
@@ -802,7 +811,289 @@ export function CompanySettings() {
         </Link>
       </div>
 
+      {/* Talent Pool */}
+      <TalentPoolSection companyId={selectedCompanyId!} />
+
       <InviteUserDialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen} />
+    </div>
+  );
+}
+
+/* ── Talent Pool Section ── */
+
+function TalentPoolSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const [formTitle, setFormTitle] = useState("");
+  const [formRole, setFormRole] = useState<string>("engineer");
+  const [formDepartment, setFormDepartment] = useState<string>("engineering");
+  const [formEmploymentType, setFormEmploymentType] = useState<string>("full_time");
+  const [formDescription, setFormDescription] = useState("");
+
+  const templatesQuery = useQuery({
+    queryKey: queryKeys.roleTemplates.list(companyId),
+    queryFn: () => roleTemplatesApi.list(companyId),
+    enabled: !!companyId,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      roleTemplatesApi.create(companyId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.roleTemplates.list(companyId) });
+      pushToast({ title: "Template created", tone: "success" });
+      resetForm();
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to create template", body: err.message, tone: "error" });
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      roleTemplatesApi.update(companyId, id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.roleTemplates.list(companyId) });
+      pushToast({ title: "Template updated", tone: "success" });
+      resetForm();
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to update template", body: err.message, tone: "error" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => roleTemplatesApi.remove(companyId, id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.roleTemplates.list(companyId) });
+      pushToast({ title: "Template deleted", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to delete template", body: err.message, tone: "error" });
+    },
+  });
+
+  function resetForm() {
+    setShowForm(false);
+    setEditingId(null);
+    setFormTitle("");
+    setFormRole("engineer");
+    setFormDepartment("engineering");
+    setFormEmploymentType("full_time");
+    setFormDescription("");
+  }
+
+  function startEdit(t: RoleTemplate) {
+    setEditingId(t.id);
+    setFormTitle(t.title);
+    setFormRole(t.role);
+    setFormDepartment(t.department ?? "engineering");
+    setFormEmploymentType(t.employmentType);
+    setFormDescription(t.description ?? "");
+    setShowForm(true);
+  }
+
+  function handleSave() {
+    const data: Record<string, unknown> = {
+      title: formTitle.trim(),
+      role: formRole,
+      department: formDepartment,
+      employmentType: formEmploymentType,
+      description: formDescription.trim() || null,
+    };
+    if (editingId) {
+      updateMutation.mutate({ id: editingId, data });
+    } else {
+      createMutation.mutate(data);
+    }
+  }
+
+  const templates = templatesQuery.data ?? [];
+  const isSystemTemplate = (t: RoleTemplate) => t.key.startsWith("system:");
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+          <Users className="h-3.5 w-3.5" />
+          Talent Pool
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            resetForm();
+            setShowForm(true);
+          }}
+        >
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          Create Template
+        </Button>
+      </div>
+
+      {showForm && (
+        <div className="rounded-md border border-border px-4 py-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">
+              {editingId ? "Edit Template" : "New Template"}
+            </span>
+            <button
+              className="text-muted-foreground hover:text-foreground transition-colors"
+              onClick={resetForm}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="space-y-2">
+            <Field label="Title">
+              <input
+                value={formTitle}
+                onChange={(e) => setFormTitle(e.target.value)}
+                placeholder="e.g. Senior Engineer"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              />
+            </Field>
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="Role">
+                <select
+                  value={formRole}
+                  onChange={(e) => setFormRole(e.target.value)}
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                >
+                  {AGENT_ROLES.map((r) => (
+                    <option key={r} value={r}>
+                      {(AGENT_ROLE_LABELS as Record<string, string>)[r] ?? r}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Department">
+                <select
+                  value={formDepartment}
+                  onChange={(e) => setFormDepartment(e.target.value)}
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                >
+                  {DEPARTMENTS.map((d) => (
+                    <option key={d} value={d}>
+                      {(DEPARTMENT_LABELS as Record<string, string>)[d] ?? d}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Type">
+                <select
+                  value={formEmploymentType}
+                  onChange={(e) => setFormEmploymentType(e.target.value)}
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                >
+                  {EMPLOYMENT_TYPES.map((et) => (
+                    <option key={et} value={et}>
+                      {(EMPLOYMENT_TYPE_LABELS as Record<string, string>)[et] ?? et}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <Field label="Description">
+              <input
+                value={formDescription}
+                onChange={(e) => setFormDescription(e.target.value)}
+                placeholder="Optional description"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              />
+            </Field>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!formTitle.trim() || isSaving}
+            >
+              {isSaving ? "Saving..." : editingId ? "Update" : "Create"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={resetForm}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {templates.length === 0 && !showForm && (
+        <div className="rounded-md border border-border px-4 py-6 text-center">
+          <p className="text-xs text-muted-foreground">
+            No role templates yet. Create one to speed up hiring.
+          </p>
+        </div>
+      )}
+
+      {templates.length > 0 && (
+        <div className="space-y-2">
+          {templates.map((t) => (
+            <div
+              key={t.id}
+              className="rounded-md border border-border px-4 py-3 flex items-center justify-between"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{t.title}</span>
+                  {isSystemTemplate(t) && (
+                    <span className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground">System</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs text-muted-foreground">
+                    {(AGENT_ROLE_LABELS as Record<string, string>)[t.role] ?? t.role}
+                  </span>
+                  {t.department && (
+                    <>
+                      <span className="text-border">|</span>
+                      <span className="text-xs text-muted-foreground">
+                        {(DEPARTMENT_LABELS as Record<string, string>)[t.department] ?? t.department}
+                      </span>
+                    </>
+                  )}
+                  <span className="text-border">|</span>
+                  <span className="text-xs text-muted-foreground">
+                    {(EMPLOYMENT_TYPE_LABELS as Record<string, string>)[t.employmentType] ?? t.employmentType}
+                  </span>
+                </div>
+                {t.description && (
+                  <p className="text-xs text-muted-foreground/70 mt-0.5">{t.description}</p>
+                )}
+              </div>
+              {!isSystemTemplate(t) && (
+                <div className="flex items-center gap-1 shrink-0 ml-3">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => startEdit(t)}
+                    title="Edit template"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-destructive"
+                    onClick={() => {
+                      if (window.confirm(`Delete template "${t.title}"?`)) {
+                        deleteMutation.mutate(t.id);
+                      }
+                    }}
+                    title="Delete template"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -84,7 +84,7 @@ function LineChart({
         return (
           <g key={i}>
             <line x1={PAD.left} y1={y} x2={CHART_W - PAD.right} y2={y} stroke="currentColor" strokeOpacity={0.08} strokeWidth={1} />
-            <text x={PAD.left - 4} y={y + 4} textAnchor="end" fontSize={9} fill="currentColor" fillOpacity={0.4}>
+            <text x={PAD.left - 4} y={y + 4} textAnchor="end" fontSize={10} className="fill-muted-foreground" fontFamily="var(--font-sans)">
               {fmtAxisLabel(val, unit)}
             </text>
           </g>
@@ -95,7 +95,7 @@ function LineChart({
         const step = Math.max(1, Math.floor(data.length / 6));
         if (i % step !== 0 && i !== data.length - 1) return null;
         return (
-          <text key={i} x={scaleX(i, data.length)} y={CHART_H - 4} textAnchor="middle" fontSize={9} fill="currentColor" fillOpacity={0.4}>
+          <text key={i} x={scaleX(i, data.length)} y={CHART_H - 4} textAnchor="middle" fontSize={10} className="fill-muted-foreground" fontFamily="var(--font-sans)">
             {d.label}
           </text>
         );
@@ -140,7 +140,7 @@ function BarChart({
         return (
           <g key={i}>
             <line x1={PAD.left} y1={y} x2={CHART_W - PAD.right} y2={y} stroke="currentColor" strokeOpacity={0.08} strokeWidth={1} />
-            <text x={PAD.left - 4} y={y + 4} textAnchor="end" fontSize={9} fill="currentColor" fillOpacity={0.4}>
+            <text x={PAD.left - 4} y={y + 4} textAnchor="end" fontSize={10} className="fill-muted-foreground" fontFamily="var(--font-sans)">
               {fmtAxisLabel(val, unit)}
             </text>
           </g>
@@ -156,7 +156,7 @@ function BarChart({
           <g key={i}>
             <rect x={x} y={y} width={barW} height={barH} fill={color} fillOpacity={0.75} rx={2} />
             {showLabel && (
-              <text x={scaleX(i, data.length)} y={CHART_H - 4} textAnchor="middle" fontSize={9} fill="currentColor" fillOpacity={0.4}>
+              <text x={scaleX(i, data.length)} y={CHART_H - 4} textAnchor="middle" fontSize={10} className="fill-muted-foreground" fontFamily="var(--font-sans)">
                 {d.label}
               </text>
             )}

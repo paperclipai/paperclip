@@ -3,6 +3,7 @@ import { eq, sql, and } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import { goals, issues, agents, projects } from "@ironworksai/db";
 import { assertCompanyAccess } from "./authz.js";
+import { getVelocityData } from "../services/velocity.js";
 
 export function goalStatsRoutes(db: Db) {
   const router = Router();
@@ -95,6 +96,24 @@ export function goalStatsRoutes(db: Db) {
     });
 
     res.json(result);
+  });
+
+  /**
+   * GET /companies/:companyId/velocity?weeks=12
+   * Returns weekly issue completion/cancellation counts for the last N weeks.
+   */
+  router.get("/companies/:companyId/velocity", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const weeksParam = req.query.weeks;
+    const weeks =
+      typeof weeksParam === "string" && /^\d+$/.test(weeksParam)
+        ? Math.min(Math.max(parseInt(weeksParam, 10), 1), 52)
+        : 12;
+
+    const data = await getVelocityData(db, companyId, weeks);
+    res.json(data);
   });
 
   return router;

@@ -40,3 +40,6 @@ export { buildOnboardingPacket, type OnboardingPacket } from "./contractor-onboa
 export { computePerformanceScore, updateAllPerformanceScores } from "./performance-score.js";
 export { createAgentWorkspace, archiveAgentWorkspace, createAgentDocument, getAgentDocuments } from "./agent-workspace.js";
 export { createHiringRecord, createTerminationRecord, createPerformanceReview } from "./hr-personnel.js";
+export { generateAgentWeeklyReport, generateCompanyWeeklyReport, runWeeklyReports, runAllWeeklyReports } from "./weekly-reports.js";
+export { generateDailyStandup, runDailyStandups, runAllDailyStandups } from "./daily-standup.js";
+export { getVelocityData, type VelocityWeek } from "./velocity.js";

@@ -4,6 +4,8 @@ import type { Db } from "@ironworksai/db";
 import { captureAnalyticsSnapshot } from "../services/analytics.js";
 import { checkContractorLifecycles } from "../services/contractor-lifecycle.js";
 import { decayStaleMemories } from "../services/agent-memory.js";
+import { runAllWeeklyReports } from "../services/weekly-reports.js";
+import { runAllDailyStandups } from "../services/daily-standup.js";
 import {
   companies,
   agents,
@@ -653,6 +655,51 @@ export function startRetentionScheduler(db: Db): NodeJS.Timeout {
         logger.error({ err }, "scheduled contractor lifecycle check failed");
       });
   }, HOURLY_INTERVAL_MS);
+
+  // ── CT-aware scheduled tasks ──────────────────────────────────────────
+  // Check every minute whether it's time to run CT-scheduled jobs.
+  // Weekly reports: Sunday 18:00 CT
+  // Daily standups: every day 08:00 CT
+  const MINUTE_MS = 60 * 1000;
+  let lastStandupDate = "";
+  let lastWeeklyDate = "";
+
+  setInterval(() => {
+    const now = new Date();
+    const ctParts = now.toLocaleString("en-US", {
+      timeZone: "America/Chicago",
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+    });
+
+    // Parse CT time components
+    const hourMatch = ctParts.match(/(\d{2}):(\d{2})/);
+    const ctHour = hourMatch ? parseInt(hourMatch[1], 10) : -1;
+    const ctMinute = hourMatch ? parseInt(hourMatch[2], 10) : -1;
+    const isSunday = ctParts.startsWith("Sun");
+    const dateKey = now.toLocaleDateString("en-CA", { timeZone: "America/Chicago" });
+
+    // Daily standups at 08:00 CT (run once per day)
+    if (ctHour === 8 && ctMinute === 0 && lastStandupDate !== dateKey) {
+      lastStandupDate = dateKey;
+      runAllDailyStandups(db).catch((err) =>
+        logger.error({ err }, "scheduled daily standups failed"),
+      );
+    }
+
+    // Weekly reports on Sunday at 18:00 CT (run once per week)
+    if (isSunday && ctHour === 18 && ctMinute === 0 && lastWeeklyDate !== dateKey) {
+      lastWeeklyDate = dateKey;
+      runAllWeeklyReports(db).catch((err) =>
+        logger.error({ err }, "scheduled weekly reports failed"),
+      );
+    }
+  }, MINUTE_MS);
 
   // Return the interval so it can be cleared on shutdown
   return interval;

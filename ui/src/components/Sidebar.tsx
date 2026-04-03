@@ -8,6 +8,7 @@ import {
   BookText,
   BookTemplate,
   DollarSign,
+  FileText,
   History,
   Search,
   SquarePen,
@@ -98,6 +99,7 @@ export function Sidebar() {
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/playbooks" label="Playbooks" icon={BookTemplate} />
+          <SidebarNavItem to="/board-briefing" label="Board Briefing" icon={FileText} />
         </SidebarSection>
 
         <SidebarProjects />
