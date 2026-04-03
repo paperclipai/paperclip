@@ -12,6 +12,7 @@ import {
   agentWakeupRequests,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issues,
   projects,
   projectWorkspaces,
@@ -71,7 +72,206 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
+const READY_UNASSIGNED_STATUSES = ["backlog", "todo"] as const;
 const execFile = promisify(execFileCallback);
+
+function normalizePriorityRank(priority: string | null | undefined) {
+  switch ((priority ?? "").toLowerCase()) {
+    case "urgent":
+      return 4;
+    case "high":
+      return 3;
+    case "medium":
+      return 2;
+    case "low":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function isOperationsOrchestratorAgent(agent: { role?: string | null; name?: string | null }) {
+  const role = (agent.role ?? "").toLowerCase();
+  const name = (agent.name ?? "").toLowerCase();
+  return role.includes("operat") || role === "coo" || name.includes("operations");
+}
+
+type OperationsHeartbeatTarget = {
+  issueId: string;
+  mode: "ops_active" | "cross_agent_recovery" | "ready_unassigned";
+  reason: string;
+};
+
+async function resolveOperationsHeartbeatTarget(
+  db: Db,
+  input: { companyId: string; operationsAgentId: string },
+): Promise<OperationsHeartbeatTarget | null> {
+  const now = Date.now();
+
+  const activeOpsIssue = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.operationsAgentId),
+        inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+      ),
+    )
+    .orderBy(desc(issues.updatedAt))
+    .then((rows) => rows[0] ?? null);
+
+  if (activeOpsIssue) {
+    return {
+      issueId: activeOpsIssue.id,
+      mode: "ops_active",
+      reason: "operations agent already owns an active issue",
+    };
+  }
+
+  const openAssignedIssues = await db
+    .select({
+      id: issues.id,
+      status: issues.status,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+      executionRunId: issues.executionRunId,
+      assigneeAgentId: issues.assigneeAgentId,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+        sql`${issues.assigneeAgentId} is not null`,
+      ),
+    );
+
+  const crossAgentAssigned = openAssignedIssues.filter(
+    (row) => row.assigneeAgentId && row.assigneeAgentId !== input.operationsAgentId,
+  );
+
+  if (crossAgentAssigned.length > 0) {
+    const runIds = Array.from(new Set(crossAgentAssigned.map((row) => row.executionRunId).filter((id): id is string => Boolean(id))));
+    const runRows =
+      runIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, runIds)))
+        : [];
+    const runById = new Map(runRows.map((row) => [row.id, row]));
+
+    const issueIds = crossAgentAssigned.map((row) => row.id);
+    const latestCommentRows =
+      issueIds.length > 0
+        ? await db
+            .selectDistinctOn([issueComments.issueId], {
+              issueId: issueComments.issueId,
+              createdAt: issueComments.createdAt,
+              authorAgentId: issueComments.authorAgentId,
+            })
+            .from(issueComments)
+            .where(and(eq(issueComments.companyId, input.companyId), inArray(issueComments.issueId, issueIds)))
+            .orderBy(issueComments.issueId, desc(issueComments.createdAt))
+        : [];
+    const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
+
+    const ranked = crossAgentAssigned
+      .map((issue) => {
+        const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
+        const latestComment = latestCommentByIssueId.get(issue.id);
+        const issueAgeHours = Math.floor((now - issue.updatedAt.getTime()) / (60 * 60 * 1000));
+        const latestCommentAgeHours = latestComment
+          ? Math.floor((now - latestComment.createdAt.getTime()) / (60 * 60 * 1000))
+          : Number.POSITIVE_INFINITY;
+
+        let score = 0;
+        const reasons: string[] = [];
+
+        if (issue.status === "in_progress" && !issue.executionRunId) {
+          score += 120;
+          reasons.push("in_progress with no execution run");
+        }
+        if (run && (run.status === "failed" || run.status === "cancelled")) {
+          score += 110;
+          reasons.push(`latest run ended ${run.status}`);
+        }
+        if (run && run.status === "completed" && !latestComment) {
+          score += 100;
+          reasons.push("run completed without issue-level evidence comment");
+        }
+        if (!latestComment) {
+          score += 80;
+          reasons.push("no issue comments found");
+        }
+        if (latestCommentAgeHours >= 24) {
+          score += 70;
+          reasons.push(`stale comments (${latestCommentAgeHours}h)`);
+        }
+        if (issueAgeHours >= 24) {
+          score += 60;
+          reasons.push(`stale issue updates (${issueAgeHours}h)`);
+        }
+
+        score += normalizePriorityRank(issue.priority) * 5;
+
+        return {
+          issue,
+          score,
+          reasons,
+          issueAgeHours,
+        };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || b.issueAgeHours - a.issueAgeHours);
+
+    const top = ranked[0];
+    if (top) {
+      return {
+        issueId: top.issue.id,
+        mode: "cross_agent_recovery",
+        reason: top.reasons.join("; "),
+      };
+    }
+  }
+
+  const readyUnassigned = await db
+    .select({
+      id: issues.id,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        inArray(issues.status, READY_UNASSIGNED_STATUSES as unknown as string[]),
+        sql`${issues.hiddenAt} is null`,
+        sql`${issues.assigneeAgentId} is null`,
+      ),
+    )
+    .orderBy(desc(issues.updatedAt))
+    .then((rows) => rows[0] ?? null);
+
+  if (readyUnassigned) {
+    return {
+      issueId: readyUnassigned.id,
+      mode: "ready_unassigned",
+      reason: "no recovery target found; selected ready unassigned issue",
+    };
+  }
+
+  return null;
+}
 type DbExecutor = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -3367,6 +3567,38 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
       });
     };
+
+    const shouldApplyOperationsRouting =
+      !issueId
+      && (source === "timer" || source === "on_demand")
+      && isOperationsOrchestratorAgent(agent)
+      && readNonEmptyString(enrichedContextSnapshot.wakeReason) !== "issue_assigned";
+
+    if (shouldApplyOperationsRouting) {
+      const operationsTarget = await resolveOperationsHeartbeatTarget(db, {
+        companyId: agent.companyId,
+        operationsAgentId: agent.id,
+      });
+      if (!operationsTarget) {
+        enrichedContextSnapshot.operationsHeartbeatMode = "none";
+        enrichedContextSnapshot.operationsHeartbeatReason = "no actionable recovery or ready unassigned issue";
+        await writeSkippedRequest("operations.no_actionable_work");
+        return null;
+      }
+      issueId = operationsTarget.issueId;
+      enrichedContextSnapshot.issueId = operationsTarget.issueId;
+      if (!readNonEmptyString(enrichedContextSnapshot.taskId)) {
+        enrichedContextSnapshot.taskId = operationsTarget.issueId;
+      }
+      if (!readNonEmptyString(enrichedContextSnapshot.taskKey)) {
+        enrichedContextSnapshot.taskKey = operationsTarget.issueId;
+      }
+      if (!readNonEmptyString(enrichedContextSnapshot.wakeReason)) {
+        enrichedContextSnapshot.wakeReason = "operations_workflow_recovery";
+      }
+      enrichedContextSnapshot.operationsHeartbeatMode = operationsTarget.mode;
+      enrichedContextSnapshot.operationsHeartbeatReason = operationsTarget.reason;
+    }
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
