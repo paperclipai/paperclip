@@ -70,6 +70,7 @@ export function Issues() {
       createIssueDetailLocationState(
         "Issues",
         `${location.pathname}${location.search}${location.hash}`,
+        "issues",
       ),
     [location.pathname, location.search, location.hash],
   );

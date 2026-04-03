@@ -17,6 +17,27 @@ function asErrorText(value: unknown): string {
   }
 }
 
+function printToolResult(block: Record<string, unknown>): void {
+  const isError = block.is_error === true;
+  let text = "";
+  if (typeof block.content === "string") {
+    text = block.content;
+  } else if (Array.isArray(block.content)) {
+    const parts: string[] = [];
+    for (const part of block.content) {
+      if (typeof part !== "object" || part === null || Array.isArray(part)) continue;
+      const record = part as Record<string, unknown>;
+      if (typeof record.text === "string") parts.push(record.text);
+    }
+    text = parts.join("\n");
+  }
+
+  console.log((isError ? pc.red : pc.cyan)(`tool_result${isError ? " (error)" : ""}`));
+  if (text) {
+    console.log((isError ? pc.red : pc.gray)(text));
+  }
+}
+
 export function printClaudeStreamEvent(raw: string, debug: boolean): void {
   const line = raw.trim();
   if (!line) return;
@@ -51,12 +72,31 @@ export function printClaudeStreamEvent(raw: string, debug: boolean): void {
       if (blockType === "text") {
         const text = typeof block.text === "string" ? block.text : "";
         if (text) console.log(pc.green(`assistant: ${text}`));
+      } else if (blockType === "thinking") {
+        const text = typeof block.thinking === "string" ? block.thinking : "";
+        if (text) console.log(pc.gray(`thinking: ${text}`));
       } else if (blockType === "tool_use") {
         const name = typeof block.name === "string" ? block.name : "unknown";
         console.log(pc.yellow(`tool_call: ${name}`));
         if (block.input !== undefined) {
           console.log(pc.gray(JSON.stringify(block.input, null, 2)));
         }
+      }
+    }
+    return;
+  }
+
+  if (type === "user") {
+    const message =
+      typeof parsed.message === "object" && parsed.message !== null && !Array.isArray(parsed.message)
+        ? (parsed.message as Record<string, unknown>)
+        : {};
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const blockRaw of content) {
+      if (typeof blockRaw !== "object" || blockRaw === null || Array.isArray(blockRaw)) continue;
+      const block = blockRaw as Record<string, unknown>;
+      if (typeof block.type === "string" && block.type === "tool_result") {
+        printToolResult(block);
       }
     }
     return;
