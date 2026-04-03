@@ -8,24 +8,7 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-/**
- * Multer decodes the filename from the Content-Disposition header using
- * Latin-1 (per RFC 7578). When the browser sends a UTF-8 filename, each
- * UTF-8 byte is misinterpreted as a Latin-1 code point, producing a
- * double-encoded string. This helper re-encodes the Latin-1 string back
- * to bytes and decodes them as UTF-8 to recover the original filename.
- */
-function fixMulterFilename(name: string): string {
-  try {
-    const bytes = Buffer.from(name, "latin1");
-    const decoded = bytes.toString("utf8");
-    // If re-decoding produces replacement characters the original was
-    // genuinely Latin-1, so return it unchanged.
-    return decoded.includes("\uFFFD") ? name : decoded;
-  } catch {
-    return name;
-  }
-}
+import { fixMulterFilename } from "../utils/filename.js";
 
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
