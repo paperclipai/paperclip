@@ -2292,8 +2292,8 @@ export function agentRoutes(db: Db) {
 
     await logActivity(db, {
       companyId: parentRun.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: req.actor.type === "agent" ? "agent" : "user",
+      actorId: req.actor.type === "agent" ? req.actor.agentId ?? "board" : req.actor.userId ?? "board",
       action: "heartbeat.nudged",
       entityType: "heartbeat_run",
       entityId: run.id,
