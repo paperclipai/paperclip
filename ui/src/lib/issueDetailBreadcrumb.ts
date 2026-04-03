@@ -8,9 +8,11 @@ type IssueDetailBreadcrumb = {
 type IssueDetailLocationState = {
   issueDetailBreadcrumb?: IssueDetailBreadcrumb;
   issueDetailSource?: IssueDetailSource;
+  issueDetailInboxQuickArchiveArmed?: boolean;
 };
 
 const ISSUE_DETAIL_SOURCE_QUERY_PARAM = "from";
+const ISSUE_DETAIL_BREADCRUMB_HREF_QUERY_PARAM = "fromHref";
 
 function isIssueDetailBreadcrumb(value: unknown): value is IssueDetailBreadcrumb {
   if (typeof value !== "object" || value === null) return false;
@@ -35,6 +37,13 @@ function readIssueDetailSourceFromSearch(search?: string): IssueDetailSource | n
   return isIssueDetailSource(source) ? source : null;
 }
 
+function readIssueDetailBreadcrumbHrefFromSearch(search?: string): string | null {
+  if (!search) return null;
+  const params = new URLSearchParams(search);
+  const href = params.get(ISSUE_DETAIL_BREADCRUMB_HREF_QUERY_PARAM);
+  return href && href.startsWith("/") ? href : null;
+}
+
 function breadcrumbForSource(source: IssueDetailSource): IssueDetailBreadcrumb {
   if (source === "inbox") return { label: "Inbox", href: "/inbox" };
   return { label: "Issues", href: "/issues" };
@@ -51,11 +60,30 @@ export function createIssueDetailLocationState(
   };
 }
 
+export function armIssueDetailInboxQuickArchive(state: unknown): IssueDetailLocationState {
+  if (typeof state !== "object" || state === null) {
+    return { issueDetailInboxQuickArchiveArmed: true };
+  }
+
+  return {
+    ...(state as IssueDetailLocationState),
+    issueDetailInboxQuickArchiveArmed: true,
+  };
+}
+
 export function createIssueDetailPath(issuePathId: string, state?: unknown, search?: string): string {
   const source = readIssueDetailSource(state) ?? readIssueDetailSourceFromSearch(search);
+  const breadcrumb =
+    (typeof state === "object" && state !== null
+      ? (state as IssueDetailLocationState).issueDetailBreadcrumb
+      : null);
+  const breadcrumbHref =
+    (isIssueDetailBreadcrumb(breadcrumb) ? breadcrumb.href : null) ??
+    readIssueDetailBreadcrumbHrefFromSearch(search);
   if (!source) return `/issues/${issuePathId}`;
   const params = new URLSearchParams();
   params.set(ISSUE_DETAIL_SOURCE_QUERY_PARAM, source);
+  if (breadcrumbHref) params.set(ISSUE_DETAIL_BREADCRUMB_HREF_QUERY_PARAM, breadcrumbHref);
   return `/issues/${issuePathId}?${params.toString()}`;
 }
 
@@ -66,5 +94,14 @@ export function readIssueDetailBreadcrumb(state: unknown, search?: string): Issu
   }
 
   const source = readIssueDetailSourceFromSearch(search);
-  return source ? breadcrumbForSource(source) : null;
+  if (!source) return null;
+
+  const fallback = breadcrumbForSource(source);
+  const href = readIssueDetailBreadcrumbHrefFromSearch(search);
+  return href ? { ...fallback, href } : fallback;
+}
+
+export function shouldArmIssueDetailInboxQuickArchive(state: unknown): boolean {
+  if (typeof state !== "object" || state === null) return false;
+  return (state as IssueDetailLocationState).issueDetailInboxQuickArchiveArmed === true;
 }
