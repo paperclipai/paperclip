@@ -33,6 +33,25 @@ describe("TelemetryClient periodic flush", () => {
 
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetch).toHaveBeenCalledTimes(1);
+    const lastCall = vi.mocked(fetch).mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("http://localhost:9999/ingest");
+    const requestInit = lastCall?.[1] as RequestInit | undefined;
+    expect(requestInit?.method).toBe("POST");
+    expect(requestInit?.headers).toEqual({ "Content-Type": "application/json" });
+    const body = JSON.parse(String(requestInit?.body ?? "{}"));
+    expect(body).toMatchObject({
+      app: "paperclip",
+      schemaVersion: "1",
+      installId: "test-install",
+      version: "0.0.0-test",
+      events: [
+        {
+          name: "install.started",
+          dimensions: {},
+        },
+      ],
+    });
+    expect(body.events[0]?.occurredAt).toEqual(expect.any(String));
 
     // Second tick with no new events — no additional call
     await vi.advanceTimersByTimeAsync(1000);

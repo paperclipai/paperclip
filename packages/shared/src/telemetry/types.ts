@@ -24,6 +24,7 @@ export interface TelemetryEventEnvelope {
   app: string;
   schemaVersion: string;
   installId: string;
+  version: string;
   events: TelemetryEvent[];
 }
 
@@ -31,6 +32,12 @@ export type TelemetryEventName =
   | "install.started"
   | "install.completed"
   | "company.imported"
+  | "project.created"
+  | "routine.created"
+  | "routine.run"
+  | "goal.created"
+  | "agent.created"
+  | "skill.imported"
   | "agent.first_heartbeat"
   | "agent.task_completed"
   | "error.handler_crash"

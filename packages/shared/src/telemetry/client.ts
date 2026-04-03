@@ -58,6 +58,7 @@ export class TelemetryClient {
           app,
           schemaVersion,
           installId: state.installId,
+          version: this.version,
           events,
         }),
         signal: controller.signal,

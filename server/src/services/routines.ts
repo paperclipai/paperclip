@@ -31,8 +31,10 @@ import {
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
 } from "@paperclipai/shared";
+import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { getTelemetryClient } from "../telemetry.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -854,6 +856,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       } catch (err) {
         logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log automated routine run");
       }
+    }
+
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      trackRoutineRun(telemetryClient, {
+        source: run.source,
+        status: run.status,
+      });
     }
 
     return run;

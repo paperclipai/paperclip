@@ -68,6 +68,7 @@ export async function createApp(
     feedbackExportService?: {
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
+        traceId?: string;
         limit?: number;
         now?: Date;
       }): Promise<unknown>;
@@ -153,7 +154,9 @@ export async function createApp(
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService));
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+  }));
   api.use(routineRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
