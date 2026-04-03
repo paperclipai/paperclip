@@ -23,6 +23,7 @@ RUN pnpm install
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
+ARG CACHE_BUST=1
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/server build
