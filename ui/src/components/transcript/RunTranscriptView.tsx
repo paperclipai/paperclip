@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  MessageSquare,
   TerminalSquare,
   User,
   Wrench,
@@ -104,6 +105,11 @@ type TranscriptBlock =
       tone: "info" | "warn" | "error" | "neutral";
       text: string;
       detail?: string;
+    }
+  | {
+      type: "nudge_separator";
+      ts: string;
+      message: string;
     };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -541,6 +547,15 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
             pendingActivityBlocks.set(activity.activityId, block);
           }
         }
+        continue;
+      }
+      const nudgeMatch = entry.text.match(/^---\s*Follow-up:\s*(.*?)\s*---$/);
+      if (nudgeMatch) {
+        blocks.push({
+          type: "nudge_separator",
+          ts: entry.ts,
+          message: nudgeMatch[1] ?? "",
+        });
         continue;
       }
       blocks.push({
@@ -1159,6 +1174,23 @@ function TranscriptStdoutRow({
   );
 }
 
+function TranscriptNudgeSeparator({
+  block,
+}: {
+  block: Extract<TranscriptBlock, { type: "nudge_separator" }>;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <div className="flex-1 border-t border-blue-400/30" />
+      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+        <MessageSquare className="h-3 w-3" />
+        Follow-up: {block.message}
+      </span>
+      <div className="flex-1 border-t border-blue-400/30" />
+    </div>
+  );
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -1248,6 +1280,7 @@ export function RunTranscriptView({
           )}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
           {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
+          {block.type === "nudge_separator" && <TranscriptNudgeSeparator block={block} />}
         </div>
       ))}
     </div>

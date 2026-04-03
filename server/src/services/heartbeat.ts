@@ -19,7 +19,7 @@ import {
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
-import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { getRunLogStore, type RunLogHandle, type RunLogStoreType } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -2553,10 +2553,10 @@ export function heartbeatService(db: Db) {
       runtimeWorkspaceWarnings = [];
     }
 
-    let seq = 1;
+    let seq = isNudge ? await nextRunEventSeq(runId) : 1;
     let handle: RunLogHandle | null = null;
-    let stdoutExcerpt = "";
-    let stderrExcerpt = "";
+    let stdoutExcerpt = isNudge ? (run.stdoutExcerpt ?? "") : "";
+    let stderrExcerpt = isNudge ? (run.stderrExcerpt ?? "") : "";
     try {
       const startedAt = run.startedAt ?? new Date();
       const runningWithSession = await db
@@ -2596,23 +2596,29 @@ export function heartbeatService(db: Db) {
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: "run started",
+        message: isNudge ? "nudge follow-up started" : "run started",
       });
 
-      handle = await runLogStore.begin({
-        companyId: run.companyId,
-        agentId: run.agentId,
-        runId,
-      });
+      // For nudge runs, reuse the existing log file instead of creating a new one
+      // (runLogStore.begin() would truncate the existing log)
+      if (isNudge && run.logStore && run.logRef) {
+        handle = { store: run.logStore as RunLogStoreType, logRef: run.logRef };
+      } else {
+        handle = await runLogStore.begin({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId,
+        });
 
-      await db
-        .update(heartbeatRuns)
-        .set({
-          logStore: handle.store,
-          logRef: handle.logRef,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, runId));
+        await db
+          .update(heartbeatRuns)
+          .set({
+            logStore: handle.store,
+            logRef: handle.logRef,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, runId));
+      }
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
@@ -2862,6 +2868,26 @@ export function heartbeatService(db: Db) {
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
+
+      // For nudge runs, accumulate usage from the previous run completion
+      const finalUsageJson = isNudge && usageJson
+        ? (() => {
+            const prevUsage = parseObject(context.nudgePreviousUsageJson);
+            if (!prevUsage) return usageJson;
+            const accumulated = { ...usageJson };
+            const numOr0 = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+            accumulated.inputTokens = numOr0(accumulated.inputTokens) + numOr0(prevUsage.inputTokens);
+            accumulated.outputTokens = numOr0(accumulated.outputTokens) + numOr0(prevUsage.outputTokens);
+            accumulated.cachedInputTokens = numOr0(accumulated.cachedInputTokens) + numOr0(prevUsage.cachedInputTokens);
+            accumulated.rawInputTokens = numOr0(accumulated.rawInputTokens) + numOr0(prevUsage.rawInputTokens);
+            accumulated.rawOutputTokens = numOr0(accumulated.rawOutputTokens) + numOr0(prevUsage.rawOutputTokens);
+            accumulated.rawCachedInputTokens = numOr0(accumulated.rawCachedInputTokens) + numOr0(prevUsage.rawCachedInputTokens);
+            if (numOr0(prevUsage.costUsd) > 0 || numOr0(accumulated.costUsd) > 0) {
+              accumulated.costUsd = numOr0(accumulated.costUsd) + numOr0(prevUsage.costUsd);
+            }
+            return accumulated;
+          })()
+        : usageJson;
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -3750,7 +3776,7 @@ export function heartbeatService(db: Db) {
     const serializedParams = sessionCodec.serialize({ sessionId: parentSessionIdAfter });
     if (serializedParams) contextSnapshot.resumeSessionParams = serializedParams;
 
-    // 5. Create wakeup request and run records directly (bypass coalescing/issue locks)
+    // 5. Create wakeup request and re-open the parent run (no new run record)
     const wakeupRequest = await db.insert(agentWakeupRequests).values({
       companyId: agent.companyId,
       agentId: agent.id,
@@ -3761,40 +3787,52 @@ export function heartbeatService(db: Db) {
       status: "queued",
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
+      runId: parentRunId,
     }).returning().then((rows) => rows[0]);
 
-    const newRun = await db.insert(heartbeatRuns).values({
-      companyId: agent.companyId,
-      agentId: agent.id,
-      invocationSource: "on_demand",
-      triggerDetail: "nudge",
+    // Stash previous usage so executeRun can accumulate it after the nudge completes
+    contextSnapshot.nudgePreviousUsageJson = parentRun.usageJson ?? null;
+
+    // Re-open the parent run: transition back to "queued" so executeRun can claim it
+    const reopenedRun = await db.update(heartbeatRuns).set({
       status: "queued",
+      finishedAt: null,
+      error: null,
+      errorCode: null,
+      exitCode: null,
+      signal: null,
       wakeupRequestId: wakeupRequest.id,
       contextSnapshot,
       sessionIdBefore: parentSessionIdAfter,
-    }).returning().then((rows) => rows[0]);
-
-    await db.update(agentWakeupRequests).set({
-      runId: newRun.id,
       updatedAt: new Date(),
-    }).where(eq(agentWakeupRequests.id, wakeupRequest.id));
+    }).where(eq(heartbeatRuns.id, parentRunId)).returning().then((rows) => rows[0]);
+
+    // Inject a nudge boundary marker into the existing log file
+    if (parentRun.logStore && parentRun.logRef) {
+      const handle: RunLogHandle = { store: parentRun.logStore as RunLogStoreType, logRef: parentRun.logRef };
+      await runLogStore.append(handle, {
+        stream: "system",
+        chunk: `--- Follow-up: ${nudgeMessage} ---`,
+        ts: new Date().toISOString(),
+      });
+    }
 
     // 6. Publish live event + start executing
     publishLiveEvent({
-      companyId: newRun.companyId,
+      companyId: reopenedRun.companyId,
       type: "heartbeat.run.queued",
       payload: {
-        runId: newRun.id,
-        agentId: newRun.agentId,
-        invocationSource: newRun.invocationSource,
-        triggerDetail: newRun.triggerDetail,
-        wakeupRequestId: newRun.wakeupRequestId,
+        runId: reopenedRun.id,
+        agentId: reopenedRun.agentId,
+        invocationSource: reopenedRun.invocationSource,
+        triggerDetail: reopenedRun.triggerDetail,
+        wakeupRequestId: reopenedRun.wakeupRequestId,
       },
     });
 
     await startNextQueuedRunForAgent(agent.id);
 
-    return newRun;
+    return reopenedRun;
   }
 
   async function listProjectScopedRunIds(companyId: string, projectId: string) {

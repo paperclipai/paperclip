@@ -2297,7 +2297,7 @@ export function agentRoutes(db: Db) {
       action: "heartbeat.nudged",
       entityType: "heartbeat_run",
       entityId: run.id,
-      details: { parentRunId: runId, agentId: parentRun.agentId },
+      details: { agentId: parentRun.agentId },
     });
 
     res.status(202).json(run);

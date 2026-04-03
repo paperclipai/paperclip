@@ -2919,10 +2919,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       const result = await heartbeatsApi.nudge(run.id, trimmed);
       return result;
     },
-    onSuccess: (newRun) => {
+    onSuccess: () => {
       setNudgeMessage("");
+      // Invalidate run queries so the current run refreshes with status "running"
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
-      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+      queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
+      // Stay on the same page — the run status changes to "running", reactivating
+      // WebSocket streaming + log polling to show the nudge output in real time.
     },
   });
 
