@@ -167,7 +167,7 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
-const RATE_LIMIT_RE = /api\s+error[:\s]+429|rate[-_]?limit(?:ed)?|too\s+many\s+requests|temporarily\s+rate[-_]?limited|upstream.*rate|provider\s+returned\s+error.*429/i;
+const RATE_LIMIT_RE = /api\s+error[:\s]+429|rate[-_]?limit(?:ed)?|too\s+many\s+requests|temporarily\s+rate[-_]?limited|provider\s+returned\s+error.*429/i;
 
 export function isClaudeRateLimitError(input: {
   parsed: Record<string, unknown> | null;
