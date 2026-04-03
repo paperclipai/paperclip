@@ -133,6 +133,22 @@ function CloudAccessGate() {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
+  if (requiresSession && activeSessionQuery.error && !activeSessionQuery.data) {
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
+        <p>{activeSessionQuery.error instanceof Error ? activeSessionQuery.error.message : "Failed to verify session"}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-4"
+          onClick={() => void activeSessionQuery.refetch()}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   if (requiresSession && !activeSessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;

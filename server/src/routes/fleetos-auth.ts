@@ -69,7 +69,9 @@ async function validateFleetosApiKey(
   }
 
   // Normalize: response is either an array of tenants or a single tenant object
-  const tenants = Array.isArray(raw) ? raw : [raw];
+  const tenants = (Array.isArray(raw) ? raw : [raw]).filter(
+    (t): t is Record<string, unknown> => t !== null && typeof t === "object",
+  );
   if (tenants.length === 0) return null;
 
   // Use the first tenant as the identity (tenant-scoped keys return exactly one)
