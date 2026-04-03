@@ -58,6 +58,13 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+const CODEX_FATAL_STDERR_RE =
+  /TokenRefreshFailed|token refresh failed|authentication_error|AuthenticationError|invalid_api_key|invalid api key|account_deactivated|Could not refresh token/i;
+
+export function isCodexFatalStderr(accumulated: string): boolean {
+  return CODEX_FATAL_STDERR_RE.test(accumulated);
+}
+
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -518,6 +525,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
+      isFatalStderr: isCodexFatalStderr,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
           await onLog(stream, chunk);

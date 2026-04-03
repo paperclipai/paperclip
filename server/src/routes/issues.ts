@@ -62,10 +62,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
   });
 
-  function withContentPath<T extends { id: string }>(attachment: T) {
+  function withContentPath<T extends { id: string }>(attachment: T, req?: Request) {
+    const contentPath = `/api/attachments/${attachment.id}/content`;
+    const forwardedProto = req?.get("x-forwarded-proto")?.split(",")[0]?.trim();
+    const protocol = forwardedProto || req?.protocol;
+    const host = req?.get("host");
+    const contentUrl = protocol && host ? `${protocol}://${host}${contentPath}` : null;
     return {
       ...attachment,
-      contentPath: `/api/attachments/${attachment.id}/content`,
+      contentPath,
+      contentUrl,
     };
   }
 
@@ -295,9 +301,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const assigneeAgentId = req.query.assigneeAgentId as string | undefined;
+    const includeRoutineExecutionsExplicit =
+      req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1";
+    const includeRoutineExecutionsImplicit =
+      req.query.includeRoutineExecutions === undefined &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      assigneeAgentId === req.actor.agentId;
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -309,8 +324,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
-      includeRoutineExecutions:
-        req.query.includeRoutineExecutions === "true" || req.query.includeRoutineExecutions === "1",
+      includeRoutineExecutions: includeRoutineExecutionsExplicit || includeRoutineExecutionsImplicit,
       q: req.query.q as string | undefined,
     });
     res.json(result);
@@ -1382,6 +1396,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    const forceRequested = req.body?.force === true;
+
+    if (forceRequested) {
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Only board users can force-release a locked issue" });
+        return;
+      }
+      const released = await svc.forceRelease(id);
+      if (!released) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: released.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.force_released",
+        entityType: "issue",
+        entityId: released.id,
+      });
+      res.json(released);
+      return;
+    }
+
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -1669,7 +1711,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, issue.companyId);
     const attachments = await svc.listAttachments(issueId);
-    res.json(attachments.map(withContentPath));
+    res.json(attachments.map((attachment) => withContentPath(attachment, req)));
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
@@ -1760,7 +1802,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    res.status(201).json(withContentPath(attachment));
+    res.status(201).json(withContentPath(attachment, req));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {

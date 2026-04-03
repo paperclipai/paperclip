@@ -474,6 +474,13 @@ function invalidateHeartbeatQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
+
+  const runId = readString(payload.runId);
+  if (runId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(runId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.runWorkspaceOperations(runId) });
+  }
 }
 
 function invalidateActivityQueries(
@@ -706,6 +713,7 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  invalidateHeartbeatQueries,
   invalidateActivityQueries,
   resolveLiveCompanyId,
   shouldSuppressActivityToastForVisibleIssue,

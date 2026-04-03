@@ -93,7 +93,7 @@ export function OpenClawGatewayConfigFields({
   const sessionStrategy = eff(
     "adapterConfig",
     "sessionKeyStrategy",
-    String(config.sessionKeyStrategy ?? "fixed"),
+    String(config.sessionKeyStrategy ?? "issue"),
   );
 
   return (
@@ -209,18 +209,18 @@ export function OpenClawGatewayConfigFields({
 
           <Field label="Wait timeout (ms)">
             <DraftInput
-              value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "120000"))}
+              value={eff("adapterConfig", "waitTimeoutMs", String(config.waitTimeoutMs ?? "0"))}
               onCommit={(v) => {
                 const parsed = Number.parseInt(v.trim(), 10);
                 mark(
                   "adapterConfig",
                   "waitTimeoutMs",
-                  Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+                  Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined,
                 );
               }}
               immediate
               className={inputClass}
-              placeholder="120000"
+              placeholder="0"
             />
           </Field>
 

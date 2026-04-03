@@ -34,6 +34,36 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.listUnreadTouchedByMe("company-1"),
     });
   });
+
+  it("refreshes run detail queries for heartbeat status changes", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateHeartbeatQueries(
+      queryClient as never,
+      "company-1",
+      {
+        runId: "run-1",
+        agentId: "agent-1",
+        status: "failed",
+      },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.runDetail("run-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.runIssues("run-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.runWorkspaceOperations("run-1"),
+    });
+  });
 });
 
 describe("LiveUpdatesProvider visible issue toast suppression", () => {

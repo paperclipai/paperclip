@@ -10,6 +10,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
+import { resolveCommentAuthorIdentity } from "../lib/comment-authors";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -41,6 +42,7 @@ interface CommentThreadProps {
   linkedRuns?: LinkedRunItem[];
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
@@ -127,6 +129,7 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   highlightCommentId,
   queued = false,
 }: {
@@ -134,12 +137,14 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
   const isQueued = queued || comment.queueState === "queued" || comment.clientStatus === "queued";
+  const authorIdentity = resolveCommentAuthorIdentity(comment, currentUserId);
 
   return (
     <div
@@ -154,15 +159,15 @@ function CommentCard({
       } ${isPending ? "opacity-80" : ""}`}
     >
       <div className="flex items-center justify-between mb-1">
-        {comment.authorAgentId ? (
-          <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
+        {authorIdentity.kind === "agent" && authorIdentity.agentId ? (
+          <Link to={`/agents/${authorIdentity.agentId}`} className="hover:underline">
             <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+              name={agentMap?.get(authorIdentity.agentId)?.name ?? authorIdentity.agentId.slice(0, 8)}
               size="sm"
             />
           </Link>
         ) : (
-          <Identity name="You" size="sm" />
+          <Identity name={authorIdentity.name} size="sm" />
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
@@ -249,18 +254,20 @@ function TimelineItemView({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   highlightCommentId,
 }: {
   item: TimelineItem;
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
 }) {
   if (item.kind === "run") {
     const run = item.run;
     return (
-      <div key={`run:${run.runId}`} className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
+      <div className="border border-border bg-accent/20 p-3 overflow-hidden min-w-0 rounded-sm">
         <div className="flex items-center justify-between mb-2">
           <Link to={`/agents/${run.agentId}`} className="hover:underline">
             <Identity
@@ -289,11 +296,11 @@ function TimelineItemView({
   const comment = item.comment;
   return (
     <CommentCard
-      key={comment.id}
       comment={comment}
       agentMap={agentMap}
       companyId={companyId}
       projectId={projectId}
+      currentUserId={currentUserId}
       highlightCommentId={highlightCommentId}
     />
   );
@@ -304,21 +311,28 @@ const TimelineList = memo(function TimelineList({
   agentMap,
   companyId,
   projectId,
+  currentUserId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  currentUserId?: string | null;
   highlightCommentId?: string | null;
 }) {
-  const [expanded, setExpanded] = useState(false);
-
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
   }
 
   const collapsible = timeline.length > VISIBLE_TAIL_COUNT;
+  const hiddenIds = useMemo(
+    () => new Set(collapsible ? timeline.slice(0, -VISIBLE_TAIL_COUNT).map((i) => i.id) : []),
+    [collapsible, timeline],
+  );
+  const [expanded, setExpanded] = useState(
+    () => !!highlightCommentId && hiddenIds.has(highlightCommentId),
+  );
   const hiddenCount = collapsible && !expanded ? timeline.length - VISIBLE_TAIL_COUNT : 0;
   const visibleItems = hiddenCount > 0 ? timeline.slice(-VISIBLE_TAIL_COUNT) : timeline;
 
@@ -341,6 +355,7 @@ const TimelineList = memo(function TimelineList({
           agentMap={agentMap}
           companyId={companyId}
           projectId={projectId}
+          currentUserId={currentUserId}
           highlightCommentId={highlightCommentId}
         />
       ))}
@@ -364,6 +379,7 @@ export function CommentThread({
   linkedRuns = [],
   companyId,
   projectId,
+  currentUserId,
   onAdd,
   agentMap,
   imageUploadHandler,
@@ -526,6 +542,7 @@ export function CommentThread({
           agentMap={agentMap}
           companyId={companyId}
           projectId={projectId}
+          currentUserId={currentUserId}
           highlightCommentId={highlightCommentId}
         />
       ) : null}
@@ -558,6 +575,7 @@ export function CommentThread({
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
+                currentUserId={currentUserId}
                 highlightCommentId={highlightCommentId}
                 queued
               />

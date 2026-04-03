@@ -1,4 +1,8 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+type LegendItem = { color: string; label: string };
+type TooltipMetric = { color?: string; label: string; value: string | number };
 
 /* ---- Utilities ---- */
 
@@ -13,6 +17,18 @@ export function getLast14Days(): string[] {
 function formatDayLabel(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
   return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function formatTooltipDate(dateStr: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(dateStr + "T12:00:00"));
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 /* ---- Sub-components ---- */
@@ -31,7 +47,7 @@ function DateLabels({ days }: { days: string[] }) {
   );
 }
 
-function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
+function ChartLegend({ items }: { items: LegendItem[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
@@ -56,7 +72,92 @@ export function ChartCard({ title, subtitle, children }: { title: string; subtit
   );
 }
 
+function ChartTooltipBody({
+  day,
+  summaryLabel,
+  summaryValue,
+  metrics,
+}: {
+  day: string;
+  summaryLabel: string;
+  summaryValue: string | number;
+  metrics: TooltipMetric[];
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="space-y-0.5">
+        <p className="text-[11px] font-medium">{formatTooltipDate(day)}</p>
+        <div className="flex items-center justify-between gap-3 text-[11px]">
+          <span className="text-background/70">{summaryLabel}</span>
+          <span className="font-medium tabular-nums">{summaryValue}</span>
+        </div>
+      </div>
+      <div className="space-y-1">
+        {metrics.map(metric => (
+          <div key={metric.label} className="flex items-center justify-between gap-3 text-[11px]">
+            <span className="flex items-center gap-1.5 text-background/70">
+              {metric.color ? (
+                <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: metric.color }} />
+              ) : null}
+              {metric.label}
+            </span>
+            <span className="font-medium tabular-nums text-right">{metric.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChartBarColumn({
+  day,
+  summaryLabel,
+  summaryValue,
+  metrics,
+  children,
+}: {
+  day: string;
+  summaryLabel: string;
+  summaryValue: string | number;
+  metrics: TooltipMetric[];
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="flex-1 h-full flex flex-col justify-end rounded-[2px] cursor-default focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-label={`${formatTooltipDate(day)} ${summaryLabel} ${summaryValue}`}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={8} className="min-w-44 px-3 py-2">
+        <ChartTooltipBody
+          day={day}
+          summaryLabel={summaryLabel}
+          summaryValue={summaryValue}
+          metrics={metrics}
+        />
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /* ---- Chart Components ---- */
+
+const runActivityColors = {
+  succeeded: "#10b981",
+  failed: "#ef4444",
+  other: "#737373",
+};
+
+const runActivityLegend: LegendItem[] = [
+  { color: runActivityColors.succeeded, label: "Succeeded" },
+  { color: runActivityColors.failed, label: "Failed" },
+  { color: runActivityColors.other, label: "Other" },
+];
 
 export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
   const days = getLast14Days();
@@ -85,21 +186,32 @@ export function RunActivityChart({ runs }: { runs: HeartbeatRun[] }) {
           const total = entry.succeeded + entry.failed + entry.other;
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
+            <ChartBarColumn
+              key={day}
+              day={day}
+              summaryLabel="Runs"
+              summaryValue={total}
+              metrics={[
+                { color: runActivityColors.succeeded, label: "Succeeded", value: entry.succeeded },
+                { color: runActivityColors.failed, label: "Failed", value: entry.failed },
+                { color: runActivityColors.other, label: "Other", value: entry.other },
+              ]}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
+                  {entry.succeeded > 0 && <div style={{ flex: entry.succeeded, backgroundColor: runActivityColors.succeeded }} />}
+                  {entry.failed > 0 && <div style={{ flex: entry.failed, backgroundColor: runActivityColors.failed }} />}
+                  {entry.other > 0 && <div style={{ flex: entry.other, backgroundColor: runActivityColors.other }} />}
                 </div>
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
               )}
-            </div>
+            </ChartBarColumn>
           );
         })}
       </div>
       <DateLabels days={days} />
+      <ChartLegend items={runActivityLegend} />
     </div>
   );
 }
@@ -137,7 +249,17 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <ChartBarColumn
+              key={day}
+              day={day}
+              summaryLabel="Issues"
+              summaryValue={total}
+              metrics={priorityOrder.map((priority) => ({
+                color: priorityColors[priority],
+                label: priority.charAt(0).toUpperCase() + priority.slice(1),
+                value: entry[priority],
+              }))}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -147,7 +269,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
               )}
-            </div>
+            </ChartBarColumn>
           );
         })}
       </div>
@@ -204,7 +326,17 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <ChartBarColumn
+              key={day}
+              day={day}
+              summaryLabel="Issues"
+              summaryValue={total}
+              metrics={statusOrder.map((status) => ({
+                color: statusColors[status] ?? "#6b7280",
+                label: statusLabels[status] ?? status,
+                value: entry[status] ?? 0,
+              }))}
+            >
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -214,7 +346,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
               )}
-            </div>
+            </ChartBarColumn>
           );
         })}
       </div>
@@ -222,6 +354,19 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
       <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
     </div>
   );
+}
+
+const successRateLegend: LegendItem[] = [
+  { color: "#10b981", label: ">= 80%" },
+  { color: "#eab308", label: "50-79%" },
+  { color: "#ef4444", label: "< 50%" },
+];
+
+function getSuccessRateBand(rate: number, total: number): { color?: string; label: string } {
+  if (total === 0) return { label: "No runs" };
+  if (rate >= 0.8) return { color: "#10b981", label: ">= 80%" };
+  if (rate >= 0.5) return { color: "#eab308", label: "50-79%" };
+  return { color: "#ef4444", label: "< 50%" };
 }
 
 export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
@@ -245,19 +390,32 @@ export function SuccessRateChart({ runs }: { runs: HeartbeatRun[] }) {
         {days.map(day => {
           const entry = grouped.get(day)!;
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
+          const unsuccessful = entry.total - entry.succeeded;
+          const band = getSuccessRateBand(rate, entry.total);
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
+            <ChartBarColumn
+              key={day}
+              day={day}
+              summaryLabel="Success rate"
+              summaryValue={formatPercent(rate)}
+              metrics={[
+                { color: "#10b981", label: "Succeeded", value: entry.succeeded },
+                { color: "#ef4444", label: "Unsuccessful", value: unsuccessful },
+                { label: "Total runs", value: entry.total },
+                { color: band.color, label: "Band", value: band.label },
+              ]}
+            >
               {entry.total > 0 ? (
-                <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
+                <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: band.color }} />
               ) : (
                 <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
               )}
-            </div>
+            </ChartBarColumn>
           );
         })}
       </div>
       <DateLabels days={days} />
+      <ChartLegend items={successRateLegend} />
     </div>
   );
 }

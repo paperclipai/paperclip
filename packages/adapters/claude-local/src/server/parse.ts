@@ -167,6 +167,24 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+/**
+ * Detect provider quota / extra-usage exhaustion from the Claude result.
+ *
+ * Known patterns:
+ *   "You're out of extra usage · resets 2am (Europe/Warsaw)"
+ *   "You've exceeded your usage limit"
+ *   "out of usage"
+ */
+export function isClaudeQuotaExhausted(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const resultText = asString(parsed.result, "").trim();
+  const errors = extractClaudeErrorMessages(parsed);
+  const allMessages = [resultText, ...errors].map((m) => m.trim()).filter(Boolean);
+  return allMessages.some((msg) =>
+    /out of (?:extra )?usage|exceeded your usage limit|usage limit reached/i.test(msg),
+  );
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
