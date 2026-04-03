@@ -67,7 +67,6 @@ interface CommentThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
-  currentUserId?: string | null;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Callback to attach an image file to the parent issue (not inline in a comment). */
   onAttachImage?: (file: File) => Promise<void>;
@@ -442,7 +441,6 @@ const TimelineList = memo(function TimelineList({
   feedbackTermsUrl = null,
   onVote,
   votingTargetId,
-  currentUserId,
   highlightCommentId,
 }: {
   timeline: TimelineItem[];
@@ -580,7 +578,6 @@ export function CommentThread({
   currentUserId,
   onAdd,
   agentMap,
-  currentUserId,
   imageUploadHandler,
   onAttachImage,
   draftKey,
