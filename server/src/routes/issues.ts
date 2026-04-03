@@ -1038,6 +1038,32 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+
+    // Agent issue creation rate limit
+    if (actor.actorType === "agent" && actor.agentId) {
+      const recentCount = await svc.countRecentByAgent(actor.agentId);
+      const rateLimit = parseInt(process.env.AGENT_ISSUE_CREATION_RATE_LIMIT ?? "5", 10);
+      if (recentCount >= rateLimit) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.creation_rate_limited",
+          entityType: "issue",
+          entityId: actor.agentId,
+          details: { count: recentCount, limit: rateLimit, window: "1h" },
+        });
+        res.status(429).json({
+          error: "rate_limited",
+          gate: "issue_creation_rate_limit",
+          message: `Agent created ${recentCount} issues in the last hour (limit: ${rateLimit})`,
+        });
+        return;
+      }
+    }
+
     let issue;
     try {
       issue = await svc.create(companyId, {

@@ -719,6 +719,20 @@ export function issueService(db: Db) {
       return Number(row?.count ?? 0);
     },
 
+    countRecentByAgent: async (agentId: string, windowMs: number = 3_600_000) => {
+      const since = new Date(Date.now() - windowMs);
+      const [row] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.createdByAgentId, agentId),
+            sql`${issues.createdAt} >= ${since}`,
+          ),
+        );
+      return Number(row?.count ?? 0);
+    },
+
     markRead: async (companyId: string, issueId: string, userId: string, readAt: Date = new Date()) => {
       const now = new Date();
       const [row] = await db
