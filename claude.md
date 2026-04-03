@@ -151,12 +151,13 @@ docker exec paperclip-db-1 psql -U paperclip paperclip -t -A -c "
 ## Known CI / PR workflow gotchas
 
 - **CONFLICTING PRs silently block CI**: GitHub won't trigger `pull_request` workflows on a PR in `CONFLICTING` state. Always check `gh pr view <N> --json mergeable,mergeStateStatus` before wondering why CI hasn't run. Rebase to fix.
-- **ai-review/verdict must be posted manually**: The `ai-review/verdict` required check is not automatically posted by the internal AI Code Reviewer. After review, post it via the GitHub Statuses API:
+- **ai-review/verdict is automated**: The `ai-review.yml` workflow runs on every PR (`opened`, `synchronize`, `reopened`). It sends the diff to MiniMax M2.7 via OpenRouter, produces a verdict (`PASS`, `PASS_WITH_NOTES`, `FAIL`, `HIGH_RISK`), and posts the `ai-review/verdict` GitHub status. The existing `merge-automation.yml` then auto-merges when all checks pass. Manual posting is only needed as a fallback if the workflow fails:
   ```bash
   gh api repos/Viraforge/paperclip/statuses/<SHA> \
     -X POST -f state=success -f context="ai-review/verdict" \
     -f description="PASS – ..." -f target_url="<PR URL>"
   ```
+  **Required secret**: `OPENROUTER_API_KEY` must be configured in GitHub Actions secrets.
 - **Deploy Vultr is `workflow_dispatch` only**: `deploy-vultr.yml` no longer triggers on push to master (removed 2026-03-18). Deploy requires:
   ```bash
   gh workflow run deploy-vultr.yml --repo Viraforge/paperclip --ref master
@@ -166,7 +167,7 @@ docker exec paperclip-db-1 psql -U paperclip paperclip -t -A -c "
   1. Trigger the workflow: `gh workflow run refresh-lockfile.yml --repo Viraforge/paperclip --ref master`
   2. The workflow pushes the updated lockfile to branch `chore/refresh-lockfile` but **cannot create the PR** (GitHub Actions lacks PR creation permission in this repo).
   3. Open the PR manually: `gh pr create --repo Viraforge/paperclip --head chore/refresh-lockfile --base master --title "chore(lockfile): refresh pnpm-lock.yaml" --body "Auto-generated lockfile refresh."`
-  4. Post `ai-review/verdict`, then merge. The `pr-policy` check has a built-in exception for the `chore/refresh-lockfile` branch.
+  4. `ai-review/verdict` is posted automatically by `ai-review.yml`. Once it passes along with `verify` + `policy`, merge. The `pr-policy` check has a built-in exception for the `chore/refresh-lockfile` branch.
 - **npm package scope is `@paperclipai/`**: All packages use the upstream `@paperclipai/` scope and are marked `"private": true`. We do NOT publish to npm — packages are consumed only within the monorepo via pnpm workspace protocol. This alignment with upstream's scope eliminates merge conflicts on upgrades.
 
 ## Runtime auth state
@@ -553,6 +554,58 @@ gh run list --repo Viraforge/paperclip --workflow=pipeline-watchdog.yml --limit 
 ### Docker build speedup (PR #125)
 
 The `docker.yml` workflow previously built `linux/amd64,linux/arm64` — the ARM64 cross-compilation via QEMU took ~20 minutes. The VPS is x86_64 only, so ARM64 was dropped. Build time: ~25 min → ~5 min.
+
+---
+
+## Automated AI review pipeline
+
+Every PR to `master` is automatically reviewed by MiniMax M2.7 via OpenRouter. The `ai-review.yml` workflow posts `ai-review/verdict` as a GitHub commit status, which the existing `merge-automation.yml` consumes for auto-merge decisions.
+
+### Flow
+
+1. PR opened/updated → `ai-review.yml` triggers
+2. Posts `pending` status on head SHA immediately
+3. Fetches PR diff via `gh pr diff`
+4. Sends diff + metadata to MiniMax M2.7 via OpenRouter (`scripts/ai-review.mjs`)
+5. Parses structured verdict: `PASS`, `PASS_WITH_NOTES`, `FAIL`, or `HIGH_RISK`
+6. Posts `ai-review/verdict` status (`success`/`failure`/`error`)
+7. Posts PR comment with findings (only for non-PASS verdicts; cleans up old comments on re-push)
+8. `merge-automation.yml` picks up the status and auto-merges if all checks pass
+
+### Verdict rules
+
+| Verdict | GitHub status | Merge eligible? |
+|---------|--------------|-----------------|
+| `PASS` | `success` | Yes |
+| `PASS_WITH_NOTES` | `success` | Yes |
+| `HIGH_RISK` | `success` | Yes (but requires human attention per merge-automation) |
+| `FAIL` | `failure` | No |
+| `ERROR` | `error` | No |
+
+### Diff size guard
+
+Diffs exceeding 100KB are truncated. If the original verdict would be `PASS`, it's upgraded to `PASS_WITH_NOTES` with a truncation note.
+
+### GitHub secrets required
+
+| Secret | Purpose |
+|--------|---------|
+| `OPENROUTER_API_KEY` | OpenRouter API key for MiniMax M2.7 inference |
+
+### Key files
+
+- `scripts/ai-review.mjs` — review script (pure functions, native fetch, no dependencies)
+- `.github/workflows/ai-review.yml` — GHA workflow (triggered on PR events)
+- `.github/workflows/merge-automation.yml` — consumes `ai-review/verdict` for auto-merge
+
+### Manual fallback
+
+If the workflow fails (e.g., OpenRouter outage), post the status manually:
+```bash
+gh api repos/Viraforge/paperclip/statuses/<SHA> \
+  -X POST -f state=success -f context="ai-review/verdict" \
+  -f description="PASS – manual review" -f target_url="<PR URL>"
+```
 
 ---
 

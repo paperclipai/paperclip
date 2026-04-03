@@ -1,0 +1,166 @@
+name: AI Review
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Post pending status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+            -X POST \
+            -f state=pending \
+            -f context="ai-review/verdict" \
+            -f description="AI review in progress..." \
+            -f target_url="${{ github.event.pull_request.html_url }}"
+
+      - name: Fetch PR metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh pr view ${{ github.event.pull_request.number }} --json title,body,url,changedFiles,additions,deletions)
+          echo "PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')" >> "$GITHUB_ENV"
+          echo "PR_URL=$(echo "$PR_JSON" | jq -r '.url')" >> "$GITHUB_ENV"
+          echo "PR_FILES_CHANGED=$(echo "$PR_JSON" | jq -r '.changedFiles')" >> "$GITHUB_ENV"
+          echo "PR_ADDITIONS=$(echo "$PR_JSON" | jq -r '.additions')" >> "$GITHUB_ENV"
+          echo "PR_DELETIONS=$(echo "$PR_JSON" | jq -r '.deletions')" >> "$GITHUB_ENV"
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
+
+          # PR body may be multiline — write to file
+          echo "$PR_JSON" | jq -r '.body // ""' > /tmp/pr-body.txt
+
+          # Fetch diff — write to file to avoid env var size limits
+          gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt || true
+
+      - name: Run AI review
+        id: review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          export PR_DIFF="$(cat /tmp/pr-diff.txt)"
+          export PR_BODY="$(cat /tmp/pr-body.txt)"
+
+          node scripts/ai-review.mjs > /tmp/review-result.json || true
+
+          # Ensure result file exists (script may crash before writing)
+          if [ ! -s /tmp/review-result.json ]; then
+            echo '{"verdict":"ERROR","summary":"Review script crashed before producing output","findings":[]}' > /tmp/review-result.json
+          fi
+
+          # Parse verdict for subsequent steps
+          VERDICT=$(jq -r '.verdict // "ERROR"' /tmp/review-result.json)
+          SUMMARY=$(jq -r '.summary // "Review failed"' /tmp/review-result.json)
+          echo "VERDICT=$VERDICT" >> "$GITHUB_ENV"
+          echo "SUMMARY=$SUMMARY" >> "$GITHUB_ENV"
+
+      - name: Post verdict status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Map verdict to GitHub status state
+          case "$VERDICT" in
+            PASS|PASS_WITH_NOTES)
+              STATE=success
+              ;;
+            HIGH_RISK)
+              STATE=success
+              ;;
+            FAIL)
+              STATE=failure
+              ;;
+            *)
+              STATE=error
+              ;;
+          esac
+
+          # Build description, truncate to 140 chars (GitHub limit)
+          DESC="$(echo "$VERDICT — $SUMMARY" | head -c 140)"
+
+          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+            -X POST \
+            -f state="$STATE" \
+            -f context="ai-review/verdict" \
+            -f description="$DESC" \
+            -f target_url="${{ github.event.pull_request.html_url }}"
+
+      - name: Comment on PR (if findings)
+        if: env.VERDICT != 'PASS'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const result = JSON.parse(fs.readFileSync('/tmp/review-result.json', 'utf8'));
+            const verdict = result.verdict || 'ERROR';
+            const summary = result.summary || '';
+            const findings = result.findings || [];
+
+            const icon = { PASS: '✅', PASS_WITH_NOTES: '✅', FAIL: '❌', HIGH_RISK: '⚠️' }[verdict] || '❓';
+
+            let body = `## ${icon} AI Review: ${verdict}\n\n${summary}\n\n`;
+
+            if (findings.length > 0) {
+              const grouped = { critical: [], warning: [], note: [] };
+              for (const f of findings) {
+                const sev = grouped[f.severity] ? f.severity : 'note';
+                grouped[sev].push(f);
+              }
+              for (const [severity, items] of Object.entries(grouped)) {
+                if (items.length === 0) continue;
+                const label = { critical: 'Critical', warning: 'Warnings', note: 'Notes' }[severity];
+                body += `### ${label}\n\n`;
+                for (const f of items) {
+                  const loc = f.file ? (f.line ? `\`${f.file}:${f.line}\`` : `\`${f.file}\``) : '';
+                  body += `- ${loc ? `${loc} — ` : ''}${f.message}\n`;
+                }
+                body += '\n';
+              }
+            }
+
+            body += '---\n*Automated review by Paperclip AI Review*';
+
+            // Delete previous AI Review comments to avoid spam on force-pushes
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const MARKER = '*Automated review by Paperclip AI Review*';
+            for (const c of comments) {
+              if (c.body && c.body.includes(MARKER)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id,
+                });
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
