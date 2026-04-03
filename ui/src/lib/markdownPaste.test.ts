@@ -6,6 +6,10 @@ describe("markdownPaste", () => {
     expect(normalizePastedMarkdown("a\r\nb\r\n")).toBe("a\nb\n");
   });
 
+  it("normalizes old mac line endings", () => {
+    expect(normalizePastedMarkdown("a\rb\r")).toBe("a\nb\n");
+  });
+
   it("treats markdown blocks as markdown paste", () => {
     expect(looksLikeMarkdownPaste("# Title\n\n- item 1\n- item 2")).toBe(true);
   });

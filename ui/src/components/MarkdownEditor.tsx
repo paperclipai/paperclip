@@ -484,11 +484,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (types.has("Files") || types.has("text/html")) return;
     if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
 
-    const text = normalizePastedMarkdown(clipboard.getData("text/plain"));
-    if (!looksLikeMarkdownPaste(text)) return;
+    const rawText = clipboard.getData("text/plain");
+    if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
-    ref.current.insertMarkdown(text);
+    ref.current.insertMarkdown(normalizePastedMarkdown(rawText));
   }, []);
 
   return (
