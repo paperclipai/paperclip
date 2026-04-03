@@ -5,9 +5,9 @@ import { Shield } from "lucide-react";
 const PRIVACY_POLICY = `
 # Privacy Policy
 
-**Version:** v0.1 — pending legal review
+**Version:** v0.2
 **Effective Date:** April 1, 2026
-**Last Updated:** April 1, 2026
+**Last Updated:** April 3, 2026
 
 IronWorks ("we," "us," "our") is operated by Steel Motion LLC. This Privacy Policy describes how we collect, use, store, and protect your information when you use the IronWorks platform.
 
@@ -162,12 +162,30 @@ You can manage your cookie preferences at any time by clicking "Cookie Settings"
 - **Right to Opt-Out of Sale:** We do not sell personal information. No opt-out is necessary.
 - **Non-Discrimination:** We will not discriminate against you for exercising your privacy rights.
 
-## 11. Third-Party Services
+## 11. Third-Party Services and AI Data Processing
 
 ### 11.1 AI Model Providers
-When you configure AI agents, your prompts and agent instructions are sent to your chosen AI provider (Anthropic, OpenAI, Google, etc.). Each provider has their own privacy policy governing how they handle this data. IronWorks does not control how AI providers process your data.
+When you configure AI agents, your prompts, agent instructions, and related data are sent to your chosen AI provider (Anthropic, OpenAI, Google, and others) using API keys that you provide under the Bring Your Own Key (BYOK) model. Each provider has their own terms of service, privacy policy, and data handling practices. IronWorks does not control how AI providers process your data.
 
-### 11.2 No Other Third Parties
+### 11.2 Steel Motion's Limited Role in AI Data Processing
+Steel Motion acts as a conduit, transmitting your data to the third-party LLM provider you have selected and configured. Steel Motion does not:
+
+- Read, review, store, or log the content of prompts sent to or responses received from third-party LLM providers (beyond what is necessary for the platform to function, such as token counting for cost tracking)
+- Control the behavior, training practices, data retention policies, or privacy practices of any third-party LLM provider
+- Have access to the data processed by third-party LLM providers on their infrastructure
+
+### 11.3 Your Responsibility for LLM Provider Compliance
+You are solely responsible for:
+
+- Understanding and complying with the terms of service, acceptable use policies, and privacy policies of any third-party LLM provider whose API keys you use with IronWorks
+- Ensuring that any data you process through third-party LLM providers complies with all applicable data protection laws, including GDPR, CCPA, and any industry-specific regulations
+- Determining whether the data you send to third-party LLM providers is appropriate and lawful, including ensuring you have the necessary consents or legal basis for such processing
+- Any data retention, model training, or other processing that third-party LLM providers may perform on the data you send through their APIs
+
+### 11.4 No Guarantee of Provider Practices
+Steel Motion makes no representations or warranties regarding the data handling practices, security measures, or privacy protections of any third-party LLM provider. Changes to a provider's terms, policies, or practices are outside Steel Motion's control. You should regularly review the policies of your chosen LLM providers.
+
+### 11.5 No Other Third Parties
 We do not use third-party analytics, advertising, or tracking services unless you explicitly enable them.
 
 ## 12. Children's Privacy

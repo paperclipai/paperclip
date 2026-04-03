@@ -126,6 +126,7 @@ export const AGENT_ICON_NAMES = [
   "pen-line",
   "server",
   "palette",
+  "gavel",
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
@@ -807,6 +808,7 @@ export const ROLE_LEVEL_MAP: Record<string, RoleLevel> = {
   cfo: "executive",
   vphr: "management",
   compliancedirector: "management",
+  legalcounsel: "management",
   seniorengineer: "staff",
   devopsengineer: "staff",
   securityengineer: "staff",
@@ -822,6 +824,7 @@ export const ROLE_DEPARTMENT_MAP: Record<string, Department> = {
   cfo: "finance",
   vphr: "hr",
   compliancedirector: "compliance",
+  legalcounsel: "compliance",
   seniorengineer: "engineering",
   devopsengineer: "engineering",
   securityengineer: "security",

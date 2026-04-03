@@ -14,6 +14,7 @@ import {
   FileCode,
   Fingerprint,
   Flame,
+  Gavel,
   Gem,
   GitBranch,
   Globe,
@@ -99,6 +100,7 @@ export const AGENT_ICONS: Record<AgentIconName, LucideIcon> = {
   "pen-line": PenLine,
   server: Server,
   palette: Palette,
+  gavel: Gavel,
 };
 
 const DEFAULT_ICON: AgentIconName = "bot";
