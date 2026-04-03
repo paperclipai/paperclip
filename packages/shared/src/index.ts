@@ -21,6 +21,7 @@ export {
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
+  ROUTINE_VARIABLE_TYPES,
   ROUTINE_RUN_STATUSES,
   ROUTINE_RUN_SOURCES,
   PAUSE_REASONS,
@@ -88,6 +89,7 @@ export {
   type RoutineCatchUpPolicy,
   type RoutineTriggerKind,
   type RoutineTriggerSigningMode,
+  type RoutineVariableType,
   type RoutineRunStatus,
   type RoutineRunSource,
   type PauseReason,
@@ -255,6 +257,8 @@ export type {
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
+  AgentWakeupResponse,
+  AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
   AgentRuntimeState,
@@ -304,6 +308,8 @@ export type {
   CompanySecret,
   SecretProviderDescriptor,
   Routine,
+  RoutineVariable,
+  RoutineVariableDefaultValue,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -473,6 +479,7 @@ export {
   updateRoutineSchema,
   createRoutineTriggerSchema,
   updateRoutineTriggerSchema,
+  routineVariableSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateSecret,
@@ -596,6 +603,14 @@ export {
   type ParsedAgentMention,
   type ParsedProjectMention,
 } from "./project-mentions.js";
+
+export {
+  extractRoutineVariableNames,
+  interpolateRoutineTemplate,
+  isValidRoutineVariableName,
+  stringifyRoutineVariableValue,
+  syncRoutineVariablesWithTemplate,
+} from "./routine-variables.js";
 
 export {
   paperclipConfigSchema,

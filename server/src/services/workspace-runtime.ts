@@ -24,6 +24,10 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
+export function resolveShell(): string {
+  return process.env.SHELL?.trim() || (process.platform === "win32" ? "sh" : "/bin/sh");
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -299,6 +303,16 @@ function quoteForBash(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function decodeShellWord(value: string): string {
+  if (
+    (value.startsWith(`"`) && value.endsWith(`"`)) ||
+    (value.startsWith(`'`) && value.endsWith(`'`))
+  ) {
+    return decodeQuotedCommandArg(value.slice(1, -1), value[0] as `"` | `'`);
+  }
+  return value;
+}
+
 function resolveDirectCommand(
   command: string,
   env: NodeJS.ProcessEnv,
@@ -312,6 +326,19 @@ function resolveDirectCommand(
       command: process.execPath,
       args: ["-e", source],
     };
+  }
+
+  const nodeScriptMatch = /^node\s+(.+)$/u.exec(trimmed);
+  if (nodeScriptMatch) {
+    const args = (nodeScriptMatch[1] ?? "")
+      .match(/"[^"]*"|'[^']*'|[^\s]+/g)
+      ?.map(decodeShellWord) ?? [];
+    if (args.length > 0) {
+      return {
+        command: process.execPath,
+        args,
+      };
+    }
   }
 
   const bashScriptMatch = /^bash\s+([^\s]+)$/u.exec(trimmed);
@@ -341,14 +368,15 @@ function resolveDirectCommand(
 function resolveShellCommand(command: string, env: NodeJS.ProcessEnv): { command: string; args: string[] } {
   const direct = resolveDirectCommand(command, env);
   if (direct) return direct;
-  if (process.platform === "win32") {
+  const shell = resolveShell();
+  if (/([\\/]|^)cmd(?:\.exe)?$/i.test(shell)) {
     return {
-      command: process.env.ComSpec || "cmd.exe",
+      command: shell,
       args: ["/d", "/s", "/c", command],
     };
   }
   return {
-    command: process.env.SHELL?.trim() || "/bin/sh",
+    command: shell,
     args: ["-lc", command],
   };
 }
@@ -1381,6 +1409,7 @@ async function startLocalRuntimeService(input: {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
   }
+
   const expose = parseObject(input.service.expose);
   const readiness = parseObject(input.service.readiness);
   const urlTemplate =

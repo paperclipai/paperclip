@@ -21,7 +21,11 @@ export function instanceSettingsRoutes(db: Db) {
   const svc = instanceSettingsService(db);
 
   router.get("/instance/settings/general", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    // General settings (e.g. keyboardShortcuts) are readable by any
+    // authenticated board user.  Only PATCH requires instance-admin.
+    if (req.actor.type !== "board") {
+      throw forbidden("Board access required");
+    }
     res.json(await svc.getGeneral());
   });
 
@@ -56,7 +60,11 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    // Experimental settings are readable by any authenticated board user.
+    // Only PATCH requires instance-admin.
+    if (req.actor.type !== "board") {
+      throw forbidden("Board access required");
+    }
     res.json(await svc.getExperimental());
   });
 

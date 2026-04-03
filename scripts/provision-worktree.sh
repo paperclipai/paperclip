@@ -63,20 +63,6 @@ source_env_path_shell="$(dirname "$source_config_path_shell")/.env"
 
 mkdir -p "$paperclip_dir"
 
-run_isolated_worktree_init() {
-  if command -v pnpm >/dev/null 2>&1 && pnpm penclip --help >/dev/null 2>&1; then
-    pnpm penclip worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path_raw"
-    return 0
-  fi
-
-  if command -v penclip >/dev/null 2>&1; then
-    penclip worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path_raw"
-    return 0
-  fi
-
-  return 1
-}
-
 resolve_node_command() {
   if [[ "$base_cwd_raw" =~ ^[A-Za-z]:[\\/] || "$worktree_cwd_raw" =~ ^[A-Za-z]:[\\/] ]]; then
     if command -v node.exe >/dev/null 2>&1; then
@@ -86,6 +72,43 @@ resolve_node_command() {
   fi
 
   printf '%s\n' "node"
+}
+
+run_penclip_command() {
+  local command_args=("$@")
+  if command -v pnpm >/dev/null 2>&1 && pnpm penclip --help >/dev/null 2>&1; then
+    pnpm penclip "${command_args[@]}"
+    return 0
+  fi
+
+  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
+  local node_command
+  node_command="$(resolve_node_command)"
+  if command -v "$node_command" >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+    "$node_command" "$base_cli_tsx_path" "$base_cli_entry_path" "${command_args[@]}"
+    return 0
+  fi
+
+  if command -v penclip >/dev/null 2>&1; then
+    penclip "${command_args[@]}"
+    return 0
+  fi
+
+  return 1
+}
+
+run_isolated_worktree_init() {
+  run_penclip_command \
+    worktree \
+    init \
+    --force \
+    --seed-mode \
+    minimal \
+    --name \
+    "$worktree_name" \
+    --from-config \
+    "$source_config_path_raw"
 }
 
 write_fallback_worktree_config() {
@@ -350,6 +373,20 @@ elif [[ ! -e "$(to_shell_path "$worktree_config_path_raw")" || ! -e "$(to_shell_
   echo "penclip worktree init did not materialize repo-local config; writing isolated fallback config." >&2
   write_fallback_worktree_config
 fi
+
+disable_seeded_routines() {
+  local company_id="${PAPERCLIP_COMPANY_ID:-}"
+  if [[ -z "$company_id" ]]; then
+    echo "PAPERCLIP_COMPANY_ID not set; skipping routine disable post-step." >&2
+    return 0
+  fi
+
+  if ! run_penclip_command routines disable-all --config "$worktree_config_path_raw" --company-id "$company_id"; then
+    echo "penclip CLI not available in this workspace; skipping routine disable post-step." >&2
+  fi
+}
+
+disable_seeded_routines
 
 while IFS= read -r relative_path; do
   [[ -n "$relative_path" ]] || continue

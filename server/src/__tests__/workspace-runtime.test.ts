@@ -24,6 +24,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
@@ -1331,6 +1332,60 @@ describe("ensureRuntimeServicesForRun", () => {
 
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
+  });
+});
+
+describe("resolveShell (shell fallback)", () => {
+  const originalShell = process.env.SHELL;
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    if (originalShell !== undefined) {
+      process.env.SHELL = originalShell;
+    } else {
+      delete process.env.SHELL;
+    }
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  });
+
+  it("returns process.env.SHELL when set", () => {
+    process.env.SHELL = "/usr/bin/zsh";
+    expect(resolveShell()).toBe("/usr/bin/zsh");
+  });
+
+  it("trims whitespace from SHELL env var", () => {
+    process.env.SHELL = "  /usr/bin/fish  ";
+    expect(resolveShell()).toBe("/usr/bin/fish");
+  });
+
+  it("falls back to /bin/sh on non-Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("falls back to sh (bare) on Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
+  });
+
+  it("falls back to /bin/sh on darwin when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats empty SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats whitespace-only SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "   ";
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
   });
 });
 

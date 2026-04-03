@@ -249,6 +249,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
   });
 
   const linkedGoalIds = project.goalIds.length > 0

@@ -199,8 +199,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const ref = useRef<MDXEditorMethods>(null);
+  const editorRef = useRef<MDXEditorMethods | null>(null);
   const latestValueRef = useRef(value);
+  const latestPropValueRef = useRef(value);
+  const pendingExternalValueRef = useRef<string | null>(null);
+  const isFocusedRef = useRef(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -236,7 +239,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
-      ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
   }), []);
 
@@ -263,10 +266,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
-                ref.current?.setMarkdown(updated);
+                editorRef.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
-                  ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+                  editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
               }
             }, 100);
@@ -300,10 +303,29 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
+  const handleEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    editorRef.current = instance;
+    if (!instance) return;
+
+    const pendingValue = pendingExternalValueRef.current;
+    if (pendingValue !== null && pendingValue !== latestValueRef.current) {
+      instance.setMarkdown(pendingValue);
+      latestValueRef.current = pendingValue;
+    }
+    pendingExternalValueRef.current = null;
+  }, []);
+
+  latestPropValueRef.current = value;
+
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
+      if (!editorRef.current) {
+        pendingExternalValueRef.current = value;
+        return;
+      }
+      editorRef.current.setMarkdown(value);
       latestValueRef.current = value;
+      pendingExternalValueRef.current = null;
     }
   }, [value]);
 
@@ -394,7 +416,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
-        ref.current?.setMarkdown(next);
+        editorRef.current?.setMarkdown(next);
         onChange(next);
       }
 
@@ -541,12 +563,35 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         dragDepthRef.current = 0;
         setIsDragOver(false);
       }}
+      onFocusCapture={() => {
+        isFocusedRef.current = true;
+      }}
+      onBlurCapture={() => {
+        isFocusedRef.current = false;
+      }}
     >
       <MDXEditor
-        ref={ref}
+        ref={handleEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
+          const externalValue = latestPropValueRef.current;
+          if (!isFocusedRef.current) {
+            if (next === externalValue) {
+              latestValueRef.current = externalValue;
+              return;
+            }
+
+            latestValueRef.current = externalValue;
+            if (editorRef.current) {
+              editorRef.current.setMarkdown(externalValue);
+              pendingExternalValueRef.current = null;
+            } else {
+              pendingExternalValueRef.current = externalValue;
+            }
+            return;
+          }
+
           latestValueRef.current = next;
           onChange(next);
         }}

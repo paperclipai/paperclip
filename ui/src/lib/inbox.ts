@@ -12,8 +12,12 @@ export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_reques
 export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
 export const INBOX_LAST_TAB_KEY = "paperclip:inbox:last-tab";
+export const INBOX_ISSUE_COLUMNS_KEY = "paperclip:inbox:issue-columns";
 export type InboxTab = "mine" | "recent" | "unread" | "all";
 export type InboxApprovalFilter = "all" | "actionable" | "resolved";
+export const inboxIssueColumns = ["status", "id", "assignee", "project", "workspace", "labels", "updated"] as const;
+export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
+export const DEFAULT_INBOX_ISSUE_COLUMNS: InboxIssueColumn[] = ["status", "id", "updated"];
 export type InboxWorkItem =
   | {
       kind: "issue";
@@ -77,6 +81,80 @@ export function saveReadInboxItems(ids: Set<string>) {
   } catch {
     // Ignore localStorage failures.
   }
+}
+
+export function normalizeInboxIssueColumns(columns: Iterable<string | InboxIssueColumn>): InboxIssueColumn[] {
+  const selected = new Set(columns);
+  return inboxIssueColumns.filter((column) => selected.has(column));
+}
+
+export function getAvailableInboxIssueColumns(enableWorkspaceColumn: boolean): InboxIssueColumn[] {
+  if (enableWorkspaceColumn) return [...inboxIssueColumns];
+  return inboxIssueColumns.filter((column) => column !== "workspace");
+}
+
+export function loadInboxIssueColumns(): InboxIssueColumn[] {
+  try {
+    const raw = localStorage.getItem(INBOX_ISSUE_COLUMNS_KEY);
+    if (raw === null) return DEFAULT_INBOX_ISSUE_COLUMNS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_INBOX_ISSUE_COLUMNS;
+    return normalizeInboxIssueColumns(parsed);
+  } catch {
+    return DEFAULT_INBOX_ISSUE_COLUMNS;
+  }
+}
+
+export function saveInboxIssueColumns(columns: InboxIssueColumn[]) {
+  try {
+    localStorage.setItem(
+      INBOX_ISSUE_COLUMNS_KEY,
+      JSON.stringify(normalizeInboxIssueColumns(columns)),
+    );
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function resolveIssueWorkspaceName(
+  issue: Pick<Issue, "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  {
+    executionWorkspaceById,
+    projectWorkspaceById,
+    defaultProjectWorkspaceIdByProjectId,
+  }: {
+    executionWorkspaceById?: ReadonlyMap<string, {
+      name: string;
+      mode: "shared_workspace" | "isolated_workspace" | "operator_branch" | "adapter_managed" | "cloud_sandbox";
+      projectWorkspaceId: string | null;
+    }>;
+    projectWorkspaceById?: ReadonlyMap<string, { name: string }>;
+    defaultProjectWorkspaceIdByProjectId?: ReadonlyMap<string, string>;
+  },
+): string | null {
+  const defaultProjectWorkspaceId = issue.projectId
+    ? defaultProjectWorkspaceIdByProjectId?.get(issue.projectId) ?? null
+    : null;
+
+  if (issue.executionWorkspaceId) {
+    const executionWorkspace = executionWorkspaceById?.get(issue.executionWorkspaceId) ?? null;
+    const linkedProjectWorkspaceId =
+      executionWorkspace?.projectWorkspaceId ?? issue.projectWorkspaceId ?? null;
+    const isDefaultSharedExecutionWorkspace =
+      executionWorkspace?.mode === "shared_workspace" && linkedProjectWorkspaceId === defaultProjectWorkspaceId;
+    if (isDefaultSharedExecutionWorkspace) return null;
+
+    const workspaceName = executionWorkspace?.name;
+    if (workspaceName) return workspaceName;
+  }
+
+  if (issue.projectWorkspaceId) {
+    if (issue.projectWorkspaceId === defaultProjectWorkspaceId) return null;
+    const workspaceName = projectWorkspaceById?.get(issue.projectWorkspaceId)?.name;
+    if (workspaceName) return workspaceName;
+  }
+
+  return null;
 }
 
 export function loadLastInboxTab(): InboxTab {
@@ -163,6 +241,24 @@ export function getRecentTouchedIssues(issues: Issue[]): Issue[] {
 
 export function getUnreadTouchedIssues(issues: Issue[]): Issue[] {
   return issues.filter((issue) => issue.isUnreadForMe);
+}
+
+export function getVisibleUnreadIssueIds(
+  workItems: InboxWorkItem[],
+  {
+    fadingOutIssues = new Set<string>(),
+    archivingIssueIds = new Set<string>(),
+  }: {
+    fadingOutIssues?: ReadonlySet<string>;
+    archivingIssueIds?: ReadonlySet<string>;
+  } = {},
+): string[] {
+  return workItems.flatMap((item) => {
+    if (item.kind !== "issue") return [];
+    if (!item.issue.isUnreadForMe) return [];
+    if (fadingOutIssues.has(item.issue.id) || archivingIssueIds.has(item.issue.id)) return [];
+    return [item.issue.id];
+  });
 }
 
 export function getApprovalsForTab(

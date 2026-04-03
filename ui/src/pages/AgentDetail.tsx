@@ -3054,9 +3054,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: resumePayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(t("Resume request was skipped because the agent is not currently invokable.", {
-          defaultValue: "Resume request was skipped because the agent is not currently invokable.",
-        }));
+        throw new Error(
+          result.message
+            ?? t("Resume request was skipped because the agent is not currently invokable.", {
+              defaultValue: "Resume request was skipped because the agent is not currently invokable.",
+            }),
+        );
       }
       return result;
     },
@@ -3088,9 +3091,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
         payload: retryPayload,
       }, run.companyId);
       if (!("id" in result)) {
-        throw new Error(t("Retry was skipped because the agent is not currently invokable.", {
-          defaultValue: "Retry was skipped because the agent is not currently invokable.",
-        }));
+        throw new Error(
+          result.message
+            ?? t("Retry was skipped because the agent is not currently invokable.", {
+              defaultValue: "Retry was skipped because the agent is not currently invokable.",
+            }),
+        );
       }
       return result;
     },
