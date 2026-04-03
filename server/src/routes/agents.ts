@@ -2063,6 +2063,70 @@ export function agentRoutes(db: Db) {
     res.status(202).json(run);
   });
 
+  router.post("/agents/:id/heartbeat/trigger", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    // Board users can always trigger any agent's heartbeat.
+    // Agent callers must be a manager of the target (in its chainOfCommand).
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== agent.companyId) {
+        res.status(403).json({ error: "Agent key cannot access another company" });
+        return;
+      }
+      const chainOfCommand = await svc.getChainOfCommand(agent.id);
+      const isManager = chainOfCommand.some((m) => m.id === actorAgent.id);
+      if (!isManager) {
+        res.status(403).json({ error: "Only a manager or board user can trigger a report's heartbeat" });
+        return;
+      }
+    }
+
+    const run = await heartbeat.invoke(
+      id,
+      "on_demand",
+      {
+        triggeredBy: req.actor.type,
+        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+      },
+      "manual",
+      {
+        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      },
+    );
+
+    if (!run) {
+      res.status(202).json({ status: "skipped", runId: null });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "heartbeat.triggered",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { agentId: id },
+    });
+
+    res.status(202).json(run);
+  });
+
   router.post("/agents/:id/claude-login", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
