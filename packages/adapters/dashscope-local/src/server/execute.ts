@@ -1,4 +1,3 @@
-import * as http from "node:http";
 import * as https from "node:https";
 import { URL } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -11,58 +10,69 @@ import {
   renderTemplate,
 } from "@paperclipai/adapter-utils/server-utils";
 
-interface DashScopeMessage {
+// OpenAI 兼容的消息格式
+interface OpenAIMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-interface DashScopeRequest {
+// OpenAI 兼容的请求格式
+interface OpenAIRequest {
   model: string;
-  input: {
-    messages: DashScopeMessage[];
-  };
-  parameters: {
-    temperature?: number;
-    top_p?: number;
-    max_tokens?: number;
-  };
+  messages: OpenAIMessage[];
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
 }
 
-interface DashScopeUsage {
-  input_tokens: number;
-  output_tokens: number;
-}
-
-interface DashScopeResponse {
-  output: {
-    text: string;
-    finish_reason?: string;
+// OpenAI 兼容的响应格式
+interface OpenAIChoice {
+  message: {
+    role: string;
+    content: string;
   };
-  usage: DashScopeUsage;
-  request_id: string;
+  finish_reason: string;
 }
 
+interface OpenAIUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+interface OpenAIResponse {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: OpenAIChoice[];
+  usage: OpenAIUsage;
+}
+
+/**
+ * 调用阿里云百炼 OpenAI 兼容 API
+ * 端点：https://coding.dashscope.aliyuncs.com/v1/chat/completions
+ */
 async function callDashScopeAPI(
   apiKey: string,
   model: string,
-  messages: DashScopeMessage[],
+  messages: OpenAIMessage[],
   options: {
     temperature?: number;
     topP?: number;
     maxTokens?: number;
     timeoutSec?: number;
   },
-): Promise<{ response: DashScopeResponse; latencyMs: number }> {
-  const url = new URL("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation");
+): Promise<{ response: OpenAIResponse; latencyMs: number }> {
+  // 使用阿里云百炼 OpenAI 兼容端点
+  const url = new URL("https://coding.dashscope.aliyuncs.com/v1/chat/completions");
   
-  const requestBody: DashScopeRequest = {
+  const requestBody: OpenAIRequest = {
     model,
-    input: { messages },
-    parameters: {
-      ...(options.temperature !== undefined && { temperature: options.temperature }),
-      ...(options.topP !== undefined && { top_p: options.topP }),
-      ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
-    },
+    messages,
+    ...(options.temperature !== undefined && { temperature: options.temperature }),
+    ...(options.topP !== undefined && { top_p: options.topP }),
+    ...(options.maxTokens !== undefined && { max_tokens: options.maxTokens }),
   };
 
   const body = JSON.stringify(requestBody);
@@ -87,7 +97,7 @@ async function callDashScopeAPI(
           return;
         }
         try {
-          const response: DashScopeResponse = JSON.parse(responseData);
+          const response: OpenAIResponse = JSON.parse(responseData);
           resolve({ response, latencyMs });
         } catch (e) {
           reject(new Error(`Failed to parse DashScope response: ${e}\n${responseData}`));
@@ -182,14 +192,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorMessage: "Model not specified. Set config.model to a valid DashScope model (e.g., qwen-max, qwen-plus).",
+      errorMessage: "Model not specified. Set config.model to a valid DashScope model (e.g., qwen3.5-plus, qwen-max, qwen-plus).",
       errorCode: "invalid_config",
     };
   }
 
-  await onLog("stdout", `[paperclip] Calling DashScope API with model: ${model}\n`);
+  await onLog("stdout", `[paperclip] Calling DashScope OpenAI-compatible API with model: ${model}\n`);
+  await onLog("stdout", `[paperclip] Endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions\n`);
 
-  const messages: DashScopeMessage[] = [
+  const messages: OpenAIMessage[] = [
     { role: "system", content: "You are a helpful AI assistant integrated with Paperclip." },
     { role: "user", content: prompt },
   ];
@@ -202,11 +213,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
     });
 
-    await onLog("stdout", `[paperclip] DashScope response in ${latencyMs}ms\n`);
-    await onLog("stdout", `[paperclip] Tokens: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}\n`);
+    const choice = response.choices[0];
+    const outputText = choice?.message?.content ?? "";
+    const finishReason = choice?.finish_reason ?? "stop";
 
-    const outputText = response.output.text ?? "";
-    const finishReason = response.output.finish_reason ?? "stop";
+    await onLog("stdout", `[paperclip] DashScope response in ${latencyMs}ms\n`);
+    await onLog("stdout", `[paperclip] Tokens: prompt=${response.usage.prompt_tokens}, completion=${response.usage.completion_tokens}, total=${response.usage.total_tokens}\n`);
+    await onLog("stdout", `[paperclip] Finish reason: ${finishReason}\n`);
 
     return {
       exitCode: 0,
@@ -215,9 +228,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: null,
       errorCode: null,
       usage: {
-        inputTokens: response.usage.input_tokens,
+        inputTokens: response.usage.prompt_tokens,
         cachedInputTokens: 0,
-        outputTokens: response.usage.output_tokens,
+        outputTokens: response.usage.completion_tokens,
       },
       sessionId: null,
       sessionParams: null,
@@ -228,9 +241,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType: "api",
       costUsd: 0,
       resultJson: {
-        output: response.output,
+        output: {
+          text: outputText,
+          finish_reason: finishReason,
+        },
         usage: response.usage,
-        request_id: response.request_id,
+        request_id: response.id,
         latency_ms: latencyMs,
       },
       summary: outputText,

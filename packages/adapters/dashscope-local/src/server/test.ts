@@ -32,6 +32,7 @@ export async function testEnvironment(
       code: "dashscope_api_key_present",
       level: "info",
       message: "DashScope API key is configured",
+      detail: "Using OpenAI-compatible endpoint: https://coding.dashscope.aliyuncs.com/v1",
     });
   }
   
