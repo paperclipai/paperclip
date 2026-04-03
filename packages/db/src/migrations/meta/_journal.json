@@ -435,6 +435,20 @@
       "when": 1775700000000,
       "tag": "0061_support_tickets",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1775786400000,
+      "tag": "0062_agent_employment_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1775872800000,
+      "tag": "0063_knowledge_page_agent_workspace",
+      "breakpoints": true
     }
   ]
 }

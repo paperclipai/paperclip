@@ -49,6 +49,7 @@ import {
   AgentConfigurePage,
   PromptsTab,
   AgentSkillsTab,
+  AgentMemoryTab,
   RunsTab,
 } from "../components/agent-detail";
 
@@ -307,11 +308,13 @@ export function AgentDetail() {
           ? "configuration"
           : activeView === "skills"
             ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+            : activeView === "memory"
+              ? "memory"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
+                : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -341,6 +344,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Configuration" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
+      } else if (activeView === "memory") {
+        crumbs.push({ label: "Memory" });
       } else if (activeView === "budget") {
         crumbs.push({ label: "Budget" });
       } else {
@@ -503,6 +508,7 @@ export function AgentDetail() {
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
               { value: "configuration", label: "Configuration" },
+              { value: "memory", label: "Memory" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
@@ -615,6 +621,13 @@ export function AgentDetail() {
         <AgentSkillsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
+        />
+      )}
+
+      {activeView === "memory" && resolvedCompanyId && (
+        <AgentMemoryTab
+          companyId={resolvedCompanyId}
+          agentId={agent.id}
         />
       )}
 

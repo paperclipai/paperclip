@@ -273,7 +273,7 @@ export function Goals() {
       {/* Toolbar */}
       {totalGoals > 0 && (
         <div className="flex items-center justify-between gap-2">
-          <div className="relative w-48 sm:w-64">
+          <div className="relative w-48 sm:w-64 md:w-80">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={search}

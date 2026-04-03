@@ -8,21 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Key, Check, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type { CompanySecret } from "@ironworksai/shared";
 
-type ProviderKey = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY";
+type ProviderKey = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GEMINI_API_KEY" | "OPENROUTER_API_KEY" | "OLLAMA_BASE_URL";
 
-const PROVIDERS: { key: ProviderKey; label: string; placeholder: string; testUrl: string }[] = [
-  {
-    key: "ANTHROPIC_API_KEY",
-    label: "Anthropic",
-    placeholder: "sk-ant-...",
-    testUrl: "https://api.anthropic.com/v1/messages",
-  },
-  {
-    key: "OPENAI_API_KEY",
-    label: "OpenAI",
-    placeholder: "sk-...",
-    testUrl: "https://api.openai.com/v1/models",
-  },
+const PROVIDERS: { key: ProviderKey; label: string; placeholder: string }[] = [
+  { key: "ANTHROPIC_API_KEY", label: "Anthropic", placeholder: "sk-ant-..." },
+  { key: "OPENAI_API_KEY", label: "OpenAI", placeholder: "sk-..." },
+  { key: "GEMINI_API_KEY", label: "Gemini", placeholder: "AIza..." },
+  { key: "OPENROUTER_API_KEY", label: "OpenRouter", placeholder: "sk-or-..." },
+  { key: "OLLAMA_BASE_URL", label: "Ollama", placeholder: "http://localhost:11434" },
 ];
 
 function maskKey(key: string): string {
@@ -55,54 +48,16 @@ export function ApiKeyOnboardingBanner() {
       .map((s: CompanySecret) => s.name),
   );
 
-  const hasAnyLlmKey = configuredKeys.has("ANTHROPIC_API_KEY") || configuredKeys.has("OPENAI_API_KEY");
+  const hasAnyLlmKey = PROVIDERS.some((p) => configuredKeys.has(p.key));
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      // Validate the key first by attempting an API call
       setValidating(true);
       setValidationError(null);
 
       const provider = PROVIDERS.find((p) => p.key === activeProvider);
       if (!provider) throw new Error("Unknown provider");
 
-      try {
-        if (activeProvider === "ANTHROPIC_API_KEY") {
-          const res = await fetch(provider.testUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": keyValue.trim(),
-              "anthropic-version": "2023-06-01",
-            },
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 1,
-              messages: [{ role: "user", content: "test" }],
-            }),
-          });
-          // 200 or 400 (bad request due to minimal payload) both indicate the key is valid
-          // 401 means invalid key
-          if (res.status === 401) {
-            throw new Error("Invalid API key - authentication failed");
-          }
-        } else {
-          const res = await fetch(provider.testUrl, {
-            headers: { Authorization: `Bearer ${keyValue.trim()}` },
-          });
-          if (res.status === 401) {
-            throw new Error("Invalid API key - authentication failed");
-          }
-        }
-      } catch (err) {
-        if (err instanceof Error && err.message.includes("Invalid API key")) {
-          throw err;
-        }
-        // Network errors (CORS, etc.) are expected when calling external APIs from browser
-        // The key will be validated server-side when actually used
-      }
-
-      // Save the key as a company secret
       const existingSecret = secrets.find((s: CompanySecret) => s.name === activeProvider);
       if (existingSecret) {
         await secretsApi.rotate(existingSecret.id, { value: keyValue.trim() });

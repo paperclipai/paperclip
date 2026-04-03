@@ -180,7 +180,7 @@ export function SidebarProjects() {
           <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                "h-3 w-3 text-muted-foreground/60 transition-transform md:opacity-0 md:group-hover:opacity-100",
                 open && "rotate-90"
               )}
             />

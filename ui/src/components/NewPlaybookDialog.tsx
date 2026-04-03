@@ -6,7 +6,7 @@ import {
   Minus,
   PenLine,
   Plus,
-  Sparkles,
+  Wand2,
   Trash2,
 } from "lucide-react";
 import { api } from "../api/client";
@@ -203,7 +203,7 @@ export function NewPlaybookDialog({
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-blue-500" />
+              <Wand2 className="h-4 w-4 text-blue-500" />
               AI-Assisted Playbook
             </DialogTitle>
             <DialogDescription>
@@ -279,12 +279,12 @@ export function NewPlaybookDialog({
             >
               {autoGenerating ? (
                 <>
-                  <Sparkles className="h-3.5 w-3.5 mr-1.5 animate-pulse" />
+                  <Wand2 className="h-3.5 w-3.5 mr-1.5 animate-pulse" />
                   Generating...
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                  <Wand2 className="h-3.5 w-3.5 mr-1.5" />
                   Generate Playbook
                 </>
               )}

@@ -150,6 +150,19 @@ export const queryKeys = {
     search: (companyId: string, query: string) =>
       ["library", companyId, "search", query] as const,
   },
+  hiring: {
+    list: (companyId: string) => ["hiring-requests", companyId] as const,
+    detail: (companyId: string, id: string) => ["hiring-requests", companyId, id] as const,
+  },
+  agentMemory: {
+    list: (companyId: string, agentId: string, memoryType?: string) =>
+      ["agent-memory", companyId, agentId, memoryType ?? "__all__"] as const,
+  },
+  roleTemplates: {
+    list: (companyId: string) => ["role-templates", companyId] as const,
+    detail: (companyId: string, id: string) => ["role-templates", companyId, id] as const,
+  },
+  headcount: (companyId: string) => ["headcount", companyId] as const,
   billing: {
     subscription: (companyId: string) => ["billing", "subscription", companyId] as const,
   },

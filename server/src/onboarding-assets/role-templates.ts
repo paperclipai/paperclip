@@ -4,6 +4,8 @@
  * plus metadata for the onboarding wizard (org hierarchy, skills, etc.).
  */
 
+import type { Department, RoleLevel } from "@ironworksai/shared";
+
 export interface RoleTemplate {
   /** Machine key (lowercase, no spaces). */
   key: string;
@@ -17,6 +19,12 @@ export interface RoleTemplate {
   role: "ceo" | "vp" | "director" | "manager" | "contractor" | "engineer";
   /** Who this role reports to (key of another template, null for CEO). */
   reportsTo: string | null;
+  /** Organizational department. */
+  department: Department;
+  /** Organizational level (executive, management, staff). */
+  roleLevel: RoleLevel;
+  /** Default Lucide icon name for this role. */
+  defaultIcon: string;
   /** Default adapter suggestion. */
   suggestedAdapter: string;
   /** Skills to auto-assign. */
@@ -36,6 +44,9 @@ export const ROLE_TEMPLATES: RoleTemplate[] = [
     icon: "crown",
     role: "ceo",
     reportsTo: null,
+    department: "executive",
+    roleLevel: "executive",
+    defaultIcon: "crown",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "ironworks-create-agent", "para-memory-files"],
     soul: `# SOUL.md — CEO
@@ -104,6 +115,9 @@ Every heartbeat, read your direct reports' daily notes to stay informed. Synthes
     icon: "code-2",
     role: "manager",
     reportsTo: "ceo",
+    department: "engineering",
+    roleLevel: "executive",
+    defaultIcon: "code",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "ironworks-create-agent", "para-memory-files"],
     soul: `# SOUL.md — CTO
@@ -166,6 +180,9 @@ You manage engineers. When work comes to you:
     icon: "megaphone",
     role: "manager",
     reportsTo: "ceo",
+    department: "marketing",
+    roleLevel: "executive",
+    defaultIcon: "megaphone",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — CMO
@@ -224,6 +241,9 @@ You are the CMO. You own the brand, marketing strategy, and growth engine.
     icon: "users",
     role: "vp",
     reportsTo: "ceo",
+    department: "hr",
+    roleLevel: "management",
+    defaultIcon: "users",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "ironworks-create-agent", "para-memory-files"],
     soul: `# SOUL.md — VP of HR
@@ -317,6 +337,9 @@ Monthly:
     icon: "dollar-sign",
     role: "vp",
     reportsTo: "ceo",
+    department: "finance",
+    roleLevel: "executive",
+    defaultIcon: "dollar-sign",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — CFO
@@ -397,6 +420,9 @@ Escalate to CEO immediately if:
     icon: "terminal",
     role: "engineer",
     reportsTo: "cto",
+    department: "engineering",
+    roleLevel: "staff",
+    defaultIcon: "terminal",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — Senior Engineer
@@ -456,6 +482,9 @@ You are a Senior Engineer. You are the hands on the keyboard — the person who 
     icon: "server",
     role: "engineer",
     reportsTo: "cto",
+    department: "engineering",
+    roleLevel: "staff",
+    defaultIcon: "server",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — DevOps Engineer
@@ -514,6 +543,9 @@ You are the DevOps Engineer. You own the pipeline from commit to production and 
     icon: "shield-check",
     role: "engineer",
     reportsTo: "cto",
+    department: "security",
+    roleLevel: "staff",
+    defaultIcon: "shield",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — Security Engineer
@@ -569,10 +601,13 @@ You are the Security Engineer. You are the company's immune system — constantl
   {
     key: "compliancedirector",
     title: "Compliance Director",
-    tagline: "GRC oversight — regulatory compliance, data governance, and risk management",
+    tagline: "GRC oversight - regulatory compliance, data governance, and risk management",
     icon: "scale",
     role: "director",
     reportsTo: "ceo",
+    department: "compliance",
+    roleLevel: "management",
+    defaultIcon: "scale",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — Compliance Director
@@ -643,6 +678,9 @@ You cannot modify agent configurations or delete data — you are an oversight r
     icon: "pen-tool",
     role: "engineer",
     reportsTo: "cmo",
+    department: "marketing",
+    roleLevel: "staff",
+    defaultIcon: "pen-line",
     suggestedAdapter: "claude_local",
     skills: ["ironworks", "para-memory-files"],
     soul: `# SOUL.md — Content Marketer

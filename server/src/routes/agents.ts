@@ -2,7 +2,7 @@ import { Router, type Request } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@ironworksai/db";
-import { agents as agentsTable, companies, companySubscriptions, heartbeatRuns } from "@ironworksai/db";
+import { agents as agentsTable, agentMemoryEntries, companies, companySubscriptions, heartbeatRuns } from "@ironworksai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -21,6 +21,15 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  CONTRACT_END_CONDITIONS,
+  DEPARTMENTS,
+  EMPLOYMENT_TYPES,
+  PLAN_AGENT_LIMITS,
+  TERMINATION_REASONS,
+  type ContractEndCondition,
+  type Department,
+  type EmploymentType,
+  type TerminationReason,
 } from "@ironworksai/shared";
 import {
   readIronworksSkillSyncPreference,
@@ -42,9 +51,13 @@ import {
   secretService,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
+  createAgentWorkspace as createAgentWorkspaceService,
+  archiveAgentWorkspace as archiveAgentWorkspaceService,
+  createHiringRecord as createHiringRecordService,
+  createTerminationRecord as createTerminationRecordService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertBoard, assertCanWrite, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -864,7 +877,16 @@ export function agentRoutes(db: Db) {
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+
+    const includeTerminated = req.query.includeTerminated === "true";
+    const employmentType = typeof req.query.employmentType === "string" && EMPLOYMENT_TYPES.includes(req.query.employmentType as EmploymentType)
+      ? req.query.employmentType as string
+      : undefined;
+    const department = typeof req.query.department === "string" && DEPARTMENTS.includes(req.query.department as Department)
+      ? req.query.department as string
+      : undefined;
+
+    const result = await svc.list(companyId, { includeTerminated, employmentType, department });
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs || req.actor.type === "board") {
       res.json(result);
@@ -1326,6 +1348,26 @@ export function agentRoutes(db: Db) {
       });
     }
 
+    // Create workspace and hiring record if agent does not require approval (already active)
+    if (!requiresApproval) {
+      try {
+        await createAgentWorkspaceService(db, agent.id, companyId, agent.role);
+        await createHiringRecordService(db, {
+          companyId,
+          hrAgentId: null,
+          hiredAgentId: agent.id,
+          hiredAgentName: agent.name,
+          hiredAgentRole: agent.role,
+          employmentType: (agent as Record<string, unknown>).employmentType as string ?? "full_time",
+          hiredByUserId: actor.actorType === "user" ? actor.actorId : null,
+          hiredByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+        });
+      } catch (err) {
+        // Non-fatal: workspace/personnel record creation should not block hiring
+        console.error("Failed to create agent workspace or hiring record:", err);
+      }
+    }
+
     res.status(201).json({ agent, approval });
   });
 
@@ -1362,6 +1404,49 @@ export function agentRoutes(db: Db) {
       normalizedAdapterConfig,
     );
 
+    // ── Headcount limit enforcement ──────────────────────────────────
+    const resolvedEmploymentType: EmploymentType =
+      (typeof createInput.employmentType === "string" && EMPLOYMENT_TYPES.includes(createInput.employmentType as EmploymentType))
+        ? createInput.employmentType as EmploymentType
+        : "full_time";
+
+    const subRow = await db
+      .select({ planTier: companySubscriptions.planTier, llmAuthMethod: companySubscriptions.llmAuthMethod })
+      .from(companySubscriptions)
+      .where(eq(companySubscriptions.companyId, companyId))
+      .then((rows) => rows[0] ?? null);
+
+    const tier = subRow?.planTier ?? "starter";
+    const limits = PLAN_AGENT_LIMITS[tier] ?? PLAN_AGENT_LIMITS["starter"]!;
+
+    // Only run headcount query if there's actually a limit to enforce
+    const fteLimit = limits.fte;
+    const contractorLimit = limits.contractor;
+    if (
+      (resolvedEmploymentType === "full_time" && fteLimit !== -1) ||
+      (resolvedEmploymentType === "contractor" && contractorLimit !== -1)
+    ) {
+      const [headcountRow] = await db
+        .select({
+          fte: sql<number>`count(*) filter (where ${agentsTable.employmentType} = 'full_time' and ${agentsTable.status} != 'terminated')`,
+          contractor: sql<number>`count(*) filter (where ${agentsTable.employmentType} = 'contractor' and ${agentsTable.status} != 'terminated')`,
+        })
+        .from(agentsTable)
+        .where(eq(agentsTable.companyId, companyId));
+
+      const fteCount = Number(headcountRow?.fte ?? 0);
+      const contractorCount = Number(headcountRow?.contractor ?? 0);
+
+      if (resolvedEmploymentType === "full_time" && fteLimit !== -1 && fteCount >= fteLimit) {
+        res.status(403).json({ error: `Full-time agent limit reached (${fteLimit}) for ${tier} plan. Upgrade to add more full-time agents.` });
+        return;
+      }
+      if (resolvedEmploymentType === "contractor" && contractorLimit !== -1 && contractorCount >= contractorLimit) {
+        res.status(403).json({ error: `Contractor agent limit reached (${contractorLimit}) for ${tier} plan. Upgrade to add more contractors.` });
+        return;
+      }
+    }
+
     // Auto-budget: determine default before create so we can pass it in
     // when the caller didn't supply one and the company uses api_key auth.
     let resolvedBudgetCents = typeof createInput.budgetMonthlyCents === "number"
@@ -1369,18 +1454,13 @@ export function agentRoutes(db: Db) {
       : 0;
 
     if (resolvedBudgetCents === 0) {
-      // Check the company's llmAuthMethod — only assign a default budget when
-      // the company is paying per-token via an API key.
-      const subRow = await db
-        .select({ llmAuthMethod: companySubscriptions.llmAuthMethod })
-        .from(companySubscriptions)
-        .where(eq(companySubscriptions.companyId, companyId))
-        .then((rows) => rows[0] ?? null);
-
       if (subRow?.llmAuthMethod === "api_key") {
         resolvedBudgetCents = defaultBudgetCentsForRole(createInput.role ?? "general");
       }
     }
+
+    // Employment model fields from request body
+    const hiredByUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
 
     const createdAgent = await svc.create(companyId, {
       ...createInput,
@@ -1389,6 +1469,14 @@ export function agentRoutes(db: Db) {
       spentMonthlyCents: 0,
       budgetMonthlyCents: resolvedBudgetCents,
       lastHeartbeatAt: null,
+      employmentType: resolvedEmploymentType,
+      department: typeof createInput.department === "string" ? createInput.department : undefined,
+      hiredByUserId,
+      contractEndAt: typeof createInput.contractEndAt === "string" ? new Date(createInput.contractEndAt) : undefined,
+      contractEndCondition: typeof createInput.contractEndCondition === "string" ? createInput.contractEndCondition : undefined,
+      contractProjectId: typeof createInput.contractProjectId === "string" ? createInput.contractProjectId : undefined,
+      contractBudgetCents: typeof createInput.contractBudgetCents === "number" ? createInput.contractBudgetCents : undefined,
+      onboardingContextIds: Array.isArray(createInput.onboardingContextIds) ? createInput.onboardingContextIds : undefined,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
@@ -1899,6 +1987,7 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       "name", "role", "title", "icon", "reportsTo", "capabilities",
       "adapterType", "adapterConfig", "runtimeConfig", "replaceAdapterConfig",
       "budgetMonthlyCents", "status", "soulMd", "agentsMd",
+      "department", "performanceScore",
     ]);
     const rawBody = req.body as Record<string, unknown>;
     const patchData: Record<string, unknown> = {};
@@ -1907,6 +1996,24 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
     }
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+
+    // Validate department if provided
+    if (Object.prototype.hasOwnProperty.call(patchData, "department") && patchData.department !== null) {
+      if (typeof patchData.department !== "string" || !DEPARTMENTS.includes(patchData.department as Department)) {
+        res.status(422).json({ error: `Invalid department. Must be one of: ${DEPARTMENTS.join(", ")}` });
+        return;
+      }
+    }
+
+    // Validate performanceScore if provided
+    if (Object.prototype.hasOwnProperty.call(patchData, "performanceScore") && patchData.performanceScore !== null) {
+      const score = patchData.performanceScore;
+      if (typeof score !== "number" || score < 0 || score > 100 || !Number.isInteger(score)) {
+        res.status(422).json({ error: "performanceScore must be an integer between 0 and 100" });
+        return;
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")) {
       const adapterConfig = asRecord(patchData.adapterConfig);
       if (!adapterConfig) {
@@ -2064,6 +2171,20 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       entityType: "agent",
       entityId: agent.id,
     });
+
+    // Archive workspace and create termination record (best-effort)
+    try {
+      await archiveAgentWorkspaceService(db, agent.id);
+      await createTerminationRecordService(db, {
+        companyId: agent.companyId,
+        hrAgentId: null,
+        terminatedAgentId: agent.id,
+        terminatedAgentName: agent.name,
+        reason: "manual_termination",
+      });
+    } catch (err) {
+      console.error("Failed to archive workspace or create termination record:", err);
+    }
 
     res.json(agent);
   });
@@ -2508,6 +2629,108 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,
+    });
+  });
+
+  // ── POST /companies/:companyId/agents/:agentId/terminate ─────────────────────
+  router.post("/companies/:companyId/agents/:agentId/terminate", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    await assertCanWrite(req, companyId, db);
+
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const { terminationReason } = req.body as { terminationReason?: string };
+    if (!terminationReason || !TERMINATION_REASONS.includes(terminationReason as TerminationReason)) {
+      res.status(400).json({
+        error: `termination_reason is required and must be one of: ${TERMINATION_REASONS.join(", ")}`,
+      });
+      return;
+    }
+
+    const now = new Date();
+    const result = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(agentsTable)
+        .set({
+          status: "terminated",
+          terminatedAt: now,
+          terminationReason,
+          updatedAt: now,
+        })
+        .where(and(eq(agentsTable.id, agentId), eq(agentsTable.companyId, companyId)))
+        .returning();
+
+      // Archive all memory entries for this agent
+      await tx
+        .update(agentMemoryEntries)
+        .set({ archivedAt: now })
+        .where(eq(agentMemoryEntries.agentId, agentId));
+
+      return updated!;
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.terminated",
+      entityType: "agent",
+      entityId: agentId,
+      details: { name: result.name, terminationReason },
+    });
+
+    // Archive workspace and create termination record (best-effort)
+    try {
+      await archiveAgentWorkspaceService(db, agentId);
+      await createTerminationRecordService(db, {
+        companyId,
+        hrAgentId: null,
+        terminatedAgentId: agentId,
+        terminatedAgentName: result.name,
+        reason: terminationReason as string,
+      });
+    } catch (err) {
+      console.error("Failed to archive workspace or create termination record:", err);
+    }
+
+    res.json(result);
+  });
+
+  // ── GET /companies/:companyId/agents/headcount ──────────────────────────────
+  router.get("/companies/:companyId/agents/headcount", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const [counts] = await db
+      .select({
+        fte: sql<number>`count(*) filter (where ${agentsTable.employmentType} = 'full_time' and ${agentsTable.status} != 'terminated')`,
+        contractor: sql<number>`count(*) filter (where ${agentsTable.employmentType} = 'contractor' and ${agentsTable.status} != 'terminated')`,
+      })
+      .from(agentsTable)
+      .where(eq(agentsTable.companyId, companyId));
+
+    const subRow = await db
+      .select({ planTier: companySubscriptions.planTier })
+      .from(companySubscriptions)
+      .where(eq(companySubscriptions.companyId, companyId))
+      .then((rows) => rows[0] ?? null);
+
+    const tier = subRow?.planTier ?? "starter";
+    const limits = PLAN_AGENT_LIMITS[tier] ?? PLAN_AGENT_LIMITS["starter"]!;
+
+    res.json({
+      fte: Number(counts?.fte ?? 0),
+      contractor: Number(counts?.contractor ?? 0),
+      limits,
+      tier,
     });
   });
 

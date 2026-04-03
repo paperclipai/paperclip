@@ -11,7 +11,7 @@ import {
   BookText,
   DollarSign,
   X,
-  Sparkles,
+  Wand2,
 } from "lucide-react";
 
 const STEPS = [
@@ -88,7 +88,7 @@ export function WelcomeBanner() {
       </button>
 
       <div className="flex items-center gap-2 mb-3">
-        <Sparkles className="h-4 w-4 text-amber-500" />
+        <Wand2 className="h-4 w-4 text-amber-500" />
         <h2 className="text-sm font-semibold">Welcome to IronWorks</h2>
       </div>
       <p className="text-xs text-muted-foreground mb-4">

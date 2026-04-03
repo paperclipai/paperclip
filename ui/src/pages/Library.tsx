@@ -178,7 +178,7 @@ function TreeNode({
         {entry.meta?.visibility && entry.meta.visibility !== "company" && (
           <Tooltip delayDuration={300}>
             <TooltipTrigger asChild>
-              <span className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <span className="shrink-0 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                 {entry.meta.visibility === "private" ? (
                   <Lock className="h-3 w-3 text-amber-500" />
                 ) : (

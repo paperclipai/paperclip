@@ -119,6 +119,13 @@ export const AGENT_ICON_NAMES = [
   "hexagon",
   "pentagon",
   "fingerprint",
+  "megaphone",
+  "dollar-sign",
+  "users",
+  "scale",
+  "pen-line",
+  "server",
+  "palette",
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
@@ -357,6 +364,10 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:hire:full_time",
+  "agents:hire:contractor",
+  "agents:hire:approve",
+  "agents:hire:bypass_approval",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
@@ -374,8 +385,8 @@ export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
  */
 export const ROLE_PERMISSIONS: Record<MembershipRole, readonly PermissionKey[]> = {
   owner: PERMISSION_KEYS,
-  admin: ["agents:create", "users:invite", "users:manage_permissions", "tasks:assign", "tasks:assign_scope", "joins:approve"],
-  member: ["agents:create", "tasks:assign"],
+  admin: ["agents:create", "agents:hire:full_time", "agents:hire:contractor", "agents:hire:approve", "agents:hire:bypass_approval", "users:invite", "users:manage_permissions", "tasks:assign", "tasks:assign_scope", "joins:approve"],
+  member: ["agents:create", "agents:hire:contractor", "tasks:assign"],
   viewer: [],
 } as const;
 
@@ -723,3 +734,129 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+// ── Agent Employment Model ──────────────────────────────────────
+
+export const EMPLOYMENT_TYPES = ["full_time", "contractor"] as const;
+export type EmploymentType = (typeof EMPLOYMENT_TYPES)[number];
+
+export const EMPLOYMENT_TYPE_LABELS: Record<EmploymentType, string> = {
+  full_time: "Full-Time",
+  contractor: "Contractor",
+};
+
+export const CONTRACT_END_CONDITIONS = [
+  "date",
+  "project_complete",
+  "budget_exhausted",
+  "manual",
+] as const;
+export type ContractEndCondition = (typeof CONTRACT_END_CONDITIONS)[number];
+
+export const TERMINATION_REASONS = [
+  "contract_complete",
+  "budget_exhausted",
+  "deadline_reached",
+  "manual",
+  "performance",
+] as const;
+export type TerminationReason = (typeof TERMINATION_REASONS)[number];
+
+export const DEPARTMENTS = [
+  "executive",
+  "engineering",
+  "design",
+  "operations",
+  "finance",
+  "security",
+  "research",
+  "marketing",
+  "support",
+  "compliance",
+  "hr",
+] as const;
+export type Department = (typeof DEPARTMENTS)[number];
+
+export const DEPARTMENT_LABELS: Record<Department, string> = {
+  executive: "Executive",
+  engineering: "Engineering",
+  design: "Design",
+  operations: "Operations",
+  finance: "Finance",
+  security: "Security",
+  research: "Research",
+  marketing: "Marketing",
+  support: "Support",
+  compliance: "Compliance",
+  hr: "Human Resources",
+};
+
+export const ROLE_LEVELS = ["executive", "management", "staff"] as const;
+export type RoleLevel = (typeof ROLE_LEVELS)[number];
+
+/** Maps role template keys to their organizational level */
+export const ROLE_LEVEL_MAP: Record<string, RoleLevel> = {
+  ceo: "executive",
+  cto: "executive",
+  cmo: "executive",
+  cfo: "executive",
+  vphr: "management",
+  compliancedirector: "management",
+  seniorengineer: "staff",
+  devopsengineer: "staff",
+  securityengineer: "staff",
+  uxdesigner: "staff",
+  contentmarketer: "staff",
+};
+
+/** Maps role template keys to their default department */
+export const ROLE_DEPARTMENT_MAP: Record<string, Department> = {
+  ceo: "executive",
+  cto: "engineering",
+  cmo: "marketing",
+  cfo: "finance",
+  vphr: "hr",
+  compliancedirector: "compliance",
+  seniorengineer: "engineering",
+  devopsengineer: "engineering",
+  securityengineer: "security",
+  uxdesigner: "design",
+  contentmarketer: "marketing",
+};
+
+/**
+ * Official pricing tiers. Must match ironworksapp.ai/pricing.html.
+ * Only three tiers: Starter, Growth, Business. No free/trial/enterprise.
+ */
+export const PLAN_TIERS = ["starter", "growth", "business"] as const;
+export type PlanTier = (typeof PLAN_TIERS)[number];
+
+export const PLAN_TIER_LABELS: Record<PlanTier, string> = {
+  starter: "Starter",
+  growth: "Growth",
+  business: "Business",
+};
+
+/**
+ * Agent headcount limits per subscription tier.
+ * All tiers allow unlimited agents (-1 = no limit).
+ * BYOK = customers pay their own LLM costs. More agents cost us near-zero.
+ * Differentiate on storage, projects, playbook runs, and integrations instead.
+ */
+export const PLAN_AGENT_LIMITS: Record<string, { fte: number; contractor: number }> = {
+  starter: { fte: -1, contractor: -1 },
+  growth: { fte: -1, contractor: -1 },
+  business: { fte: -1, contractor: -1 },
+};
+
+export const MEMORY_TYPES = ["episodic", "semantic", "procedural"] as const;
+export type MemoryType = (typeof MEMORY_TYPES)[number];
+
+export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
+  episodic: "Event Recall",
+  semantic: "Learned Fact",
+  procedural: "How-To",
+};
+
+export const HIRING_REQUEST_STATUSES = ["draft", "pending", "approved", "rejected", "fulfilled"] as const;
+export type HiringRequestStatus = (typeof HIRING_REQUEST_STATUSES)[number];

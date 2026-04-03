@@ -19,7 +19,10 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Bot, Plus, List, GitBranch, Search, SlidersHorizontal } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@ironworksai/shared";
+import { AGENT_ROLE_LABELS, DEPARTMENTS, DEPARTMENT_LABELS, type Agent, type Department } from "@ironworksai/shared";
+import { EmploymentBadge } from "../components/EmploymentBadge";
+import { AgentIcon } from "../components/AgentIconPicker";
+import { getRoleLevel, getAgentRingClass } from "../lib/role-icons";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -78,6 +81,7 @@ export function Agents() {
   const [showTerminated, setShowTerminated] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [agentSearch, setAgentSearch] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState<string>("all");
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -131,9 +135,11 @@ export function Agents() {
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, showTerminated).filter((a) =>
-    !agentSearch.trim() || a.name.toLowerCase().includes(agentSearch.toLowerCase()) || (a.title ?? "").toLowerCase().includes(agentSearch.toLowerCase()),
-  );
+  const filtered = filterAgents(agents ?? [], tab, showTerminated).filter((a) => {
+    if (agentSearch.trim() && !a.name.toLowerCase().includes(agentSearch.toLowerCase()) && !(a.title ?? "").toLowerCase().includes(agentSearch.toLowerCase())) return false;
+    if (departmentFilter !== "all" && (a as unknown as Record<string, unknown>).department !== departmentFilter) return false;
+    return true;
+  });
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, showTerminated);
 
   return (
@@ -153,7 +159,7 @@ export function Agents() {
         </Tabs>
         <div className="flex items-center gap-2">
           {/* Search */}
-          <div className="relative w-40 sm:w-52">
+          <div className="relative w-40 sm:w-52 md:w-64">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={agentSearch}
@@ -173,10 +179,14 @@ export function Agents() {
             >
               <SlidersHorizontal className="h-3 w-3" />
               Filters
-              {showTerminated && <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">1</span>}
+              {(showTerminated || departmentFilter !== "all") && (
+                <span className="ml-0.5 px-1 bg-foreground/10 rounded text-[10px]">
+                  {(showTerminated ? 1 : 0) + (departmentFilter !== "all" ? 1 : 0)}
+                </span>
+              )}
             </button>
             {filtersOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-48 border border-border bg-popover shadow-md p-1">
+              <div className="absolute right-0 top-full mt-1 z-50 w-52 border border-border bg-popover shadow-md p-1 space-y-0.5">
                 <button
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-left hover:bg-accent/50 transition-colors"
                   onClick={() => setShowTerminated(!showTerminated)}
@@ -189,6 +199,19 @@ export function Agents() {
                   </span>
                   Show terminated
                 </button>
+                <div className="px-2 py-1.5">
+                  <label className="text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Department</label>
+                  <select
+                    value={departmentFilter}
+                    onChange={(e) => setDepartmentFilter(e.target.value)}
+                    className="w-full text-xs bg-transparent border border-border rounded px-1.5 py-1"
+                  >
+                    <option value="all">All departments</option>
+                    {DEPARTMENTS.map((d) => (
+                      <option key={d} value={d}>{(DEPARTMENT_LABELS as Record<string, string>)[d] ?? d}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             )}
           </div>
@@ -248,10 +271,25 @@ export function Agents() {
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 leading={
-                  <span className="relative flex h-2.5 w-2.5">
+                  <span className="flex items-center gap-2">
                     <span
-                      className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
-                    />
+                      className={cn(
+                        "flex items-center justify-center h-6 w-6 rounded-md",
+                        getRoleLevel(agent.role) === "executive"
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          : getRoleLevel(agent.role) === "management"
+                            ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                            : "bg-muted text-muted-foreground",
+                        getAgentRingClass(agent.role),
+                      )}
+                    >
+                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span
+                        className={`absolute inline-flex h-full w-full rounded-full ${agentStatusDot[agent.status] ?? agentStatusDotDefault}`}
+                      />
+                    </span>
                   </span>
                 }
                 trailing={
@@ -275,6 +313,7 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
+                      <EmploymentBadge type={(agent as unknown as Record<string, unknown>).employmentType as string ?? "full_time"} />
                       <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
@@ -344,8 +383,23 @@ function OrgTreeNode({
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
       >
-        <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
+        <span className="flex items-center gap-2 shrink-0">
+          <span
+            className={cn(
+              "flex items-center justify-center h-6 w-6 rounded-md",
+              getRoleLevel(node.role) === "executive"
+                ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : getRoleLevel(node.role) === "management"
+                  ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                  : "bg-muted text-muted-foreground",
+              getAgentRingClass(node.role),
+            )}
+          >
+            <AgentIcon icon={agent?.icon} className="h-3.5 w-3.5" />
+          </span>
+          <span className="relative flex h-2.5 w-2.5">
+            <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
+          </span>
         </span>
         <div className="flex-1 min-w-0">
           <span className="text-sm font-medium">{node.name}</span>
@@ -376,6 +430,7 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
+                <EmploymentBadge type={(agent as unknown as Record<string, unknown>).employmentType as string ?? "full_time"} />
                 <span className="text-xs text-muted-foreground font-mono w-14 text-right">
                   {adapterLabels[agent.adapterType] ?? agent.adapterType}
                 </span>

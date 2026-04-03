@@ -12,7 +12,7 @@ import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } fro
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronRight } from "lucide-react";
 import type { ApprovalComment } from "@ironworksai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
@@ -178,7 +178,7 @@ export function ApprovalDetail() {
             <div className="flex items-start gap-2">
               <div className="relative mt-0.5">
                 <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-300" />
-                <Sparkles className="h-3 w-3 text-green-500 dark:text-green-200 absolute -right-2 -top-1 animate-pulse" />
+                <CheckCircle2 className="h-2.5 w-2.5 text-green-500 dark:text-green-200 absolute -right-1.5 -top-0.5" />
               </div>
               <div>
                 <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>

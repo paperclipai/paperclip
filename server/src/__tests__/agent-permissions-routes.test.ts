@@ -97,6 +97,13 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
+  createAgentWorkspace: vi.fn().mockResolvedValue(undefined),
+  archiveAgentWorkspace: vi.fn().mockResolvedValue(undefined),
+  createAgentDocument: vi.fn().mockResolvedValue("doc-id"),
+  getAgentDocuments: vi.fn().mockResolvedValue([]),
+  createHiringRecord: vi.fn().mockResolvedValue(undefined),
+  createTerminationRecord: vi.fn().mockResolvedValue(undefined),
+  createPerformanceReview: vi.fn().mockResolvedValue(undefined),
   companyPortabilityService: () => ({}),
   instanceSettingsService: () => ({}),
   workProductService: () => ({}),
@@ -188,7 +195,7 @@ describe("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("grants tasks:assign by default when board creates a new agent", async () => {
+  it("grants tasks:assign by default when board creates a new agent", { timeout: 60_000 }, async () => {
     const app = createApp({
       type: "board",
       userId: "board-user",

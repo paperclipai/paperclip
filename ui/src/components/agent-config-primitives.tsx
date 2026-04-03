@@ -126,7 +126,7 @@ export function ToggleField({
       >
         <span
           className={cn(
-            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+            "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
             checked ? "translate-x-4.5" : "translate-x-0.5"
           )}
         />
@@ -175,7 +175,7 @@ export function ToggleWithNumber({
         >
           <span
             className={cn(
-              "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+              "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
               checked ? "translate-x-4.5" : "translate-x-0.5"
             )}
           />

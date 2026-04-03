@@ -16,7 +16,7 @@ import {
   Code,
   Gem,
   MousePointer2,
-  Sparkles,
+  Wand2,
   Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -41,7 +41,7 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
   {
     value: "claude_local",
     label: "Claude Code",
-    icon: Sparkles,
+    icon: Wand2,
     desc: "Local Claude agent",
     recommended: true,
   },
@@ -153,7 +153,7 @@ export function NewAgentDialog() {
               {/* Recommendation */}
               <div className="text-center space-y-3">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-accent">
-                  <Sparkles className="h-6 w-6 text-foreground" />
+                  <Wand2 className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
                   We recommend letting your CEO handle agent setup — they know the

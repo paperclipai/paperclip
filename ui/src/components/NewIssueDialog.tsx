@@ -1286,7 +1286,7 @@ export function NewIssueDialog() {
                     >
                       <span
                         className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                          "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
                           assigneeChrome ? "translate-x-4.5" : "translate-x-0.5"
                         )}
                       />

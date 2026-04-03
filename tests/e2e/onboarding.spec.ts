@@ -3,11 +3,12 @@ import { test, expect } from "@playwright/test";
 /**
  * E2E: Onboarding wizard flow (skip_llm mode).
  *
- * Walks through the 4-step OnboardingWizard:
+ * Walks through the 5-step OnboardingWizard:
  *   Step 1 — Name your company
- *   Step 2 — Create your first agent (adapter selection + config)
- *   Step 3 — Give it something to do (task creation)
- *   Step 4 — Ready to launch (summary + open issue)
+ *   Step 2 — Connect your LLM provider (skipped in CI)
+ *   Step 3 — Create your first agent (adapter selection + config)
+ *   Step 4 — Give it something to do (task creation)
+ *   Step 5 — Ready to launch (summary + open issue)
  *
  * By default this runs in skip_llm mode: we do NOT assert that an LLM
  * heartbeat fires. Set IRONWORKS_E2E_SKIP_LLM=false to enable LLM-dependent
@@ -24,7 +25,7 @@ test.describe("Onboarding wizard", () => {
   test("completes full wizard flow", async ({ page }) => {
     await page.goto("/");
 
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
+    const wizardHeading = page.locator("h2", { hasText: "Name your company" });
     const newCompanyBtn = page.getByRole("button", { name: "New Company" });
 
     await expect(
@@ -42,6 +43,12 @@ test.describe("Onboarding wizard", () => {
 
     const nextButton = page.getByRole("button", { name: "Next" });
     await nextButton.click();
+
+    // Step 2: LLM Provider — skip in CI (no API key available)
+    await expect(
+      page.locator("h2", { hasText: "Connect your LLM provider" })
+    ).toBeVisible({ timeout: 10_000 });
+    await page.getByText("Skip for now").click();
 
     await expect(
       page.locator("h3", { hasText: "Build your team" })

@@ -67,3 +67,6 @@ export { messagingBridges } from "./messaging_bridges.js";
 export { webhookEvents } from "./webhook_events.js";
 export { analyticsSnapshots } from "./analytics_snapshots.js";
 export { supportTickets, supportTicketComments } from "./support_tickets.js";
+export { agentMemoryEntries } from "./agent_memory_entries.js";
+export { hiringRequests } from "./hiring_requests.js";
+export { agentRoleTemplates } from "./agent_role_templates.js";

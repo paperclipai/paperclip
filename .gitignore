@@ -58,3 +58,7 @@ tests/release-smoke/playwright-report/
 .design-reports/
 .security-reports/
 .perf/
+.research/
+.mdmp/
+ironworks-features.md
+ironworks-todo.md

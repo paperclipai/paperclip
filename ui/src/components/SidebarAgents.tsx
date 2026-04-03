@@ -13,6 +13,7 @@ import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { getRoleLevel } from "../lib/role-icons";
 import {
   Collapsible,
   CollapsibleContent,
@@ -76,7 +77,7 @@ export function SidebarAgents() {
           <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
             <ChevronRight
               className={cn(
-                "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
+                "h-3 w-3 text-muted-foreground/60 transition-transform md:opacity-0 md:group-hover:opacity-100",
                 open && "rotate-90"
               )}
             />
@@ -115,7 +116,17 @@ export function SidebarAgents() {
                     : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
                 )}
               >
-                <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
+                <AgentIcon
+                  icon={agent.icon}
+                  className={cn(
+                    "shrink-0 h-3.5 w-3.5",
+                    getRoleLevel(agent.role) === "executive"
+                      ? "text-amber-500 dark:text-amber-400"
+                      : getRoleLevel(agent.role) === "management"
+                        ? "text-blue-500 dark:text-blue-400"
+                        : "text-muted-foreground",
+                  )}
+                />
                 <span className="flex-1 truncate">{agent.name}</span>
                 {(agent.pauseReason === "budget" || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">

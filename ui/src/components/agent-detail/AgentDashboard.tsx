@@ -1,10 +1,22 @@
+import { useState } from "react";
 import { Link } from "@/lib/router";
+import { useQueryClient, useMutation } from "@tanstack/react-query";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../ActivityCharts";
 import { StatusBadge } from "../StatusBadge";
+import { EmploymentBadge } from "../EmploymentBadge";
 import { MarkdownBody } from "../MarkdownBody";
 import { EntityRow } from "../EntityRow";
+import { Button } from "@/components/ui/button";
 import { formatCents, formatTokens, formatDate, relativeTime, cn } from "../../lib/utils";
-import { Clock } from "lucide-react";
+import { agentsApi } from "../../api/agents";
+import { queryKeys } from "../../lib/queryKeys";
+import { Clock, AlertTriangle } from "lucide-react";
+import {
+  DEPARTMENT_LABELS,
+  TERMINATION_REASONS,
+  type Department,
+  type TerminationReason,
+} from "@ironworksai/shared";
 import type {
   AgentDetail as AgentDetailRecord,
   HeartbeatRun,
@@ -157,6 +169,166 @@ function CostsSection({
   );
 }
 
+function EmploymentCard({
+  agent,
+  companyId,
+}: {
+  agent: AgentDetailRecord;
+  companyId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [showTerminateConfirm, setShowTerminateConfirm] = useState(false);
+  const [terminationReason, setTerminationReason] = useState<string>("manual");
+  const ext = agent as unknown as Record<string, unknown>;
+  const employmentType = (ext.employmentType as string) ?? "full_time";
+  const department = ext.department as string | null;
+  const hiredAt = ext.hiredAt as string | null;
+  const performanceScore = ext.performanceScore as number | null;
+  const contractEndCondition = ext.contractEndCondition as string | null;
+  const contractEndAt = ext.contractEndAt as string | null;
+  const contractBudgetCents = ext.contractBudgetCents as number | null;
+
+  const terminateMutation = useMutation({
+    mutationFn: () => agentsApi.terminateWithReason(companyId, agent.id, terminationReason),
+    onSuccess: () => {
+      setShowTerminateConfirm(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    },
+  });
+
+  const reasonLabels: Record<string, string> = {
+    contract_complete: "Contract Complete",
+    budget_exhausted: "Budget Exhausted",
+    deadline_reached: "Deadline Reached",
+    manual: "Manual Termination",
+    performance: "Performance",
+  };
+
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Employment</h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <span className="text-xs text-muted-foreground block">Type</span>
+          <EmploymentBadge type={employmentType} className="mt-1" />
+        </div>
+        {department && (
+          <div>
+            <span className="text-xs text-muted-foreground block">Department</span>
+            <span className="text-sm font-medium mt-1 block">
+              {(DEPARTMENT_LABELS as Record<string, string>)[department] ?? department}
+            </span>
+          </div>
+        )}
+        {hiredAt && (
+          <div>
+            <span className="text-xs text-muted-foreground block">Hired</span>
+            <span className="text-sm mt-1 block">{formatDate(hiredAt)}</span>
+          </div>
+        )}
+        {performanceScore != null && (
+          <div>
+            <span className="text-xs text-muted-foreground block">Performance</span>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="w-20 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full rounded-full",
+                    performanceScore >= 80 ? "bg-emerald-500" : performanceScore >= 50 ? "bg-amber-500" : "bg-red-500",
+                  )}
+                  style={{ width: `${performanceScore}%` }}
+                />
+              </div>
+              <span className="text-xs tabular-nums">{performanceScore}/100</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {employmentType === "contractor" && (
+        <div className="border-t border-border pt-3 space-y-2">
+          <h4 className="text-xs font-medium text-muted-foreground">Contract Details</h4>
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            {contractEndCondition && (
+              <div>
+                <span className="text-xs text-muted-foreground block">End Condition</span>
+                <span className="capitalize">{contractEndCondition.replace(/_/g, " ")}</span>
+              </div>
+            )}
+            {contractEndAt && (
+              <div>
+                <span className="text-xs text-muted-foreground block">Deadline</span>
+                <span>{formatDate(contractEndAt)}</span>
+              </div>
+            )}
+            {contractBudgetCents != null && (
+              <div>
+                <span className="text-xs text-muted-foreground block">Budget Remaining</span>
+                <span>{formatCents(contractBudgetCents)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {agent.status !== "terminated" && (
+        <div className="border-t border-border pt-3">
+          {!showTerminateConfirm ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setShowTerminateConfirm(true)}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 mr-1" />
+              Terminate Agent
+            </Button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Select a reason and confirm termination. This cannot be undone.
+              </p>
+              <select
+                value={terminationReason}
+                onChange={(e) => setTerminationReason(e.target.value)}
+                className="w-full text-xs bg-transparent border border-border rounded px-2 py-1.5"
+              >
+                {TERMINATION_REASONS.map((r) => (
+                  <option key={r} value={r}>{reasonLabels[r] ?? r}</option>
+                ))}
+              </select>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => terminateMutation.mutate()}
+                  disabled={terminateMutation.isPending}
+                >
+                  {terminateMutation.isPending ? "Terminating..." : "Confirm Terminate"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowTerminateConfirm(false)}
+                  disabled={terminateMutation.isPending}
+                >
+                  Cancel
+                </Button>
+              </div>
+              {terminateMutation.isError && (
+                <p className="text-xs text-destructive">
+                  {terminateMutation.error instanceof Error ? terminateMutation.error.message : "Termination failed"}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AgentDashboard({
   agent,
   runs,
@@ -174,6 +346,9 @@ export function AgentDashboard({
 }) {
   return (
     <div className="space-y-8">
+      {/* Employment */}
+      <EmploymentCard agent={agent} companyId={agent.companyId} />
+
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />
 

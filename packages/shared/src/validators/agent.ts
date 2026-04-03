@@ -4,6 +4,9 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  CONTRACT_END_CONDITIONS,
+  DEPARTMENTS,
+  EMPLOYMENT_TYPES,
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -57,6 +60,13 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.unknown()).optional().nullable(),
+  employmentType: z.enum(EMPLOYMENT_TYPES).optional().default("full_time"),
+  department: z.enum(DEPARTMENTS).optional().nullable(),
+  contractEndAt: z.string().datetime().optional().nullable(),
+  contractEndCondition: z.enum(CONTRACT_END_CONDITIONS).optional().nullable(),
+  contractProjectId: z.string().uuid().optional().nullable(),
+  contractBudgetCents: z.number().int().nonnegative().optional().nullable(),
+  onboardingContextIds: z.array(z.string()).optional().nullable(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -76,6 +86,7 @@ export const updateAgentSchema = createAgentSchema
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    performanceScore: z.number().int().min(0).max(100).optional().nullable(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;

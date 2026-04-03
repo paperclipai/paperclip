@@ -7,7 +7,7 @@ import {
   Folder,
   Play,
   Plus,
-  Sparkles,
+  Wand2,
   Users,
   CheckCircle2,
   ArrowRight,
@@ -436,7 +436,7 @@ export function Playbooks() {
                 onClick={() => seedMutation.mutate()}
                 disabled={seedMutation.isPending}
               >
-                <Sparkles className={cn("h-3.5 w-3.5 mr-1.5", seedMutation.isPending && "animate-pulse")} />
+                <Wand2 className={cn("h-3.5 w-3.5 mr-1.5", seedMutation.isPending && "animate-pulse")} />
                 Load Template Playbooks
               </Button>
             )}

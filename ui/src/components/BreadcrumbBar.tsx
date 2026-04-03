@@ -56,7 +56,7 @@ export function BreadcrumbBar() {
   const menuButton = isMobile && (
     <Button
       variant="ghost"
-      size="icon-sm"
+      size="icon"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
       aria-label="Open sidebar"

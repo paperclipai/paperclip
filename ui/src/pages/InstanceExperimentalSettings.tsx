@@ -95,7 +95,7 @@ export function InstanceExperimentalSettings() {
           >
             <span
               className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
                 enableIsolatedWorkspaces ? "translate-x-4.5" : "translate-x-0.5",
               )}
             />
@@ -127,7 +127,7 @@ export function InstanceExperimentalSettings() {
           >
             <span
               className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
                 autoRestartDevServerWhenIdle ? "translate-x-4.5" : "translate-x-0.5",
               )}
             />

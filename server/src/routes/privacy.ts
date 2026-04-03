@@ -2,6 +2,8 @@ import { Router } from "express";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import { captureAnalyticsSnapshot } from "../services/analytics.js";
+import { checkContractorLifecycles } from "../services/contractor-lifecycle.js";
+import { decayStaleMemories } from "../services/agent-memory.js";
 import {
   companies,
   agents,
@@ -608,6 +610,7 @@ export async function runRetentionCleanup(db: Db): Promise<{
  */
 export function startRetentionScheduler(db: Db): NodeJS.Timeout {
   const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const HOURLY_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
   // Run once on startup (delayed 60s to avoid slowing boot)
   const initialTimeout = setTimeout(() => {
@@ -616,6 +619,12 @@ export function startRetentionScheduler(db: Db): NodeJS.Timeout {
     );
     captureAnalyticsSnapshot(db).catch((err) =>
       logger.error({ err }, "initial analytics snapshot failed"),
+    );
+    checkContractorLifecycles(db).catch((err) =>
+      logger.error({ err }, "initial contractor lifecycle check failed"),
+    );
+    decayStaleMemories(db).catch((err) =>
+      logger.error({ err }, "initial memory decay failed"),
     );
   }, 60_000);
 
@@ -627,7 +636,23 @@ export function startRetentionScheduler(db: Db): NodeJS.Timeout {
     captureAnalyticsSnapshot(db).catch((err) =>
       logger.error({ err }, "scheduled analytics snapshot failed"),
     );
+    decayStaleMemories(db).catch((err) =>
+      logger.error({ err }, "scheduled memory decay failed"),
+    );
   }, CLEANUP_INTERVAL_MS);
+
+  // Hourly: contractor lifecycle checks
+  setInterval(() => {
+    checkContractorLifecycles(db)
+      .then((terminated) => {
+        if (terminated > 0) {
+          logger.info({ terminated }, "contractor lifecycle check completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "scheduled contractor lifecycle check failed");
+      });
+  }, HOURLY_INTERVAL_MS);
 
   // Return the interval so it can be cleared on shutdown
   return interval;

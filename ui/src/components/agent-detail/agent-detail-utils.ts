@@ -141,13 +141,14 @@ export function scrollToContainerBottom(container: ScrollContainer, behavior: Sc
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-export type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+export type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget" | "memory";
 
 export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
   if (value === "budget") return "budget";
+  if (value === "memory") return "memory";
   if (value === "runs") return value;
   return "dashboard";
 }

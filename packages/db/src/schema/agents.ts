@@ -9,6 +9,7 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { projects } from "./projects.js";
 
 export const agents = pgTable(
   "agents",
@@ -32,11 +33,27 @@ export const agents = pgTable(
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    employmentType: text("employment_type").notNull().default("full_time"),
+    hiredAt: timestamp("hired_at", { withTimezone: true }).defaultNow(),
+    hiredByUserId: text("hired_by_user_id"),
+    hiredByAgentId: uuid("hired_by_agent_id").references((): AnyPgColumn => agents.id, { onDelete: "set null" }),
+    contractEndAt: timestamp("contract_end_at", { withTimezone: true }),
+    contractEndCondition: text("contract_end_condition"),
+    contractProjectId: uuid("contract_project_id").references((): AnyPgColumn => projects.id, { onDelete: "set null" }),
+    contractBudgetCents: integer("contract_budget_cents"),
+    contractSpentCents: integer("contract_spent_cents").notNull().default(0),
+    terminatedAt: timestamp("terminated_at", { withTimezone: true }),
+    terminationReason: text("termination_reason"),
+    department: text("department"),
+    onboardingContextIds: jsonb("onboarding_context_ids").$type<string[]>().notNull().default([]),
+    performanceScore: integer("performance_score"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
+    companyEmploymentTypeIdx: index("agents_company_employment_type_idx").on(table.companyId, table.employmentType),
+    companyDepartmentIdx: index("agents_company_department_idx").on(table.companyId, table.department),
   }),
 );

@@ -153,7 +153,7 @@ export function ConfigurationTab({
             >
               <span
                 className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                  "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
                   canCreateAgents ? "translate-x-4.5" : "translate-x-0.5",
                 )}
               />
@@ -185,7 +185,7 @@ export function ConfigurationTab({
             >
               <span
                 className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                  "inline-block h-3.5 w-3.5 rounded-full bg-background shadow-sm transition-transform",
                   canAssignTasks ? "translate-x-4.5" : "translate-x-0.5",
                 )}
               />

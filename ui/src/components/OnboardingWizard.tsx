@@ -9,6 +9,7 @@ import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { teamTemplatesApi, type TeamPack } from "../api/teamTemplates";
 import { issuesApi } from "../api/issues";
+import { secretsApi } from "../api/secrets";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
@@ -39,18 +40,20 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@ironworksai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@ironworksai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { LlmProviderLogo } from "./LlmProviderLogos";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
   Building2,
   Bot,
   Code,
   Gem,
+  Key,
   ListTodo,
   Rocket,
   ArrowLeft,
   ArrowRight,
   Terminal,
-  Sparkles,
+  Wand2,
   MousePointer2,
   Check,
   Loader2,
@@ -58,7 +61,7 @@ import {
   X
 } from "lucide-react";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 type AdapterType =
   | "claude_local"
   | "codex_local"
@@ -79,6 +82,14 @@ interface RosterItem {
   skills: string[];
   title: string;
 }
+
+const LLM_PROVIDERS: readonly { key: string; label: string; secretName: string; placeholder: string; hint: string; recommended?: boolean }[] = [
+  { key: "anthropic", label: "Anthropic (Claude)", secretName: "ANTHROPIC_API_KEY", placeholder: "sk-ant-...", hint: "console.anthropic.com", recommended: true },
+  { key: "openai", label: "OpenAI", secretName: "OPENAI_API_KEY", placeholder: "sk-...", hint: "platform.openai.com/api-keys" },
+  { key: "google", label: "Google AI (Gemini)", secretName: "GEMINI_API_KEY", placeholder: "AIza...", hint: "aistudio.google.com/apikey" },
+  { key: "openrouter", label: "OpenRouter", secretName: "OPENROUTER_API_KEY", placeholder: "sk-or-...", hint: "openrouter.ai/keys" },
+  { key: "ollama", label: "Ollama (self-hosted)", secretName: "OLLAMA_BASE_URL", placeholder: "http://localhost:11434", hint: "ollama.com - no API key needed, enter your Ollama server URL" },
+];
 
 let rosterIdCounter = 0;
 function nextRosterId() { return `roster-${++rosterIdCounter}`; }
@@ -125,7 +136,13 @@ export function OnboardingWizard() {
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
-  // Step 2
+  // Step 2 -- LLM Provider
+  const [llmProvider, setLlmProvider] = useState<string>("anthropic");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmSaving, setLlmSaving] = useState(false);
+  const [llmSaved, setLlmSaved] = useState(false);
+
+  // Step 3 -- Agent
   const [step2Mode, setStep2Mode] = useState<"pack" | "manual">("pack");
   const [selectedPackKey, setSelectedPackKey] = useState<string | null>(null);
   const [rosterItems, setRosterItems] = useState<RosterItem[]>([]);
@@ -146,7 +163,7 @@ export function OnboardingWizard() {
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
 
-  // Step 3
+  // Step 4 -- Task
   const [taskTitle, setTaskTitle] = useState(
     "Hire your first engineer and create a hiring plan"
   );
@@ -207,15 +224,15 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // Resize textarea when step 3 is shown or description changes
+  // Resize textarea when step 4 is shown or description changes
   useEffect(() => {
-    if (step === 3) autoResizeTextarea();
+    if (step === 4) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
   const { data: teamPacks } = useQuery({
     queryKey: ["team-templates", "packs"],
     queryFn: () => teamTemplatesApi.listPacks(),
-    enabled: effectiveOnboardingOpen && step === 2,
+    enabled: effectiveOnboardingOpen && step === 3,
   });
 
   const {
@@ -228,7 +245,7 @@ export function OnboardingWizard() {
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
       : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
-    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 3
   });
   const isLocalAdapter =
     adapterType === "claude_local" ||
@@ -252,7 +269,7 @@ export function OnboardingWizard() {
       : "claude");
 
   useEffect(() => {
-    if (step !== 2) return;
+    if (step !== 3) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
@@ -309,6 +326,10 @@ export function OnboardingWizard() {
     setError(null);
     setCompanyName("");
     setCompanyGoal("");
+    setLlmProvider("anthropic");
+    setLlmApiKey("");
+    setLlmSaving(false);
+    setLlmSaved(false);
     setAgentName("CEO");
     setAdapterType("claude_local");
     setModel("");
@@ -438,6 +459,26 @@ export function OnboardingWizard() {
     }
   }
 
+  async function handleStep2LlmNext() {
+    if (!llmApiKey.trim() || !createdCompanyId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const provider = LLM_PROVIDERS.find((p) => p.key === llmProvider) ?? LLM_PROVIDERS[0];
+      await secretsApi.create(createdCompanyId, {
+        name: provider.secretName,
+        value: llmApiKey.trim(),
+        description: `${provider.label} API key for LLM access`,
+      });
+      setLlmSaved(true);
+      setStep(3);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save API key");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleStep2Next() {
     if (!createdCompanyId) return;
     setLoading(true);
@@ -500,7 +541,7 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      setStep(3);
+      setStep(4);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
@@ -569,7 +610,7 @@ export function OnboardingWizard() {
       }
 
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(createdCompanyId) });
-      setStep(3);
+      setStep(4);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create team");
     } finally {
@@ -630,7 +671,7 @@ export function OnboardingWizard() {
   async function handleStep3Next() {
     if (!createdCompanyId || !createdAgentId) return;
     setError(null);
-    setStep(4);
+    setStep(5);
   }
 
   async function handleLaunch() {
@@ -696,10 +737,11 @@ export function OnboardingWizard() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (step === 1 && companyName.trim()) handleStep1Next();
-      else if (step === 2 && step2Mode === "pack" && selectedPackKey) handlePackDeploy();
-      else if (step === 2 && step2Mode === "manual" && agentName.trim()) handleStep2Next();
-      else if (step === 3 && taskTitle.trim()) handleStep3Next();
-      else if (step === 4) handleLaunch();
+      else if (step === 2 && llmApiKey.trim()) handleStep2LlmNext();
+      else if (step === 3 && step2Mode === "pack" && selectedPackKey) handlePackDeploy();
+      else if (step === 3 && step2Mode === "manual" && agentName.trim()) handleStep2Next();
+      else if (step === 4 && taskTitle.trim()) handleStep3Next();
+      else if (step === 5) handleLaunch();
     }
   }
 
@@ -737,15 +779,16 @@ export function OnboardingWizard() {
               step === 1 ? "md:w-1/2" : "md:w-full"
             )}
           >
-            <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
+            <div className="w-full max-w-lg mx-auto my-auto px-8 py-12 shrink-0">
               {/* Progress tabs */}
-              <div className="flex items-center gap-0 mb-8 border-b border-border">
+              <div className="flex items-center gap-0 mb-10 border-b border-border">
                 {(
                   [
                     { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Agent", icon: Bot },
-                    { step: 3 as Step, label: "Task", icon: ListTodo },
-                    { step: 4 as Step, label: "Launch", icon: Rocket }
+                    { step: 2 as Step, label: "LLM", icon: Key },
+                    { step: 3 as Step, label: "Agent", icon: Bot },
+                    { step: 4 as Step, label: "Task", icon: ListTodo },
+                    { step: 5 as Step, label: "Launch", icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -753,13 +796,13 @@ export function OnboardingWizard() {
                     type="button"
                     onClick={() => setStep(s)}
                     className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors cursor-pointer",
+                      "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer",
                       s === step
                         ? "border-foreground text-foreground"
                         : "border-transparent text-muted-foreground hover:text-foreground/70 hover:border-border"
                     )}
                   >
-                    <Icon className="h-3.5 w-3.5" />
+                    <Icon className="h-4 w-4" />
                     {label}
                   </button>
                 ))}
@@ -769,12 +812,12 @@ export function OnboardingWizard() {
               {step === 1 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
+                    <div className="bg-muted/50 p-2.5 rounded-lg">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
-                      <p className="text-xs text-muted-foreground">
+                      <h2 className="text-lg font-semibold tracking-tight">Name your company</h2>
+                      <p className="text-sm text-muted-foreground">
                         This is the organization your agents will work for.
                       </p>
                     </div>
@@ -819,7 +862,76 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 2 && (
+              {step === 2 && (() => {
+                const activeProvider = LLM_PROVIDERS.find((p) => p.key === llmProvider) ?? LLM_PROVIDERS[0];
+                return (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-xl font-semibold tracking-tight">Connect your LLM provider</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Your AI agents need an API key to function. Choose your provider and paste your key.
+                      </p>
+                    </div>
+
+                    {/* Provider selector */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {LLM_PROVIDERS.map((p) => (
+                        <button
+                          key={p.key}
+                          type="button"
+                          onClick={() => { setLlmProvider(p.key); setLlmApiKey(""); setError(null); }}
+                          className={cn(
+                            "rounded-lg border px-3 py-2.5 text-left text-sm transition-colors",
+                            llmProvider === p.key
+                              ? "border-foreground bg-foreground/5 font-medium"
+                              : "border-border hover:border-foreground/30",
+                            p.recommended && llmProvider !== p.key && "border-dashed"
+                          )}
+                        >
+                          <span className="flex items-center gap-2">
+                            <LlmProviderLogo provider={p.key} className="h-4 w-4 shrink-0" />
+                            <span>{p.label}</span>
+                          </span>
+                          {p.recommended && (
+                            <span className="text-[10px] text-muted-foreground ml-6">Recommended</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* API Key / URL input */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">
+                        {activeProvider.key === "ollama" ? "Server URL" : "API Key"}
+                      </label>
+                      <input
+                        type={activeProvider.key === "ollama" ? "url" : "password"}
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
+                        placeholder={activeProvider.placeholder}
+                        value={llmApiKey}
+                        onChange={(e) => { setLlmApiKey(e.target.value); setError(null); }}
+                        autoComplete="off"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {activeProvider.hint}
+                      </p>
+                    </div>
+
+                    {llmSaved && (
+                      <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                        <Check className="h-4 w-4" />
+                        {activeProvider.key === "ollama" ? "Server URL saved" : "API key saved"}
+                      </div>
+                    )}
+
+                    {error && (
+                      <p className="text-sm text-destructive" role="alert">{error}</p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {step === 3 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -975,7 +1087,7 @@ export function OnboardingWizard() {
                         {
                           value: "claude_local" as const,
                           label: "Claude Code",
-                          icon: Sparkles,
+                          icon: Wand2,
                           desc: "Local Claude agent",
                           recommended: true
                         },
@@ -1365,7 +1477,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 3 && (
+              {step === 4 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1406,7 +1518,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 4 && (
+              {step === 5 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1494,7 +1606,30 @@ export function OnboardingWizard() {
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 2 && step2Mode === "manual" && (
+                  {step === 2 && (
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        onClick={() => setStep(3)}
+                      >
+                        Skip for now
+                      </button>
+                      <Button
+                        size="sm"
+                        disabled={!llmApiKey.trim() || loading}
+                        onClick={handleStep2LlmNext}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Saving..." : "Next"}
+                      </Button>
+                    </div>
+                  )}
+                  {step === 3 && step2Mode === "manual" && (
                     <Button
                       size="sm"
                       disabled={
@@ -1510,7 +1645,7 @@ export function OnboardingWizard() {
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 2 && step2Mode === "pack" && (
+                  {step === 3 && step2Mode === "pack" && (
                     <Button
                       size="sm"
                       disabled={!selectedPackKey || rosterItems.length === 0 || packCreating}
@@ -1524,7 +1659,7 @@ export function OnboardingWizard() {
                       {packCreating ? `Deploying team...` : "Deploy Team"}
                     </Button>
                   )}
-                  {step === 3 && (
+                  {step === 4 && (
                     <Button
                       size="sm"
                       disabled={!taskTitle.trim() || loading}
@@ -1538,7 +1673,7 @@ export function OnboardingWizard() {
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 4 && (
+                  {step === 5 && (
                     <Button size="sm" disabled={loading} onClick={handleLaunch}>
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />

@@ -213,9 +213,20 @@ export const agentsApi = {
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  headcount: (companyId: string) =>
+    api.get<HeadcountResponse>(`/companies/${companyId}/agents/headcount`),
+  terminateWithReason: (companyId: string, agentId: string, terminationReason: string) =>
+    api.post<Agent>(`/companies/${companyId}/agents/${agentId}/terminate`, { terminationReason }),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };
+
+export interface HeadcountResponse {
+  fte: number;
+  contractor: number;
+  limits: { fte: number; contractor: number };
+  tier: string;
+}
 
 export interface AvailableSkill {
   name: string;
