@@ -87,13 +87,14 @@ export function OpenClawGatewayConfigFields({
       delete nextHeaders["x-openclaw-token"];
       delete nextHeaders["x-openclaw-auth"];
     }
+    mark("adapterConfig", "authToken", nextValue || undefined);
     mark("adapterConfig", "headers", Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined);
   };
 
   const sessionStrategy = eff(
     "adapterConfig",
     "sessionKeyStrategy",
-    String(config.sessionKeyStrategy ?? "fixed"),
+    String(config.sessionKeyStrategy ?? "issue"),
   );
 
   return (
@@ -124,6 +125,39 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
+      <SecretField
+        label="Gateway auth token (x-openclaw-token)"
+        value={
+          isCreate
+            ? values!.authToken ?? ""
+            : effectiveGatewayToken
+        }
+        onCommit={(v) =>
+          isCreate
+            ? set!({ authToken: v })
+            : commitGatewayToken(v)
+        }
+        placeholder="OpenClaw gateway token"
+      />
+
+      <Field label="OpenClaw agent ID">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.agentId ?? ""
+              : eff("adapterConfig", "agentId", String(config.agentId ?? ""))
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ agentId: v })
+              : mark("adapterConfig", "agentId", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="main"
+        />
+      </Field>
+
       <RuntimeServicesJsonField
         isCreate={isCreate}
         values={values}
@@ -132,24 +166,30 @@ export function OpenClawGatewayConfigFields({
         mark={mark}
       />
 
-      {!isCreate && (
-        <>
-          <Field label="Paperclip API URL override">
-            <DraftInput
-              value={
-                eff(
+      <Field label="Paperclip API URL override">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.paperclipApiUrl ?? ""
+              : eff(
                   "adapterConfig",
                   "paperclipApiUrl",
                   String(config.paperclipApiUrl ?? ""),
                 )
-              }
-              onCommit={(v) => mark("adapterConfig", "paperclipApiUrl", v || undefined)}
-              immediate
-              className={inputClass}
-              placeholder="https://paperclip.example"
-            />
-          </Field>
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ paperclipApiUrl: v })
+              : mark("adapterConfig", "paperclipApiUrl", v || undefined)
+          }
+          immediate
+          className={inputClass}
+          placeholder="https://paperclip.example"
+        />
+      </Field>
 
+      {!isCreate && (
+        <>
           <Field label="Session strategy">
             <select
               value={sessionStrategy}
@@ -174,13 +214,6 @@ export function OpenClawGatewayConfigFields({
             </Field>
           )}
 
-          <SecretField
-            label="Gateway auth token (x-openclaw-token)"
-            value={effectiveGatewayToken}
-            onCommit={commitGatewayToken}
-            placeholder="OpenClaw gateway token"
-          />
-
           <Field label="Role">
             <DraftInput
               value={eff("adapterConfig", "role", String(config.role ?? "operator"))}
@@ -193,7 +226,11 @@ export function OpenClawGatewayConfigFields({
 
           <Field label="Scopes (comma-separated)">
             <DraftInput
-              value={eff("adapterConfig", "scopes", parseScopes(config.scopes ?? ["operator.admin"]))}
+              value={eff(
+                "adapterConfig",
+                "scopes",
+                parseScopes(config.scopes ?? ["operator.admin", "operator.pairing", "operator.read", "operator.write"]),
+              )}
               onCommit={(v) => {
                 const parsed = v
                   .split(",")
@@ -203,7 +240,7 @@ export function OpenClawGatewayConfigFields({
               }}
               immediate
               className={inputClass}
-              placeholder="operator.admin"
+              placeholder="operator.admin, operator.pairing, operator.read, operator.write"
             />
           </Field>
 

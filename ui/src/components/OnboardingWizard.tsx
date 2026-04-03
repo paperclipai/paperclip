@@ -119,6 +119,9 @@ export function OnboardingWizard() {
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [url, setUrl] = useState("");
+  const [gatewayToken, setGatewayToken] = useState("");
+  const [gatewayAgentId, setGatewayAgentId] = useState("");
+  const [gatewayPaperclipApiUrl, setGatewayPaperclipApiUrl] = useState("");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -294,6 +297,9 @@ export function OnboardingWizard() {
     setCommand("");
     setArgs("");
     setUrl("");
+    setGatewayToken("");
+    setGatewayAgentId("");
+    setGatewayPaperclipApiUrl("");
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
     setAdapterEnvLoading(false);
@@ -330,6 +336,9 @@ export function OnboardingWizard() {
       command,
       args,
       url,
+      authToken: gatewayToken,
+      agentId: gatewayAgentId,
+      paperclipApiUrl: gatewayPaperclipApiUrl,
       dangerouslySkipPermissions:
         adapterType === "claude_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
@@ -828,41 +837,52 @@ export function OnboardingWizard() {
                             value: "gemini_local" as const,
                             label: "Gemini CLI",
                             icon: Gem,
-                            desc: "Local Gemini agent"
+                            desc: "Local Gemini agent",
+                            comingSoon: false,
                           },
                           {
                             value: "opencode_local" as const,
                             label: "OpenCode",
                             icon: OpenCodeLogoIcon,
-                            desc: "Local multi-provider agent"
+                            desc: "Local multi-provider agent",
+                            comingSoon: false,
                           },
                           {
                             value: "pi_local" as const,
                             label: "Pi",
                             icon: Terminal,
-                            desc: "Local Pi agent"
+                            desc: "Local Pi agent",
+                            comingSoon: false,
                           },
                           {
                             value: "cursor" as const,
                             label: "Cursor",
                             icon: MousePointer2,
-                            desc: "Local Cursor agent"
+                            desc: "Local Cursor agent",
+                            comingSoon: false,
                           },
                           {
                             value: "hermes_local" as const,
                             label: "Hermes Agent",
                             icon: HermesIcon,
-                            desc: "Local multi-provider agent"
+                            desc: "Local multi-provider agent",
+                            comingSoon: false,
                           },
                           {
                             value: "openclaw_gateway" as const,
                             label: "OpenClaw Gateway",
                             icon: Bot,
                             desc: "Invoke OpenClaw via gateway protocol",
-                            comingSoon: true,
-                            disabledLabel: "Configure OpenClaw within the App"
+                            comingSoon: false,
                           }
-                        ].map((opt) => (
+                        ].map((opt: {
+                          value: AdapterType;
+                          label: string;
+                          icon: any;
+                          desc: string;
+                          comingSoon?: boolean;
+                          disabledLabel?: string;
+                        }) => (
                           <button
                             key={opt.value}
                             disabled={!!opt.comingSoon}
@@ -1155,6 +1175,45 @@ export function OnboardingWizard() {
                         onChange={(e) => setUrl(e.target.value)}
                       />
                     </div>
+                  )}
+
+                  {adapterType === "openclaw_gateway" && (
+                    <>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Gateway auth token
+                        </label>
+                        <input
+                          type="password"
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="OpenClaw gateway token"
+                          value={gatewayToken}
+                          onChange={(e) => setGatewayToken(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          OpenClaw agent ID
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="main"
+                          value={gatewayAgentId}
+                          onChange={(e) => setGatewayAgentId(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Paperclip API URL override
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="https://paperclip.example"
+                          value={gatewayPaperclipApiUrl}
+                          onChange={(e) => setGatewayPaperclipApiUrl(e.target.value)}
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
               )}

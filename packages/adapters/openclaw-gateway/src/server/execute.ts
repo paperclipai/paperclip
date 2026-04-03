@@ -79,7 +79,7 @@ type GatewayClientRequestOptions = {
 };
 
 const PROTOCOL_VERSION = 3;
-const DEFAULT_SCOPES = ["operator.admin"];
+const DEFAULT_SCOPES = ["operator.admin", "operator.pairing", "operator.read", "operator.write"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
@@ -126,16 +126,49 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
+function normalizeOpenClawAgentId(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "main";
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+/g, "")
+    .replace(/-+$/g, "");
+  return normalized || "main";
+}
+
+function scopeOpenClawSessionKey(agentId: string | null | undefined, sessionKey: string): string {
+  const trimmed = sessionKey.trim();
+  const normalizedAgentId = normalizeOpenClawAgentId(agentId);
+  if (!trimmed) return `agent:${normalizedAgentId}:main`;
+  if (trimmed.toLowerCase().startsWith("agent:")) return trimmed;
+  return `agent:${normalizedAgentId}:${trimmed}`;
+}
+
+function resolveClaimedApiKeyPath(agentId: string | null | undefined): string {
+  const normalizedAgentId = normalizeOpenClawAgentId(agentId);
+  const workspaceDir =
+    normalizedAgentId === "main"
+      ? "~/.openclaw/workspace"
+      : `~/.openclaw/workspace-${normalizedAgentId}`;
+  return `${workspaceDir}/paperclip-claimed-api-key.json`;
+}
+
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  agentId: string | null | undefined;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  if (input.strategy === "run") {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:run:${input.runId}`);
+  }
+  if (input.strategy === "issue" && input.issueId) {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:issue:${input.issueId}`);
+  }
+  return scopeOpenClawSessionKey(input.agentId, fallback);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -225,7 +258,9 @@ function resolveAuthToken(config: Record<string, unknown>, headers: Record<strin
   const authHeader =
     headerMapGetIgnoreCase(headers, "x-openclaw-auth") ??
     headerMapGetIgnoreCase(headers, "authorization");
-  return tokenFromAuthHeader(authHeader);
+  const fromHeader = tokenFromAuthHeader(authHeader);
+  if (fromHeader) return fromHeader;
+  return nonEmpty(process.env.OPENCLAW_TOKEN);
 }
 
 function isSensitiveLogKey(key: string): boolean {
@@ -335,8 +370,12 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+function buildWakeText(
+  payload: WakePayload,
+  paperclipEnv: Record<string, string>,
+  openClawAgentId: string | null | undefined,
+): string {
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(openClawAgentId);
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -599,6 +638,8 @@ class GatewayWsClient {
   private challengePromise: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
+  private challengeState: "pending" | "resolved" | "rejected" = "pending";
+  private intentionalClose = false;
 
   constructor(private readonly opts: GatewayClientOptions) {
     this.challengePromise = new Promise<string>((resolve, reject) => {
@@ -612,6 +653,8 @@ class GatewayWsClient {
     buildConnectParams: (nonce: string) => Record<string, unknown>,
     timeoutMs: number,
   ): Promise<Record<string, unknown> | null> {
+    this.intentionalClose = false;
+    this.challengeState = "pending";
     this.ws = new WebSocket(this.opts.url, {
       headers: this.opts.headers,
       maxPayload: 25 * 1024 * 1024,
@@ -624,10 +667,12 @@ class GatewayWsClient {
     });
 
     ws.on("close", (code, reason) => {
+      this.ws = null;
+      if (this.intentionalClose) return;
       const reasonText = rawDataToString(reason);
       const err = new Error(`gateway closed (${code}): ${reasonText}`);
       this.failPending(err);
-      this.rejectChallenge(err);
+      this.rejectChallengeOnce(err);
     });
 
     ws.on("error", (err) => {
@@ -713,8 +758,12 @@ class GatewayWsClient {
 
   close() {
     if (!this.ws) return;
-    this.ws.close(1000, "paperclip-complete");
+    const ws = this.ws;
+    this.intentionalClose = true;
     this.ws = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close(1000, "paperclip-complete");
+    }
   }
 
   private failPending(err: Error) {
@@ -738,7 +787,7 @@ class GatewayWsClient {
         const payload = asRecord(parsed.payload);
         const nonce = nonEmpty(payload?.nonce);
         if (nonce) {
-          this.resolveChallenge(nonce);
+          this.resolveChallengeOnce(nonce);
           return;
         }
       }
@@ -778,6 +827,18 @@ class GatewayWsClient {
     if (code) err.gatewayCode = code;
     if (details) err.gatewayDetails = details;
     pending.reject(err);
+  }
+
+  private resolveChallengeOnce(nonce: string) {
+    if (this.challengeState !== "pending") return;
+    this.challengeState = "resolved";
+    this.resolveChallenge(nonce);
+  }
+
+  private rejectChallengeOnce(err: Error) {
+    if (this.challengeState !== "pending") return;
+    this.challengeState = "rejected";
+    this.rejectChallenge(err);
   }
 }
 
@@ -874,8 +935,8 @@ function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined
   const record = asRecord(value);
   if (!record) return undefined;
 
-  const inputTokens = asNumber(record.inputTokens ?? record.input, 0);
-  const outputTokens = asNumber(record.outputTokens ?? record.output, 0);
+  const inputTokens = asNumber(record.inputTokens ?? record.input_tokens ?? record.input, 0);
+  const outputTokens = asNumber(record.outputTokens ?? record.output_tokens ?? record.output, 0);
   const cachedInputTokens = asNumber(
     record.cachedInputTokens ?? record.cached_input_tokens ?? record.cacheRead ?? record.cache_read,
     0,
@@ -1033,6 +1094,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
+  const templateAgentId = nonEmpty(payloadTemplate.agentId);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const effectiveGatewayAgentId = templateAgentId ?? configuredAgentId ?? null;
 
   const headers = toStringRecord(ctx.config.headers);
   const authToken = resolveAuthToken(parseObject(ctx.config), headers);
@@ -1053,7 +1117,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const wakeText = buildWakeText(wakePayload, paperclipEnv, effectiveGatewayAgentId);
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
@@ -1062,6 +1126,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    agentId: effectiveGatewayAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
@@ -1076,7 +1141,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   delete agentParams.text;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
@@ -1120,6 +1184,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  let retryCount = 0;
+  const maxRetries = 2;
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
@@ -1323,6 +1389,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
+      let sessionUsageResult: Record<string, unknown> | null = null;
+      try {
+        sessionUsageResult = await client.request<Record<string, unknown>>(
+          "sessions.usage",
+          { key: sessionKey },
+          { timeoutMs: 10_000 },
+        );
+      } catch (usageErr) {
+        await ctx.onLog(
+          "stderr",
+          `[openclaw-gateway] sessions.usage failed (non-fatal): ${usageErr instanceof Error ? usageErr.message : String(usageErr)}\n`,
+        );
+      }
+
       const summaryFromEvents = assistantChunks.join("").trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
@@ -1344,11 +1424,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         asRecord(mergedMeta.agentMeta) ??
         asRecord(acceptedMeta?.agentMeta) ??
         asRecord(latestMeta?.agentMeta);
-      const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
+      const sessionUsage = asRecord(sessionUsageResult);
+      const sessionTotals = asRecord(sessionUsage?.totals);
+      const sessionAggregates = asRecord(sessionUsage?.aggregates);
+      const sessionByModel = Array.isArray(sessionAggregates?.byModel)
+        ? sessionAggregates.byModel
+        : [];
+      const primaryModelEntry =
+        sessionByModel.length > 0 ? asRecord(sessionByModel[0]) : null;
+      const usage =
+        parseUsage(agentMeta?.usage ?? mergedMeta.usage) ??
+        parseUsage(sessionTotals);
       const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
-      const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
-      const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
-      const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
+      const provider =
+        nonEmpty(agentMeta?.provider) ??
+        nonEmpty(mergedMeta.provider) ??
+        nonEmpty(primaryModelEntry?.provider) ??
+        "openclaw";
+      const model =
+        nonEmpty(agentMeta?.model) ??
+        nonEmpty(mergedMeta.model) ??
+        nonEmpty(primaryModelEntry?.model) ??
+        null;
+      const primaryCostSource = agentMeta?.costUsd ?? mergedMeta.costUsd;
+      const costUsd =
+        primaryCostSource == null
+          ? asNumber(sessionTotals?.totalCost, 0)
+          : asNumber(primaryCostSource, 0);
+
+      if (sessionUsageResult) {
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] sessions.usage: input=${usage?.inputTokens ?? 0} output=${usage?.outputTokens ?? 0} cached=${usage?.cachedInputTokens ?? 0} model=${model ?? "unknown"} cost=$${costUsd.toFixed(4)}\n`,
+        );
+      }
 
       await ctx.onLog(
         "stdout",
@@ -1407,6 +1516,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           "stderr",
           `[openclaw-gateway] auto-pairing failed: ${pairResult.reason}\n`,
         );
+      }
+
+      const isTransient =
+        !pairingRequired &&
+        (lower.includes("econnrefused") ||
+          lower.includes("econnreset") ||
+          lower.includes("socket hang up") ||
+          (timedOut && !lower.includes("agent.wait")));
+      if (isTransient && retryCount < maxRetries) {
+        retryCount += 1;
+        const backoffMs = retryCount * 2000;
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] transient error, retry ${retryCount}/${maxRetries} after ${backoffMs}ms: ${message}\n`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue;
       }
 
       const detailedMessage = pairingRequired

@@ -529,10 +529,9 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
   openclaw_gateway: [
     { path: ["timeoutSec"], value: 120 },
     { path: ["waitTimeoutMs"], value: 120000 },
-    { path: ["sessionKeyStrategy"], value: "fixed" },
-    { path: ["sessionKey"], value: "paperclip" },
+    { path: ["sessionKeyStrategy"], value: "issue" },
     { path: ["role"], value: "operator" },
-    { path: ["scopes"], value: ["operator.admin"] },
+    { path: ["scopes"], value: ["operator.admin", "operator.pairing", "operator.read", "operator.write"] },
   ],
 };
 

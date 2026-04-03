@@ -353,4 +353,7 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  authToken?: string;
+  agentId?: string;
+  paperclipApiUrl?: string;
 }

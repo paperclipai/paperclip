@@ -5,6 +5,7 @@ import {
   agentsApi,
   type AgentKey,
   type ClaudeLoginResult,
+  type CodexLoginResult,
   type AgentPermissionUpdate,
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
@@ -2900,9 +2901,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
   const metrics = runMetrics(run);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
+  const [codexLoginResult, setCodexLoginResult] = useState<CodexLoginResult | null>(null);
 
   useEffect(() => {
     setClaudeLoginResult(null);
+    setCodexLoginResult(null);
   }, [run.id]);
 
   const cancelRun = useMutation({
@@ -3005,6 +3008,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     mutationFn: () => agentsApi.loginWithClaude(run.agentId, run.companyId),
     onSuccess: (data) => {
       setClaudeLoginResult(data);
+    },
+  });
+  const runCodexLogin = useMutation({
+    mutationFn: () => agentsApi.loginWithCodex(run.agentId, run.companyId),
+    onSuccess: (data) => {
+      setCodexLoginResult(data);
     },
   });
 
@@ -3246,6 +3255,58 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                       </p>
                     )}
                   </div>
+                )}
+              </div>
+            )}
+            {run.errorCode === "codex_auth_required" && adapterType === "codex_local" && (
+              <div className="space-y-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => runCodexLogin.mutate()}
+                  disabled={runCodexLogin.isPending}
+                >
+                  {runCodexLogin.isPending ? "Running codex login..." : "Login to Codex"}
+                </Button>
+                {runCodexLogin.isError && (
+                  <p className="text-xs text-destructive">
+                    {runCodexLogin.error instanceof Error
+                      ? runCodexLogin.error.message
+                      : "Failed to run Codex login"}
+                  </p>
+                )}
+                {codexLoginResult?.loginUrl && (
+                  <p className="text-xs">
+                    Login URL:
+                    <a
+                      href={codexLoginResult.loginUrl}
+                      className="text-blue-600 underline underline-offset-2 ml-1 break-all dark:text-blue-400"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {codexLoginResult.loginUrl}
+                    </a>
+                  </p>
+                )}
+                {codexLoginResult?.verificationCode && (
+                  <p className="text-xs font-mono text-foreground">
+                    Code: {codexLoginResult.verificationCode}
+                  </p>
+                )}
+                {codexLoginResult && (
+                  <>
+                    {!!codexLoginResult.stdout && (
+                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                        {codexLoginResult.stdout}
+                      </pre>
+                    )}
+                    {!!codexLoginResult.stderr && (
+                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                        {codexLoginResult.stderr}
+                      </pre>
+                    )}
+                  </>
                 )}
               </div>
             )}

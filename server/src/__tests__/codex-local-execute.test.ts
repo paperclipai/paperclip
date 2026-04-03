@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-codex-local/server";
+import { execute, runCodexLogin } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -23,6 +23,39 @@ if (capturePath) {
 console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }));
 console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }));
 console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFakeCodexLoginCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  codexHome: process.env.CODEX_HOME || null,
+};
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
+}
+if (process.argv[2] === "login" && process.argv[3] === "--device-auth") {
+  console.log("Open this URL in your browser:");
+  console.log("https://auth.openai.com/codex/device");
+  console.log("Code: AB12-3CD45");
+  process.exit(0);
+}
+process.exit(1);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeFakeCodexAuthFailureCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.error("Authentication required. Please run \`codex login\`.");
+process.exit(1);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -448,6 +481,92 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns the device-auth login URL and verification code", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-login-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await writeFakeCodexLoginCommand(commandPath);
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const result = await runCodexLogin({
+        runId: "run-login",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.loginUrl).toBe("https://auth.openai.com/codex/device");
+      expect(result.verificationCode).toBe("AB12-3CD45");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).toEqual(["login", "--device-auth"]);
+      expect(capture.codexHome).toBe(sharedCodexHome);
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies login-required failures as codex_auth_required", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-required-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexAuthFailureCommand(commandPath);
+
+    try {
+      const result = await execute({
+        runId: "run-auth-required",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_auth_required");
+    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   });

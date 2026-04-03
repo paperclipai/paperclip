@@ -41,6 +41,7 @@ function buildContext(
 
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
+  sessionUsagePayload?: Record<string, unknown>;
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -77,7 +78,7 @@ async function createMockGatewayServer(options?: {
               type: "hello-ok",
               protocol: 3,
               server: { version: "test", connId: "conn-1" },
-              features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
+              features: { methods: ["connect", "agent", "agent.wait", "sessions.usage"], events: ["agent"] },
               snapshot: { version: 1, ts: Date.now() },
               policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
             },
@@ -147,6 +148,18 @@ async function createMockGatewayServer(options?: {
               startedAt: 1,
               endedAt: 2,
             },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "sessions.usage") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: options?.sessionUsagePayload ?? {},
           }),
         );
       }
@@ -239,7 +252,7 @@ async function createMockGatewayServerWithPairing() {
               protocol: 3,
               server: { version: "test", connId: "conn-1" },
               features: {
-                methods: ["connect", "agent", "agent.wait", "device.pair.list", "device.pair.approve"],
+                methods: ["connect", "agent", "agent.wait", "sessions.usage", "device.pair.list", "device.pair.approve"],
                 events: ["agent"],
               },
               snapshot: { version: 1, ts: Date.now() },
@@ -351,6 +364,18 @@ async function createMockGatewayServerWithPairing() {
             },
           }),
         );
+        return;
+      }
+
+      if (frame.method === "sessions.usage") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {},
+          }),
+        );
       }
     });
   });
@@ -452,12 +477,107 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
+      expect(payload?.sessionKey).toBe("agent:main:paperclip:issue:issue-123");
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(String(payload?.message ?? "")).toContain("~/.openclaw/workspace/paperclip-claimed-api-key.json");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("falls back to a per-agent session key when issue strategy has no issue id", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            agentId: "dot",
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: null,
+              issueId: null,
+              wakeReason: "manual",
+              issueIds: [],
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("agent:dot:paperclip");
+      expect(payload?.agentId).toBe("dot");
+      expect(String(payload?.message ?? "")).toContain("~/.openclaw/workspace-dot/paperclip-claimed-api-key.json");
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("falls back to the main OpenClaw agent when no agent id is configured", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            context: {
+              taskId: null,
+              issueId: null,
+              wakeReason: "manual",
+              issueIds: [],
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("agent:main:paperclip");
+      expect(payload?.agentId).toBeUndefined();
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("scopes a fixed session key to the configured OpenClaw agent", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          agentId: "dot",
+          sessionKeyStrategy: "fixed",
+          sessionKey: "paperclip",
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("agent:dot:paperclip");
+      expect(payload?.agentId).toBe("dot");
     } finally {
       await gateway.close();
     }
@@ -467,6 +587,36 @@ describe("openclaw gateway adapter execute", () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
+  });
+
+  it("prefixes session keys when an explicit OpenClaw agent id is configured", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          agentId: "worker-42",
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+
+      const payload = gateway.getAgentPayload();
+      expect(payload?.sessionKey).toBe("agent:worker-42:paperclip:issue:issue-123");
+      expect(String(payload?.message ?? "")).toContain(
+        "~/.openclaw/workspace-worker-42/paperclip-claimed-api-key.json",
+      );
+    } finally {
+      await gateway.close();
+    }
   });
 
   it("returns adapter-managed runtime services from gateway result meta", async () => {
@@ -512,6 +662,54 @@ describe("openclaw gateway adapter execute", () => {
           status: "running",
         }),
       ]);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("uses sessions.usage to populate usage, model, and cost when agent.wait omits them", async () => {
+    const gateway = await createMockGatewayServer({
+      sessionUsagePayload: {
+        totals: {
+          inputTokens: 11,
+          input_tokens: 11,
+          outputTokens: 7,
+          output_tokens: 7,
+          cachedInputTokens: 3,
+          cached_input_tokens: 3,
+          totalCost: 0.42,
+        },
+        aggregates: {
+          byModel: [
+            {
+              provider: "openai",
+              model: "gpt-5-codex",
+            },
+          ],
+        },
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.provider).toBe("openai");
+      expect(result.model).toBe("gpt-5-codex");
+      expect(result.usage).toEqual({
+        inputTokens: 11,
+        outputTokens: 7,
+        cachedInputTokens: 3,
+      });
+      expect(result.costUsd).toBe(0.42);
     } finally {
       await gateway.close();
     }
@@ -573,6 +771,9 @@ describe("openclaw gateway ui build config", () => {
       envVars: "",
       envBindings: {},
       url: "wss://gateway.example/ws",
+      authToken: "gateway-token",
+      agentId: "worker-42",
+      paperclipApiUrl: "https://paperclip.example",
       payloadTemplateJson: JSON.stringify({
         agentId: "remote-agent-123",
         metadata: { team: "platform" },
@@ -594,6 +795,12 @@ describe("openclaw gateway ui build config", () => {
     expect(config).toEqual(
       expect.objectContaining({
         url: "wss://gateway.example/ws",
+        authToken: "gateway-token",
+        agentId: "worker-42",
+        paperclipApiUrl: "https://paperclip.example",
+        headers: {
+          "x-openclaw-token": "gateway-token",
+        },
         payloadTemplate: {
           agentId: "remote-agent-123",
           metadata: { team: "platform" },

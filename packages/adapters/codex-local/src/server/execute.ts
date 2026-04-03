@@ -20,6 +20,7 @@ import {
   renderTemplate,
   joinPromptSections,
   runChildProcess,
+  type RunProcessResult,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
@@ -28,6 +29,10 @@ import { resolveCodexDesiredSkillNames } from "./skills.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+const CODEX_AUTH_REQUIRED_RE =
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
+const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+const CODEX_DEVICE_CODE_RE = /\b[A-Z0-9]{4}-[A-Z0-9]{4,8}\b/;
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -53,6 +58,40 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, "");
+}
+
+function detectCodexLoginRequired(text: string): boolean {
+  return CODEX_AUTH_REQUIRED_RE.test(stripAnsi(text));
+}
+
+function extractCodexDeviceAuthUrl(text: string): string | null {
+  const match = stripAnsi(text).match(/https:\/\/[^\s]+/);
+  return match?.[0] ?? null;
+}
+
+function extractCodexDeviceCode(text: string): string | null {
+  const match = stripAnsi(text).match(CODEX_DEVICE_CODE_RE);
+  return match?.[0] ?? null;
+}
+
+function buildCodexLoginResult(input: {
+  proc: RunProcessResult;
+  loginUrl: string | null;
+  verificationCode: string | null;
+}) {
+  return {
+    exitCode: input.proc.exitCode,
+    signal: input.proc.signal,
+    timedOut: input.proc.timedOut,
+    stdout: input.proc.stdout,
+    stderr: input.proc.stderr,
+    loginUrl: input.loginUrl,
+    verificationCode: input.verificationCode,
+  };
+}
+
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
@@ -67,6 +106,13 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+function resolveConfiguredCodexHome(config: Record<string, unknown>): string | null {
+  const envConfig = parseObject(config.env);
+  return typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
+    ? path.resolve(envConfig.CODEX_HOME.trim())
+    : null;
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -212,6 +258,64 @@ export async function ensureCodexSkillsInjected(
   );
 }
 
+export async function runCodexLogin(input: {
+  runId: string;
+  agent: AdapterExecutionContext["agent"];
+  config: Record<string, unknown>;
+  authToken?: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  const onLog = input.onLog ?? (async () => {});
+  const command = asString(input.config.command, "codex");
+  const cwd = asString(input.config.cwd, process.cwd());
+  const envConfig = parseObject(input.config.env);
+  const configuredCodexHome = resolveConfiguredCodexHome(input.config);
+  const loginCodexHome = configuredCodexHome ?? resolveSharedCodexHomeDir(process.env);
+  const timeoutSec = asNumber(input.config.timeoutSec, 0);
+  const graceSec = asNumber(input.config.graceSec, 20);
+
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  await fs.mkdir(loginCodexHome, { recursive: true });
+
+  const hasExplicitApiKey =
+    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const env: Record<string, string> = {
+    ...buildPaperclipEnv(input.agent),
+    CODEX_HOME: loginCodexHome,
+    PAPERCLIP_RUN_ID: input.runId,
+  };
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  if (!hasExplicitApiKey && input.authToken) {
+    env.PAPERCLIP_API_KEY = input.authToken;
+  }
+
+  const runtimeEnv = ensurePathInEnv(
+    Object.fromEntries(
+      Object.entries({ ...process.env, ...env }).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
+  );
+  await ensureCommandResolvable(command, cwd, runtimeEnv);
+
+  const proc = await runChildProcess(input.runId, command, ["login", "--device-auth"], {
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    onLog,
+  });
+  const combinedOutput = [proc.stdout, proc.stderr].filter(Boolean).join("\n");
+
+  return buildCodexLoginResult({
+    proc,
+    loginUrl: extractCodexDeviceAuthUrl(combinedOutput),
+    verificationCode: extractCodexDeviceCode(combinedOutput),
+  });
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
 
@@ -262,10 +366,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
-  const configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
-      ? path.resolve(envConfig.CODEX_HOME.trim())
-      : null;
+  const configuredCodexHome = resolveConfiguredCodexHome(config);
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
@@ -569,6 +670,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const authEvidence = [attempt.parsed.errorMessage, attempt.proc.stderr, attempt.proc.stdout]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("\n");
+    const authRequired = detectCodexLoginRequired(authEvidence);
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -578,6 +683,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode:
+        (attempt.proc.exitCode ?? 0) === 0
+          ? undefined
+          : authRequired
+            ? "codex_auth_required"
+            : undefined,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
