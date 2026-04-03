@@ -224,7 +224,7 @@ export function Agents() {
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
-                className={agent.pausedAt ? "opacity-50" : ""}
+                className={agent.pausedAt && tab !== "paused" ? "opacity-50" : ""}
                 leading={
                   <span className="relative flex h-2.5 w-2.5">
                     <span
