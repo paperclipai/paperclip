@@ -44,7 +44,10 @@
     "typecheck": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit"
   },
   "dependencies": {
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.202.0",
+    "@opentelemetry/sdk-node": "^0.202.0",
     "@aws-sdk/client-s3": "^3.888.0",
+    "otel-instrumentation-postgres": "^1.0.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",

@@ -44,8 +44,10 @@
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
+    "@opentelemetry/api": "^1.9.0",
     "drizzle-orm": "^0.38.4",
     "embedded-postgres": "^18.1.0-beta.16",
+    "otel-instrumentation-postgres": "^1.0.0",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
