@@ -1,0 +1,35 @@
+{
+  "common": {
+    "sidebar": {
+      "new_issue": "New Issue",
+      "search": "Search",
+      "dashboard": "Dashboard",
+      "goals": "Goals",
+      "approvals": "Approvals",
+      "runs": "Runs",
+      "live_runs": "Live Runs",
+      "heartbeat": "Heartbeat",
+      "settings": "Settings",
+      "teams": "Teams",
+      "members": "Members",
+      "pending": "Join Requests",
+      "projects": "Projects",
+      "inbox": "Inbox",
+      "sections": {
+        "work": "Work",
+        "company": "Company"
+      },
+      "work": {
+        "tasks": "Tasks",
+        "routines": "Routines"
+      },
+      "company_menu": {
+        "org": "Org",
+        "skills": "Skills",
+        "costs": "Costs",
+        "activity": "Activity",
+        "select": "Select company"
+      }
+    }
+  }
+}

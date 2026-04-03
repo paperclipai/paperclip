@@ -1,0 +1,35 @@
+{
+  "common": {
+    "sidebar": {
+      "new_issue": "Nova Tarefa",
+      "search": "Buscar",
+      "dashboard": "Painel",
+      "goals": "Metas",
+      "approvals": "Aprovações",
+      "runs": "Execuções",
+      "live_runs": "Em Tempo Real",
+      "heartbeat": "Monitoramento",
+      "settings": "Configurações",
+      "teams": "Equipes",
+      "members": "Membros",
+      "pending": "Pedidos de Adesão",
+      "projects": "Projetos",
+      "inbox": "Entrada",
+      "sections": {
+        "work": "Trabalho",
+        "company": "Empresa"
+      },
+      "work": {
+        "tasks": "Tarefas",
+        "routines": "Rotinas"
+      },
+      "company_menu": {
+        "org": "Org",
+        "skills": "Habilidades",
+        "costs": "Custos",
+        "activity": "Atividade",
+        "select": "Selecionar empresa"
+      }
+    }
+  }
+}

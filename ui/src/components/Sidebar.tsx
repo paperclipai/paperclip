@@ -12,11 +12,13 @@ import {
   Repeat,
   Settings,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarAgents } from "./SidebarAgents";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -26,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const { openNewIssue } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
@@ -57,7 +60,7 @@ export function Sidebar() {
           />
         )}
         <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
-          {selectedCompany?.name ?? "Selecionar empresa"}
+          {selectedCompany?.name ?? t('sidebar.company_menu.select')}
         </span>
         <Button
           variant="ghost"
@@ -77,12 +80,12 @@ export function Sidebar() {
             className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">Nova Tarefa</span>
+            <span className="truncate">{t('sidebar.new_issue')}</span>
           </button>
-          <SidebarNavItem to="/dashboard" label="Painel" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label={t('sidebar.dashboard')} icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Entrada"
+            label={t('sidebar.inbox')}
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
@@ -97,22 +100,22 @@ export function Sidebar() {
           />
         </div>
 
-        <SidebarSection label="Trabalho">
-          <SidebarNavItem to="/issues" label="Tarefas" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Rotinas" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
-          <SidebarNavItem to="/goals" label="Metas" icon={Target} />
+        <SidebarSection label={t('sidebar.sections.work')}>
+          <SidebarNavItem to="/issues" label={t('sidebar.work.tasks')} icon={CircleDot} />
+          <SidebarNavItem to="/routines" label={t('sidebar.work.routines')} icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
+          <SidebarNavItem to="/goals" label={t('sidebar.goals')} icon={Target} />
         </SidebarSection>
 
         <SidebarProjects />
 
         <SidebarAgents />
 
-        <SidebarSection label="Empresa">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Habilidades" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Custos" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Atividade" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Configurações" icon={Settings} />
+        <SidebarSection label={t('sidebar.sections.company')}>
+          <SidebarNavItem to="/org" label={t('sidebar.company_menu.org')} icon={Network} />
+          <SidebarNavItem to="/skills" label={t('sidebar.company_menu.skills')} icon={Boxes} />
+          <SidebarNavItem to="/costs" label={t('sidebar.company_menu.costs')} icon={DollarSign} />
+          <SidebarNavItem to="/activity" label={t('sidebar.company_menu.activity')} icon={History} />
+          <SidebarNavItem to="/company/settings" label={t('sidebar.settings')} icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet
@@ -123,6 +126,7 @@ export function Sidebar() {
           missingBehavior="placeholder"
         />
       </nav>
+      <LanguageSwitcher />
     </aside>
   );
 }
