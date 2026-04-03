@@ -12,7 +12,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
+import { heartbeatService, resolveOperationsHeartbeatTarget } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -222,6 +222,50 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
     });
+  });
+
+  it("routes generic manual heartbeat (no issue context) to company-wide recovery target", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const staleIssueId = randomUUID();
+    const staleRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: staleIssueId },
+    });
+
+    await db.insert(issues).values({
+      id: staleIssueId,
+      companyId,
+      title: "Broken assigned issue requiring recovery",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: workerAgentId,
+      executionRunId: staleRunId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      opsAgentId,
+      "on_demand",
+      {},
+      "manual",
+      { actorType: "user", actorId: "board-user" },
+    );
+
+    expect(run).toBeTruthy();
+    expect(run?.contextSnapshot?.issueId).toBe(staleIssueId);
+    expect(run?.contextSnapshot?.wakeReason).toBe("operations_workflow_recovery");
+    expect(run?.contextSnapshot?.operationsHeartbeatMode).toBe("cross_agent_recovery");
   });
 
   it("returns null when there is no actionable work", async () => {
