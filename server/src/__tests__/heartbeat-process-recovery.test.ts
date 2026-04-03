@@ -86,7 +86,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
-    runStatus?: "running" | "queued" | "failed";
+    runStatus?: "running" | "queued" | "failed" | "succeeded" | "cancelled" | "timed_out";
     processPid?: number | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
@@ -160,6 +160,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeAgentId: agentId,
         checkoutRunId: runId,
         executionRunId: runId,
+        executionLockedAt: now,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
@@ -252,6 +253,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("clears issue execution locks that still point at terminal runs", async () => {
+    const { runId, issueId } = await seedRunFixture({
+      runStatus: "succeeded",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("succeeded");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionLockedAt).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
   });
 

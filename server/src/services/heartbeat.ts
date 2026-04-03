@@ -67,10 +67,12 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const execFile = promisify(execFileCallback);
+type DbExecutor = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -1620,6 +1622,80 @@ export function heartbeatService(db: Db) {
     return updated;
   }
 
+  async function repairIssueExecutionLock(
+    tx: DbExecutor,
+    issue: {
+      id: string;
+      companyId: string;
+      executionRunId: string | null;
+      executionAgentNameKey: string | null;
+    },
+    now = new Date(),
+  ) {
+    let activeExecutionRun = issue.executionRunId
+      ? await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.executionRunId))
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    if (activeExecutionRun && !LIVE_HEARTBEAT_RUN_STATUSES.includes(activeExecutionRun.status as "queued" | "running")) {
+      activeExecutionRun = null;
+    }
+
+    if (!activeExecutionRun && issue.executionRunId) {
+      await tx
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issue.id));
+    }
+
+    if (activeExecutionRun) return activeExecutionRun;
+
+    const legacyRun = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          inArray(heartbeatRuns.status, [...LIVE_HEARTBEAT_RUN_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+        ),
+      )
+      .orderBy(
+        sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+        asc(heartbeatRuns.createdAt),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!legacyRun) return null;
+
+    const legacyAgent = await tx
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.id, legacyRun.agentId))
+      .then((rows) => rows[0] ?? null);
+
+    await tx
+      .update(issues)
+      .set({
+        executionRunId: legacyRun.id,
+        executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
+        executionLockedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(issues.id, issue.id));
+
+    return legacyRun;
+  }
+
   async function enqueueProcessLossRetry(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -1948,6 +2024,57 @@ export function heartbeatService(db: Db) {
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
+
+    const repairedIssueIds: string[] = [];
+    const staleIssueLocks = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+      .where(
+        and(
+          sql`${issues.executionRunId} is not null`,
+          sql`(${heartbeatRuns.id} is null or ${heartbeatRuns.status} not in ('queued', 'running'))`,
+        ),
+      );
+
+    for (const staleIssue of staleIssueLocks) {
+      const repaired = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from issues where id = ${staleIssue.id} and company_id = ${staleIssue.companyId} for update`,
+        );
+
+        const current = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            executionRunId: issues.executionRunId,
+            executionAgentNameKey: issues.executionAgentNameKey,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, staleIssue.id), eq(issues.companyId, staleIssue.companyId)))
+          .then((rows) => rows[0] ?? null);
+
+        if (!current?.executionRunId) return false;
+
+        const repairedRun = await repairIssueExecutionLock(tx, current, now);
+        return repairedRun == null || repairedRun.id !== current.executionRunId;
+      });
+
+      if (repaired) repairedIssueIds.push(staleIssue.id);
+    }
+
+    if (repairedIssueIds.length > 0) {
+      logger.warn(
+        { repairedCount: repairedIssueIds.length, issueIds: repairedIssueIds },
+        "repaired stale issue execution locks",
+      );
+    }
+
     return { reaped: reaped.length, runIds: reaped };
   }
 
@@ -2089,9 +2216,47 @@ export function heartbeatService(db: Db) {
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
+
+    if (run.wakeupRequestId) {
+      const wakeupRequest = await db
+        .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      const payload = parseObject(wakeupRequest?.payload);
+      const payloadIssueId = readNonEmptyString(payload.issueId);
+      if (!readNonEmptyString(context.wakeReason) && wakeupRequest?.reason) {
+        context.wakeReason = wakeupRequest.reason;
+      }
+      if (!readNonEmptyString(context.issueId) && payloadIssueId) {
+        context.issueId = payloadIssueId;
+      }
+      if (!readNonEmptyString(context.taskId) && payloadIssueId) {
+        context.taskId = payloadIssueId;
+      }
+    }
+
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    const issueId = readNonEmptyString(context.issueId);
+
+    if (wakeReason === "issue_assigned" && !issueId) {
+      const errorMessage = "missing assigned issue context";
+      await setRunStatus(runId, "failed", {
+        error: errorMessage,
+        errorCode: "missing_assigned_issue_context",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: new Date(),
+        error: errorMessage,
+      });
+      const failedRun = await getRun(runId);
+      if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
+      return;
+    }
+
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
-    const issueId = readNonEmptyString(context.issueId);
     const issueContext = issueId
       ? await db
           .select({
@@ -2110,6 +2275,10 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    if (issueContext?.identifier && !readNonEmptyString(context.issueIdentifier)) {
+      context.issueIdentifier = issueContext.identifier;
+    }
+
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(
@@ -2580,6 +2749,11 @@ export function heartbeatService(db: Db) {
           },
         });
       };
+      await onLog("stdout", `[context] wake_reason=${wakeReason ?? ""}\n`);
+      if (issueId) {
+        await onLog("stdout", `[context] issue_id=${issueId}\n`);
+      }
+
       for (const warning of runtimeWorkspaceWarnings) {
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
@@ -3260,66 +3434,7 @@ export function heartbeatService(db: Db) {
           return { kind: "skipped" as const };
         }
 
-        let activeExecutionRun = issue.executionRunId
-          ? await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(eq(heartbeatRuns.id, issue.executionRunId))
-            .then((rows) => rows[0] ?? null)
-          : null;
-
-        if (activeExecutionRun && activeExecutionRun.status !== "queued" && activeExecutionRun.status !== "running") {
-          activeExecutionRun = null;
-        }
-
-        if (!activeExecutionRun && issue.executionRunId) {
-          await tx
-            .update(issues)
-            .set({
-              executionRunId: null,
-              executionAgentNameKey: null,
-              executionLockedAt: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(issues.id, issue.id));
-        }
-
-        if (!activeExecutionRun) {
-          const legacyRun = await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, ["queued", "running"]),
-                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-              ),
-            )
-            .orderBy(
-              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-              asc(heartbeatRuns.createdAt),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-
-          if (legacyRun) {
-            activeExecutionRun = legacyRun;
-            const legacyAgent = await tx
-              .select({ name: agents.name })
-              .from(agents)
-              .where(eq(agents.id, legacyRun.agentId))
-              .then((rows) => rows[0] ?? null);
-            await tx
-              .update(issues)
-              .set({
-                executionRunId: legacyRun.id,
-                executionAgentNameKey: normalizeAgentNameKey(legacyAgent?.name),
-                executionLockedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(issues.id, issue.id));
-          }
-        }
+        const activeExecutionRun = await repairIssueExecutionLock(tx, issue);
 
         if (activeExecutionRun) {
           const executionAgent = await tx

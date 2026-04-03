@@ -1,5 +1,5 @@
 diff --git a/dist/server/execute.js b/dist/server/execute.js
-index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250cbbf816dc 100644
+index 93cddf8..23e6762 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
 @@ -41,6 +41,34 @@ const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee i
@@ -62,7 +62,7 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250c
  
  Address the comment, POST a reply if needed, then continue working.
  {{/commentId}}
-@@ -77,18 +106,21 @@ Address the comment, POST a reply if needed, then continue working.
+@@ -77,28 +106,32 @@ Address the comment, POST a reply if needed, then continue working.
  {{#noTask}}
  ## Heartbeat Wake — Check for Work
  
@@ -90,7 +90,23 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250c
  
  4. If truly nothing to do, report briefly what you checked.
  {{/noTask}}`;
-@@ -293,6 +325,13 @@ export async function execute(ctx) {
+ function buildPrompt(ctx, config) {
+     const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
+-    const taskId = cfgString(ctx.config?.taskId);
+-    const taskTitle = cfgString(ctx.config?.taskTitle) || "";
+-    const taskBody = cfgString(ctx.config?.taskBody) || "";
+-    const commentId = cfgString(ctx.config?.commentId) || "";
+-    const wakeReason = cfgString(ctx.config?.wakeReason) || "";
++    const runContext = (ctx.context && typeof ctx.context === "object") ? ctx.context : {};
++    const taskId = cfgString(ctx.config?.taskId) || cfgString(runContext.taskId) || cfgString(runContext.issueId);
++    const taskTitle = cfgString(ctx.config?.taskTitle) || cfgString(runContext.taskTitle) || "";
++    const taskBody = cfgString(ctx.config?.taskBody) || cfgString(runContext.taskBody) || "";
++    const commentId = cfgString(ctx.config?.commentId) || cfgString(runContext.commentId) || cfgString(runContext.wakeCommentId) || "";
++    const wakeReason = cfgString(ctx.config?.wakeReason) || cfgString(runContext.wakeReason) || "";
+     const agentName = ctx.agent?.name || "Hermes Agent";
+     const companyName = cfgString(ctx.config?.companyName) || "";
+     const projectName = cfgString(ctx.config?.projectName) || "";
+@@ -293,11 +326,28 @@ export async function execute(ctx) {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
      };
@@ -103,4 +119,20 @@ index 93cddf8243271f5fb3ab101617f9114257e41328..af81a03b35bc04b17ea4d2254e61250c
 +    }
      if (ctx.runId)
          env.PAPERCLIP_RUN_ID = ctx.runId;
-     const taskId = cfgString(ctx.config?.taskId);
+-    const taskId = cfgString(ctx.config?.taskId);
++    const runContext = (ctx.context && typeof ctx.context === "object") ? ctx.context : {};
++    const taskId = cfgString(ctx.config?.taskId) || cfgString(runContext.taskId) || cfgString(runContext.issueId);
+     if (taskId)
+         env.PAPERCLIP_TASK_ID = taskId;
++    const issueId = cfgString(runContext.issueId) || taskId;
++    if (issueId)
++        env.PAPERCLIP_ISSUE_ID = issueId;
++    const issueIdentifier = cfgString(runContext.issueIdentifier);
++    if (issueIdentifier)
++        env.PAPERCLIP_ISSUE_IDENTIFIER = issueIdentifier;
++    const wakeReason = cfgString(ctx.config?.wakeReason) || cfgString(runContext.wakeReason);
++    if (wakeReason)
++        env.PAPERCLIP_WAKE_REASON = wakeReason;
+     const userEnv = config.env;
+     if (userEnv && typeof userEnv === "object") {
+         Object.assign(env, userEnv);
