@@ -208,53 +208,65 @@ export async function resolveOperationsHeartbeatTarget(
         let score = 0;
         const reasons: string[] = [];
 
+        const hasStuckAssignedSignals =
+          (issue.status === "in_progress" && !issue.executionRunId)
+          || issue.status === "blocked"
+          || Boolean(run && (run.status === "failed" || run.status === "cancelled"));
+        const hasFalseCompleteSignals = Boolean(run && run.status === "completed" && truthType !== "completion");
+        const hasContradictoryTruthSignals =
+          (truthType === "completion" && issue.status !== "in_review")
+          || ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog");
+
         if (issue.status === "in_progress" && !issue.executionRunId) {
-          score += 170;
+          score += 180;
           reasons.push("stale or blocked assigned work: in_progress with no execution run");
         }
         if (issue.status === "blocked") {
-          score += 150;
+          score += 170;
           reasons.push("stale or blocked assigned work: status is blocked");
         }
         if (run && (run.status === "failed" || run.status === "cancelled")) {
-          score += 165;
+          score += 180;
           reasons.push(`stale assigned work: latest run ended ${run.status}`);
         }
 
-        if (run && run.status === "completed" && truthType !== "completion") {
-          score += 210;
+        if (hasFalseCompleteSignals) {
+          score += 280;
           reasons.push("incomplete/false-complete assigned work: completed run without completion truth");
         }
 
         if (truthType === "completion" && issue.status !== "in_review") {
-          score += 175;
+          score += 240;
           reasons.push("contradictory issue truth: completion truth on non-completed status");
         }
         if ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog") {
-          score += 140;
+          score += 200;
           reasons.push(`contradictory issue truth: ${truthType} truth while status is backlog`);
         }
 
         if (!latestComment) {
-          score += 85;
+          score += 90;
           reasons.push("no issue comments found");
         }
         if (latestComment && !truthType && latestCommentAgeHours >= 12) {
-          score += 95;
+          score += 100;
           reasons.push(`stale comment without explicit truth (${latestCommentAgeHours}h)`);
         }
         if (issueAgeHours >= 24) {
-          score += 90;
+          score += 100;
           reasons.push(`stale issue updates (${issueAgeHours}h)`);
         }
 
         if (isWatchdogIssue) {
-          score += 120;
+          score += 40;
           reasons.push("queue-lock/watchdog issue");
+          if (hasStuckAssignedSignals || hasFalseCompleteSignals || hasContradictoryTruthSignals) {
+            score += 80;
+            reasons.push("watchdog issue has active recovery signals");
+          }
         }
 
-        score += normalizePriorityRank(issue.priority) * 12;
-
+        score += normalizePriorityRank(issue.priority) * 18;
         if ((truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6) {
           score -= 120;
           reasons.push(`fresh ${truthType} truth already present`);

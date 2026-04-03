@@ -252,8 +252,8 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         id: watchdogIssueId,
         companyId,
         title: "Queue-lock watchdog routine",
-        status: "todo",
-        priority: "low",
+        status: "blocked",
+        priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -263,7 +263,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
         companyId,
         title: "Assigned issue with probable false completion",
         status: "in_progress",
-        priority: "urgent",
+        priority: "high",
         assigneeAgentId: workerAgentId,
         executionRunId: stuckAssignedRunId,
         issueNumber: 2,
@@ -278,8 +278,9 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     expect(target?.reason).toContain("incomplete/false-complete assigned work");
   });
 
-  it("routes generic manual heartbeat (no issue context) to company-wide recovery target", async () => {
+  it("routes generic manual heartbeat (no issue context) to company-wide top recovery target", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const watchdogIssueId = randomUUID();
     const staleIssueId = randomUUID();
     const staleRunId = randomUUID();
 
@@ -295,17 +296,29 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       contextSnapshot: { issueId: staleIssueId },
     });
 
-    await db.insert(issues).values({
-      id: staleIssueId,
-      companyId,
-      title: "Broken assigned issue requiring recovery",
-      status: "in_progress",
-      priority: "high",
-      assigneeAgentId: workerAgentId,
-      executionRunId: staleRunId,
-      issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
-    });
+    await db.insert(issues).values([
+      {
+        id: watchdogIssueId,
+        companyId,
+        title: "Queue-lock watchdog routine",
+        status: "blocked",
+        priority: "urgent",
+        assigneeAgentId: opsAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: staleIssueId,
+        companyId,
+        title: "Broken assigned issue requiring recovery",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: workerAgentId,
+        executionRunId: staleRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.invoke(
