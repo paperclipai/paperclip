@@ -278,10 +278,10 @@ export async function handleSessionDoneTraces(
     ctx.activeSessionSpans.delete(sessionId);
   }
 
-  sessionMeta.delete(sessionId);
   await ctx.state
     .delete({ scopeKind: "instance", stateKey: `span:session:${sessionId}` })
     .catch(() => {});
+  sessionMeta.delete(sessionId);
 }
 
 export async function handleSessionDoneMetrics(
@@ -396,10 +396,10 @@ export async function handleSessionErrorTraces(
     ctx.activeSessionSpans.delete(sessionId);
   }
 
-  sessionMeta.delete(sessionId);
   await ctx.state
     .delete({ scopeKind: "instance", stateKey: `span:session:${sessionId}` })
     .catch(() => {});
+  sessionMeta.delete(sessionId);
 }
 
 export async function handleSessionErrorMetrics(
