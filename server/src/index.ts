@@ -716,11 +716,11 @@ export async function startServer(): Promise<StartedServer> {
     const thisDir = path.dirname(new URL(import.meta.url).pathname);
     const workspaceSdkDist = path.resolve(thisDir, "../../packages/plugins/sdk/dist");
     const workspaceSdkPkg = path.resolve(thisDir, "../../packages/plugins/sdk/package.json");
-    if (fs.existsSync(workspaceSdkDist) && fs.existsSync(pluginsSdkDir)) {
-      if (fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
+    if (fs.existsSync(workspaceSdkDist)) {
+      if (fs.existsSync(pluginsSdkDir) && fs.lstatSync(pluginsSdkDir).isSymbolicLink()) {
         fs.unlinkSync(pluginsSdkDir);
-        fs.mkdirSync(pluginsSdkDir, { recursive: true });
       }
+      fs.mkdirSync(pluginsSdkDir, { recursive: true });
       fs.cpSync(workspaceSdkDist, path.join(pluginsSdkDir, "dist"), { recursive: true });
       if (fs.existsSync(workspaceSdkPkg)) {
         fs.cpSync(workspaceSdkPkg, path.join(pluginsSdkDir, "package.json"));
