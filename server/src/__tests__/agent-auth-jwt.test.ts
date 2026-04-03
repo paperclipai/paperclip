@@ -58,11 +58,12 @@ describe("agent local JWT", () => {
   });
 
   it("rejects expired tokens", () => {
-    process.env[ttlEnv] = "1";
+    process.env[ttlEnv] = "300";
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
 
-    vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
+    // Advance past the 300s (minimum) TTL
+    vi.setSystemTime(new Date("2026-01-01T00:06:00.000Z"));
     expect(verifyLocalAgentJwt(token!)).toBeNull();
   });
 
@@ -75,5 +76,48 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+});
+
+describe("jwtConfig TTL bounds", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("clamps TTL to minimum 300s", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-secret";
+    process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "10";
+    const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude", "run-1");
+    expect(token).toBeTruthy();
+    const payload = JSON.parse(Buffer.from(token!.split(".")[1], "base64url").toString());
+    expect(payload.exp - payload.iat).toBe(300);
+  });
+
+  it("clamps TTL to maximum 30 days", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-secret";
+    process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "99999999";
+    const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude", "run-1");
+    expect(token).toBeTruthy();
+    const payload = JSON.parse(Buffer.from(token!.split(".")[1], "base64url").toString());
+    expect(payload.exp - payload.iat).toBe(30 * 24 * 60 * 60);
+  });
+
+  it("uses configured TTL within bounds", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-secret";
+    process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS = "3600";
+    const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude", "run-1");
+    expect(token).toBeTruthy();
+    const payload = JSON.parse(Buffer.from(token!.split(".")[1], "base64url").toString());
+    expect(payload.exp - payload.iat).toBe(3600);
   });
 });
