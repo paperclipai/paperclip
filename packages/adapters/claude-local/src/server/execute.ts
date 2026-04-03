@@ -584,6 +584,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const checkRateLimit = (attempt: { proc: RunProcessResult; parsedStream: ReturnType<typeof parseClaudeStreamJson>; parsed: Record<string, unknown> | null }) =>
     !attempt.proc.timedOut &&
+    (attempt.proc.exitCode ?? 0) !== 0 &&
     isClaudeRateLimitError({
       parsed: attempt.parsed,
       summary: attempt.parsedStream.summary ?? "",
