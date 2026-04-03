@@ -9,12 +9,13 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
+  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   deriveAgentHomeFromInstructionsFilePath,
@@ -279,6 +280,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveCursorBillingType(effectiveEnv);
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -391,11 +398,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "cursor",
-        command,
+        command: resolvedCommand,
         cwd,
         commandNotes,
         commandArgs: args,
-        env: redactEnvForLogs(env),
+        env: loggedEnv,
         prompt,
         promptMetrics,
         context,

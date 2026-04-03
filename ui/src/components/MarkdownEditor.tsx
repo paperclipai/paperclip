@@ -8,6 +8,7 @@ import {
   useState,
   type DragEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   CodeMirrorEditor,
   MDXEditor,
@@ -82,6 +83,9 @@ interface MentionState {
   query: string;
   top: number;
   left: number;
+  /** Viewport-relative coords for portal positioning */
+  viewportTop: number;
+  viewportLeft: number;
   textNode: Text;
   atPos: number;
   endPos: number;
@@ -155,6 +159,8 @@ function detectMention(container: HTMLElement): MentionState | null {
     query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
+    viewportTop: rect.bottom,
+    viewportLeft: rect.left,
     textNode: textNode as Text,
     atPos,
     endPos: offset,
@@ -193,8 +199,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const ref = useRef<MDXEditorMethods>(null);
+  const editorRef = useRef<MDXEditorMethods | null>(null);
   const latestValueRef = useRef(value);
+  const latestPropValueRef = useRef(value);
+  const pendingExternalValueRef = useRef<string | null>(null);
+  const isFocusedRef = useRef(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -230,7 +239,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
-      ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
   }), []);
 
@@ -257,10 +266,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
-                ref.current?.setMarkdown(updated);
+                editorRef.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
-                  ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+                  editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
               }
             }, 100);
@@ -294,10 +303,29 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
+  const handleEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    editorRef.current = instance;
+    if (!instance) return;
+
+    const pendingValue = pendingExternalValueRef.current;
+    if (pendingValue !== null && pendingValue !== latestValueRef.current) {
+      instance.setMarkdown(pendingValue);
+      latestValueRef.current = pendingValue;
+    }
+    pendingExternalValueRef.current = null;
+  }, []);
+
+  latestPropValueRef.current = value;
+
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
+      if (!editorRef.current) {
+        pendingExternalValueRef.current = value;
+        return;
+      }
+      editorRef.current.setMarkdown(value);
       latestValueRef.current = value;
+      pendingExternalValueRef.current = null;
     }
   }, [value]);
 
@@ -388,7 +416,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
-        ref.current?.setMarkdown(next);
+        editorRef.current?.setMarkdown(next);
         onChange(next);
       }
 
@@ -535,12 +563,35 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         dragDepthRef.current = 0;
         setIsDragOver(false);
       }}
+      onFocusCapture={() => {
+        isFocusedRef.current = true;
+      }}
+      onBlurCapture={() => {
+        isFocusedRef.current = false;
+      }}
     >
       <MDXEditor
-        ref={ref}
+        ref={handleEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
+          const externalValue = latestPropValueRef.current;
+          if (!isFocusedRef.current) {
+            if (next === externalValue) {
+              latestValueRef.current = externalValue;
+              return;
+            }
+
+            latestValueRef.current = externalValue;
+            if (editorRef.current) {
+              editorRef.current.setMarkdown(externalValue);
+              pendingExternalValueRef.current = null;
+            } else {
+              pendingExternalValueRef.current = externalValue;
+            }
+            return;
+          }
+
           latestValueRef.current = next;
           onChange(next);
         }}
@@ -554,46 +605,51 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         plugins={plugins}
       />
 
-      {/* Mention dropdown */}
-      {mentionActive && filteredMentions.length > 0 && (
-        <div
-          className="absolute z-50 min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-          style={{ top: mentionState.top + 4, left: mentionState.left }}
-        >
-          {filteredMentions.map((option, i) => (
-            <button
-              key={option.id}
-              className={cn(
-                "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
-                i === mentionIndex && "bg-accent",
-              )}
-              onMouseDown={(e) => {
-                e.preventDefault(); // prevent blur
-                selectMention(option);
-              }}
-              onMouseEnter={() => setMentionIndex(i)}
-            >
-              {option.kind === "project" && option.projectId ? (
-                <span
-                  className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                  style={{ backgroundColor: option.projectColor ?? "#64748b" }}
-                />
-              ) : (
-                <AgentIcon
-                  icon={option.agentIcon}
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                />
-              )}
-              <span>{option.name}</span>
-              {option.kind === "project" && option.projectId && (
-                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Project
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
+      {mentionActive && filteredMentions.length > 0 &&
+        createPortal(
+          <div
+            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            style={{
+              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
+              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
+            }}
+          >
+            {filteredMentions.map((option, i) => (
+              <button
+                key={option.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
+                  i === mentionIndex && "bg-accent",
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // prevent blur
+                  selectMention(option);
+                }}
+                onMouseEnter={() => setMentionIndex(i)}
+              >
+                {option.kind === "project" && option.projectId ? (
+                  <span
+                    className="inline-flex h-2 w-2 rounded-full border border-border/50"
+                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                  />
+                ) : (
+                  <AgentIcon
+                    icon={option.agentIcon}
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
+                <span>{option.name}</span>
+                {option.kind === "project" && option.projectId && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Project
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
 
       {isDragOver && canDropImage && (
         <div

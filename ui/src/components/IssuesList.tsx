@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { startTransition, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
@@ -68,6 +68,7 @@ const quickFilterPresets = [
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
+const ISSUE_SEARCH_COMMIT_DELAY_MS = 150;
 
 function getViewState(key: string): IssueViewState {
   try {
@@ -174,6 +175,44 @@ interface IssuesListProps {
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
+interface IssuesSearchInputProps {
+  initialValue: string;
+  onValueCommitted: (value: string) => void;
+}
+
+function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInputProps) {
+  const [value, setValue] = useState(initialValue);
+  const onValueCommittedRef = useRef(onValueCommitted);
+
+  useEffect(() => {
+    setValue(initialValue);
+  }, [initialValue]);
+
+  useEffect(() => {
+    onValueCommittedRef.current = onValueCommitted;
+  }, [onValueCommitted]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      onValueCommittedRef.current(value);
+    }, ISSUE_SEARCH_COMMIT_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [value]);
+
+  return (
+    <div className="relative w-48 sm:w-64 md:w-80">
+      <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Search issues..."
+        className="pl-7 text-xs sm:text-sm"
+        aria-label="Search issues"
+      />
+    </div>
+  );
+}
+
 export function IssuesList({
   issues,
   isLoading,
@@ -210,19 +249,11 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
-  const [debouncedIssueSearch, setDebouncedIssueSearch] = useState(issueSearch);
-  const normalizedIssueSearch = debouncedIssueSearch.trim();
+  const normalizedIssueSearch = issueSearch.trim();
 
   useEffect(() => {
     setIssueSearch(initialSearch ?? "");
   }, [initialSearch]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedIssueSearch(issueSearch);
-    }, 300);
-    return () => window.clearTimeout(timeoutId);
-  }, [issueSearch]);
 
   // Reload view state from localStorage when company changes (scopedKey changes).
   const prevScopedKey = useRef(scopedKey);
@@ -234,6 +265,13 @@ export function IssuesList({
         : getViewState(scopedKey));
     }
   }, [scopedKey, initialAssignees]);
+
+  const handleIssueSearchCommit = useCallback((nextSearch: string) => {
+    startTransition(() => {
+      setIssueSearch(nextSearch);
+    });
+    onSearchChange?.(nextSearch);
+  }, [onSearchChange]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
@@ -250,6 +288,7 @@ export function IssuesList({
     ],
     queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    placeholderData: (previousData) => previousData,
   });
 
   const agentName = useCallback((id: string | null) => {
@@ -333,19 +372,10 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
           </Button>
-          <div className="relative w-48 sm:w-64 md:w-80">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={issueSearch}
-              onChange={(e) => {
-                setIssueSearch(e.target.value);
-                onSearchChange?.(e.target.value);
-              }}
-              placeholder="Search issues..."
-              className="pl-7 text-xs sm:text-sm"
-              aria-label="Search issues"
-            />
-          </div>
+          <IssuesSearchInput
+            initialValue={initialSearch ?? ""}
+            onValueCommitted={handleIssueSearchCommit}
+          />
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">

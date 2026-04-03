@@ -519,6 +519,12 @@ export interface WorkerToHostMethods {
     result: void,
   ];
 
+  // Telemetry
+  "telemetry.track": [
+    params: { eventName: string; dimensions?: Record<string, string | number | boolean> },
+    result: void,
+  ];
+
   // Logger
   "log": [
     params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
@@ -579,6 +585,7 @@ export interface WorkerToHostMethods {
       projectId?: string;
       goalId?: string;
       parentId?: string;
+      inheritExecutionWorkspaceFromIssueId?: string;
       title: string;
       description?: string;
       priority?: string;

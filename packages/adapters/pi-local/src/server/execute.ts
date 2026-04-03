@@ -10,12 +10,13 @@ import {
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
+  resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
@@ -204,6 +205,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME"],
+    resolvedCommand,
+  });
 
   // Validate model is available before execution
   await ensurePiModelConfiguredAndAvailable({
@@ -356,11 +363,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "pi_local",
-        command,
+        command: resolvedCommand,
         cwd,
         commandNotes,
         commandArgs: args,
-        env: redactEnvForLogs(env),
+        env: loggedEnv,
         prompt: userPrompt,
         promptMetrics,
         context,

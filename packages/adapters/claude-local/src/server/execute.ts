@@ -14,11 +14,12 @@ import {
   buildPaperclipEnv,
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
   deriveAgentHomeFromInstructionsFilePath,
+  resolveCommandForLogs,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -70,11 +71,13 @@ interface ClaudeExecutionInput {
 
 interface ClaudeRuntimeConfig {
   command: string;
+  resolvedCommand: string;
   cwd: string;
   workspaceId: string | null;
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
   env: Record<string, string>;
+  loggedEnv: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
@@ -245,6 +248,12 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
+  const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+  const loggedEnv = buildInvocationEnvForLogs(env, {
+    runtimeEnv,
+    includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+    resolvedCommand,
+  });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
@@ -256,11 +265,13 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   return {
     command,
+    resolvedCommand,
     cwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    loggedEnv,
     timeoutSec,
     graceSec,
     extraArgs,
@@ -333,11 +344,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const {
     command,
+    resolvedCommand,
     cwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    loggedEnv,
     timeoutSec,
     graceSec,
     extraArgs,
@@ -449,11 +462,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
-        command,
+        command: resolvedCommand,
         cwd,
         commandArgs: args,
         commandNotes,
-        env: redactEnvForLogs(env),
+        env: loggedEnv,
         prompt,
         promptMetrics,
         context,

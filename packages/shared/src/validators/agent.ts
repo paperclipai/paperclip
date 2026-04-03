@@ -4,6 +4,7 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
@@ -92,6 +93,13 @@ export const createAgentKeySchema = z.object({
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;
+
+export const agentMineInboxQuerySchema = z.object({
+  userId: z.string().trim().min(1),
+  status: z.string().trim().min(1).optional().default(INBOX_MINE_ISSUE_STATUS_FILTER),
+});
+
+export type AgentMineInboxQuery = z.infer<typeof agentMineInboxQuerySchema>;
 
 export const wakeAgentSchema = z.object({
   source: z.enum(["timer", "assignment", "on_demand", "automation"]).optional().default("on_demand"),

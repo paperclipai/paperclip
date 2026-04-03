@@ -75,6 +75,9 @@ function buildSourceConfig(): PaperclipConfig {
       publicBaseUrl: "http://127.0.0.1:3100",
       disableSignUp: false,
     },
+    telemetry: {
+      enabled: true,
+    },
     storage: {
       provider: "local_disk",
       localDisk: {
@@ -340,6 +343,87 @@ describe("worktree helpers", () => {
       } else {
         process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
       }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("avoids ports already claimed by sibling worktree instance configs", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-claimed-ports-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const siblingInstanceRoot = path.join(homeDir, "instances", "existing-worktree");
+    const originalCwd = process.cwd();
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(siblingInstanceRoot, { recursive: true });
+      fs.writeFileSync(
+        path.join(siblingInstanceRoot, "config.json"),
+        JSON.stringify(
+          {
+            ...buildSourceConfig(),
+            database: {
+              mode: "embedded-postgres",
+              embeddedPostgresDataDir: path.join(siblingInstanceRoot, "db"),
+              embeddedPostgresPort: 54330,
+              backup: {
+                enabled: true,
+                intervalMinutes: 60,
+                retentionDays: 30,
+                dir: path.join(siblingInstanceRoot, "backups"),
+              },
+            },
+            logging: {
+              mode: "file",
+              logDir: path.join(siblingInstanceRoot, "logs"),
+            },
+            server: {
+              deploymentMode: "authenticated",
+              exposure: "private",
+              host: "127.0.0.1",
+              port: 3101,
+              allowedHostnames: ["localhost"],
+              serveUi: true,
+            },
+            storage: {
+              provider: "local_disk",
+              localDisk: {
+                baseDir: path.join(siblingInstanceRoot, "storage"),
+              },
+              s3: {
+                bucket: "paperclip",
+                region: "us-east-1",
+                prefix: "",
+                forcePathStyle: false,
+              },
+            },
+            secrets: {
+              provider: "local_encrypted",
+              strictMode: false,
+              localEncrypted: {
+                keyFilePath: path.join(siblingInstanceRoot, "secrets", "master.key"),
+              },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+
+      process.chdir(repoRoot);
+      await worktreeInitCommand({
+        seed: false,
+        fromConfig: path.join(tempRoot, "missing", "config.json"),
+        home: homeDir,
+      });
+
+      const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".paperclip", "config.json"), "utf8"));
+      expect(config.server.port).toBeGreaterThan(3101);
+      expect(config.database.embeddedPostgresPort).not.toBe(54330);
+      expect(config.database.embeddedPostgresPort).not.toBe(config.server.port);
+      expect(config.database.embeddedPostgresPort).toBeGreaterThan(54330);
+    } finally {
+      process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });

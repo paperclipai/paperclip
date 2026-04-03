@@ -10,9 +10,11 @@ import { and, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
+  formatEmbeddedPostgresError,
   getPostgresDataDirectory,
   inspectMigrations,
   applyPendingMigrations,
+  createEmbeddedPostgresLogBuffer,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
@@ -26,10 +28,18 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService } from "./services/index.js";
+import {
+  feedbackService,
+  heartbeatService,
+  reconcilePersistedRuntimeServicesOnStartup,
+  routineService,
+} from "./services/index.js";
+import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
+import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -69,7 +79,8 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
-  const config = loadConfig();
+  let config = loadConfig();
+  initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
   }
@@ -167,6 +178,18 @@ export async function startServer(): Promise<StartedServer> {
     const normalized = host.trim().toLowerCase();
     return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
   }
+
+  function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
+    if (!rawUrl) return undefined;
+    try {
+      const parsed = new URL(rawUrl);
+      if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+      parsed.port = String(port);
+      return parsed.toString();
+    } catch {
+      return rawUrl;
+    }
+  }
   
   const LOCAL_BOARD_USER_ID = "local-board";
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
@@ -233,6 +256,7 @@ export async function startServer(): Promise<StartedServer> {
   let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
+  let resolvedEmbeddedPostgresPort: number | null = null;
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
@@ -258,29 +282,31 @@ export async function startServer(): Promise<StartedServer> {
     const dataDir = resolve(config.embeddedPostgresDataDir);
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
-    const embeddedPostgresLogBuffer: string[] = [];
-    const EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT = 120;
+    const logBuffer = createEmbeddedPostgresLogBuffer(120);
     const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
     const appendEmbeddedPostgresLog = (message: unknown) => {
-      const text = typeof message === "string" ? message : message instanceof Error ? message.message : String(message ?? "");
-      for (const lineRaw of text.split(/\r?\n/)) {
+      logBuffer.append(message);
+      if (!verboseEmbeddedPostgresLogs) {
+        return;
+      }
+      const lines = typeof message === "string"
+        ? message.split(/\r?\n/)
+        : message instanceof Error
+          ? [message.message]
+          : [String(message ?? "")];
+      for (const lineRaw of lines) {
         const line = lineRaw.trim();
         if (!line) continue;
-        embeddedPostgresLogBuffer.push(line);
-        if (embeddedPostgresLogBuffer.length > EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT) {
-          embeddedPostgresLogBuffer.splice(0, embeddedPostgresLogBuffer.length - EMBEDDED_POSTGRES_LOG_BUFFER_LIMIT);
-        }
-        if (verboseEmbeddedPostgresLogs) {
-          logger.info({ embeddedPostgresLog: line }, "embedded-postgres");
-        }
+        logger.info({ embeddedPostgresLog: line }, "embedded-postgres");
       }
     };
     const logEmbeddedPostgresFailure = (phase: "initialise" | "start", err: unknown) => {
-      if (embeddedPostgresLogBuffer.length > 0) {
+      const recentLogs = logBuffer.getRecentLogs();
+      if (recentLogs.length > 0) {
         logger.error(
           {
             phase,
-            recentLogs: embeddedPostgresLogBuffer,
+            recentLogs,
             err,
           },
           "Embedded PostgreSQL failed; showing buffered startup logs",
@@ -357,7 +383,10 @@ export async function startServer(): Promise<StartedServer> {
             await embeddedPostgres.initialise();
           } catch (err) {
             logEmbeddedPostgresFailure("initialise", err);
-            throw err;
+            throw formatEmbeddedPostgresError(err, {
+              fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
+              recentLogs: logBuffer.getRecentLogs(),
+            });
           }
         } else {
           logger.info(`Embedded PostgreSQL cluster already exists (${clusterVersionFile}); skipping init`);
@@ -371,7 +400,10 @@ export async function startServer(): Promise<StartedServer> {
           await embeddedPostgres.start();
         } catch (err) {
           logEmbeddedPostgresFailure("start", err);
-          throw err;
+          throw formatEmbeddedPostgresError(err, {
+            fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
+            recentLogs: logBuffer.getRecentLogs(),
+          });
         }
         embeddedPostgresStartedByThisProcess = true;
       }
@@ -395,6 +427,7 @@ export async function startServer(): Promise<StartedServer> {
     db = createDb(embeddedConnectionString);
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
+    resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
@@ -476,12 +509,29 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const listenPort = await detectPort(config.port);
+  if (listenPort !== config.port) {
+    config.port = listenPort;
+  }
+  if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
+    config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
+  }
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  }
+  maybePersistWorktreeRuntimePorts({
+    serverPort: listenPort,
+    databasePort: resolvedEmbeddedPostgresPort,
+  });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const feedback = feedbackService(db as any, {
+    shareClient: createFeedbackTraceShareClientFromConfig(config) ?? undefined,
+  });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
+    feedbackExportService: feedback,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -678,18 +728,26 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+  {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
-      try {
-        await embeddedPostgres?.stop();
-      } catch (err) {
-        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        telemetryClient.stop();
+        await telemetryClient.flush();
       }
+
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        logger.info({ signal }, "Stopping embedded PostgreSQL");
+        try {
+          await embeddedPostgres?.stop();
+        } catch (err) {
+          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
+      }
+
+      process.exit(0);
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });

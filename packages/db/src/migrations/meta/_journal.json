@@ -316,6 +316,34 @@
       "when": 1774269579794,
       "tag": "0044_illegal_toad",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1774530504348,
+      "tag": "0045_workable_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1774960197878,
+      "tag": "0046_smooth_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1775137972687,
+      "tag": "0047_overjoyed_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1775145655557,
+      "tag": "0048_flashy_marrow",
+      "breakpoints": true
     }
   ]
 }
