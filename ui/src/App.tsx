@@ -73,15 +73,15 @@ function CloudAccessGate() {
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: (failureCount, error) => {
-      // Retry on network/server errors (e.g. 502/503 at first boot) up to 10 times
-      if (error instanceof Error && error.message.includes("(4")) {
-        // Don't retry on definitive client errors (4xx except 408/429)
-        const match = error.message.match(/\((\d{3})\)/);
+      // Don't retry on definitive client errors (4xx except 408/429)
+      if (error instanceof Error) {
+        const match = error.message.match(/\((\d{3})\)$/);
         const status = match ? parseInt(match[1], 10) : 0;
         if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
           return false;
         }
       }
+      // Retry on network/server errors (e.g. 502/503 at first boot) up to 10 times
       return failureCount < 10;
     },
     retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 15000),
