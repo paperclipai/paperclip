@@ -125,8 +125,9 @@ function parseCommaArgs(value: string): string[] {
     .filter(Boolean);
 }
 
-export function resolveExtraArgsValue(value: string): string[] {
-  return parseCommaArgs(value);
+export function resolveExtraArgsValue(value: string): string[] | undefined {
+  const parsed = parseCommaArgs(value);
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function formatArgList(value: unknown): string {

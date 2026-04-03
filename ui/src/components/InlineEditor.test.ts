@@ -13,6 +13,10 @@ describe("InlineEditor save behavior", () => {
     expect(shouldSaveInlineEditorValue("  hello  ", "hello")).toBe(false);
   });
 
+  it("normalizes the current value before comparing", () => {
+    expect(shouldSaveInlineEditorValue("hello", "  hello  ")).toBe(false);
+  });
+
   it("saves when clearing an existing value", () => {
     expect(shouldSaveInlineEditorValue("", "Has description")).toBe(true);
     expect(shouldSaveInlineEditorValue("   ", "Has description")).toBe(true);

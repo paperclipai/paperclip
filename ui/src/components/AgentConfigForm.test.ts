@@ -9,8 +9,8 @@ describe("resolveExtraArgsValue", () => {
     ]);
   });
 
-  it("returns an empty array when the field is cleared", () => {
-    expect(resolveExtraArgsValue("")).toEqual([]);
-    expect(resolveExtraArgsValue("   ")).toEqual([]);
+  it("returns undefined when the field is cleared", () => {
+    expect(resolveExtraArgsValue("")).toBeUndefined();
+    expect(resolveExtraArgsValue("   ")).toBeUndefined();
   });
 });

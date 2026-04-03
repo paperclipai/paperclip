@@ -24,7 +24,7 @@ export function normalizeInlineEditorValue(value: string): string {
 }
 
 export function shouldSaveInlineEditorValue(nextValue: string, currentValue: string): boolean {
-  return normalizeInlineEditorValue(nextValue) !== currentValue;
+  return normalizeInlineEditorValue(nextValue) !== normalizeInlineEditorValue(currentValue);
 }
 
 export function InlineEditor({
@@ -124,8 +124,8 @@ export function InlineEditor({
   useEffect(() => {
     if (!multiline) return;
     if (!multilineFocused) return;
-    const trimmed = draft.trim();
-    if (!trimmed || trimmed === value) {
+    const normalizedDraft = normalizeInlineEditorValue(draft);
+    if (!shouldSaveInlineEditorValue(draft, value)) {
       if (autosaveState !== "saved") {
         reset();
       }
@@ -136,7 +136,7 @@ export function InlineEditor({
       clearTimeout(autosaveDebounceRef.current);
     }
     autosaveDebounceRef.current = setTimeout(() => {
-      void runSave(() => commit(trimmed));
+      void runSave(() => commit(normalizedDraft));
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => {
@@ -161,8 +161,7 @@ export function InlineEditor({
             clearTimeout(autosaveDebounceRef.current);
           }
           setMultilineFocused(false);
-          const trimmed = draft.trim();
-          if (!trimmed || trimmed === value) {
+          if (!shouldSaveInlineEditorValue(draft, value)) {
             reset();
             void commit();
             return;
@@ -182,8 +181,7 @@ export function InlineEditor({
           imageUploadHandler={imageUploadHandler}
           mentions={mentions}
           onSubmit={() => {
-            const trimmed = draft.trim();
-            if (!trimmed || trimmed === value) {
+            if (!shouldSaveInlineEditorValue(draft, value)) {
               reset();
               void commit();
               return;
