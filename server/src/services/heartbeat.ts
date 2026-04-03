@@ -91,7 +91,7 @@ function normalizePriorityRank(priority: string | null | undefined) {
   }
 }
 
-function isOperationsOrchestratorAgent(agent: { role?: string | null; name?: string | null }) {
+export function isOperationsOrchestratorAgent(agent: { role?: string | null; name?: string | null }) {
   const role = (agent.role ?? "").toLowerCase();
   const name = (agent.name ?? "").toLowerCase();
   return role.includes("operat") || role === "coo" || name.includes("operations");
@@ -103,7 +103,7 @@ type OperationsHeartbeatTarget = {
   reason: string;
 };
 
-async function resolveOperationsHeartbeatTarget(
+export async function resolveOperationsHeartbeatTarget(
   db: Db,
   input: { companyId: string; operationsAgentId: string },
 ): Promise<OperationsHeartbeatTarget | null> {
