@@ -21,22 +21,15 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const model = asString(config.model, "");
-  const fallbackModel = asString(config.fallbackModel, "");
+  const codingModel = asString(config.codingModel, "");
   const allowExtraCredit = asBoolean(config.allowExtraCredit, false);
   const quotaThreshold = asNumber(config.quotaThresholdPercent, 80);
   const localBaseUrl = resolveBaseUrl(config.localBaseUrl);
-  const primaryIsClaude = isClaudeModel(model);
-  const fallbackIsClaude = fallbackModel.length > 0 && isClaudeModel(fallbackModel);
-  const needsClaude = primaryIsClaude || fallbackIsClaude;
-  const claudeProbeModel = primaryIsClaude
-    ? model
-    : fallbackIsClaude
-      ? fallbackModel
-      : "";
+  const codingIsClaude = codingModel.length > 0 && isClaudeModel(codingModel);
+  const needsClaude = codingIsClaude;
+  const claudeProbeModel = codingIsClaude ? codingModel : "";
 
-  // Only run Claude checks when this config can route to Claude
-  // (Claude primary or Claude fallback). For local-only configs, skip them
-  // to avoid noisy warnings from an unused backend.
+  // Only run Claude checks when codingModel targets Claude.
   const [claudeResult, localResult] = await Promise.all([
     needsClaude
       ? claudeTestEnvironment({
@@ -61,9 +54,9 @@ export async function testEnvironment(
         claudeBlockedByPolicy = true;
         checks.push({
           code: "local_claude_policy_precheck_unavailable",
-          level: primaryIsClaude ? "error" : "warn",
+          level: "warn",
           message: "Claude quota pre-check unavailable while extra credit is disabled.",
-          hint: "Paperclip will fail-closed for Claude policy safety. Fix quota probe/login, or enable extra credit.",
+          hint: "Paperclip will fail-closed for Claude coding runs. Fix quota probe/login, or enable extra credit.",
         });
       } else {
         const exhausted = quota.windows.find((w) => w.usedPercent != null && w.usedPercent >= quotaThreshold);
@@ -71,11 +64,9 @@ export async function testEnvironment(
           claudeBlockedByPolicy = true;
           checks.push({
             code: "local_claude_policy_blocked",
-            level: primaryIsClaude ? "error" : "warn",
+            level: "warn",
             message: `Claude is blocked by policy: "${exhausted.label}" is ${exhausted.usedPercent}% (threshold ${quotaThreshold}%, allowExtraCredit=false).`,
-            hint: primaryIsClaude
-              ? "Switch to a local model, lower threshold, or enable extra credit."
-              : "Fallback to Claude is disabled by policy until quota is below threshold.",
+            hint: "Switch codingModel to Codex, lower threshold, or enable extra credit.",
           });
         }
       }
@@ -83,9 +74,9 @@ export async function testEnvironment(
       claudeBlockedByPolicy = true;
       checks.push({
         code: "local_claude_policy_precheck_error",
-        level: primaryIsClaude ? "error" : "warn",
+        level: "warn",
         message: "Claude quota pre-check failed while extra credit is disabled.",
-        hint: "Paperclip will fail-closed for Claude policy safety.",
+        hint: "Paperclip will fail-closed for Claude coding runs.",
       });
     }
   }
@@ -93,12 +84,7 @@ export async function testEnvironment(
   // Claude CLI checks
   if (claudeResult) {
     for (const check of claudeResult.checks) {
-      // Only hard-fail Claude checks when Claude is the primary execution path.
-      // If local is primary and Claude is only fallback, surface as warning.
-      const adjustedLevel =
-        (!primaryIsClaude && check.level === "error")
-          ? "warn"
-          : check.level;
+      const adjustedLevel = check.level === "error" ? "warn" : check.level;
       checks.push({
         ...check,
         level: adjustedLevel,
@@ -130,7 +116,7 @@ export async function testEnvironment(
       });
 
       // Check if the configured model is available on the local endpoint
-      if (model && !isClaudeModel(model)) {
+      if (model) {
         const modelLoaded = localResult.models.some(
           (m) => m === model || m.includes(model) || model.includes(m),
         );
@@ -160,14 +146,14 @@ export async function testEnvironment(
   } else {
     checks.push({
       code: "local_openai_compat_unavailable",
-      level: model && !isClaudeModel(model) ? "error" : "warn",
+      level: model ? "error" : "warn",
       message: localResult.error ?? `Local inference endpoint is not available at ${localBaseUrl}`,
       hint: `Start your local inference server (LM Studio, Ollama, LiteLLM, etc.) at ${localBaseUrl}. LM Studio: https://lmstudio.ai, Ollama: https://ollama.com`,
     });
   }
 
   // Summary check for the combined adapter
-  const hasClaude = primaryIsClaude ? (claudeAvailable && !claudeBlockedByPolicy) : true;
+  const hasClaude = needsClaude ? (claudeAvailable && !claudeBlockedByPolicy) : true;
   const hasLocal = localResult.available;
   if (!hasClaude && !hasLocal) {
     checks.push({
@@ -181,13 +167,6 @@ export async function testEnvironment(
       code: "local_both_backends_ready",
       level: "info",
       message: "Both Claude CLI and local inference backends are available.",
-    });
-  } else if (hasLocal && fallbackIsClaude && (!claudeAvailable || claudeBlockedByPolicy)) {
-    checks.push({
-      code: "local_claude_fallback_unavailable",
-      level: "warn",
-      message: "Local backend is available, but Claude fallback is unavailable under current health/policy.",
-      hint: "If you rely on Claude fallback, fix Claude login/quota health or policy settings. Otherwise remove Claude fallback to silence this warning.",
     });
   }
 

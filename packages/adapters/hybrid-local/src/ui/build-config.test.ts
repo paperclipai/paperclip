@@ -9,6 +9,8 @@ describe("buildHybridLocalConfig", () => {
       instructionsFilePath: "",
       promptTemplate: "",
       model: "qwen3-coder:latest",
+      codingModel: "claude-sonnet-4-6",
+      localToolMode: "read_only",
       thinkingEffort: "",
       chrome: false,
       dangerouslySkipPermissions: true,
@@ -34,5 +36,7 @@ describe("buildHybridLocalConfig", () => {
     });
 
     expect(config.maxTotalTokens).toBe(300000);
+    expect(config.codingModel).toBe("claude-sonnet-4-6");
+    expect(config.localToolMode).toBe("read_only");
   });
 });

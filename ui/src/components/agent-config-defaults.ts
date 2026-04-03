@@ -6,6 +6,8 @@ export const defaultCreateValues: CreateConfigValues = {
   instructionsFilePath: "",
   promptTemplate: "",
   model: "",
+  codingModel: "",
+  localToolMode: "read_only",
   thinkingEffort: "",
   chrome: false,
   dangerouslySkipPermissions: true,

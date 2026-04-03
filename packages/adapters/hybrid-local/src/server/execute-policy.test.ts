@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   return {
     claudeExecute: vi.fn(),
+    codexExecute: vi.fn(),
     executeLocalModel: vi.fn(),
     testOpenAICompatAvailability: vi.fn(),
     getQuotaWindows: vi.fn(),
@@ -11,6 +12,10 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({
   execute: mocks.claudeExecute,
+}));
+
+vi.mock("@paperclipai/adapter-codex-local/server", () => ({
+  execute: mocks.codexExecute,
 }));
 
 vi.mock("./openai-compat.js", () => ({
@@ -31,23 +36,21 @@ describe("hybrid_local quota policy enforcement", () => {
     vi.clearAllMocks();
   });
 
-  it("blocks Claude fallback when local fails and allowExtraCredit=false at/over threshold", async () => {
-    mocks.testOpenAICompatAvailability.mockResolvedValue({
-      available: true,
-      models: ["qwen3-coder:latest"],
+  it("blocks Claude coding when handoff requested and allowExtraCredit=false at/over threshold", async () => {
+    mocks.executeLocalModel.mockResolvedValue({
+      summary: "Need code changes.\nHANDOFF: true",
+      model: "qwen3-coder:latest",
+      usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 0 },
+      finishReason: "stop",
     });
 
-    // Resource-style local failure so fallback path is considered.
-    mocks.executeLocalModel.mockRejectedValue(new Error("503 Service Unavailable"));
-
-    // Quota exhausted => policy should block Claude fallback.
     mocks.getQuotaWindows.mockResolvedValue({
       provider: "anthropic",
       ok: true,
       windows: [
         {
           label: "Current week (all models)",
-          usedPercent: 100,
+          usedPercent: 95,
           resetsAt: null,
           valueLabel: null,
           detail: null,
@@ -66,7 +69,7 @@ describe("hybrid_local quota policy enforcement", () => {
       },
       config: {
         model: "qwen3-coder:latest",
-        fallbackModel: "claude-haiku-4-5-20251001",
+        codingModel: "claude-haiku-4-5-20251001",
         allowExtraCredit: false,
         quotaThresholdPercent: 80,
         localBaseUrl: "http://127.0.0.1:11434/v1",
@@ -79,11 +82,10 @@ describe("hybrid_local quota policy enforcement", () => {
     } as never);
 
     expect(result.errorCode).toBe("extra_credit_disabled");
-    expect(String(result.errorMessage ?? "")).toContain("Claude fallback is blocked by quota policy");
     expect(mocks.claudeExecute).not.toHaveBeenCalled();
   });
 
-  it("uses Claude backend when quota precheck fallbackModel is Claude", async () => {
+  it("routes handoff to Codex when codingModel is non-Claude", async () => {
     mocks.getQuotaWindows.mockResolvedValue({
       provider: "anthropic",
       ok: true,
@@ -98,7 +100,14 @@ describe("hybrid_local quota policy enforcement", () => {
       ],
     });
 
-    mocks.claudeExecute.mockResolvedValue({
+    mocks.executeLocalModel.mockResolvedValue({
+      summary: "Need code changes.\nHANDOFF: true",
+      model: "qwen3-coder:latest",
+      usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 0 },
+      finishReason: "stop",
+    });
+
+    mocks.codexExecute.mockResolvedValue({
       exitCode: 0,
       signal: null,
       timedOut: false,
@@ -115,9 +124,9 @@ describe("hybrid_local quota policy enforcement", () => {
         name: "Agent One",
       },
       config: {
-        model: "claude-sonnet-4-6",
-        fallbackModel: "claude-haiku-4-5-20251001",
-        allowExtraCredit: true,
+        model: "qwen3-coder:latest",
+        codingModel: "codex-mini-latest",
+        allowExtraCredit: false,
         quotaThresholdPercent: 80,
       },
       context: {
@@ -127,18 +136,12 @@ describe("hybrid_local quota policy enforcement", () => {
       onMeta: async () => {},
     } as never);
 
-    expect(mocks.claudeExecute).toHaveBeenCalledTimes(1);
-    expect(mocks.claudeExecute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        config: expect.objectContaining({ model: "claude-haiku-4-5-20251001" }),
-      }),
-    );
-    expect(mocks.executeLocalModel).not.toHaveBeenCalled();
+    expect(mocks.codexExecute).toHaveBeenCalledTimes(1);
     expect((result.resultJson as Record<string, unknown>)._hybrid).toEqual(
       expect.objectContaining({
-        fallbackModel: "claude-haiku-4-5-20251001",
-        fallbackBackend: "claude_cli",
-        fallbackReason: "claude_quota_precheck",
+        codingModel: "codex-mini-latest",
+        codingBackend: "codex_cli",
+        handoffRequested: true,
       }),
     );
   });

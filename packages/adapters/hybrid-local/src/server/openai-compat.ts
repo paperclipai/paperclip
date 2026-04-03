@@ -10,6 +10,28 @@ const BASH_TIMEOUT_MS = 120_000;
 const BASH_MAX_OUTPUT_CHARS = 1024 * 1024; // Mirror prior execFile maxBuffer to avoid runaway memory use
 const MAX_TOOL_OUTPUT_CHARS = 8_000; // ~2k tokens — prevents context overflow from large ls/cat outputs
 const BASH_KILL_GRACE_MS = 2_000;
+const READONLY_DISALLOWED = /(^|[^\\])(?:>|>>|\|\s*tee\b)/;
+const READONLY_SED_INPLACE = /\bsed\b[^\n]*\s-i\b/;
+const READONLY_ALLOWED_PREFIXES = [
+  /^\s*ls(\s|$)/,
+  /^\s*pwd(\s|$)/,
+  /^\s*whoami(\s|$)/,
+  /^\s*uname(\s|$)/,
+  /^\s*id(\s|$)/,
+  /^\s*stat(\s|$)/,
+  /^\s*du(\s|$)/,
+  /^\s*df(\s|$)/,
+  /^\s*cat(\s|$)/,
+  /^\s*head(\s|$)/,
+  /^\s*tail(\s|$)/,
+  /^\s*wc(\s|$)/,
+  /^\s*sed(\s|$)/,
+  /^\s*rg(\s|$)/,
+  /^\s*grep(\s|$)/,
+  /^\s*find(\s|$)/,
+  /^\s*tree(\s|$)/,
+  /^\s*git\s+(status|log|diff|show|branch|rev-parse|ls-files|describe|remote)(\s|$)/,
+];
 
 // Commands that are too dangerous to execute via local model
 const DANGEROUS_PATTERNS = [
@@ -28,6 +50,14 @@ const DANGEROUS_PATTERNS = [
 
 export function isDangerousCommand(command: string): boolean {
   return DANGEROUS_PATTERNS.some(pattern => pattern.test(command));
+}
+
+export function isReadOnlyCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  if (READONLY_DISALLOWED.test(trimmed)) return false;
+  if (READONLY_SED_INPLACE.test(trimmed)) return false;
+  return READONLY_ALLOWED_PREFIXES.some((pattern) => pattern.test(trimmed));
 }
 
 export interface OpenAICompatResult {
@@ -175,13 +205,14 @@ async function runBash(
   command: string,
   cwd: string,
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
+  env: Record<string, string> | undefined,
 ): Promise<string> {
   await onLog("stdout", `[hybrid] bash $ ${command}\n`);
   return new Promise<string>((resolve) => {
     const child = spawn("bash", ["-lc", command], {
       cwd,
       detached: process.platform !== "win32",
-      env: { ...process.env, TERM: "dumb" },
+      env: { ...process.env, ...(env ?? {}), TERM: "dumb" },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -259,13 +290,16 @@ export async function executeLocalModel(opts: {
   prompt: string;
   systemPrompt?: string;
   cwd: string;
+  env?: Record<string, string>;
   enableTools: boolean;
+  toolMode?: "off" | "read_only" | "full";
   timeoutMs: number;
   maxTotalTokens?: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<OpenAICompatResult> {
-  const { baseUrl, model, prompt, systemPrompt, cwd, enableTools, timeoutMs, onLog } = opts;
+  const { baseUrl, model, prompt, systemPrompt, cwd, env, enableTools, timeoutMs, onLog } = opts;
   const maxTotalTokens = asNumber(opts.maxTotalTokens, DEFAULT_MAX_TOTAL_TOKENS);
+  const toolMode = opts.toolMode ?? (enableTools ? "full" : "off");
   const url = `${baseUrl}/chat/completions`;
   const deadline = Date.now() + timeoutMs;
 
@@ -434,8 +468,11 @@ export async function executeLocalModel(opts: {
             // Guard: block dangerous commands
             result = `ERROR: dangerous command blocked: ${command}`;
             await onLog("stderr", `[hybrid] Blocked dangerous command: ${command}\n`);
+          } else if (toolMode === "read_only" && !isReadOnlyCommand(command)) {
+            result = `ERROR: read-only tool mode blocked: ${command}`;
+            await onLog("stderr", `[hybrid] Blocked non-read-only command: ${command}\n`);
           } else {
-            result = await runBash(command, cwd, onLog);
+            result = await runBash(command, cwd, onLog, env);
           }
         }
       } else {

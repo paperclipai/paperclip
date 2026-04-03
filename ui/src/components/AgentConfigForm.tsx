@@ -760,7 +760,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "hermes_local"}
                 required={adapterType === "opencode_local" || adapterType === "hermes_local"}
                 groupByProvider={adapterType === "opencode_local"}
-                creatable={adapterType === "hermes_local"}
+                creatable={adapterType === "hermes_local" || adapterType === "hybrid_local"}
                 detectedModel={adapterType === "hermes_local" ? detectedModel : null}
                 onDetectModel={adapterType === "hermes_local"
                   ? async () => {

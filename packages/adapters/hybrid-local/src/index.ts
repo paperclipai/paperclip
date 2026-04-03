@@ -20,22 +20,19 @@ export const agentConfigurationDoc = `# hybrid_local agent configuration
 
 Adapter: hybrid_local
 
-A hybrid adapter that routes between Claude Code CLI and any OpenAI-compatible
-local inference server (LM Studio, Ollama, LiteLLM, vLLM, etc.).
-
-Select a Claude model to run via the Claude CLI, or a local model to run via
-the configured OpenAI-compatible endpoint. Supports bidirectional fallback:
-- Claude model fails (quota/auth) → falls back to local model
-- Local model fails (server down/GPU busy) → falls back to Claude model
+A hybrid adapter that pairs a local planning model (OpenAI-compatible endpoint)
+with a coding CLI adapter (Claude or Codex). The local model handles heartbeats
+and triage, and only hands off to the coding adapter when explicitly requested.
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
-- model (string, required): model id — Claude models (claude-*) route to CLI, others route to local endpoint
-- fallbackModel (string, optional): model to fall back to when the primary is unavailable; can be Claude or local
+- model (string, required): local planning model id (OpenAI-compatible)
+- codingModel (string, optional): CLI model to run when handoff is requested (Claude or Codex)
 - localBaseUrl (string, optional): OpenAI-compatible API base URL (default: http://127.0.0.1:11434/v1)
 - quotaThresholdPercent (number, optional): Claude quota usage percent at which to pre-emptively skip to local (default: 80, set to 0 to disable)
 - allowExtraCredit (boolean, optional): whether Claude can continue past quota policy; default false (recommended)
+- localToolMode (string, optional): tool access for local planning (off | read_only | full; default: read_only)
 - effort (string, optional): reasoning effort for Claude runs (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
@@ -52,17 +49,13 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Routing:
-- model starts with "claude-" → Claude CLI
-- all other models → OpenAI-compatible endpoint at localBaseUrl
-
-Fallback (bidirectional):
-- Claude model + quota/auth error → retry with fallbackModel (Claude or local, based on model id)
-- Local model + connection/timeout error → retry with fallbackModel (Claude or local, based on model id)
-- Set fallbackModel to "" to disable fallback (fail on error)
+- Local planning runs always use the OpenAI-compatible endpoint at localBaseUrl.
+- If the local model emits "HANDOFF: true", Paperclip invokes the coding CLI.
+- Claude models (claude-*) use the Claude CLI; all others use the Codex CLI.
 
 Cost policy:
-- allowExtraCredit=false (default) enforces fail-closed quota behavior for Claude routing.
-- If quota pre-check is unavailable and fallbackModel is unset, Claude run is blocked.
+- allowExtraCredit=false (default) enforces fail-closed quota behavior for Claude coding runs.
+- If quota pre-check is unavailable, Claude coding runs are blocked.
 
 Compatible local backends:
 - Ollama (default, http://127.0.0.1:11434/v1)
@@ -100,9 +93,11 @@ LOCAL VS CLAUDE COSTS:
 - Most cost-effective: Use local + Claude fallback for quota management
 
 Notes:
-- Claude runs inherit all claude_local behavior (sessions, skills, quota).
-- Local runs are stateless (no session resume).
-- The local endpoint must be running with a model loaded for local routing to work.
+- Claude/Codex runs inherit their respective local adapter behavior (sessions, skills, quota).
+- Local planning runs are stateless (no session resume).
+- The local endpoint must be running with a model loaded for planning to work.
+- When localToolMode=off, the local model should end its response with "HANDOFF: true" to request coding.
+- When localToolMode=read_only, only read commands are allowed (ls, rg, cat, git status, etc.).
 - Token limits: 30 tool turns max, 300k tokens total by default, 5 tools per turn max, 1MB output per command.
 - Guards: Dangerous command blocklist (rm -rf, sudo, dd, fdisk, format, shutdown, reboot, halt, poweroff, pkill, kill -9).
 `;

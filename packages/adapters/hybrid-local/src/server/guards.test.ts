@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDangerousCommand } from "./openai-compat.js";
+import { isDangerousCommand, isReadOnlyCommand } from "./openai-compat.js";
 
 // These test the guard logic that prevents runaway or dangerous execution
 
@@ -53,6 +53,26 @@ describe("Guard: dangerous command detection", () => {
 
   it("allows rdiff (contains dd but not the dangerous pattern)", () => {
     expect(isDangerousCommand("rdiff-backup")).toBe(false);
+  });
+});
+
+describe("Guard: read-only command detection", () => {
+  it("allows common read-only commands", () => {
+    expect(isReadOnlyCommand("ls -la")).toBe(true);
+    expect(isReadOnlyCommand("rg \"TODO\" src")).toBe(true);
+    expect(isReadOnlyCommand("git status")).toBe(true);
+    expect(isReadOnlyCommand("cat README.md")).toBe(true);
+  });
+
+  it("blocks commands with redirection", () => {
+    expect(isReadOnlyCommand("echo hi > file.txt")).toBe(false);
+    expect(isReadOnlyCommand("cat README.md | tee out.txt")).toBe(false);
+  });
+
+  it("blocks common write commands", () => {
+    expect(isReadOnlyCommand("rm -rf /tmp/foo")).toBe(false);
+    expect(isReadOnlyCommand("git commit -m \"x\"" )).toBe(false);
+    expect(isReadOnlyCommand("sed -i 's/a/b/' file.txt")).toBe(false);
   });
 });
 

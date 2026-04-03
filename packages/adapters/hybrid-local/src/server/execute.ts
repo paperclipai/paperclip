@@ -1,48 +1,26 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { asString, asNumber, asBoolean, renderTemplate, joinPromptSections } from "@paperclipai/adapter-utils/server-utils";
+import {
+  asString,
+  asNumber,
+  asBoolean,
+  renderTemplate,
+  joinPromptSections,
+  buildPaperclipEnv,
+  parseObject,
+} from "@paperclipai/adapter-utils/server-utils";
 import { execute as claudeExecute } from "@paperclipai/adapter-claude-local/server";
-import { isClaudeModel, models as staticModels } from "../index.js";
-import { executeLocalModel, resolveBaseUrl, testOpenAICompatAvailability } from "./openai-compat.js";
+import { execute as codexExecute } from "@paperclipai/adapter-codex-local/server";
+import { isClaudeModel } from "../index.js";
+import { executeLocalModel, resolveBaseUrl } from "./openai-compat.js";
 import { getQuotaWindows } from "./quota.js";
 import { readFile } from "node:fs/promises";
 
 // --- Helpers ---
 
-function isClaudeQuotaOrAuthError(result: AdapterExecutionResult): boolean {
-  if (result.errorCode === "claude_auth_required") return true;
-  if (result.errorMeta && "loginUrl" in result.errorMeta) return true;
-  const msg = (result.errorMessage ?? "").toLowerCase();
-  return (
-    msg.includes("rate limit") ||
-    msg.includes("quota") ||
-    msg.includes("not logged in") ||
-    msg.includes("out of credits") ||
-    msg.includes("out_of_credits") ||
-    msg.includes("extra usage")
-  );
-}
-
-function isLocalResourceError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  const lower = msg.toLowerCase();
-  return (
-    lower.includes("econnrefused") ||
-    lower.includes("econnreset") ||
-    lower.includes("socket hang up") ||
-    lower.includes("aborted") ||
-    lower.includes("timeout") ||
-    lower.includes("503") ||
-    lower.includes("502") ||
-    lower.includes("out of memory") ||
-    lower.includes("gpu") ||
-    lower.includes("no model loaded") ||
-    lower.includes("context size has been exceeded") ||
-    lower.includes("context length exceeded") ||
-    lower.includes("maximum context length")
-  );
-}
-
 const DEFAULT_QUOTA_THRESHOLD_PERCENT = 80;
+const HANDOFF_REGEX = /^\s*HANDOFF:\s*true\b.*$/im;
+const HANDOFF_INSTRUCTION =
+  "If you need to write code, run tests, or use shell tools, end your response with a new line: HANDOFF: true.";
 
 /**
  * Proactive Claude quota check. Returns true if any quota window exceeds
@@ -53,23 +31,21 @@ const DEFAULT_QUOTA_THRESHOLD_PERCENT = 80;
 async function isClaudeQuotaNearExhausted(
   threshold: number,
   opts: {
-    hasFallback: boolean;
     allowExtraCredit: boolean;
   },
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<boolean> {
   if (threshold <= 0) return false;
-  const { hasFallback, allowExtraCredit } = opts;
+  const { allowExtraCredit } = opts;
   try {
     const quota = await getQuotaWindows();
 
     // Quota check unavailable:
     // - allowExtraCredit=false => fail closed (policy)
-    // - fallback configured => fail closed (route to fallback)
     // - otherwise fail open
     if (!quota.ok || quota.windows.length === 0) {
-      if (!allowExtraCredit || hasFallback) {
-        const mode = !allowExtraCredit ? "policy fail-closed" : "routing to fallback";
+      if (!allowExtraCredit) {
+        const mode = "policy fail-closed";
         await onLog(
           "stdout",
           `[hybrid] Claude quota pre-check unavailable (${quota.error ?? "no windows"}) — ${mode}\n`,
@@ -91,9 +67,9 @@ async function isClaudeQuotaNearExhausted(
     }
     return false;
   } catch (error) {
-    if (!allowExtraCredit || hasFallback) {
+    if (!allowExtraCredit) {
       const message = error instanceof Error ? error.message : String(error);
-      const mode = !allowExtraCredit ? "policy fail-closed" : "routing to fallback";
+      const mode = "policy fail-closed";
       await onLog("stdout", `[hybrid] Claude quota pre-check error: ${message} — ${mode}\n`);
       return true;
     }
@@ -102,26 +78,28 @@ async function isClaudeQuotaNearExhausted(
   }
 }
 
-/**
- * Proactive local endpoint health check. Returns true if the endpoint
- * responds to GET /v1/models within 3 seconds.
- */
-async function isLocalEndpointHealthy(baseUrl: string): Promise<boolean> {
-  const result = await testOpenAICompatAvailability(baseUrl);
-  return result.available;
+function extractHandoffMarker(text: string): { requested: boolean; cleaned: string } {
+  if (!text) return { requested: false, cleaned: text };
+  const requested = HANDOFF_REGEX.test(text);
+  if (!requested) return { requested: false, cleaned: text };
+  const cleaned = text
+    .split(/\r?\n/)
+    .filter((line) => !HANDOFF_REGEX.test(line))
+    .join("\n")
+    .trim();
+  return { requested: true, cleaned };
 }
 
 // --- Routing metadata ---
 
 interface RoutingMeta {
-  primaryModel: string;
-  primaryBackend: "claude_cli" | "openai_compatible";
-  fallbackModel: string | null;
-  fallbackBackend: "claude_cli" | "openai_compatible" | null;
-  fallbackTriggered: boolean;
-  fallbackReason: string | null;
-  preCheckTriggered: boolean;
-  preCheckReason: string | null;
+  planningModel: string;
+  planningBackend: "openai_compatible";
+  codingModel: string | null;
+  codingBackend: "claude_cli" | "codex_cli" | null;
+  localToolsEnabled: boolean;
+  handoffRequested: boolean;
+  handoffReason: string | null;
 }
 
 function attachRoutingMeta(
@@ -137,280 +115,163 @@ function attachRoutingMeta(
   };
 }
 
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function truncateText(value: string, max = 1200): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function buildCodingHandoffSummary(
+  context: AdapterExecutionContext["context"] | null | undefined,
+  planningSummary: string,
+): string {
+  const ctx = (context ?? {}) as Record<string, unknown>;
+  const issueRaw = ctx.paperclipIssue;
+  const issue =
+    typeof issueRaw === "object" && issueRaw !== null && !Array.isArray(issueRaw)
+      ? (issueRaw as Record<string, unknown>)
+      : null;
+  const issueId = issue ? readNonEmptyString(issue.id) : null;
+  const issueIdentifier = issue ? readNonEmptyString(issue.identifier) : null;
+  const issueTitle = issue ? readNonEmptyString(issue.title) : null;
+  const issueDescription = issue ? readNonEmptyString(issue.description) : null;
+  const issueLabel = issueIdentifier && issueTitle
+    ? `${issueIdentifier} ${issueTitle}`
+    : issueTitle ?? issueIdentifier ?? issueId;
+
+  const priorSession = readNonEmptyString(ctx.paperclipSessionHandoffMarkdown);
+  const planning = readNonEmptyString(planningSummary);
+
+  const lines = ["Paperclip coding handoff:"];
+  if (issueLabel) lines.push(`- Task: ${issueLabel}`);
+  if (issueDescription) lines.push(`- Task details: ${truncateText(issueDescription)}`);
+  if (priorSession) lines.push(`- Prior session notes: ${truncateText(priorSession)}`);
+  if (planning) lines.push(`- Planning summary: ${truncateText(planning)}`);
+  lines.push("Proceed to implement the task and report progress.");
+  return lines.join("\n");
+}
+
 // --- Main execute ---
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { config, onLog, context } = ctx;
-  const model = asString(config.model, "");
-  const fallbackModel = asString(config.fallbackModel, "");
+  const { config, onLog } = ctx;
+  const localModel = asString(config.model, "");
+  const codingModel = asString(config.codingModel, "");
   const allowExtraCredit = asBoolean(config.allowExtraCredit, false);
-  const localBaseUrl = resolveBaseUrl(config.localBaseUrl);
+  const allowLocalTools = asBoolean(config.allowLocalTools, false);
+  const localToolMode = asString(config.localToolMode, "");
+  const effectiveToolMode = localToolMode || (allowLocalTools ? "full" : "off");
+  const toolsEnabled = effectiveToolMode !== "off";
 
-  if (!model) {
+  if (!localModel) {
     return {
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorMessage: "No model configured. Set a model in adapterConfig.",
+      errorMessage: "No local planning model configured. Set adapterConfig.model.",
       errorCode: "missing_model",
     };
   }
 
   const quotaThreshold = asNumber(config.quotaThresholdPercent, DEFAULT_QUOTA_THRESHOLD_PERCENT);
 
-  if (isClaudeModel(model)) {
-    // Require explicit fallback configuration - don't auto-select local models
-    // This prevents unexpected token consumption without user knowledge
-    const effectiveFallback = fallbackModel;
-
-    // Pre-check: is Claude quota near exhausted?
-    // - With fallback configured: skip to fallback when near/exhausted
-    // - With allowExtraCredit=false: fail closed when quota pre-check is unavailable
-    const shouldPreCheckQuota = Boolean(effectiveFallback) || !allowExtraCredit;
-    if (shouldPreCheckQuota) {
-      const nearExhausted = await isClaudeQuotaNearExhausted(
-        quotaThreshold,
-        {
-          hasFallback: Boolean(effectiveFallback),
-          allowExtraCredit,
-        },
-        onLog,
-      );
-      if (nearExhausted) {
-        if (!effectiveFallback) {
-          return {
-            exitCode: 1,
-            signal: null,
-            timedOut: false,
-            errorCode: "extra_credit_disabled",
-            errorMessage:
-              `Claude quota pre-check indicates quota >= ${quotaThreshold}% (or unavailable), and extra credit is disabled. Configure fallbackModel to route locally.`,
-            clearSession: false,
-          };
-        }
-
-        const fallbackIsClaude = isClaudeModel(effectiveFallback);
-        await onLog(
-          "stdout",
-          `[hybrid] Claude quota near limit — skipping to ${fallbackIsClaude ? "Claude" : "local"} model: ${effectiveFallback}\n`,
-        );
-        const result = fallbackIsClaude
-          ? await claudeExecute({
-              ...ctx,
-              config: { ...ctx.config, model: effectiveFallback },
-            })
-          : await executeLocal(ctx, effectiveFallback);
-        return attachRoutingMeta(result, {
-          primaryModel: model,
-          primaryBackend: "claude_cli",
-          fallbackModel: effectiveFallback,
-          fallbackBackend: fallbackIsClaude ? "claude_cli" : "openai_compatible",
-          fallbackTriggered: true,
-          fallbackReason: "claude_quota_precheck",
-          preCheckTriggered: true,
-          preCheckReason: `Claude quota >= ${quotaThreshold}%`,
-        });
-      }
-    }
-
-    return executeClaudeWithFallback(ctx, model, effectiveFallback);
-  }
-
-  // Local model as primary
-  // Pre-check: is the local endpoint reachable?
-  if (fallbackModel && isClaudeModel(fallbackModel)) {
-    const healthy = await isLocalEndpointHealthy(localBaseUrl);
-    if (!healthy) {
-      if (!allowExtraCredit) {
-        const claudeQuotaBlocked = await isClaudeQuotaNearExhausted(
-          quotaThreshold,
-          { hasFallback: true, allowExtraCredit },
-          onLog,
-        );
-        if (claudeQuotaBlocked) {
-          return {
-            exitCode: 1,
-            signal: null,
-            timedOut: false,
-            errorCode: "extra_credit_disabled",
-            errorMessage:
-              `Local endpoint is unavailable and Claude fallback is blocked by quota policy (allowExtraCredit=false, threshold=${quotaThreshold}%).`,
-            clearSession: false,
-          };
-        }
-      }
-
-      await onLog(
-        "stdout",
-        `[hybrid] Local endpoint not reachable at ${localBaseUrl} — skipping to Claude: ${fallbackModel}\n`,
-      );
-      const claudeCtx: AdapterExecutionContext = {
-        ...ctx,
-        config: { ...ctx.config, model: fallbackModel },
-      };
-      const result = await claudeExecute(claudeCtx);
-      return attachRoutingMeta(result, {
-        primaryModel: model,
-        primaryBackend: "openai_compatible",
-        fallbackModel,
-        fallbackBackend: "claude_cli",
-        fallbackTriggered: true,
-        fallbackReason: "local_endpoint_precheck",
-        preCheckTriggered: true,
-        preCheckReason: `Local endpoint unreachable at ${localBaseUrl}`,
-      });
-    }
-  }
-
-  return executeLocalWithFallback(ctx, model, fallbackModel, allowExtraCredit, quotaThreshold);
-}
-
-// --- Claude primary with local fallback ---
-
-async function executeClaudeWithFallback(
-  ctx: AdapterExecutionContext,
-  model: string,
-  fallbackModel: string,
-): Promise<AdapterExecutionResult> {
-  const { onLog } = ctx;
-
-  const claudeResult = await claudeExecute(ctx);
-
-  // Success or non-quota error — return as-is
-  if ((claudeResult.exitCode === 0 && !claudeResult.errorMessage) || !isClaudeQuotaOrAuthError(claudeResult)) {
-    return attachRoutingMeta(claudeResult, {
-      primaryModel: model,
-      primaryBackend: "claude_cli",
-      fallbackModel: fallbackModel || null,
-      fallbackBackend: fallbackModel ? "openai_compatible" : null,
-      fallbackTriggered: false,
-      fallbackReason: null,
-      preCheckTriggered: false,
-      preCheckReason: null,
-    });
-  }
-
-  // No fallback configured
-  if (!fallbackModel) {
-    return claudeResult;
-  }
-
-  const reason = claudeResult.errorCode ?? claudeResult.errorMessage ?? "unknown";
-  await onLog(
-    "stdout",
-    `[hybrid] Claude unavailable (${reason}). Falling back to ${isClaudeModel(fallbackModel) ? "Claude" : "local"} model: ${fallbackModel}\n`,
-  );
-
-  const result = isClaudeModel(fallbackModel)
-    ? await claudeExecute({
-        ...ctx,
-        config: { ...ctx.config, model: fallbackModel },
-      })
-    : await executeLocal(ctx, fallbackModel);
-  return attachRoutingMeta(result, {
-    primaryModel: model,
-    primaryBackend: "claude_cli",
-    fallbackModel,
-    fallbackBackend: isClaudeModel(fallbackModel) ? "claude_cli" : "openai_compatible",
-    fallbackTriggered: true,
-    fallbackReason: reason,
-    preCheckTriggered: false,
-    preCheckReason: null,
-  });
-}
-
-// --- Local primary with Claude fallback ---
-
-async function executeLocalWithFallback(
-  ctx: AdapterExecutionContext,
-  model: string,
-  fallbackModel: string,
-  allowExtraCredit: boolean,
-  quotaThreshold: number,
-): Promise<AdapterExecutionResult> {
-  const { onLog } = ctx;
+  let planningOutcome: {
+    result: AdapterExecutionResult;
+    handoffRequested: boolean;
+    handoffSummary: string;
+  };
 
   try {
-    const result = await executeLocal(ctx, model);
-    return attachRoutingMeta(result, {
-      primaryModel: model,
-      primaryBackend: "openai_compatible",
-      fallbackModel: fallbackModel || null,
-      fallbackBackend: fallbackModel && isClaudeModel(fallbackModel) ? "claude_cli" : fallbackModel ? "openai_compatible" : null,
-      fallbackTriggered: false,
-      fallbackReason: null,
-      preCheckTriggered: false,
-      preCheckReason: null,
-    });
+    planningOutcome = await executeLocal(ctx, localModel, toolsEnabled, effectiveToolMode);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `Local planning error: ${message}`,
+      errorCode: "local_error",
+      clearSession: true,
+    };
+  }
 
-    // No fallback configured
-    if (!fallbackModel) {
-      const isTimeout = message.toLowerCase().includes("aborted") || message.toLowerCase().includes("timeout");
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: isTimeout,
-        errorMessage: `Local model error: ${message}`,
-        errorCode: isTimeout ? "timeout" : "local_error",
-        clearSession: true,
-      };
-    }
+  if (!planningOutcome.handoffRequested) {
+    return attachRoutingMeta(planningOutcome.result, {
+      planningModel: localModel,
+      planningBackend: "openai_compatible",
+      codingModel: codingModel || null,
+      codingBackend: codingModel
+        ? (isClaudeModel(codingModel) ? "claude_cli" : "codex_cli")
+        : null,
+      localToolsEnabled: toolsEnabled,
+      handoffRequested: false,
+      handoffReason: null,
+    });
+  }
 
-    // Not a resource error — real failure, don't fall back
-    if (!isLocalResourceError(error)) {
+  if (!codingModel) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Handoff requested, but no coding model is configured. Choose a coding model in agent settings, or edit the instructions to avoid requesting HANDOFF unless a coding model is set.",
+      errorCode: "missing_coding_model",
+    };
+  }
+
+  const handoffSummary = buildCodingHandoffSummary(
+    ctx.context,
+    planningOutcome.handoffSummary,
+  );
+
+  const codingBackend = isClaudeModel(codingModel) ? "claude_cli" : "codex_cli";
+  if (codingBackend === "claude_cli" && !allowExtraCredit) {
+    const blocked = await isClaudeQuotaNearExhausted(
+      quotaThreshold,
+      { allowExtraCredit },
+      onLog,
+    );
+    if (blocked) {
       return {
         exitCode: 1,
         signal: null,
         timedOut: false,
-        errorMessage: `Local model error: ${message}`,
-        errorCode: "local_error",
-        clearSession: true,
+        errorCode: "extra_credit_disabled",
+        errorMessage:
+          `Claude quota pre-check indicates quota >= ${quotaThreshold}% (or unavailable), and extra credit is disabled.`,
+        clearSession: false,
       };
     }
-
-    await onLog(
-      "stdout",
-      `[hybrid] Local model unavailable (${message}). Falling back to ${isClaudeModel(fallbackModel) ? "Claude" : "local"}: ${fallbackModel}\n`,
-    );
-
-    if (isClaudeModel(fallbackModel) && !allowExtraCredit) {
-      const claudeQuotaBlocked = await isClaudeQuotaNearExhausted(
-        quotaThreshold,
-        { hasFallback: true, allowExtraCredit },
-        onLog,
-      );
-      if (claudeQuotaBlocked) {
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorCode: "extra_credit_disabled",
-          errorMessage:
-            `Local model failed and Claude fallback is blocked by quota policy (allowExtraCredit=false, threshold=${quotaThreshold}%).`,
-          clearSession: false,
-        };
-      }
-    }
-
-    const result = isClaudeModel(fallbackModel)
-      ? await claudeExecute({
-          ...ctx,
-          config: { ...ctx.config, model: fallbackModel },
-        })
-      : await executeLocal(ctx, fallbackModel);
-    return attachRoutingMeta(result, {
-      primaryModel: model,
-      primaryBackend: "openai_compatible",
-      fallbackModel,
-      fallbackBackend: isClaudeModel(fallbackModel) ? "claude_cli" : "openai_compatible",
-      fallbackTriggered: true,
-      fallbackReason: message,
-      preCheckTriggered: false,
-      preCheckReason: null,
-    });
   }
+
+  const codingCtx: AdapterExecutionContext = {
+    ...ctx,
+    context: {
+      ...ctx.context,
+      paperclipSessionHandoffMarkdown: handoffSummary,
+    },
+    config: { ...ctx.config, model: codingModel },
+  };
+
+  const codingResult = codingBackend === "claude_cli"
+    ? await claudeExecute(codingCtx)
+    : await codexExecute(codingCtx);
+
+  return attachRoutingMeta(codingResult, {
+    planningModel: localModel,
+    planningBackend: "openai_compatible",
+    codingModel,
+    codingBackend,
+      localToolsEnabled: toolsEnabled,
+    handoffRequested: true,
+    handoffReason: "marker",
+  });
 }
 
 // --- Local execution ---
@@ -418,8 +279,11 @@ async function executeLocalWithFallback(
 async function executeLocal(
   ctx: AdapterExecutionContext,
   model: string,
-): Promise<AdapterExecutionResult> {
+  allowLocalTools: boolean,
+  toolMode: string,
+): Promise<{ result: AdapterExecutionResult; handoffRequested: boolean; handoffSummary: string }> {
   const { runId, agent, config, context, onLog, onMeta } = ctx;
+  const workspaceContext = parseObject(context.paperclipWorkspace);
 
   const localBaseUrl = resolveBaseUrl(config.localBaseUrl);
   const timeoutSec = asNumber(config.timeoutSec, 300);
@@ -443,7 +307,8 @@ async function executeLocal(
     ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
     : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([renderedBootstrap, sessionHandoffNote, renderedPrompt]);
+  const handoffInstruction = toolMode === "full" ? "" : HANDOFF_INSTRUCTION;
+  const prompt = joinPromptSections([renderedBootstrap, sessionHandoffNote, renderedPrompt, handoffInstruction]);
 
   if (onMeta) {
     await onMeta({
@@ -463,7 +328,26 @@ async function executeLocal(
     ? (config.cwd as string).trim()
     : null;
 
-  const effectiveCwd = explicitCwd ?? (context?.paperclipWorkspace?.cwd as string | undefined) ?? process.cwd();
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const effectiveCwd = explicitCwd ?? (workspaceCwd || undefined) ?? process.cwd();
+
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  env.PAPERCLIP_RUN_ID = runId;
+  if (workspaceCwd) env.PAPERCLIP_WORKSPACE_CWD = workspaceCwd;
+  const workspaceSource = asString(workspaceContext.source, "");
+  if (workspaceSource) env.PAPERCLIP_WORKSPACE_SOURCE = workspaceSource;
+  const workspaceStrategy = asString(workspaceContext.strategy, "");
+  if (workspaceStrategy) env.PAPERCLIP_WORKSPACE_STRATEGY = workspaceStrategy;
+  const workspaceId = asString(workspaceContext.workspaceId, "");
+  if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
+  const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
+  if (workspaceRepoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = workspaceRepoUrl;
+  const workspaceRepoRef = asString(workspaceContext.repoRef, "");
+  if (workspaceRepoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
+  const workspaceBranch = asString(workspaceContext.branchName, "");
+  if (workspaceBranch) env.PAPERCLIP_WORKSPACE_BRANCH = workspaceBranch;
+  const workspaceWorktreePath = asString(workspaceContext.worktreePath, "");
+  if (workspaceWorktreePath) env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
 
   // Read instructionsFilePath as system prompt if configured.
   // Gives local models the same architectural context that Claude agents get
@@ -486,33 +370,41 @@ async function executeLocal(
     prompt,
     systemPrompt,
     cwd: effectiveCwd,
-    enableTools: true,
+    env,
+    enableTools: allowLocalTools,
+    toolMode,
     timeoutMs: timeoutSec * 1000,
     maxTotalTokens: asNumber(config.maxTotalTokens, 300_000),
     onLog,
   });
 
+  const handoff = extractHandoffMarker(result.summary ?? "");
+
   return {
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    errorMessage: null,
-    usage: result.usage,
-    provider: "openai_compatible",
-    biller: "local",
-    model: result.model,
-    billingType: "subscription",
-    costUsd: 0,
-    summary: result.summary,
-    resultJson: {
-      result: result.summary,
+    result: {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      usage: result.usage,
+      provider: "openai_compatible",
+      biller: "local",
       model: result.model,
-      finish_reason: result.finishReason,
-      usage: {
-        input_tokens: result.usage.inputTokens,
-        output_tokens: result.usage.outputTokens,
+      billingType: "subscription",
+      costUsd: 0,
+      summary: handoff.cleaned,
+      resultJson: {
+        result: handoff.cleaned,
+        model: result.model,
+        finish_reason: result.finishReason,
+        usage: {
+          input_tokens: result.usage.inputTokens,
+          output_tokens: result.usage.outputTokens,
+        },
       },
+      clearSession: true,
     },
-    clearSession: true,
+    handoffRequested: handoff.requested,
+    handoffSummary: handoff.cleaned,
   };
 }

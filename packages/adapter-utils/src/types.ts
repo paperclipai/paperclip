@@ -332,6 +332,9 @@ export interface CreateConfigValues {
   instructionsFilePath?: string;
   promptTemplate: string;
   model: string;
+  codingModel?: string;
+  allowLocalTools?: boolean;
+  localToolMode?: "off" | "read_only" | "full";
   thinkingEffort: string;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;

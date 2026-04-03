@@ -1,9 +1,14 @@
 import type { AdapterConfigFieldsProps } from "../types";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ClaudeLocalConfigFields } from "../claude-local/config-fields";
+import { agentsApi } from "../../api/agents";
+import { queryKeys } from "../../lib/queryKeys";
+import { useCompany } from "../../context/CompanyContext";
 import {
   Field,
-  ToggleField,
   DraftInput,
+  ToggleField,
   help,
 } from "../../components/agent-config-primitives";
 
@@ -14,16 +19,43 @@ const selectClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 appearance-none cursor-pointer";
 
 export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
-  const { isCreate, config, eff, mark, models } = props;
+  const { isCreate, config, eff, mark, models, values, set } = props;
+  const { selectedCompanyId } = useCompany();
+
+  const { data: claudeModels = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.adapterModels(selectedCompanyId, "claude_local")
+      : ["agents", "none", "adapter-models", "claude_local"],
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, "claude_local"),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const { data: codexModels = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.adapterModels(selectedCompanyId, "codex_local")
+      : ["agents", "none", "adapter-models", "codex_local"],
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, "codex_local"),
+    enabled: Boolean(selectedCompanyId),
+  });
+
+  const codingModels = useMemo(() => {
+    const combined = [...claudeModels, ...codexModels];
+    const seen = new Set<string>();
+    return combined.filter((model) => {
+      if (seen.has(model.id)) return false;
+      seen.add(model.id);
+      return true;
+    });
+  }, [claudeModels, codexModels]);
 
   if (isCreate) {
     return (
       <>
         {/* Reuse all Claude config fields (model, cwd, instructions, workspace, etc.) */}
-        <ClaudeLocalConfigFields {...props} />
+        <ClaudeLocalConfigFields {...props} models={models} />
         <Field
           label="Hybrid extras"
-          hint="Local endpoint URL, quota threshold, allow extra credit, and fallback model can be configured after creating the agent."
+          hint="Local endpoint URL, coding model, and routing options can be configured after creating the agent."
         >
           <div className="text-xs text-muted-foreground">
             Save the agent first, then edit it to configure hybrid-specific routing fields.
@@ -33,12 +65,10 @@ export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
     );
   }
 
-  const currentFallback = eff("adapterConfig", "fallbackModel", String(config.fallbackModel ?? ""));
-
   return (
     <>
       {/* Reuse all Claude config fields (model, cwd, instructions, workspace, etc.) */}
-      <ClaudeLocalConfigFields {...props} />
+      <ClaudeLocalConfigFields {...props} models={models} />
 
       <Field
         label="Local endpoint URL"
@@ -61,7 +91,7 @@ export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
 
       <Field
         label="Quota threshold %"
-        hint="Skip Claude and use local when Claude quota exceeds this %. Default: 80. Set to 0 to disable."
+        hint="Block Claude coding when quota exceeds this %. Default: 80. Set to 0 to disable."
       >
         <input
           type="number"
@@ -116,20 +146,57 @@ export function HybridLocalConfigFields(props: AdapterConfigFieldsProps) {
         onChange={(v) => mark("adapterConfig", "allowExtraCredit", v)}
       />
 
+      <Field label="Local tool access" hint={help.localToolMode}>
+        <select
+          className={selectClass}
+          value={
+            isCreate
+              ? (values!.localToolMode ?? "read_only")
+              : eff(
+                  "adapterConfig",
+                  "localToolMode",
+                  typeof config.localToolMode === "string" && config.localToolMode.trim().length > 0
+                    ? config.localToolMode
+                    : (config.allowLocalTools === true ? "full" : "off"),
+                )
+          }
+          onChange={(e) => {
+            const v = e.target.value as "off" | "read_only" | "full";
+            if (isCreate) {
+              set!({ localToolMode: v });
+            } else {
+              mark("adapterConfig", "localToolMode", v);
+            }
+          }}
+        >
+          <option value="off">Off (no tools)</option>
+          <option value="read_only">Read-only (ls, rg, cat, git status)</option>
+          <option value="full">Full (allow writes)</option>
+        </select>
+      </Field>
+
       <Field
-        label="Fallback model"
-        hint="Fallback when primary is unavailable. For local models: qwen2.5-coder best for tools, llama3.1 for long context. Leave as 'None' to disable fallback."
+        label="Coding model"
+        hint={help.codingModel}
       >
         <select
           className={selectClass}
-          value={currentFallback}
+          value={
+            isCreate
+              ? values!.codingModel ?? ""
+              : eff("adapterConfig", "codingModel", String(config.codingModel ?? ""))
+          }
           onChange={(e) => {
             const v = e.target.value;
-            mark("adapterConfig", "fallbackModel", v || undefined);
+            if (isCreate) {
+              set!({ codingModel: v });
+            } else {
+              mark("adapterConfig", "codingModel", v === "" ? null : v);
+            }
           }}
         >
-          <option value="">None (no fallback)</option>
-          {models.map((m) => (
+          <option value="">None (no coding model)</option>
+          {codingModels.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
             </option>
