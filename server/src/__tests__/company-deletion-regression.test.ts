@@ -1,133 +1,124 @@
-import { describe, expect, it } from "vitest";
-import {
-  budgetIncidents,
-  budgetPolicies,
-  projects,
-  goals,
-  documents,
-  documentRevisions,
-  companySkills,
-  feedbackVotes,
-  issueReadStates,
-  issueInboxArchives,
-  workspaceOperations,
-  workspaceRuntimeServices,
-  heartbeatRunEvents,
-  agentTaskSessions,
-  heartbeatRuns,
-  agentWakeupRequests,
-  agentApiKeys,
-  agentRuntimeState,
-  issueComments,
-  costEvents,
-  financeEvents,
-  approvalComments,
-  approvals,
-  companySecrets,
-  joinRequests,
-  invites,
-  principalPermissionGrants,
-  companyMemberships,
-  issues,
-  companyLogos,
-  assets,
-  agents,
-  activityLog,
-  companies,
-} from "@paperclipai/db";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companyService } from "../services/companies.ts";
 
 /**
- * HAP-4 regression: validates delete ordering constraints in
- * companyService.remove() by comparing against the Drizzle schema
- * table references used in the actual service code.
+ * HAP-4 behavioral regression: exercises companyService.remove() via a mock
+ * DB that records every table passed to tx.delete(). After calling remove(),
+ * asserts the critical FK ordering constraints.
  *
- * This file mirrors the exact delete order from companies.ts.
- * If the service changes, this file must be updated to match.
+ * This calls the real service code and captures the actual delete order.
  */
 
-// Ordered as in server/src/services/companies.ts remove()
-const DELETE_ORDER = [
-  heartbeatRunEvents,
-  agentTaskSessions,
-  heartbeatRuns,
-  agentWakeupRequests,
-  agentApiKeys,
-  agentRuntimeState,
-  issueComments,
-  issueReadStates,
-  issueInboxArchives,
-  costEvents,
-  financeEvents,
-  approvalComments,
-  approvals,
-  documentRevisions,
-  documents,
-  companySecrets,
-  joinRequests,
-  invites,
-  principalPermissionGrants,
-  companyMemberships,
-  issues,
-  companyLogos,
-  assets,
-  projects,
-  goals,
-  workspaceOperations,
-  workspaceRuntimeServices,
-  feedbackVotes,
-  agents,
-  budgetIncidents,
-  budgetPolicies,
-  companySkills,
-  activityLog,
-  companies,
-] as const;
+const DRIZZLE_NAME = Symbol.for("drizzle:Name");
 
-describe("HAP-4: company deletion FK ordering", () => {
-  it("budget_incidents deleted before budget_policies (no onDelete on FK)", () => {
-    // budget_incidents.policy_id -> budget_policies.id
-    // Schema: budget_incidents.ts line 12: .references(() => budgetPolicies.id) — no onDelete option
-    // This means PG will block deletion of a budget_policy that has incidents.
-    // The service MUST delete incidents first.
-    const incIdx = DELETE_ORDER.indexOf(budgetIncidents);
-    const polIdx = DELETE_ORDER.indexOf(budgetPolicies);
-    expect(incIdx).toBeGreaterThanOrEqual(0);
-    expect(polIdx).toBeGreaterThanOrEqual(0);
-    expect(incIdx).toBeLessThan(polIdx);
+function getTableName(table: unknown): string {
+  return String((table as Record<symbol, unknown>)[DRIZZLE_NAME] ?? "unknown");
+}
+
+function createTrackingMock() {
+  const deleteLog: string[] = [];
+  let companyRows: Array<{ id: string; name: string }> = [{ id: "c1", name: "Test" }];
+
+  const deleteFn = (table: unknown) => {
+    const name = getTableName(table);
+    deleteLog.push(name);
+    const rows = name === "companies" ? companyRows : undefined;
+    return {
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }),
+      returning: vi.fn().mockResolvedValue(rows),
+    };
+  };
+
+  const tx = {
+    delete: vi.fn(deleteFn),
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+  };
+
+  const db = {
+    transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => fn(tx)),
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+  };
+
+  return { db, deleteLog, tx, setCompanyRows: (r: typeof companyRows) => { companyRows = r; } };
+}
+
+describe("companyService.remove() behavioral FK ordering (HAP-4)", () => {
+  let tracking: ReturnType<typeof createTrackingMock>;
+
+  beforeEach(() => {
+    tracking = createTrackingMock();
+    vi.clearAllMocks();
   });
 
-  it("projects deleted before goals (goals FK to projects)", () => {
-    // projects.goalId -> goals.id (onDelete: set null)
-    // goals has no FK to projects, but both reference companies.id (no onDelete)
-    // Accepted ordering: projects before goals
-    const projIdx = DELETE_ORDER.indexOf(projects);
-    const goalIdx = DELETE_ORDER.indexOf(goals);
-    expect(projIdx).toBeGreaterThanOrEqual(0);
-    expect(goalIdx).toBeGreaterThanOrEqual(0);
-    expect(projIdx).toBeLessThan(goalIdx);
+  async function runRemove(id = "c1") {
+    return companyService(tracking.db as never).remove(id);
+  }
+
+  it("feedback_votes deleted before issues (issue_id FK, no onDelete)", async () => {
+    await runRemove();
+    const fv = tracking.deleteLog.indexOf("feedback_votes");
+    const is = tracking.deleteLog.indexOf("issues");
+    expect(fv).toBeGreaterThanOrEqual(0);
+    expect(is).toBeGreaterThanOrEqual(0);
+    expect(fv).toBeLessThan(is);
   });
 
-  it("all accepted hard-blocker tables are covered in delete sequence", () => {
-    const blockers = [
-      companySkills,
-      budgetPolicies,
-      budgetIncidents,
-      feedbackVotes,
-      issueReadStates,
-      issueInboxArchives,
-      workspaceOperations,
-      workspaceRuntimeServices,
-      documents,
-      documentRevisions,
+  it("budget_incidents deleted before approvals (approval_id FK, no onDelete)", async () => {
+    await runRemove();
+    const bi = tracking.deleteLog.indexOf("budget_incidents");
+    const ap = tracking.deleteLog.indexOf("approvals");
+    expect(bi).toBeGreaterThanOrEqual(0);
+    expect(ap).toBeGreaterThanOrEqual(0);
+    expect(bi).toBeLessThan(ap);
+  });
+
+  it("budget_incidents deleted before budget_policies (policy_id FK, no onDelete)", async () => {
+    await runRemove();
+    const bi = tracking.deleteLog.indexOf("budget_incidents");
+    const bp = tracking.deleteLog.indexOf("budget_policies");
+    expect(bi).toBeGreaterThanOrEqual(0);
+    expect(bp).toBeGreaterThanOrEqual(0);
+    expect(bi).toBeLessThan(bp);
+  });
+
+  it("projects deleted before goals", async () => {
+    await runRemove();
+    const pr = tracking.deleteLog.indexOf("projects");
+    const gl = tracking.deleteLog.indexOf("goals");
+    expect(pr).toBeGreaterThanOrEqual(0);
+    expect(gl).toBeGreaterThanOrEqual(0);
+    expect(pr).toBeLessThan(gl);
+  });
+
+  it("all 10 accepted hard-blocker tables are in the delete sequence", async () => {
+    await runRemove();
+    const required = [
+      "company_skills", "budget_policies", "budget_incidents", "feedback_votes",
+      "issue_read_states", "issue_inbox_archives", "workspace_operations",
+      "workspace_runtime_services", "documents", "document_revisions",
     ];
-    for (const table of blockers) {
-      expect(DELETE_ORDER).toContain(table);
+    for (const t of required) {
+      expect(tracking.deleteLog).toContain(t);
     }
   });
 
-  it("delete sequence contains exactly the expected number of tables (32)", () => {
-    // 25 child tables + companies = 26... but we also need to verify count
-    // to catch any future additions/removals
-    expect(DELETE_ORDER).toHaveLength(34);
+  it("companies is the last table deleted", async () => {
+    await runRemove();
+    expect(tracking.deleteLog[tracking.deleteLog.length - 1]).toBe("companies");
+  });
+
+  it("returns deleted company on success", async () => {
+    const result = await runRemove();
+    expect(result).toEqual({ id: "c1", name: "Test" });
+  });
+
+  it("returns null when company not found", async () => {
+    tracking.setCompanyRows([]);
+    const result = await runRemove();
+    expect(result).toBeNull();
   });
 });

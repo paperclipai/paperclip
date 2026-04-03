@@ -277,9 +277,11 @@ export function companyService(db: Db) {
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(issueInboxArchives).where(eq(issueInboxArchives.companyId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(documentRevisions).where(eq(documentRevisions.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
@@ -295,9 +297,7 @@ export function companyService(db: Db) {
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(workspaceOperations).where(eq(workspaceOperations.companyId, id));
         await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
-        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
-        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
