@@ -259,6 +259,37 @@ export function CompanySettings() {
     },
   });
 
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+  const [deleteShowConfirm, setDeleteShowConfirm] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: (confirmName: string) =>
+      companiesApi.remove(selectedCompanyId!).then(() => ({ confirmName })),
+    onSuccess: async ({ confirmName }) => {
+      setDeleteShowConfirm(false);
+      setDeleteConfirmName("");
+      const nextCompany = companies.find((c) => c.id !== selectedCompanyId);
+      if (nextCompany) {
+        setSelectedCompanyId(nextCompany.id);
+      }
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.all,
+      });
+      pushToast({
+        title: "Company deleted",
+        body: `Company "${confirmName}" has been permanently deleted.`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delete failed",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
@@ -725,6 +756,74 @@ export function CompanySettings() {
                     {resetMutation.error instanceof Error
                       ? resetMutation.error.message
                       : "Failed to reset company"}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Delete Company Section */}
+          <div className="mt-4 border-t border-destructive/20 pt-4">
+            <p className="text-sm text-muted-foreground">
+              Permanently delete this company and all its data. This cannot be
+              undone.
+            </p>
+            {!deleteShowConfirm ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="mt-3"
+                onClick={() => setDeleteShowConfirm(true)}
+              >
+                Delete company
+              </Button>
+            ) : (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Type <strong>{selectedCompany.name}</strong> to confirm
+                  deletion:
+                </p>
+                <input
+                  type="text"
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  placeholder={selectedCompany.name}
+                  className="w-full rounded-md border border-destructive/40 bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={
+                      deleteMutation.isPending ||
+                      deleteConfirmName !== selectedCompany.name
+                    }
+                    onClick={() => {
+                      if (deleteConfirmName === selectedCompany.name) {
+                        deleteMutation.mutate(deleteConfirmName);
+                      }
+                    }}
+                  >
+                    {deleteMutation.isPending
+                      ? "Deleting..."
+                      : "Confirm delete"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setDeleteShowConfirm(false);
+                      setDeleteConfirmName("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {deleteMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {deleteMutation.error instanceof Error
+                      ? deleteMutation.error.message
+                      : "Failed to delete company"}
                   </span>
                 )}
               </div>
