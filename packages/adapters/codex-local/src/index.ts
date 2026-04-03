@@ -37,6 +37,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- isolateSession (boolean, optional): when true, discard any stored session before each run and do not persist the resulting session; each task run starts from a clean context
 
 Notes:
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
