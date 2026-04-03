@@ -659,7 +659,15 @@ export function shouldResetTaskSessionForWake(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
+  if (wakeReason === "issue_commented") return true;
+  if (wakeReason === "process_lost_retry") return true;
   return false;
+}
+
+export function isHeartbeatAutoPushEnabled(env: NodeJS.ProcessEnv = process.env) {
+  const raw = readNonEmptyString(env.PAPERCLIP_HEARTBEAT_AUTO_PUSH);
+  if (!raw) return false;
+  return /^(1|true|yes|on)$/i.test(raw);
 }
 
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
@@ -676,6 +684,8 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_commented") return "wake reason is issue_commented";
+  if (wakeReason === "process_lost_retry") return "wake reason is process_lost_retry";
   return null;
 }
 
@@ -2830,6 +2840,49 @@ export function heartbeatService(db: Db) {
           },
         });
         await releaseIssueExecutionAndPromote(finalizedRun);
+
+        // Auto-comment disabled — agents now post their own comments via the
+        // Paperclip API directly, which produces cleaner, more contextual
+        // comments than the raw adapterResult.summary.
+
+        // Auto-push is opt-in to avoid surprising VCS side effects in shared repos.
+        if (isHeartbeatAutoPushEnabled() && outcome === "succeeded" && executionWorkspace.cwd) {
+          try {
+            const gitOpts = { cwd: executionWorkspace.cwd, timeout: 30_000 };
+
+            // Check for uncommitted changes (staged + unstaged + untracked)
+            const { stdout: statusOut } = await execFile("git", ["status", "--porcelain"], gitOpts);
+            if (statusOut.trim().length > 0) {
+              const agentName = agent.name ?? "agent";
+              const issueKey = taskKey ?? issueId ?? "heartbeat";
+              const commitMsg = `${agentName}: work on ${issueKey}\n\nAuto-committed by Paperclip after run ${run.id}`;
+
+              await execFile("git", ["add", "-A"], gitOpts);
+              await execFile(
+                "git",
+                ["commit", "-m", commitMsg, "--author", `${agentName} <${agent.id}@paperclip.agent>`],
+                gitOpts,
+              );
+
+              // Push to the current branch's upstream (if configured)
+              try {
+                await execFile("git", ["push"], { ...gitOpts, timeout: 60_000 });
+                logger.info({ agentId: agent.id, cwd: executionWorkspace.cwd }, "Auto-pushed agent changes");
+              } catch (pushErr) {
+                logger.warn(
+                  { err: pushErr, agentId: agent.id, cwd: executionWorkspace.cwd },
+                  "Auto-commit succeeded but push failed — changes are committed locally",
+                );
+              }
+            }
+          } catch (gitErr) {
+            // Non-fatal — the workspace may not be a git repo, or git may not be installed
+            logger.debug(
+              { err: gitErr, agentId: agent.id, cwd: executionWorkspace.cwd },
+              "Auto-push check skipped or failed",
+            );
+          }
+        }
       }
 
       if (finalizedRun) {

@@ -1178,7 +1178,7 @@ function RawTranscriptView({
   density: TranscriptDensity;
 }) {
   const compact = density === "compact";
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
@@ -1193,10 +1193,12 @@ function RawTranscriptView({
       .join("\n\n");
     navigator.clipboard.writeText(text).then(() => {
       clearTimeout(timerRef.current);
-      setCopied(true);
-      timerRef.current = setTimeout(() => setCopied(false), 2000);
+      setCopyState("copied");
+      timerRef.current = setTimeout(() => setCopyState("idle"), 2000);
     }).catch(() => {
-      // Clipboard write failed — silently ignore
+      clearTimeout(timerRef.current);
+      setCopyState("failed");
+      timerRef.current = setTimeout(() => setCopyState("idle"), 2000);
     });
   }, [entries]);
 
@@ -1207,16 +1209,23 @@ function RawTranscriptView({
           type="button"
           className={cn(
             "inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-2 py-1 text-[11px] font-medium transition-colors",
-            copied
+            copyState === "copied"
               ? "text-green-600 dark:text-green-400"
-              : "text-muted-foreground hover:text-foreground",
+              : copyState === "failed"
+                ? "text-red-600 dark:text-red-400"
+                : "text-muted-foreground hover:text-foreground",
           )}
           onClick={handleCopy}
         >
-          {copied ? (
+          {copyState === "copied" ? (
             <>
               <Check className="h-3 w-3" />
               Copied!
+            </>
+          ) : copyState === "failed" ? (
+            <>
+              <Copy className="h-3 w-3" />
+              Failed
             </>
           ) : (
             <>
