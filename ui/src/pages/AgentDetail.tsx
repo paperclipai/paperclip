@@ -41,6 +41,7 @@ import { PackageFileTree, buildFileTree } from "../components/PackageFileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
+import { getOrganizationTerms } from "../lib/organization-mode";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
@@ -556,6 +557,9 @@ export function AgentDetail() {
     enabled: canFetchAgent,
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
+  const resolvedCompany =
+    companies.find((company) => company.id === resolvedCompanyId) ?? null;
+  const terms = getOrganizationTerms(resolvedCompany);
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
@@ -924,7 +928,7 @@ export function AgentDetail() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
         <p className="text-sm text-amber-500">
-          This agent is pending board approval and cannot be invoked yet.
+          {`This agent is pending ${terms.operator} approval and cannot be invoked yet.`}
         </p>
       )}
 
@@ -1443,8 +1447,12 @@ function ConfigurationTab({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const { companies } = useCompany();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
+  const selectedCompany =
+    companies.find((company) => company.id === (companyId ?? agent.companyId)) ?? null;
+  const terms = getOrganizationTerms(selectedCompany);
 
   const { data: adapterModels } = useQuery({
     queryKey:
@@ -1496,11 +1504,11 @@ function ConfigurationTab({
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
   const taskAssignHint =
     taskAssignSource === "ceo_role"
-      ? "Enabled automatically for CEO agents."
+      ? `Enabled automatically for ${terms.leadRole} agents.`
       : taskAssignSource === "agent_creator"
-        ? "Enabled automatically while this agent can create new agents."
+        ? `Enabled automatically while this agent can ${terms.addAgentLower}s.`
         : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
+          ? `Enabled via explicit ${terms.singular} permission grant.`
           : "Disabled unless explicitly granted.";
 
   return (
@@ -1527,7 +1535,7 @@ function ConfigurationTab({
             <div className="space-y-1">
               <div>Can create new agents</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents and implicitly assign tasks.
+                {`Lets this agent ${terms.addAgentLower}s and implicitly assign tasks.`}
               </p>
             </div>
             <button
@@ -1611,8 +1619,11 @@ function PromptsTab({
   onSavingChange: (saving: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const { selectedCompanyId } = useCompany();
+  const { companies, selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
+  const selectedCompany =
+    companies.find((company) => company.id === (companyId ?? selectedCompanyId)) ?? null;
+  const terms = getOrganizationTerms(selectedCompany);
   const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
@@ -1744,7 +1755,9 @@ function PromptsTab({
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      if (!selectedCompanyId) {
+        throw new Error(`Select a ${terms.singular} to upload images`);
+      }
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });

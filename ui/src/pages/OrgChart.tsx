@@ -12,6 +12,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Network, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 // Layout constants
 const CARD_W = 200;
@@ -142,8 +143,10 @@ const defaultDotColor = "#a3a3a3";
 
 export function OrgChart() {
   const { selectedCompanyId } = useCompany();
+  const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  const terms = getOrganizationTerms(selectedCompany);
 
   const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -164,8 +167,8 @@ export function OrgChart() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: terms.chart }]);
+  }, [setBreadcrumbs, terms.chart]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -257,7 +260,7 @@ export function OrgChart() {
   }, [zoom, pan]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
+    return <EmptyState icon={Network} message={`Select a ${terms.singular} to view the ${terms.chart.toLowerCase()}.`} />;
   }
 
   if (isLoading) {
@@ -422,7 +425,7 @@ export function OrgChart() {
                     {node.name}
                   </span>
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
-                    {agent?.title ?? roleLabel(node.role)}
+                    {agent?.title ?? roleLabel(node.role, terms.leadRole)}
                   </span>
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
@@ -447,6 +450,7 @@ export function OrgChart() {
 
 const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
 
-function roleLabel(role: string): string {
+function roleLabel(role: string, leadRoleLabel = "CEO"): string {
+  if (role === "ceo") return leadRoleLabel;
   return roleLabels[role] ?? role;
 }

@@ -20,6 +20,7 @@ export const companiesApi = {
   create: (data: {
     name: string;
     description?: string | null;
+    organizationMode?: Company["organizationMode"];
     budgetMonthlyCents?: number;
   }) =>
     api.post<Company>("/companies", data),
@@ -30,6 +31,7 @@ export const companiesApi = {
         Company,
         | "name"
         | "description"
+        | "organizationMode"
         | "status"
         | "budgetMonthlyCents"
         | "requireBoardApprovalForNewAgents"

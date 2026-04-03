@@ -103,7 +103,7 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
-function createDbStub() {
+function createDbStub(organizationMode: "company" | "team" = "company") {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -111,6 +111,7 @@ function createDbStub() {
           then: vi.fn().mockResolvedValue([{
             id: companyId,
             name: "Paperclip",
+            organizationMode,
             requireBoardApprovalForNewAgents: false,
           }]),
         }),
@@ -119,14 +120,17 @@ function createDbStub() {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+function createApp(
+  actor: Record<string, unknown>,
+  options?: { organizationMode?: "company" | "team" },
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes(createDbStub() as any));
+  app.use("/api", agentRoutes(createDbStub(options?.organizationMode) as any));
   app.use(errorHandler);
   return app;
 }
@@ -211,6 +215,30 @@ describe("agent permission routes", () => {
       true,
       "board-user",
     );
+  });
+
+  it("uses the team lead default bundle for root agents in team mode", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    }, { organizationMode: "team" });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Team Lead",
+        role: "ceo",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(201);
+    const bundleFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls[0]?.[1];
+    expect(bundleFiles["AGENTS.md"]).toContain("You are the Team Lead.");
+    expect(bundleFiles["AGENTS.md"]).toContain("technical tasks** → Founding Engineer");
   });
 
   it("exposes explicit task assignment access on agent detail", async () => {

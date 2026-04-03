@@ -536,8 +536,19 @@ export function agentRoutes(db: Db) {
     const promptTemplate = typeof adapterConfig.promptTemplate === "string"
       ? adapterConfig.promptTemplate
       : "";
+    const company = await db
+      .select({ organizationMode: companies.organizationMode })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+    const organizationMode = company?.organizationMode === "team" ? "team" : "company";
     const files = promptTemplate.trim().length === 0
-      ? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role))
+      ? await loadDefaultAgentInstructionsBundle(
+          resolveDefaultAgentInstructionsBundleRole({
+            role: agent.role,
+            organizationMode,
+          }),
+        )
       : { "AGENTS.md": promptTemplate };
     const materialized = await instructions.materializeManagedBundle(
       agent,

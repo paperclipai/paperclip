@@ -5,6 +5,8 @@ import { Identity } from "./Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
+import { useCompany } from "../context/CompanyContext";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 function statusIcon(status: string) {
   if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
@@ -31,8 +33,14 @@ export function ApprovalCard({
   detailLink?: string;
   isPending: boolean;
 }) {
+  const { selectedCompany } = useCompany();
+  const terms = getOrganizationTerms(selectedCompany);
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
-  const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
+  const label = approvalLabel(
+    approval.type,
+    approval.payload as Record<string, unknown> | null,
+    terms.mode,
+  );
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");

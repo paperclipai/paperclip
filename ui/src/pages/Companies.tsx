@@ -27,6 +27,7 @@ import {
   DollarSign,
   Calendar,
 } from "lucide-react";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 export function Companies() {
   const {
@@ -39,6 +40,7 @@ export function Companies() {
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const terms = getOrganizationTerms(companies.find((company) => company.id === selectedCompanyId) ?? null);
 
   const { data: stats } = useQuery({
     queryKey: queryKeys.companies.stats,
@@ -69,8 +71,8 @@ export function Companies() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Companies" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: terms.pluralTitle }]);
+  }, [setBreadcrumbs, terms.pluralTitle]);
 
   function startEdit(companyId: string, currentName: string) {
     setEditingId(companyId);
@@ -92,12 +94,12 @@ export function Companies() {
       <div className="flex items-center justify-end">
         <Button size="sm" onClick={() => openOnboarding()}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Company
+          {`New ${terms.singularTitle}`}
         </Button>
       </div>
 
       <div className="h-6">
-        {loading && <p className="text-sm text-muted-foreground">Loading companies...</p>}
+        {loading && <p className="text-sm text-muted-foreground">{`Loading ${terms.plural}...`}</p>}
         {error && <p className="text-sm text-destructive">{error.message}</p>}
       </div>
 

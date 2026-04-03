@@ -12,11 +12,12 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 type StatusFilter = "pending" | "all";
 
 export function Approvals() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -24,6 +25,7 @@ export function Approvals() {
   const pathSegment = location.pathname.split("/").pop() ?? "pending";
   const statusFilter: StatusFilter = pathSegment === "all" ? "all" : "pending";
   const [actionError, setActionError] = useState<string | null>(null);
+  const terms = getOrganizationTerms(selectedCompany);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Approvals" }]);
@@ -75,7 +77,7 @@ export function Approvals() {
   ).length;
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">{`Select a ${terms.singular} first.`}</p>;
   }
 
   if (isLoading) {

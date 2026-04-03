@@ -15,10 +15,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
-  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { selectedCompanyId, setSelectedCompanyId, companies } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -33,6 +34,11 @@ export function ApprovalDetail() {
     enabled: !!approvalId,
   });
   const resolvedCompanyId = approval?.companyId ?? selectedCompanyId;
+  const resolvedCompany = useMemo(
+    () => companies.find((company) => company.id === resolvedCompanyId) ?? null,
+    [companies, resolvedCompanyId],
+  );
+  const terms = getOrganizationTerms(resolvedCompany);
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.approvals.comments(approvalId!),
@@ -162,7 +168,7 @@ export function ApprovalDetail() {
         }
       : linkedAgentId
         ? {
-            label: "Open hired agent",
+            label: `Open ${terms.addedAgent}`,
             to: `/agents/${linkedAgentId}`,
           }
         : {
@@ -203,7 +209,13 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <h2 className="text-lg font-semibold">
+                {approvalLabel(
+                  approval.type,
+                  approval.payload as Record<string, unknown> | null,
+                  terms.mode,
+                )}
+              </h2>
               <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>

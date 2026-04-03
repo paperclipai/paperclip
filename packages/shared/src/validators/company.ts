@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { COMPANY_STATUSES } from "../constants.js";
+import { COMPANY_ORGANIZATION_MODES, COMPANY_STATUSES } from "../constants.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
@@ -8,6 +8,7 @@ const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optio
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  organizationMode: z.enum(COMPANY_ORGANIZATION_MODES).optional().default("company"),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
 });
 
@@ -17,6 +18,7 @@ export const updateCompanySchema = createCompanySchema
   .partial()
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
+    organizationMode: z.enum(COMPANY_ORGANIZATION_MODES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),

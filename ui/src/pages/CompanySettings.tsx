@@ -16,6 +16,7 @@ import {
   ToggleField,
   HintIcon
 } from "../components/agent-config-primitives";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 type AgentSnippetInput = {
   onboardingTextUrl: string;
@@ -35,9 +36,11 @@ export function CompanySettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const terms = getOrganizationTerms(selectedCompany);
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
+  const [organizationMode, setOrganizationMode] = useState<"company" | "team">("company");
   const [brandColor, setBrandColor] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
@@ -47,6 +50,7 @@ export function CompanySettings() {
     if (!selectedCompany) return;
     setCompanyName(selectedCompany.name);
     setDescription(selectedCompany.description ?? "");
+    setOrganizationMode(selectedCompany.organizationMode ?? "company");
     setBrandColor(selectedCompany.brandColor ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
   }, [selectedCompany]);
@@ -60,12 +64,14 @@ export function CompanySettings() {
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
+      organizationMode !== (selectedCompany.organizationMode ?? "company") ||
       brandColor !== (selectedCompany.brandColor ?? ""));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
+      organizationMode: "company" | "team";
       brandColor: string | null;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
@@ -231,7 +237,7 @@ export function CompanySettings() {
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        {`No ${terms.singular} selected. Select a ${terms.singular} from the switcher above.`}
       </div>
     );
   }
@@ -240,6 +246,7 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
+      organizationMode,
       brandColor: brandColor || null
     });
   }
@@ -248,7 +255,7 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-semibold">{`${terms.singularTitle} Settings`}</h1>
       </div>
 
       {/* General */}
@@ -257,7 +264,7 @@ export function CompanySettings() {
           General
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label={`${terms.singularTitle} name`} hint={`The display name for your ${terms.singular}.`}>
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -267,15 +274,40 @@ export function CompanySettings() {
           </Field>
           <Field
             label="Description"
-            hint="Optional description shown in the company profile."
+            hint={`Optional description shown in the ${terms.singular} profile.`}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={`Optional ${terms.singular} description`}
               onChange={(e) => setDescription(e.target.value)}
             />
+          </Field>
+          <Field
+            label="Mode"
+            hint="Controls whether the UI presents this organization as a company or a team."
+          >
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                { value: "company", label: "Company", description: "Company, CEO, and hiring language." },
+                { value: "team", label: "Team", description: "Team, lead, and teammate language." },
+              ] as const).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setOrganizationMode(option.value)}
+                  className={`rounded-md border px-3 py-2 text-left transition-colors ${
+                    organizationMode === option.value
+                      ? "border-foreground bg-accent/40"
+                      : "border-border hover:bg-accent/20"
+                  }`}
+                >
+                  <div className="text-sm font-medium">{option.label}</div>
+                  <div className="text-xs text-muted-foreground">{option.description}</div>
+                </button>
+              ))}
+            </div>
           </Field>
         </div>
       </div>
@@ -407,8 +439,8 @@ export function CompanySettings() {
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={terms.approvalForNewAgents}
+            hint={terms.approvalForNewAgentsHint}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -544,7 +576,7 @@ export function CompanySettings() {
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            <a href="/org" className="underline hover:text-foreground">{terms.chart}</a> header.
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>

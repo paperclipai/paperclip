@@ -37,6 +37,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { getOrganizationTerms } from "../lib/organization-mode";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
@@ -76,6 +77,12 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 - write a hiring plan
 - break the roadmap into concrete tasks and start delegating work`;
 
+const TEAM_MODE_TASK_DESCRIPTION = `You are the Team Lead. You set the direction for the team.
+
+- add a founding engineer
+- write an initial team plan
+- break the roadmap into concrete tasks and start delegating work`;
+
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
   const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
@@ -111,6 +118,7 @@ export function OnboardingWizard() {
   // Step 1
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
+  const [organizationMode, setOrganizationMode] = useState<"company" | "team">("company");
 
   // Step 2
   const [agentName, setAgentName] = useState("CEO");
@@ -135,6 +143,33 @@ export function OnboardingWizard() {
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
+  const onboardingTerms = getOrganizationTerms({ organizationMode });
+
+  useEffect(() => {
+    setAgentName((current) => {
+      if (current === "CEO" || current === "Team Lead") return onboardingTerms.leadRole;
+      return current;
+    });
+    setTaskTitle((current) => {
+      if (
+        current === "Hire your first engineer and create a hiring plan"
+        || current === "Add your first engineer and create a team plan"
+      ) {
+        return organizationMode === "team"
+          ? "Add your first engineer and create a team plan"
+          : "Hire your first engineer and create a hiring plan";
+      }
+      return current;
+    });
+    setTaskDescription((current) => {
+      if (current === DEFAULT_TASK_DESCRIPTION || current === TEAM_MODE_TASK_DESCRIPTION) {
+        return organizationMode === "team"
+          ? TEAM_MODE_TASK_DESCRIPTION
+          : DEFAULT_TASK_DESCRIPTION;
+      }
+      return current;
+    });
+  }, [onboardingTerms.leadRole, organizationMode]);
 
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -288,6 +323,7 @@ export function OnboardingWizard() {
     setError(null);
     setCompanyName("");
     setCompanyGoal("");
+    setOrganizationMode("company");
     setAgentName("CEO");
     setAdapterType("claude_local");
     setModel("");
@@ -355,7 +391,7 @@ export function OnboardingWizard() {
   ): Promise<AdapterEnvironmentTestResult | null> {
     if (!createdCompanyId) {
       setAdapterEnvError(
-        "Create or select a company before testing adapter environment."
+        `Create or select a ${onboardingTerms.singular} before testing adapter environment.`
       );
       return null;
     }
@@ -385,7 +421,10 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        organizationMode,
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -411,7 +450,11 @@ export function OnboardingWizard() {
 
       setStep(2);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(
+        err instanceof Error
+          ? err.message
+          : `Failed to create ${onboardingTerms.singular}`,
+      );
     } finally {
       setLoading(false);
     }
@@ -650,7 +693,7 @@ export function OnboardingWizard() {
               <div className="flex items-center gap-0 mb-8 border-b border-border">
                 {(
                   [
-                    { step: 1 as Step, label: "Company", icon: Building2 },
+                    { step: 1 as Step, label: onboardingTerms.singularTitle, icon: Building2 },
                     { step: 2 as Step, label: "Agent", icon: Bot },
                     { step: 3 as Step, label: "Task", icon: ListTodo },
                     { step: 4 as Step, label: "Launch", icon: Rocket }
@@ -681,11 +724,32 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">{`Name your ${onboardingTerms.singular}`}</h3>
                       <p className="text-xs text-muted-foreground">
-                        This is the organization your agents will work for.
+                        {`This is the ${onboardingTerms.singular} your agents will work for.`}
                       </p>
                     </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      { value: "company", label: "Company", description: "Company, CEO, and hiring language." },
+                      { value: "team", label: "Team", description: "Team, lead, and teammate language." },
+                    ] as const).map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setOrganizationMode(option.value)}
+                        className={cn(
+                          "rounded-md border px-3 py-2 text-left transition-colors",
+                          organizationMode === option.value
+                            ? "border-foreground bg-accent/40"
+                            : "border-border hover:bg-accent/20",
+                        )}
+                      >
+                        <div className="text-sm font-medium">{option.label}</div>
+                        <div className="text-xs text-muted-foreground">{option.description}</div>
+                      </button>
+                    ))}
                   </div>
                   <div className="mt-3 group">
                     <label
@@ -696,11 +760,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      {`${onboardingTerms.singularTitle} name`}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder={organizationMode === "team" ? "Research Sprint" : "Acme Corp"}
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       autoFocus
@@ -715,11 +779,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Mission / goal (optional)
+                      {`${onboardingTerms.goalTitle} (optional)`}
                     </label>
                     <textarea
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                      placeholder="What is this company trying to achieve?"
+                      placeholder={`What is this ${onboardingTerms.singular} trying to achieve?`}
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
@@ -746,7 +810,7 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="CEO"
+                      placeholder={onboardingTerms.leadRole}
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -1062,7 +1126,8 @@ export function OnboardingWizard() {
                           <p className="text-[11px] text-amber-900/90 leading-relaxed">
                             Claude failed while{" "}
                             <span className="font-mono">ANTHROPIC_API_KEY</span>{" "}
-                            is set. You can clear it in this CEO adapter config
+                            is set. You can clear it in this{" "}
+                            {onboardingTerms.leadRole} adapter config
                             and retry the probe.
                           </p>
                           <Button

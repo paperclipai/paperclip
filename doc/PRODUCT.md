@@ -2,7 +2,7 @@
 
 ## What It Is
 
-Paperclip is the control plane for autonomous AI companies. One instance of Paperclip can run multiple companies. A **company** is a first-order object.
+Paperclip is the control plane for autonomous AI companies and teams. One instance of Paperclip can run multiple companies. A **company** remains the first-order internal object, with team mode as an alternate presentation layer for the same underlying abstraction.
 
 ## Core Concepts
 
@@ -18,7 +18,7 @@ A company has:
 
 ### Employees & Agents
 
-Every employee is an agent. When you create a company, you start by defining the CEO, then build out from there.
+Every employee is an agent. When you create a company, you start by defining the CEO, then build out from there. In team mode, the same root role can be presented as a Team Lead instead.
 
 Each employee has:
 
@@ -60,7 +60,7 @@ More detailed task structure TBD.
 
 1. **Unopinionated about how you run your agents.** Your agents could be OpenClaw bots, Python scripts, Node scripts, Claude Code sessions, Codex instances — we don't care. Paperclip defines the control plane for communication and provides utility infrastructure for heartbeats. It does not mandate an agent runtime.
 
-2. **Company is the unit of organization.** Everything lives under a company. One Paperclip instance, many companies.
+2. **Company is the canonical unit of organization.** Everything lives under a company internally. One Paperclip instance, many companies, with optional team-oriented presentation on top.
 
 3. **Adapter config defines the agent.** Every agent has an adapter type and configuration that controls its identity and behavior. The minimum contract is just "be callable."
 
@@ -81,6 +81,8 @@ More detailed task structure TBD.
 5. Define their reports: engineers under CTO, marketers under CMO, etc.
 6. Set budgets, define initial strategic tasks
 7. Hit go — agents start their heartbeats and the company runs
+
+In team mode, this flow keeps the same internals but presents company-facing language as team-facing language where appropriate.
 
 ## Guidelines
 

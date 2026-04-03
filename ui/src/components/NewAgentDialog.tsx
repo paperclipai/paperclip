@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { HermesIcon } from "./HermesIcon";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 type AdvancedAdapterType =
   | "claude_local"
@@ -94,9 +95,10 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
 
 export function NewAgentDialog() {
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const navigate = useNavigate();
   const [showAdvancedCards, setShowAdvancedCards] = useState(false);
+  const terms = getOrganizationTerms(selectedCompany);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -141,7 +143,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{terms.addAgent}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -164,7 +166,8 @@ export function NewAgentDialog() {
                   <Sparkles className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We recommend letting your CEO handle agent setup — they know the
+                  {`We recommend letting your ${terms.leadRole} handle agent setup — they know the`}
+                  {" "}
                   org structure and can configure reporting, permissions, and
                   adapters.
                 </p>
@@ -172,7 +175,7 @@ export function NewAgentDialog() {
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {`Ask the ${terms.leadRole} to create a new agent`}
               </Button>
 
               {/* Advanced link */}
