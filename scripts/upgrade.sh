@@ -41,6 +41,7 @@
 #   1 = error
 #   2 = already up to date
 #   3 = agents still busy, will retry on next cron invocation
+#   4 = drain timed out, gave up (agents restored, needs investigation)
 #
 # Environment variables:
 #   PAPERCLIP_REPO_DIR       Paperclip repo directory (default: script's grandparent)
@@ -50,6 +51,7 @@
 #   PAPERCLIP_UPSTREAM_BRANCH  Branch to track (default: master)
 #   PAPERCLIP_ORIGIN         Git remote to push to after upgrade (default: origin, empty to skip)
 #   PAPERCLIP_SERVICE        Systemd user service name (default: paperclip)
+#   PAPERCLIP_API_TOKEN       Bearer token for API calls (required for authenticated deployments)
 #   PAPERCLIP_HOME           Paperclip data directory (default: ~/.paperclip)
 #   DRAIN_MAX_AGE_SEC        Max seconds to wait for agents to drain (default: 1800)
 #   PHASE_TIMEOUT_SEC        Max seconds a phase can run before hung detection (default: 1800)
@@ -97,6 +99,15 @@ mkdir -p "$STATE_DIR"
 
 log() { echo "[$(date -Is)] $*" | tee -a "$LOG_FILE"; }
 
+# Build curl auth headers if a token is configured
+AUTH_ARGS=()
+if [ -n "${PAPERCLIP_API_TOKEN:-}" ]; then
+  AUTH_ARGS=(-H "Authorization: Bearer $PAPERCLIP_API_TOKEN")
+fi
+
+# Wrapper for authenticated curl calls
+api_curl() { curl -sf "${AUTH_ARGS[@]}" "$@"; }
+
 get_phase() { cat "$UPGRADE_PHASE_FILE" 2>/dev/null || echo "idle"; }
 set_phase() {
   echo "$1" > "$UPGRADE_PHASE_FILE"
@@ -125,7 +136,7 @@ resolve_company_id() {
     return
   fi
   local detected
-  detected=$(curl -sf "$API_URL/api/companies" 2>/dev/null | jq -r '.[0].id // empty' 2>/dev/null || echo "")
+  detected=$(api_curl "$API_URL/api/companies" 2>/dev/null | jq -r '.[0].id // empty' 2>/dev/null || echo "")
   if [ -z "$detected" ]; then
     log "ERROR: Could not auto-detect company ID. Set PAPERCLIP_COMPANY_ID or ensure the server is running."
     exit 1
@@ -138,27 +149,46 @@ resolve_company_id() {
 # Uses phase file mtime for hung detection — no background process needed.
 # ---------------------------------------------------------------------------
 
+# Read the start time (field 22) from /proc/<pid>/stat to detect PID reuse.
+pid_start_time() {
+  local pid="$1"
+  awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || echo ""
+}
+
 acquire_lock() {
   if [ -f "$LOCK_FILE" ]; then
-    local lock_pid
-    lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    local lock_pid lock_starttime
+    lock_pid=$(head -1 "$LOCK_FILE" 2>/dev/null || echo "")
+    lock_starttime=$(sed -n '2p' "$LOCK_FILE" 2>/dev/null || echo "")
     if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-      local age
-      age=$(phase_age_sec)
-      if [ "$age" -gt "$PHASE_TIMEOUT_SEC" ]; then
-        local current_phase
-        current_phase=$(get_phase)
-        log "WARN: Phase '$current_phase' unchanged for ${age}s (PID $lock_pid) — assuming hung, killing"
-        kill "$lock_pid" 2>/dev/null || true
-        sleep 2
+      # Verify PID hasn't been reused by comparing process start time
+      local current_starttime
+      current_starttime=$(pid_start_time "$lock_pid")
+      if [ -n "$lock_starttime" ] && [ -n "$current_starttime" ] && [ "$lock_starttime" != "$current_starttime" ]; then
+        log "Stale lock: PID $lock_pid was reused by a different process"
       else
-        log "Another upgrade instance running (PID $lock_pid, phase age ${age}s)"
-        exit 0
+        local age
+        age=$(phase_age_sec)
+        if [ "$age" -gt "$PHASE_TIMEOUT_SEC" ]; then
+          local current_phase
+          current_phase=$(get_phase)
+          log "WARN: Phase '$current_phase' unchanged for ${age}s (PID $lock_pid) — assuming hung, killing"
+          kill "$lock_pid" 2>/dev/null || true
+          sleep 2
+          # Remove old lock before writing new one so the dying process's
+          # EXIT trap deletes an already-gone file instead of our new lock.
+          rm -f "$LOCK_FILE"
+        else
+          log "Another upgrade instance running (PID $lock_pid, phase age ${age}s)"
+          exit 0
+        fi
       fi
     fi
     log "Stale lock (PID ${lock_pid:-unknown} dead), removing"
+    rm -f "$LOCK_FILE"
   fi
-  echo "$$" > "$LOCK_FILE"
+  # Write PID and start time (two lines) for reuse detection
+  printf '%s\n%s\n' "$$" "$(pid_start_time $$)" > "$LOCK_FILE"
   trap 'rm -f "$LOCK_FILE"' EXIT
 }
 
@@ -172,9 +202,15 @@ acquire_lock() {
 
 save_heartbeat_state() {
   log "Saving current heartbeat state (full heartbeat objects)..."
-  curl -sf "$API_URL/api/companies/$COMPANY_ID/agents" 2>/dev/null \
+  local state
+  state=$(api_curl "$API_URL/api/companies/$COMPANY_ID/agents" 2>/dev/null \
     | jq '[.[] | {id: .id, name: .name, heartbeat: .runtimeConfig.heartbeat}]' \
-    > "$HEARTBEAT_STATE_FILE" 2>/dev/null
+    2>/dev/null) || state="[]"
+  if [ -z "$state" ] || [ "$state" = "null" ]; then
+    log "WARN: Could not fetch agent state — defaulting to empty list (no agents will be quiesced)"
+    state="[]"
+  fi
+  echo "$state" > "$HEARTBEAT_STATE_FILE"
 }
 
 quiesce_agents() {
@@ -185,7 +221,7 @@ quiesce_agents() {
     # other fields (intervalSec, cooldownSec, maxConcurrentRuns) are preserved.
     saved_hb=$(jq -c --arg id "$agent_id" '.[] | select(.id == $id) | .heartbeat' "$HEARTBEAT_STATE_FILE")
     quiesced_hb=$(echo "$saved_hb" | jq -c '. + {enabled: false, wakeOnDemand: false}')
-    curl -sf -X PATCH "$API_URL/api/agents/$agent_id" \
+    api_curl -X PATCH "$API_URL/api/agents/$agent_id" \
       -H "Content-Type: application/json" \
       -d "{\"runtimeConfig\": {\"heartbeat\": $quiesced_hb}}" > /dev/null 2>&1 \
       && log "  Quiesced: $agent_name" \
@@ -202,7 +238,7 @@ restore_heartbeats() {
   for agent_id in $(jq -r '.[] | select(.heartbeat.enabled == true or .heartbeat.wakeOnDemand == true) | .id' "$HEARTBEAT_STATE_FILE"); do
     agent_name=$(jq -r --arg id "$agent_id" '.[] | select(.id == $id) | .name' "$HEARTBEAT_STATE_FILE")
     saved_hb=$(jq -c --arg id "$agent_id" '.[] | select(.id == $id) | .heartbeat' "$HEARTBEAT_STATE_FILE")
-    curl -sf -X PATCH "$API_URL/api/agents/$agent_id" \
+    api_curl -X PATCH "$API_URL/api/agents/$agent_id" \
       -H "Content-Type: application/json" \
       -d "{\"runtimeConfig\": {\"heartbeat\": $saved_hb}}" > /dev/null 2>&1 \
       && log "  Restored: $agent_name" \
@@ -234,7 +270,8 @@ check_drained() {
   now=$(date +%s)
   elapsed=$(( now - drain_started ))
 
-  live_count=$(curl -sf "$API_URL/api/companies/$COMPANY_ID/live-runs" 2>/dev/null \
+  local live_count
+  live_count=$(api_curl "$API_URL/api/companies/$COMPANY_ID/live-runs" 2>/dev/null \
     | jq 'length' 2>/dev/null || echo "unknown")
 
   if [ "$live_count" = "0" ]; then
@@ -344,7 +381,7 @@ if [ "$phase" != "idle" ]; then
       else
         restore_heartbeats
         full_cleanup
-        exit 3
+        exit 4
       fi
       ;;
     swapping)
@@ -440,7 +477,7 @@ if [ "$phase" = "built" ]; then
   else
     restore_heartbeats
     full_cleanup
-    exit 3
+    exit 4
   fi
 fi
 
@@ -488,12 +525,12 @@ if [ "$phase" = "swapping" ]; then
 
   log "Syncing build artifacts from worktree..."
   rsync -a --delete "$BUILD_DIR/node_modules/" "$REPO_DIR/node_modules/" 2>>"$LOG_FILE"
-  for dist_dir in $(find "$BUILD_DIR" -name "dist" -not -path "*/node_modules/*" -type d 2>/dev/null); do
+  while IFS= read -r dist_dir; do
     relative="${dist_dir#$BUILD_DIR/}"
     target="$REPO_DIR/$relative"
     mkdir -p "$target"
     rsync -a --delete "$dist_dir/" "$target/" 2>>"$LOG_FILE"
-  done
+  done < <(find "$BUILD_DIR" -name "dist" -not -path "*/node_modules/*" -type d 2>/dev/null)
 
   if [ -n "$ORIGIN" ]; then
     log "Pushing to $ORIGIN..."
@@ -506,7 +543,7 @@ if [ "$phase" = "swapping" ]; then
   server_up=false
   for i in $(seq 1 12); do
     sleep 5
-    if curl -sf "$API_URL/api/companies" > /dev/null 2>&1; then
+    if api_curl "$API_URL/api/companies" > /dev/null 2>&1; then
       server_up=true
       break
     fi
