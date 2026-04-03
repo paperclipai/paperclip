@@ -1647,10 +1647,7 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
-        const anchorTs =
-          anchor.createdAt instanceof Date
-            ? anchor.createdAt.toISOString()
-            : String(anchor.createdAt);
+        const anchorTs = anchor.createdAt.toISOString();
         conditions.push(
           order === "asc"
             ? sql<boolean>`(
