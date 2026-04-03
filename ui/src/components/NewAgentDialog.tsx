@@ -31,6 +31,7 @@ type AdvancedAdapterType =
   | "pi_local"
   | "cursor"
   | "openclaw_gateway"
+  | "dashscope_local"
   | "hermes_local";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
@@ -89,6 +90,13 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenClaw Gateway",
     icon: Bot,
     desc: "Invoke OpenClaw via gateway protocol",
+  },
+  {
+    value: "dashscope_local",
+    label: "阿里云百炼 (DashScope)",
+    icon: Bot,
+    desc: "Alibaba Cloud DashScope (百炼) - OpenAI compatible API",
+    recommended: true,
   },
 ];
 
