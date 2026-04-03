@@ -1,6 +1,9 @@
 import type {
   Approval,
   DocumentRevision,
+  FeedbackTargetType,
+  FeedbackTrace,
+  FeedbackVote,
   Issue,
   IssueAttachment,
   IssueComment,
@@ -76,6 +79,26 @@ export const issuesApi = {
     }),
   release: (id: string) => api.post<Issue>(`/issues/${id}/release`, {}),
   listComments: (id: string) => api.get<IssueComment[]>(`/issues/${id}/comments`),
+  listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+  listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters ?? {})) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return api.get<FeedbackTrace[]>(`/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`);
+  },
+  upsertFeedbackVote: (
+    id: string,
+    data: {
+      targetType: FeedbackTargetType;
+      targetId: string;
+      vote: "up" | "down";
+      reason?: string;
+      allowSharing?: boolean;
+    },
+  ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
   addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
