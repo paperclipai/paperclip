@@ -26,6 +26,7 @@ export async function handleRunStartedMetrics(
   });
   runCounter.add(1, {
     agent_id: String(p.agentId ?? ""),
+    agent_name: String(p.agentName ?? "unknown"),
     invocation_source: String(p.invocationSource ?? ""),
   });
 }
@@ -53,6 +54,7 @@ export async function handleRunFinishedMetrics(
   );
   durationHist.record(durationMs, {
     agent_id: String(p.agentId ?? ""),
+    agent_name: String(p.agentName ?? "unknown"),
     status: "finished",
   });
 
@@ -82,6 +84,7 @@ export async function handleRunFailedMetrics(
   });
   errorCounter.add(1, {
     agent_id: String(p.agentId ?? ""),
+    agent_name: String(p.agentName ?? "unknown"),
     error: String(p.error ?? "unknown"),
   });
 }
@@ -126,6 +129,7 @@ export async function handleCostMetrics(
 
   const costTags = {
     agent_id: String(p.agentId ?? ""),
+    agent_name: String(p.agentName ?? "unknown"),
     provider,
     model: String(p.model ?? "unknown"),
     billing_type: String(p.billingType ?? ""),
@@ -229,6 +233,7 @@ export async function handleAgentStatusChangedMetrics(
   );
   agentStatusChanges.add(1, {
     agent_id: String(p.agentId ?? ""),
+    agent_name: String(p.agentName ?? "unknown"),
     status: String(p.status ?? "unknown"),
   });
 }
