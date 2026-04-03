@@ -39,10 +39,12 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { ChoosePathButton } from "./PathInstructionsModal";
 import {
   Building2,
   Bot,
   Code,
+  FolderOpen,
   Gem,
   ListTodo,
   Rocket,
@@ -135,6 +137,10 @@ export function OnboardingWizard() {
   const [taskDescription, setTaskDescription] = useState(
     DEFAULT_TASK_DESCRIPTION
   );
+
+  // Step 4 — workspace
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -307,6 +313,8 @@ export function OnboardingWizard() {
     setCreatedAgentId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
+    setWorkspacePath("");
+    setWorkspaceError(null);
   }
 
   function handleClose() {
@@ -543,7 +551,22 @@ export function OnboardingWizard() {
   }
 
   async function handleLaunch() {
-    if (!createdCompanyId || !createdAgentId) return;
+    if (!createdCompanyId || !createdAgentId) {
+      setError(
+        !createdCompanyId
+          ? "Please create a company first (Step 1)."
+          : "Please create an agent first (Step 2)."
+      );
+      return;
+    }
+
+    const localPath = workspacePath.trim();
+    if (localPath && !(localPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(localPath))) {
+      setWorkspaceError("Local folder must be a full absolute path.");
+      return;
+    }
+    setWorkspaceError(null);
+
     setLoading(true);
     setError(null);
     try {
@@ -565,6 +588,18 @@ export function OnboardingWizard() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.projects.list(createdCompanyId)
         });
+      }
+
+      if (localPath && projectId) {
+        const folderName = localPath.split(/[\\/]/).filter(Boolean).pop() ?? "workspace";
+        try {
+          await projectsApi.createWorkspace(projectId, {
+            name: folderName,
+            cwd: localPath,
+          });
+        } catch (wsErr) {
+          console.warn("Workspace creation failed:", wsErr);
+        }
       }
 
       let issueRef = createdIssueRef;
@@ -1247,6 +1282,34 @@ export function OnboardingWizard() {
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <label className="text-xs text-muted-foreground">
+                        Project folder
+                      </label>
+                      <span className="text-xs text-muted-foreground/50">optional</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground/70 mb-1.5">
+                      Set the local directory where agents will read and write files.
+                    </p>
+                    <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
+                      <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <input
+                        className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/50"
+                        placeholder="/path/to/project"
+                        value={workspacePath}
+                        onChange={(e) => {
+                          setWorkspacePath(e.target.value);
+                          setWorkspaceError(null);
+                        }}
+                      />
+                      <ChoosePathButton />
+                    </div>
+                    {workspaceError && (
+                      <p className="text-xs text-destructive mt-1">{workspaceError}</p>
+                    )}
                   </div>
                 </div>
               )}
