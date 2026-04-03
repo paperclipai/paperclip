@@ -615,6 +615,10 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| GET    | `/api/issues/:issueId/dependencies` | List blocker dependencies (requires `enableDependencies` flag)                           |
+| POST   | `/api/issues/:issueId/dependencies` | Add a blocker dependency (requires `enableDependencies` flag)                            |
+| DELETE | `/api/issues/:issueId/dependencies/:dependencyId` | Remove a blocker dependency (requires `enableDependencies` flag)              |
+| GET    | `/api/issues/:issueId/dependents`  | List issues blocked by this issue (requires `enableDependencies` flag)                    |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
