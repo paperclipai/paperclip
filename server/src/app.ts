@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import helmet from "helmet";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -86,6 +87,11 @@ export async function createApp(
   },
 ) {
   const app = express();
+
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
 
   // Rate limiting (configurable, disable behind reverse proxy)
   const rateLimitEnabled = process.env.PAPERCLIP_RATE_LIMIT_ENABLED !== "false";
