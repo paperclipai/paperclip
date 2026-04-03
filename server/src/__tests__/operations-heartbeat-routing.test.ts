@@ -79,7 +79,7 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
     return { companyId, opsAgentId, workerAgentId, issuePrefix };
   }
 
-  it("prioritizes an active operations-assigned issue", async () => {
+  it("can pick an operations-assigned issue when it is the highest-priority recovery target", async () => {
     const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
 
     const opsIssueId = randomUUID();
@@ -89,9 +89,9 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       {
         id: opsIssueId,
         companyId,
-        title: "Ops active item",
-        status: "in_progress",
-        priority: "medium",
+        title: "Operations watchdog blocked and stale",
+        status: "blocked",
+        priority: "urgent",
         assigneeAgentId: opsAgentId,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
@@ -99,22 +99,27 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       {
         id: otherIssueId,
         companyId,
-        title: "Cross-agent stale item",
+        title: "Cross-agent assigned with fresh blocker truth",
         status: "in_progress",
-        priority: "high",
+        priority: "medium",
         assigneeAgentId: workerAgentId,
         issueNumber: 2,
         identifier: `${issuePrefix}-2`,
       },
     ]);
 
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: otherIssueId,
+      authorAgentId: workerAgentId,
+      body: "Status: blocked\nWaiting on API team.",
+    });
+
     const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
 
-    expect(target).toEqual({
-      issueId: opsIssueId,
-      mode: "ops_active",
-      reason: "operations agent already owns an active issue",
-    });
+    expect(target?.issueId).toBe(opsIssueId);
+    expect(target?.mode).toBe("ops_active");
+    expect(target?.reason).toContain("stale or blocked assigned work");
   });
 
   it("selects a cross-agent recovery issue before unassigned backlog", async () => {
@@ -222,6 +227,55 @@ describeEmbeddedPostgres("operations heartbeat routing", () => {
       mode: "ready_unassigned",
       reason: "no recovery target found; selected ready unassigned issue",
     });
+  });
+
+  it("ranks stuck assigned false-complete above watchdog when it is the higher-priority recovery problem", async () => {
+    const { companyId, opsAgentId, workerAgentId, issuePrefix } = await seedCompanyWithOpsAgent();
+    const watchdogIssueId = randomUUID();
+    const stuckAssignedIssueId = randomUUID();
+    const stuckAssignedRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: stuckAssignedRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      startedAt: new Date("2026-04-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      contextSnapshot: { issueId: stuckAssignedIssueId },
+    });
+
+    await db.insert(issues).values([
+      {
+        id: watchdogIssueId,
+        companyId,
+        title: "Queue-lock watchdog routine",
+        status: "todo",
+        priority: "low",
+        assigneeAgentId: opsAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: stuckAssignedIssueId,
+        companyId,
+        title: "Assigned issue with probable false completion",
+        status: "in_progress",
+        priority: "urgent",
+        assigneeAgentId: workerAgentId,
+        executionRunId: stuckAssignedRunId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const target = await resolveOperationsHeartbeatTarget(db, { companyId, operationsAgentId: opsAgentId });
+
+    expect(target?.issueId).toBe(stuckAssignedIssueId);
+    expect(target?.mode).toBe("cross_agent_recovery");
+    expect(target?.reason).toContain("incomplete/false-complete assigned work");
   });
 
   it("routes generic manual heartbeat (no issue context) to company-wide recovery target", async () => {

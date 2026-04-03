@@ -140,36 +140,11 @@ export async function resolveOperationsHeartbeatTarget(
 ): Promise<OperationsHeartbeatTarget | null> {
   const now = Date.now();
 
-  const activeOpsIssue = await db
-    .select({
-      id: issues.id,
-      status: issues.status,
-      priority: issues.priority,
-      updatedAt: issues.updatedAt,
-    })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.companyId, input.companyId),
-        eq(issues.assigneeAgentId, input.operationsAgentId),
-        inArray(issues.status, OPEN_ISSUE_STATUSES as unknown as string[]),
-        sql`${issues.hiddenAt} is null`,
-      ),
-    )
-    .orderBy(desc(issues.updatedAt))
-    .then((rows) => rows[0] ?? null);
-
-  if (activeOpsIssue) {
-    return {
-      issueId: activeOpsIssue.id,
-      mode: "ops_active",
-      reason: "operations agent already owns an active issue",
-    };
-  }
-
   const openAssignedIssues = await db
     .select({
       id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
       status: issues.status,
       priority: issues.priority,
       updatedAt: issues.updatedAt,
@@ -186,12 +161,10 @@ export async function resolveOperationsHeartbeatTarget(
       ),
     );
 
-  const crossAgentAssigned = openAssignedIssues.filter(
-    (row) => row.assigneeAgentId && row.assigneeAgentId !== input.operationsAgentId,
-  );
-
-  if (crossAgentAssigned.length > 0) {
-    const runIds = Array.from(new Set(crossAgentAssigned.map((row) => row.executionRunId).filter((id): id is string => Boolean(id))));
+  if (openAssignedIssues.length > 0) {
+    const runIds = Array.from(
+      new Set(openAssignedIssues.map((row) => row.executionRunId).filter((id): id is string => Boolean(id))),
+    );
     const runRows =
       runIds.length > 0
         ? await db
@@ -201,7 +174,7 @@ export async function resolveOperationsHeartbeatTarget(
         : [];
     const runById = new Map(runRows.map((row) => [row.id, row]));
 
-    const issueIds = crossAgentAssigned.map((row) => row.id);
+    const issueIds = openAssignedIssues.map((row) => row.id);
     const latestCommentRows =
       issueIds.length > 0
         ? await db
@@ -217,7 +190,7 @@ export async function resolveOperationsHeartbeatTarget(
         : [];
     const latestCommentByIssueId = new Map(latestCommentRows.map((row) => [row.issueId, row]));
 
-    const ranked = crossAgentAssigned
+    const ranked = openAssignedIssues
       .map((issue) => {
         const run = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
         const latestComment = latestCommentByIssueId.get(issue.id);
@@ -226,51 +199,77 @@ export async function resolveOperationsHeartbeatTarget(
           ? Math.floor((now - latestComment.createdAt.getTime()) / (60 * 60 * 1000))
           : Number.POSITIVE_INFINITY;
         const truthType = classifyIssueTruthFromCommentBody(latestComment?.body);
+        const isOperationsOwned = issue.assigneeAgentId === input.operationsAgentId;
+        const watchdogLabel = `${issue.identifier ?? ""} ${issue.title}`.toLowerCase();
+        const isWatchdogIssue = /watchdog|queue\s*lock|lock\s*repair|orphan(ed)?\s*run|heartbeat\s*recovery/.test(
+          watchdogLabel,
+        );
 
         let score = 0;
         const reasons: string[] = [];
 
         if (issue.status === "in_progress" && !issue.executionRunId) {
-          score += 120;
-          reasons.push("in_progress with no execution run");
+          score += 170;
+          reasons.push("stale or blocked assigned work: in_progress with no execution run");
+        }
+        if (issue.status === "blocked") {
+          score += 150;
+          reasons.push("stale or blocked assigned work: status is blocked");
         }
         if (run && (run.status === "failed" || run.status === "cancelled")) {
-          score += 110;
-          reasons.push(`latest run ended ${run.status}`);
+          score += 165;
+          reasons.push(`stale assigned work: latest run ended ${run.status}`);
         }
-        if (run && run.status === "completed" && !truthType) {
-          score += 100;
-          reasons.push("run completed without completion/blocker/handoff truth");
+
+        if (run && run.status === "completed" && truthType !== "completion") {
+          score += 210;
+          reasons.push("incomplete/false-complete assigned work: completed run without completion truth");
         }
+
+        if (truthType === "completion" && issue.status !== "in_review") {
+          score += 175;
+          reasons.push("contradictory issue truth: completion truth on non-completed status");
+        }
+        if ((truthType === "blocker" || truthType === "handoff") && issue.status === "backlog") {
+          score += 140;
+          reasons.push(`contradictory issue truth: ${truthType} truth while status is backlog`);
+        }
+
         if (!latestComment) {
-          score += 80;
+          score += 85;
           reasons.push("no issue comments found");
         }
         if (latestComment && !truthType && latestCommentAgeHours >= 12) {
-          score += 70;
+          score += 95;
           reasons.push(`stale comment without explicit truth (${latestCommentAgeHours}h)`);
         }
         if (issueAgeHours >= 24) {
-          score += 60;
+          score += 90;
           reasons.push(`stale issue updates (${issueAgeHours}h)`);
         }
 
-        if (truthType === "blocker" || truthType === "handoff") {
-          score -= 80;
-          reasons.push(`explicit ${truthType} truth present`);
-        }
-        if (truthType === "completion" && run?.status === "completed") {
-          score -= 120;
-          reasons.push("completion truth present with completed run");
+        if (isWatchdogIssue) {
+          score += 120;
+          reasons.push("queue-lock/watchdog issue");
         }
 
-        score += normalizePriorityRank(issue.priority) * 5;
+        score += normalizePriorityRank(issue.priority) * 12;
+
+        if ((truthType === "blocker" || truthType === "handoff") && latestCommentAgeHours < 6) {
+          score -= 120;
+          reasons.push(`fresh ${truthType} truth already present`);
+        }
+        if (truthType === "completion" && run?.status === "completed" && issue.status === "in_review") {
+          score -= 160;
+          reasons.push("completion truth aligns with current state");
+        }
 
         return {
           issue,
           score,
           reasons,
           issueAgeHours,
+          isOperationsOwned,
         };
       })
       .filter((entry) => entry.score > 0)
@@ -280,7 +279,7 @@ export async function resolveOperationsHeartbeatTarget(
     if (top) {
       return {
         issueId: top.issue.id,
-        mode: "cross_agent_recovery",
+        mode: top.isOperationsOwned ? "ops_active" : "cross_agent_recovery",
         reason: top.reasons.join("; "),
       };
     }
