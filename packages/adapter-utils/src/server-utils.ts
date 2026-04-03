@@ -793,8 +793,14 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
 
         if (opts.stdin != null && child.stdin) {
-          child.stdin.write(opts.stdin);
-          child.stdin.end();
+          const stdin = child.stdin;
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            // Short-lived probes can exit before consuming stdin.
+            if (err.code === "EPIPE" || err.code === "ECONNRESET") return;
+            onLogError(err, runId, "stdin stream error");
+          });
+          stdin.write(opts.stdin);
+          stdin.end();
         }
 
         if (typeof child.pid === "number" && child.pid > 0 && opts.onSpawn) {
