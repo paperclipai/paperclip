@@ -37,7 +37,14 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
 
-**Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
+**Step 4 — Pick work (with mention exception).** Prioritize tasks in this order:
+
+1. **`in_progress`** — always resume in-progress work first.
+2. **`todo`** — sorted by priority: `critical` > `high` > `medium` > `low`. When multiple `todo` tasks share the same priority level, prefer the one updated most recently (or the one with the most recent comment activity). Never let a lower-priority `todo` outrank a higher-priority `todo` by inbox position alone.
+3. **`blocked`** — only if you can unblock it.
+
+**Critical-priority override:** If you or your manager are operating under an active `critical`-priority item, all `critical` `todo` tasks take absolute precedence over any non-critical `todo` work, regardless of assignment order or inbox position.
+
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
 If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
