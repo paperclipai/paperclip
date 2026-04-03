@@ -214,6 +214,8 @@ export function InboxIssueMetaLeading({
   showStatus?: boolean;
   showIdentifier?: boolean;
 }) {
+  const { t } = useTranslation();
+
   return (
     <>
       {showStatus ? (
@@ -248,7 +250,7 @@ export function InboxIssueMetaLeading({
               "text-blue-600 dark:text-blue-400",
             )}
           >
-            Live
+            {t("Live", { defaultValue: "Live" })}
           </span>
         </span>
       )}
@@ -297,8 +299,10 @@ export function InboxIssueTrailingColumns({
   assigneeName: string | null;
   currentUserId: string | null;
 }) {
+  const { t } = useTranslation();
   const activityText = timeAgo(issue.lastExternalCommentAt ?? issue.updatedAt);
-  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
+  const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId)
+    ?? t("User", { defaultValue: "User" });
 
   return (
     <span
@@ -329,7 +333,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unassigned
+              {t("Unassigned", { defaultValue: "Unassigned" })}
             </span>
           );
         }
@@ -354,7 +358,7 @@ export function InboxIssueTrailingColumns({
 
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              No project
+              {t("No project", { defaultValue: "No project" })}
             </span>
           );
         }
@@ -1866,7 +1870,7 @@ export function Inbox() {
                     <div key="today-divider" className="flex items-center gap-3 px-4 my-2">
                       <div className="flex-1 border-t border-zinc-600" />
                       <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-                        Earlier
+                        {t("Earlier", { defaultValue: "Earlier" })}
                       </span>
                     </div>,
                   );

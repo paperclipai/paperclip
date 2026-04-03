@@ -124,16 +124,17 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">
+              {t("instanceGeneralSettings.keyboardShortcutsTitle")}
+            </h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
-              toggling panels. This is off by default.
+              {t("instanceGeneralSettings.keyboardShortcutsDescription")}
             </p>
           </div>
           <button
             type="button"
             data-slot="toggle"
-            aria-label="Toggle keyboard shortcuts"
+            aria-label={t("instanceGeneralSettings.keyboardShortcutsToggle")}
             disabled={updateGeneralMutation.isPending}
             className={cn(
               "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
