@@ -66,7 +66,7 @@ function KanbanColumn({
   const isEmpty = issues.length === 0;
 
   return (
-    <div className={`flex flex-col shrink-0 transition-all ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
+    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
       <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
         <StatusIcon status={status} />
         {(!isEmpty || isOver) && (
