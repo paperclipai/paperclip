@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -70,6 +71,7 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const LOW_MEMORY_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB — defer spawn if free memory is below this
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1932,6 +1934,8 @@ export function heartbeatService(db: Db) {
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          freeMemBytes: os.freemem(),
+          totalMemBytes: os.totalmem(),
         },
       });
 
@@ -2717,6 +2721,29 @@ export function heartbeatService(db: Db) {
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
+      }
+      // Memory pre-flight: defer if OS free memory is below threshold to avoid OOM kills
+      const freeMemBytes = os.freemem();
+      if (freeMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
+        const freeMemMB = Math.round(freeMemBytes / (1024 * 1024));
+        const totalMemMB = Math.round(os.totalmem() / (1024 * 1024));
+        logger.warn(
+          { runId: run.id, agentId: agent.id, freeMemMB, totalMemMB },
+          "low memory: deferring run back to queued",
+        );
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "queued", updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, run.id));
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Deferred: insufficient free memory (${freeMemMB} MB free of ${totalMemMB} MB total); will retry on next scheduler tick`,
+          payload: { freeMemBytes, totalMemBytes: os.totalmem() },
+        });
+        activeRunExecutions.delete(run.id);
+        return;
       }
       let adapterResult = await adapter.execute({
         runId: run.id,
