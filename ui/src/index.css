@@ -127,6 +127,10 @@
     height: 100%;
     overflow: hidden;
   }
+  #root {
+    height: 100%;
+    min-height: 0;
+  }
   h1,
   h2,
   h3 {

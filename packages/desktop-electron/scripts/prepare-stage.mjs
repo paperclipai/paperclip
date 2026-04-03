@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -18,8 +19,14 @@ import { runNodeScript, runPnpm } from "./utils.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageDir = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(packageDir, "../..");
-const stageDir = path.resolve(packageDir, ".stage", "app");
-const stageNodeModules = path.resolve(stageDir, "node_modules");
+const stageRootDir = path.resolve(packageDir, ".stage");
+const serverDeployDir = path.resolve(stageRootDir, "server-deploy");
+const serverDeployNodeModulesDir = path.resolve(serverDeployDir, "node_modules");
+const appRuntimeDir = path.resolve(stageRootDir, "app-runtime");
+const appRuntimeServerDir = path.resolve(appRuntimeDir, "server");
+const appRuntimeNodeModulesDir = path.resolve(appRuntimeDir, "node_modules");
+const appRuntimeSkillsDir = path.resolve(appRuntimeDir, "skills");
+const bundledSkillsDir = path.resolve(repoRoot, "skills");
 
 function readJson(filePath) {
   return JSON.parse(readFileSync(filePath, "utf8"));
@@ -37,8 +44,8 @@ function writeJson(filePath, value) {
 
 function isInsideStage(targetPath) {
   const realTarget = realpathSync(targetPath);
-  const relative = path.relative(stageDir, realTarget);
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  const relative = path.relative(stageRootDir, realTarget);
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function collectScopedPackageJsons(rootDir, scopeName) {
@@ -138,9 +145,9 @@ runPnpm(["--dir", repoRoot, "--filter", "@penclipai/desktop-electron", "build:re
   cwd: repoRoot,
 });
 
-console.log("[desktop-stage] Creating staged app directory...");
-rmSync(stageDir, { recursive: true, force: true });
-mkdirSync(path.dirname(stageDir), { recursive: true });
+console.log("[desktop-stage] Creating staged packaged runtime...");
+rmSync(stageRootDir, { recursive: true, force: true });
+mkdirSync(stageRootDir, { recursive: true });
 
 runPnpm(
   [
@@ -148,16 +155,29 @@ runPnpm(
     "--dir",
     repoRoot,
     "--filter",
-    "@penclipai/desktop-electron",
+    "@penclipai/server",
     "deploy",
     "--prod",
-    stageDir,
+    serverDeployDir,
   ],
   { cwd: repoRoot },
 );
 
+const hoistedSelfRefServerPath = path.resolve(
+  serverDeployNodeModulesDir,
+  ".pnpm",
+  "node_modules",
+  "@penclipai",
+  "server",
+);
+
+if (existsSync(hoistedSelfRefServerPath)) {
+  rmSync(hoistedSelfRefServerPath, { recursive: true, force: true });
+}
+
 console.log("[desktop-stage] Patching deployed workspace package metadata...");
-const packageJsons = collectScopedPackageJsons(stageNodeModules, "@penclipai");
+patchPublishMetadata(path.resolve(serverDeployDir, "package.json"));
+const packageJsons = collectScopedPackageJsons(serverDeployNodeModulesDir, "@penclipai");
 let patchedCount = 0;
 for (const packageJsonPath of packageJsons) {
   if (patchPublishMetadata(packageJsonPath)) {
@@ -166,3 +186,29 @@ for (const packageJsonPath of packageJsons) {
 }
 
 console.log(`[desktop-stage] Patched ${patchedCount} deployed package manifests.`);
+
+console.log("[desktop-stage] Assembling packaged app-runtime...");
+rmSync(appRuntimeDir, { recursive: true, force: true });
+mkdirSync(appRuntimeServerDir, { recursive: true });
+
+cpSync(path.resolve(serverDeployDir, "dist"), path.resolve(appRuntimeServerDir, "dist"), {
+  recursive: true,
+  force: true,
+});
+cpSync(path.resolve(serverDeployDir, "ui-dist"), path.resolve(appRuntimeServerDir, "ui-dist"), {
+  recursive: true,
+  force: true,
+});
+cpSync(path.resolve(serverDeployDir, "package.json"), path.resolve(appRuntimeServerDir, "package.json"), {
+  force: true,
+});
+cpSync(serverDeployNodeModulesDir, appRuntimeNodeModulesDir, {
+  recursive: true,
+  force: true,
+});
+cpSync(bundledSkillsDir, appRuntimeSkillsDir, {
+  recursive: true,
+  force: true,
+});
+
+console.log("[desktop-stage] Packaged runtime ready in .stage/app-runtime.");

@@ -21,7 +21,6 @@
     "dist:win": "node scripts/dist.mjs"
   },
   "dependencies": {
-    "@penclipai/server": "workspace:*",
     "custom-electron-titlebar": "^4.4.1"
   },
   "devDependencies": {

@@ -153,10 +153,10 @@ function ensureWindow(): BrowserWindow {
   if (mainWindow) return mainWindow;
 
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 1100,
-    minHeight: 720,
+    width: 1280,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
     show: false,
     autoHideMenuBar: true,
     title: DESKTOP_WINDOW_TITLE,

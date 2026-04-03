@@ -291,9 +291,6 @@ importers:
 
   packages/desktop-electron:
     dependencies:
-      '@penclipai/server':
-        specifier: workspace:*
-        version: link:../../server
       custom-electron-titlebar:
         specifier: ^4.4.1
         version: 4.4.1(electron@41.1.1)

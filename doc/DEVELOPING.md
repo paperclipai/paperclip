@@ -67,7 +67,7 @@ pnpm smoke:desktop --mode packaged
 What they do:
 
 - `pnpm desktop:dev` builds the Electron shell and launches a desktop window against the local Paperclip server entrypoint with `PAPERCLIP_UI_DEV_MIDDLEWARE=true`
-- `pnpm desktop:dist:win` stages the packaged runtime, builds the Electron bundle, and creates the Windows installer plus `win-unpacked/`
+- `pnpm desktop:dist:win` stages a packaged runtime in `packages/desktop-electron/.stage/app-runtime`, builds a small Electron shell, bundles `app-runtime` as extra resources, and creates the Windows installer plus `win-unpacked/`
 - `pnpm smoke:desktop --mode dev` launches the dev Electron shell, captures a startup splash screenshot, waits for `/api/health`, then captures the loaded board
 - `pnpm smoke:desktop --mode packaged` launches the unpacked Windows desktop build from `packages/desktop-electron/release/win-unpacked/` and performs the same splash + board checks
 
@@ -76,6 +76,7 @@ Current scope and notes:
 - this pass only supports Windows packaging
 - `pnpm` stays on the repo-standard `9.15.4`
 - the desktop shell uses `custom-electron-titlebar` with native Windows controls exposed via `titleBarOverlay`
+- packaged desktop assets now live under `resources/app-runtime/{server,node_modules,skills}` instead of using the server runtime as the Electron app directory
 - startup splash screenshots are written to `packages/desktop-electron/.artifacts/smoke/<mode>/`
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.

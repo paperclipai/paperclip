@@ -8,6 +8,7 @@ import {
   readDesktopThemePreference,
   resolveDesktopPreferencesPath,
   resolveDesktopTheme,
+  resolveServerEntrypoint,
   resolveDesktopUserDataDir,
   type DesktopRuntimeInput,
   writeDesktopThemePreference,
@@ -52,6 +53,10 @@ describe("buildWorkerEnvironment", () => {
     process.env.SERVE_UI = "false";
     process.env.PAPERCLIP_UI_DEV_MIDDLEWARE = "true";
     process.env.PAPERCLIP_HOME = "C:\\legacy-paperclip-home";
+    process.env.PAPERCLIP_CONFIG = "C:\\legacy\\config.json";
+    process.env.PAPERCLIP_CONTEXT = "C:\\legacy\\context.json";
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "legacy-worktree";
     process.env.PORT = "3201";
 
     const env = buildWorkerEnvironment(buildInput("packaged"));
@@ -62,8 +67,6 @@ describe("buildWorkerEnvironment", () => {
         "C:\\paperclip\\desktop-electron",
         "..",
         "app-runtime",
-        "node_modules",
-        "@penclipai",
         "server",
         "dist",
         "index.js",
@@ -72,7 +75,40 @@ describe("buildWorkerEnvironment", () => {
     expect(env.SERVE_UI).toBe("true");
     expect(env.PAPERCLIP_UI_DEV_MIDDLEWARE).toBe("false");
     expect(env.PAPERCLIP_HOME).toBe("C:\\legacy-paperclip-home");
+    expect(env.PAPERCLIP_CONFIG).toBe(
+      path.resolve("C:\\legacy-paperclip-home", "instances", "default", "config.json"),
+    );
+    expect(env.PAPERCLIP_CONTEXT).toBe(
+      path.resolve("C:\\legacy-paperclip-home", "context.json"),
+    );
+    expect(env.PAPERCLIP_IN_WORKTREE).toBe("");
+    expect(env.PAPERCLIP_WORKTREE_NAME).toBe("");
     expect(env.PORT).toBe("3201");
+  });
+
+  it("falls back to the legacy packaged server location when the split-shell layout is absent", () => {
+    const baseDir = createTempDir();
+    const appRoot = path.join(baseDir, "app");
+    const legacyEntrypoint = path.join(
+      baseDir,
+      "app-runtime",
+      "node_modules",
+      "@penclipai",
+      "server",
+      "dist",
+      "index.js",
+    );
+
+    fs.mkdirSync(appRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(legacyEntrypoint), { recursive: true });
+    fs.writeFileSync(legacyEntrypoint, "", "utf8");
+
+    expect(resolveServerEntrypoint({
+      appRoot,
+      repoRoot: "C:\\paperclip",
+      userDataDir: "C:\\Users\\chenj\\AppData\\Roaming\\Paperclip",
+      mode: "packaged",
+    })).toBe(legacyEntrypoint);
   });
 
   it("keeps development workers on Vite middleware", () => {

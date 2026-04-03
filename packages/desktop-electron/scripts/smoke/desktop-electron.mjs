@@ -205,6 +205,75 @@ async function waitForHealth(origin, timeoutMs = 90_000) {
   throw new Error(`Timed out waiting for desktop health endpoint at ${healthUrl}`);
 }
 
+async function createSmokeCompany(origin, theme) {
+  const response = await fetch(new URL("/api/companies", origin), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: `Desktop Smoke ${theme} ${Date.now()}`,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create smoke company (${response.status}): ${await response.text()}`);
+  }
+
+  return await response.json();
+}
+
+async function readDesktopLayoutState(page) {
+  return await page.evaluate(() => {
+    const rect = (element) => {
+      if (!(element instanceof Element)) return null;
+      const box = element.getBoundingClientRect();
+      return {
+        top: box.top,
+        bottom: box.bottom,
+        height: box.height,
+      };
+    };
+
+    const root = document.querySelector("#root");
+    const appShell = root?.firstElementChild ?? null;
+    const cetContainer = document.querySelector(".cet-container");
+    const main = document.querySelector("#main-content");
+
+    return {
+      appShellPaddingTop:
+        appShell instanceof Element ? Number.parseFloat(getComputedStyle(appShell).paddingTop || "0") : null,
+      cetContainer: rect(cetContainer),
+      main: rect(main),
+      root: rect(root),
+    };
+  });
+}
+
+function assertDesktopLayoutState(state, routeLabel) {
+  if (!state.cetContainer || !state.root || !state.main) {
+    throw new Error(`Missing layout nodes while validating ${routeLabel}.`);
+  }
+
+  if (state.root.bottom > state.cetContainer.bottom + 1) {
+    throw new Error(
+      `${routeLabel} root overflowed the CET container (${state.root.bottom} > ${state.cetContainer.bottom}).`,
+    );
+  }
+
+  if (state.main.bottom > state.cetContainer.bottom + 1) {
+    throw new Error(
+      `${routeLabel} main content overflowed the CET container (${state.main.bottom} > ${state.cetContainer.bottom}).`,
+    );
+  }
+
+  if ((state.appShellPaddingTop ?? 0) > 1) {
+    throw new Error(
+      `${routeLabel} retained an unexpected desktop top inset (${state.appShellPaddingTop}px).`,
+    );
+  }
+}
+
 async function ensureDirectory(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
@@ -316,6 +385,18 @@ async function runThemeScenario(mode, theme, artifactDir) {
       const root = document.querySelector("#root");
       return Boolean(root && root.childElementCount > 0);
     }, undefined, { timeout: 30_000 });
+
+    const company = await createSmokeCompany(origin, theme);
+    await page.goto(`${origin}/${company.issuePrefix}/dashboard`);
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForFunction(() => {
+      const root = document.querySelector("#root");
+      const main = document.querySelector("#main-content");
+      return Boolean(root && root.childElementCount > 0 && main);
+    }, undefined, { timeout: 30_000 });
+
+    const layoutState = await readDesktopLayoutState(page);
+    assertDesktopLayoutState(layoutState, "desktop dashboard");
 
     const boardShot = path.resolve(artifactDir, `board-${locale}-${theme}.png`);
     await page.screenshot({ path: boardShot, fullPage: true });

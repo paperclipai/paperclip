@@ -1,24 +1,23 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runNodeScript, runPnpm } from "./utils.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageDir = path.resolve(__dirname, "..");
-const repoRoot = path.resolve(packageDir, "..", "..");
 const releaseDir = path.resolve(packageDir, "release");
 const generatedWorkspaceDir = path.resolve(packageDir, "packages");
-const stageNodeModulesDir = path.resolve(packageDir, ".stage", "app", "node_modules");
-const bundledSkillsDir = path.resolve(repoRoot, "skills");
+const stageAppRuntimeDir = path.resolve(packageDir, ".stage", "app-runtime");
+const stageAppRuntimeServerDir = path.resolve(stageAppRuntimeDir, "server");
+const stageAppRuntimeNodeModulesDir = path.resolve(stageAppRuntimeDir, "node_modules");
+const stageAppRuntimeSkillsDir = path.resolve(stageAppRuntimeDir, "skills");
 const winUnpackedDir = path.resolve(releaseDir, "win-unpacked");
 const packagedRuntimeDir = path.resolve(winUnpackedDir, "resources", "app-runtime");
-const packagedRuntimeNodeModulesDir = path.resolve(
-  packagedRuntimeDir,
-  "node_modules",
-);
+const packagedRuntimeServerDir = path.resolve(packagedRuntimeDir, "server");
+const packagedRuntimeNodeModulesDir = path.resolve(packagedRuntimeDir, "node_modules");
 const packagedRuntimeSkillsDir = path.resolve(packagedRuntimeDir, "skills");
 const prepareStageScript = path.resolve(packageDir, "scripts", "prepare-stage.mjs");
 const expectedExecutablePath = path.resolve(winUnpackedDir, "Paperclip CN.exe");
@@ -59,12 +58,28 @@ function verifyPackagedRuntime() {
     throw new Error(`Missing unpacked executable: ${expectedExecutablePath}`);
   }
 
-  if (!existsSync(stageNodeModulesDir)) {
-    throw new Error(`Missing staged runtime node_modules: ${stageNodeModulesDir}`);
+  if (!existsSync(stageAppRuntimeDir)) {
+    throw new Error(`Missing staged runtime directory: ${stageAppRuntimeDir}`);
   }
 
-  if (!existsSync(bundledSkillsDir)) {
-    throw new Error(`Missing bundled Paperclip skills: ${bundledSkillsDir}`);
+  if (!existsSync(stageAppRuntimeServerDir)) {
+    throw new Error(`Missing staged runtime server directory: ${stageAppRuntimeServerDir}`);
+  }
+
+  if (!existsSync(stageAppRuntimeNodeModulesDir)) {
+    throw new Error(`Missing staged runtime node_modules: ${stageAppRuntimeNodeModulesDir}`);
+  }
+
+  if (!existsSync(stageAppRuntimeSkillsDir)) {
+    throw new Error(`Missing staged runtime skills directory: ${stageAppRuntimeSkillsDir}`);
+  }
+
+  if (!existsSync(packagedRuntimeDir)) {
+    throw new Error(`Missing packaged runtime directory: ${packagedRuntimeDir}`);
+  }
+
+  if (!existsSync(packagedRuntimeServerDir)) {
+    throw new Error(`Missing packaged runtime server directory: ${packagedRuntimeServerDir}`);
   }
 
   if (!existsSync(packagedRuntimeNodeModulesDir)) {
@@ -75,7 +90,34 @@ function verifyPackagedRuntime() {
     throw new Error(`Missing packaged runtime skills directory: ${packagedRuntimeSkillsDir}`);
   }
 
-  const stagedPackages = listRequiredTopLevelPackages(stageNodeModulesDir);
+  const requiredRuntimePaths = [
+    {
+      description: "server entrypoint",
+      stagedPath: path.resolve(stageAppRuntimeServerDir, "dist", "index.js"),
+      packagedPath: path.resolve(packagedRuntimeServerDir, "dist", "index.js"),
+    },
+    {
+      description: "server package manifest",
+      stagedPath: path.resolve(stageAppRuntimeServerDir, "package.json"),
+      packagedPath: path.resolve(packagedRuntimeServerDir, "package.json"),
+    },
+    {
+      description: "bundled static UI",
+      stagedPath: path.resolve(stageAppRuntimeServerDir, "ui-dist", "index.html"),
+      packagedPath: path.resolve(packagedRuntimeServerDir, "ui-dist", "index.html"),
+    },
+  ];
+
+  for (const { description, stagedPath, packagedPath } of requiredRuntimePaths) {
+    if (!existsSync(stagedPath)) {
+      throw new Error(`Staged runtime is missing ${description}: ${stagedPath}`);
+    }
+    if (!existsSync(packagedPath)) {
+      throw new Error(`Packaged runtime is missing ${description}: ${packagedPath}`);
+    }
+  }
+
+  const stagedPackages = listRequiredTopLevelPackages(stageAppRuntimeNodeModulesDir);
   const packagedPackages = new Set(listRequiredTopLevelPackages(packagedRuntimeNodeModulesDir));
   const missingTopLevelPackages = stagedPackages.filter((name) => !packagedPackages.has(name));
 
@@ -88,9 +130,11 @@ function verifyPackagedRuntime() {
   const requiredPaths = [
     path.resolve(packagedRuntimeNodeModulesDir, "@aws-sdk", "client-s3"),
     path.resolve(packagedRuntimeNodeModulesDir, "@embedded-postgres", "windows-x64"),
-    path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "server"),
+    path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "adapter-codex-local"),
+    path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "adapter-cursor-local"),
     path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "db"),
     path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "shared"),
+    path.resolve(packagedRuntimeNodeModulesDir, "@penclipai", "adapter-utils"),
   ];
 
   for (const requiredPath of requiredPaths) {
@@ -99,7 +143,7 @@ function verifyPackagedRuntime() {
     }
   }
 
-  const sourceSkillDirs = listSkillDirectories(bundledSkillsDir);
+  const sourceSkillDirs = listSkillDirectories(stageAppRuntimeSkillsDir);
   const packagedSkillDirs = new Set(listSkillDirectories(packagedRuntimeSkillsDir));
   const missingSkillDirs = sourceSkillDirs.filter((name) => !packagedSkillDirs.has(name));
 
@@ -203,27 +247,6 @@ function buildUnpackedWindowsApp() {
   );
 }
 
-function copyRuntimeAssetsIntoUnpackedApp() {
-  if (!existsSync(stageNodeModulesDir)) {
-    throw new Error(`Missing staged runtime node_modules: ${stageNodeModulesDir}`);
-  }
-  if (!existsSync(bundledSkillsDir)) {
-    throw new Error(`Missing bundled Paperclip skills: ${bundledSkillsDir}`);
-  }
-  if (!existsSync(winUnpackedDir)) {
-    throw new Error(`Missing win-unpacked output: ${winUnpackedDir}`);
-  }
-
-  rmSync(packagedRuntimeDir, { recursive: true, force: true });
-  mkdirSync(packagedRuntimeDir, { recursive: true });
-  cpSync(stageNodeModulesDir, packagedRuntimeNodeModulesDir, { recursive: true, force: true });
-  // Packaged local adapters and the packaged server both expect the bundled
-  // Paperclip skills to live alongside the runtime node_modules tree.
-  cpSync(bundledSkillsDir, packagedRuntimeSkillsDir, { recursive: true, force: true });
-
-  console.log("[desktop-dist] Copied staged runtime assets into win-unpacked/resources/app-runtime.");
-}
-
 function buildWindowsInstallerFromPrepackagedApp() {
   runPnpm(
     [
@@ -263,7 +286,6 @@ function run() {
 
   console.log("[desktop-dist] Building verified win-unpacked output...");
   buildUnpackedWindowsApp();
-  copyRuntimeAssetsIntoUnpackedApp();
   verifyPackagedRuntime();
 
   if (dirOnly) {

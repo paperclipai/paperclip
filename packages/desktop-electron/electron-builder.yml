@@ -4,15 +4,29 @@ artifactName: "Paperclip-CN-${version}-${arch}.${ext}"
 asar: false
 compression: store
 publish: null
+npmRebuild: false
 
 directories:
-  app: .stage/app
   output: release
   buildResources: assets
 
 files:
   - "package.json"
   - "dist/**/*"
+
+extraResources:
+  - from: .stage/app-runtime/server
+    to: app-runtime/server
+    filter:
+      - "**/*"
+  - from: .stage/app-runtime/node_modules
+    to: app-runtime/node_modules
+    filter:
+      - "**/*"
+  - from: .stage/app-runtime/skills
+    to: app-runtime/skills
+    filter:
+      - "**/*"
 
 win:
   icon: assets/icon.png

@@ -106,6 +106,25 @@ export function resolvePackagedRuntimeRoot(appRoot: string): string {
   return path.resolve(appRoot, "..", "app-runtime");
 }
 
+function resolveDesktopPaperclipHome(userDataDir: string): string {
+  return process.env.PAPERCLIP_HOME?.trim() || userDataDir;
+}
+
+function resolveDesktopPaperclipInstanceId(): string {
+  return process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+}
+
+function resolveDesktopPaperclipConfigPath(
+  paperclipHome: string,
+  instanceId: string,
+): string {
+  return path.resolve(paperclipHome, "instances", instanceId, "config.json");
+}
+
+function resolveDesktopPaperclipContextPath(paperclipHome: string): string {
+  return path.resolve(paperclipHome, "context.json");
+}
+
 export function resolveDesktopUserDataDir(defaultUserDataDir: string): string {
   const override = process.env.PAPERCLIP_DESKTOP_USER_DATA_DIR?.trim();
   return override ? path.resolve(override) : defaultUserDataDir;
@@ -146,6 +165,7 @@ export function resolveDesktopTheme(
 
 function resolvePackagedServerEntrypoint(runtimeRoot: string): string {
   const candidates = [
+    path.resolve(runtimeRoot, "server", "dist", "index.js"),
     path.resolve(runtimeRoot, "node_modules", "@penclipai", "server", "dist", "index.js"),
   ];
 
@@ -169,12 +189,14 @@ export function resolveTitlebarThemePath(appRoot: string): string {
 }
 
 export function buildWorkerEnvironment(input: DesktopRuntimeInput): NodeJS.ProcessEnv {
+  const paperclipHome = resolveDesktopPaperclipHome(input.userDataDir);
+  const paperclipInstanceId = resolveDesktopPaperclipInstanceId();
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
     PAPERCLIP_DESKTOP_MODE: input.mode,
     PAPERCLIP_DESKTOP_SERVER_ENTRY: resolveServerEntrypoint(input),
-    PAPERCLIP_HOME: process.env.PAPERCLIP_HOME?.trim() || input.userDataDir,
-    PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default",
+    PAPERCLIP_HOME: paperclipHome,
+    PAPERCLIP_INSTANCE_ID: paperclipInstanceId,
     HOST: "127.0.0.1",
     PORT: process.env.PORT?.trim() || "3100",
     PAPERCLIP_OPEN_ON_LISTEN: "false",
@@ -190,6 +212,11 @@ export function buildWorkerEnvironment(input: DesktopRuntimeInput): NodeJS.Proce
   // Packaged desktop builds must always serve the bundled ui-dist instead of inheriting dev/API-only flags.
   return {
     ...baseEnv,
+    PAPERCLIP_CONFIG: resolveDesktopPaperclipConfigPath(paperclipHome, paperclipInstanceId),
+    PAPERCLIP_CONTEXT: resolveDesktopPaperclipContextPath(paperclipHome),
+    PAPERCLIP_IN_WORKTREE: "",
+    PAPERCLIP_WORKTREE_NAME: "",
+    PAPERCLIP_WORKTREES_DIR: "",
     SERVE_UI: "true",
     PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
   };
