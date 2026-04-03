@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { createRateLimiters } from "./middleware/rate-limit.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -86,6 +87,16 @@ export async function createApp(
 ) {
   const app = express();
 
+  // Rate limiting (configurable, disable behind reverse proxy)
+  const rateLimitEnabled = process.env.PAPERCLIP_RATE_LIMIT_ENABLED !== "false";
+  const limiters = rateLimitEnabled
+    ? createRateLimiters({
+        authMax: Number(process.env.PAPERCLIP_RATE_LIMIT_AUTH) || 10,
+        writeMax: Number(process.env.PAPERCLIP_RATE_LIMIT_API_WRITE) || 100,
+        readMax: Number(process.env.PAPERCLIP_RATE_LIMIT_API_READ) || 300,
+      })
+    : null;
+
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
@@ -94,6 +105,9 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+  if (limiters) {
+    app.use("/api/auth", limiters.authLimiter);
+  }
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
@@ -137,6 +151,10 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  if (limiters) {
+    api.use(limiters.writeLimiter);
+    api.use(limiters.readLimiter);
+  }
   api.use(boardMutationGuard());
   api.use(
     "/health",
