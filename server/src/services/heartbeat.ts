@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -1924,6 +1924,68 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  /**
+   * Reap issues whose executionRunId references a terminal run.
+   *
+   * This is a safety net for cases where releaseIssueExecutionAndPromote was
+   * skipped or threw — leaving an issue locked to a dead run.  Clears both
+   * executionRunId and checkoutRunId so the issue can be checked out again
+   * without manual board intervention.
+   *
+   * Called on startup and on every heartbeat-scheduler tick.
+   */
+  async function reapStaleExecutionRunLocks() {
+    const TERMINAL_RUN_STATUSES = ["skipped", "succeeded", "failed", "cancelled", "timed_out"] as const;
+
+    const stale = await db
+      .select({
+        issueId: issues.id,
+        runId: heartbeatRuns.id,
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
+        ),
+      )
+      .where(isNotNull(issues.executionRunId));
+
+    if (stale.length === 0) return { reaped: 0, issueIds: [] as string[] };
+
+    const reaped: string[] = [];
+    for (const row of stale) {
+      const updated = await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          checkoutRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, row.issueId),
+            eq(issues.executionRunId, row.runId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (updated) reaped.push(row.issueId);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn(
+        { reaped: reaped.length, issueIds: reaped },
+        "reaped stale executionRunId locks on issues",
+      );
+    }
+
+    return { reaped: reaped.length, issueIds: reaped };
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -2951,6 +3013,7 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
+          checkoutRunId: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
@@ -3912,6 +3975,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reapStaleExecutionRunLocks,
 
     resumeQueuedRuns,
 
