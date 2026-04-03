@@ -52,7 +52,20 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
-export function issueRoutes(db: Db, storage: StorageService) {
+export function issueRoutes(
+  db: Db,
+  storage: StorageService,
+  opts?: {
+    feedbackExportService?: {
+      flushPendingFeedbackTraces(input?: {
+        companyId?: string;
+        traceId?: string;
+        limit?: number;
+        now?: Date;
+      }): Promise<unknown>;
+    };
+  },
+) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
@@ -67,6 +80,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1865,6 +1879,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           }),
         ),
       );
+    }
+
+    if (result.sharingEnabled && result.traceId && feedbackExportService) {
+      try {
+        await feedbackExportService.flushPendingFeedbackTraces({
+          companyId: issue.companyId,
+          traceId: result.traceId,
+          limit: 1,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, traceId: result.traceId }, "failed to flush shared feedback trace immediately");
+      }
     }
 
     res.status(201).json(result.vote);
