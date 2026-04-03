@@ -1243,6 +1243,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorId: actor.actorId,
           contextSnapshot: {
             issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: "issue_assigned",
             source: "issue.update",
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
