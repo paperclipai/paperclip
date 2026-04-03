@@ -98,6 +98,7 @@ function normalizeLane(value: string | null | undefined) {
 
 function normalizePublishMode(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "dry_run" || normalized === "dry-run" || normalized === "preview") return "dry_run";
   return normalized === "publish" ? "publish" : "draft";
 }
 
@@ -317,7 +318,9 @@ export function blogRunService(
         });
       }
 
-      const next = nextStateAfterStep(stepKey);
+      const next = stepKey === "validate" && run.publishMode === "dry_run"
+        ? { status: "publish_approved" as BlogRunStatus, nextStep: "publish" }
+        : nextStateAfterStep(stepKey);
       const resultJson = input.resultJson ?? {};
 
       const updatePayload: Partial<typeof blogRuns.$inferInsert> = {

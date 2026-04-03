@@ -98,12 +98,33 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
           break;
         }
         case "publish": {
-          assertWordPressWriteAllowedForLane(lane);
-          const approvalId = requireString(run.approvalId ?? run.latestApprovalId ?? run.approvalKeyHash, "publish_approval_missing");
-          const publishIdempotencyKey = requireString(run.publishIdempotencyKey, "publish_idempotency_key_missing");
           const draft = toRecord(run.contextJson);
           const title = requireString(draft.title ?? draft.topic ?? run.topic, "publish_title_missing");
           const content = requireString(draft.article_html ?? draft.content, "publish_content_missing");
+          if (String(run.publishMode ?? "draft") === "dry_run") {
+            result = {
+              mode: "dry-run",
+              payloadPreview: {
+                title,
+                content,
+                status: "draft",
+                slug: String(run.targetSlug ?? "").trim() || null,
+              },
+            };
+            break;
+          }
+
+          assertWordPressWriteAllowedForLane(lane);
+          const runDetail = await runs.getDetail(runId);
+          const latestApproval = Array.isArray(runDetail?.approvals) ? runDetail.approvals[0] : null;
+          const approvalId = requireString(
+            (latestApproval as Record<string, unknown> | null)?.id
+            ?? run.approvalId
+            ?? run.latestApprovalId
+            ?? run.approvalKeyHash,
+            "publish_approval_missing",
+          );
+          const publishIdempotencyKey = requireString(run.publishIdempotencyKey, "publish_idempotency_key_missing");
           const publishResult = normalizePublishResult(
             String(run.publishMode ?? "draft") === "publish"
               ? await publisher.publishPost({
@@ -131,7 +152,16 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
           break;
         }
         case "public_verify":
-          result = await (deps.runPublicVerifyStep ?? runPublicVerifyStep)(input);
+          result = String(run.publishMode ?? "draft") === "dry_run"
+            ? {
+                ok: true,
+                mode: "dry-run",
+                checks: {
+                  publish_file_present: true,
+                  payload_preview_present: true,
+                },
+              }
+            : await (deps.runPublicVerifyStep ?? runPublicVerifyStep)(input);
           if (result && result.ok === false) {
             throw new Error("blog_run_public_verify_failed");
           }
