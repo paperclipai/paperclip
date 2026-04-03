@@ -45,6 +45,96 @@ export interface FleetAgentProcess {
 export type FleetAction = "start" | "stop" | "restart";
 
 // ---------------------------------------------------------------------------
+// Provision types (RAA-294)
+// ---------------------------------------------------------------------------
+
+export interface FleetTemplate {
+  name: string;
+  label: string;
+  description?: string;
+}
+
+export interface FleetTemplateField {
+  name: string;
+  label: string;
+  type: "string" | "select" | "boolean" | "number" | "text";
+  required: boolean;
+  default?: string | number | boolean;
+  options?: { value: string; label: string }[];
+  description?: string;
+  group?: string;
+}
+
+export interface FleetTemplateDetail extends FleetTemplate {
+  fields: FleetTemplateField[];
+  default_memory?: string;
+  default_cpu?: string;
+  default_disk?: string;
+}
+
+export interface ProvisionValidateRequest {
+  template: string;
+  tenant_id?: string;
+  agent_name: string;
+  agent_role: string;
+  model?: string;
+  memory?: string;
+  cpu?: string;
+  disk?: string;
+  secrets_mode?: string;
+  extra_fields?: Record<string, string>;
+}
+
+export interface ProvisionValidateResponse {
+  valid: boolean;
+  container_name?: string;
+  checks?: { name: string; status: string; detail?: string }[];
+  errors?: string[];
+  warnings?: string[];
+}
+
+export interface ProvisionRequest {
+  template: string;
+  tenant_id?: string;
+  agent_name: string;
+  agent_role: string;
+  model?: string;
+  memory?: string;
+  cpu?: string;
+  disk?: string;
+  secrets_mode?: string;
+  extra_fields?: Record<string, string>;
+}
+
+export interface ProvisionStartResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+export interface ProvisionJob {
+  id: string;
+  status: "running" | "complete" | "failed" | "cancelled" | "timeout";
+  template: string;
+  tenant_id: string;
+  agent_name: string;
+  container_name?: string;
+  steps?: ProvisionStep[];
+  result?: Record<string, unknown>;
+  error?: string;
+  created_at?: string;
+  completed_at?: string;
+}
+
+export interface ProvisionStep {
+  name: string;
+  status: "pending" | "running" | "done" | "failed" | "skipped";
+  detail?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+// ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
 
@@ -100,4 +190,28 @@ export const fleetosApi = {
   /** Perform a lifecycle action (start / stop / restart). */
   containerAction: (id: string, action: FleetAction) =>
     api.post<FleetContainer>(`/fleetos/containers/${encodeURIComponent(id)}/${action}`, {}),
+
+  // -------------------------------------------------------------------------
+  // Provision endpoints (RAA-294)
+  // -------------------------------------------------------------------------
+
+  /** List available provision templates. */
+  listTemplates: () =>
+    api.get<FleetTemplate[]>("/fleetos/templates"),
+
+  /** Get a single template with its field definitions. */
+  getTemplate: (name: string) =>
+    api.get<FleetTemplateDetail>(`/fleetos/templates/${encodeURIComponent(name)}`),
+
+  /** Validate a provision request without starting it. */
+  validateProvision: (body: ProvisionValidateRequest) =>
+    api.post<ProvisionValidateResponse>("/fleetos/provision/validate", body),
+
+  /** Start a provision job. */
+  startProvision: (body: ProvisionRequest) =>
+    api.post<ProvisionStartResponse>("/fleetos/provision", body),
+
+  /** Get provision job status / progress. */
+  getProvisionJob: (jobId: string) =>
+    api.get<ProvisionJob>(`/fleetos/provision/${encodeURIComponent(jobId)}`),
 };

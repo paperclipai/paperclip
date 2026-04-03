@@ -15,7 +15,7 @@ import { cn } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { StatusBadge } from "../components/StatusBadge";
-import { Server, Cpu, HardDrive, MemoryStick, RefreshCw } from "lucide-react";
+import { Server, Cpu, HardDrive, MemoryStick, RefreshCw, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
@@ -194,10 +194,18 @@ export function FleetOverview() {
   if (!containers || containers.length === 0) {
     return (
       <div className="space-y-4">
-        <h1 className="text-lg font-semibold">Fleet</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Fleet</h1>
+          <Button size="sm" asChild>
+            <Link to="/fleet/provision" className="no-underline">
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Link>
+          </Button>
+        </div>
         <EmptyState
           icon={Server}
-          message="No containers found. FleetOS containers will appear here once provisioned."
+          message="No containers found. Provision your first Hermes agent to get started."
         />
       </div>
     );
@@ -217,15 +225,23 @@ export function FleetOverview() {
             {running.length} running
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => refetch()}
-          disabled={isFetching}
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isFetching && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isFetching && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button size="sm" asChild>
+            <Link to="/fleet/provision" className="no-underline">
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              New Agent
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {/* Summary gauges */}

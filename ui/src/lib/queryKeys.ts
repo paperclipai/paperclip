@@ -138,6 +138,11 @@ export const queryKeys = {
     container: (id: string) => ["fleet", "container", id] as const,
     health: (id: string) => ["fleet", "health", id] as const,
     agentProcess: (id: string) => ["fleet", "agent-process", id] as const,
+    provision: {
+      templates: ["fleet", "provision", "templates"] as const,
+      template: (name: string) => ["fleet", "provision", "template", name] as const,
+      job: (id: string) => ["fleet", "provision", "job", id] as const,
+    },
   },
   plugins: {
     all: ["plugins"] as const,

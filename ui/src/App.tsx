@@ -44,6 +44,7 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { FleetOverview } from "./pages/FleetOverview";
 import { FleetAgentDetail } from "./pages/FleetAgentDetail";
+import { FleetProvisionWizard } from "./pages/FleetProvisionWizard";
 import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
@@ -168,6 +169,7 @@ function boardRoutes() {
           require FleetOS API key on the actor. Non-fleetos users hitting these
           routes directly get a 401 from the proxy. */}
       <Route path="fleet" element={<FleetOverview />} />
+      <Route path="fleet/provision" element={<FleetProvisionWizard />} />
       <Route path="fleet/:containerId" element={<FleetAgentDetail />} />
       <Route path="projects" element={<Projects />} />
       <Route path="projects/:projectId" element={<ProjectDetail />} />
@@ -374,6 +376,7 @@ export function App() {
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="fleet" element={<UnprefixedBoardRedirect />} />
+          <Route path="fleet/provision" element={<UnprefixedBoardRedirect />} />
           <Route path="fleet/:containerId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
