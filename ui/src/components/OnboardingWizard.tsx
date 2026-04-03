@@ -998,7 +998,9 @@ export function OnboardingWizard() {
       e.preventDefault();
       if (step === 1 && showLinearConnect && !importingIssues) handleStep1Continue();
       else if (step === 1 && setupMode === "fresh" && companyName.trim()) handleStep1Next();
-      else if (step === 1 && setupMode === "import" && importPreview) handleStep1Next();
+      else if (step === 1 && setupMode === "import" && buildImportSource()) {
+        if (!importPreview) { void handleImportPreview(); } else { handleStep1Next(); }
+      }
       else if (step === 2 && (importedAgents || agentName.trim())) handleStep2Next();
       else if (step === 3) handleStep3Next();
       else if (step === 4) handleStep4Next();
@@ -2320,17 +2322,26 @@ export function OnboardingWizard() {
                       size="sm"
                       disabled={
                         (setupMode === "fresh" && !companyName.trim()) ||
-                        (setupMode === "import" && !importPreview) ||
-                        loading
+                        (setupMode === "import" && !buildImportSource()) ||
+                        loading || importLoading
                       }
-                      onClick={handleStep1Next}
+                      onClick={async () => {
+                        if (setupMode === "import" && !importPreview) {
+                          // Auto-preview first, then user clicks Next again to import
+                          await handleImportPreview();
+                          return;
+                        }
+                        handleStep1Next();
+                      }}
                     >
-                      {loading ? (
+                      {(loading || importLoading) ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading
+                      {importLoading
+                        ? "Loading preview..."
+                        : loading
                         ? setupMode === "import" ? "Importing..." : "Creating..."
                         : "Next"}
                     </Button>
@@ -2343,12 +2354,16 @@ export function OnboardingWizard() {
                       }
                       onClick={handleStep2Next}
                     >
-                      {loading ? (
+                      {(loading || adapterEnvLoading) ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? (importedAgents ? "Configuring..." : "Creating...") : "Next"}
+                      {adapterEnvLoading
+                        ? "Testing adapters..."
+                        : loading
+                        ? (importedAgents ? "Configuring..." : "Creating...")
+                        : "Next"}
                     </Button>
                   )}
                   {step === 3 && (
