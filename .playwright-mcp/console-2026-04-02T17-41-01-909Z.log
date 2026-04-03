@@ -1,0 +1,13 @@
+[     216ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3100/node_modules/.vite/deps/react-dom_client.js?v=16351df5:20102
+[     450ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[     450ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[    1467ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[    1469ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[    3476ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[    3478ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[    7496ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[    7502ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[   19776ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[   19777ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[   20786ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/dashboard:0
+[   20788ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0

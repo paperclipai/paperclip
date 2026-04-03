@@ -1,0 +1,136 @@
+- generic [ref=e3]:
+  - link "Skip to Main Content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e12]:
+            - button "J" [ref=e13]:
+              - link "J" [ref=e14] [cursor=pointer]:
+                - /url: /JER/dashboard
+                - generic [ref=e16]:
+                  - img [ref=e17]
+                  - generic [ref=e18]: J
+            - button "S" [ref=e19]:
+              - link "S" [ref=e20] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - generic [ref=e23]:
+                  - img [ref=e24]
+                  - generic [ref=e25]: S
+            - status [ref=e26]
+          - button "Add company" [ref=e29]:
+            - img [ref=e30]
+        - complementary [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]: Sprint Co
+            - button [ref=e35]:
+              - img
+          - navigation [ref=e36]:
+            - generic [ref=e37]:
+              - button "New Issue" [ref=e38]:
+                - img [ref=e39]
+                - generic [ref=e42]: New Issue
+              - link "Dashboard" [ref=e43] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - img [ref=e45]
+                - generic [ref=e50]: Dashboard
+              - link "Inbox" [ref=e51] [cursor=pointer]:
+                - /url: /SPR/inbox
+                - img [ref=e53]
+                - generic [ref=e56]: Inbox
+            - generic [ref=e57]:
+              - generic [ref=e58]: Work
+              - generic [ref=e59]:
+                - link "Issues" [ref=e60] [cursor=pointer]:
+                  - /url: /SPR/issues
+                  - img [ref=e62]
+                  - generic [ref=e65]: Issues
+                - link "Routines Beta" [ref=e66] [cursor=pointer]:
+                  - /url: /SPR/routines
+                  - img [ref=e68]
+                  - generic [ref=e73]: Routines
+                  - generic [ref=e74]: Beta
+                - link "Goals" [ref=e75] [cursor=pointer]:
+                  - /url: /SPR/goals
+                  - img [ref=e77]
+                  - generic [ref=e81]: Goals
+            - generic [ref=e82]:
+              - generic [ref=e84]:
+                - button "Projects" [expanded] [ref=e85]:
+                  - img [ref=e86]
+                  - generic [ref=e88]: Projects
+                - button "New project" [ref=e89]:
+                  - img [ref=e90]
+              - status [ref=e91]
+            - generic [ref=e94]:
+              - button "Agents" [expanded] [ref=e95]:
+                - img [ref=e96]
+                - generic [ref=e98]: Agents
+              - button "New agent" [ref=e99]:
+                - img [ref=e100]
+            - generic [ref=e101]:
+              - generic [ref=e102]: Company
+              - generic [ref=e103]:
+                - link "Org" [ref=e104] [cursor=pointer]:
+                  - /url: /SPR/org
+                  - img [ref=e106]
+                  - generic [ref=e111]: Org
+                - link "Skills" [ref=e112] [cursor=pointer]:
+                  - /url: /SPR/skills
+                  - img [ref=e114]
+                  - generic [ref=e124]: Skills
+                - link "Costs" [ref=e125] [cursor=pointer]:
+                  - /url: /SPR/costs
+                  - img [ref=e127]
+                  - generic [ref=e129]: Costs
+                - link "Activity" [ref=e130] [cursor=pointer]:
+                  - /url: /SPR/activity
+                  - img [ref=e132]
+                  - generic [ref=e136]: Activity
+                - link "Settings" [ref=e137] [cursor=pointer]:
+                  - /url: /SPR/company/settings
+                  - img [ref=e139]
+                  - generic [ref=e142]: Settings
+      - generic [ref=e144]:
+        - link "Documentation" [ref=e145] [cursor=pointer]:
+          - /url: https://docs.paperclip.ing/
+          - img [ref=e146]
+          - generic [ref=e148]: Documentation
+        - generic [ref=e149]: v
+        - link "Instance settings" [ref=e150] [cursor=pointer]:
+          - /url: /instance/settings/general
+          - img
+        - button "Switch to light mode" [ref=e151]:
+          - img
+    - generic [ref=e152]:
+      - heading "Issues" [level=1] [ref=e156]
+      - main [ref=e158]:
+        - generic [ref=e160]:
+          - generic [ref=e161]:
+            - button "New Issue" [ref=e162]:
+              - img
+              - generic [ref=e163]: New Issue
+            - generic [ref=e164]:
+              - img
+              - textbox "Search issues" [ref=e165]:
+                - /placeholder: Search issues...
+          - generic [ref=e166]:
+            - generic [ref=e167]:
+              - button "List view" [ref=e168]:
+                - img [ref=e169]
+              - button "Board view" [ref=e170]:
+                - img [ref=e171]
+            - button "Filter" [ref=e173]:
+              - img
+              - generic [ref=e174]: Filter
+            - button "Sort" [ref=e175]:
+              - img
+              - generic [ref=e176]: Sort
+            - button "Group" [ref=e177]:
+              - img
+              - generic [ref=e178]: Group
+  - generic [ref=e198]:
+    - heading "Command Palette" [level=2] [ref=e199]
+    - paragraph [ref=e200]: Search for a command to run...

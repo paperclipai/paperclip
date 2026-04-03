@@ -1,0 +1,146 @@
+- generic [ref=e3]:
+  - link "Skip to Main Content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e12]:
+            - button "J" [ref=e13]:
+              - link "J" [ref=e14] [cursor=pointer]:
+                - /url: /JER/dashboard
+                - generic [ref=e16]:
+                  - img [ref=e17]
+                  - generic [ref=e18]: J
+            - button "S" [ref=e19]:
+              - link "S" [ref=e20] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - generic [ref=e23]:
+                  - img [ref=e24]
+                  - generic [ref=e25]: S
+            - status [ref=e26]
+          - button "Add company" [ref=e29]:
+            - img [ref=e30]
+        - complementary [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]: Sprint Co
+            - button [ref=e35]:
+              - img
+          - navigation [ref=e36]:
+            - generic [ref=e37]:
+              - button "New Issue" [ref=e38]:
+                - img [ref=e39]
+                - generic [ref=e42]: New Issue
+              - link "Dashboard" [ref=e43] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - img [ref=e45]
+                - generic [ref=e50]: Dashboard
+              - link "Inbox 101" [ref=e51] [cursor=pointer]:
+                - /url: /SPR/inbox
+                - img [ref=e53]
+                - generic [ref=e57]: Inbox
+                - generic [ref=e58]: "101"
+            - generic [ref=e59]:
+              - generic [ref=e60]: Work
+              - generic [ref=e61]:
+                - link "Issues" [ref=e62] [cursor=pointer]:
+                  - /url: /SPR/issues
+                  - img [ref=e64]
+                  - generic [ref=e67]: Issues
+                - link "Routines Beta" [ref=e68] [cursor=pointer]:
+                  - /url: /SPR/routines
+                  - img [ref=e70]
+                  - generic [ref=e75]: Routines
+                  - generic [ref=e76]: Beta
+                - link "Goals" [ref=e77] [cursor=pointer]:
+                  - /url: /SPR/goals
+                  - img [ref=e79]
+                  - generic [ref=e83]: Goals
+            - generic [ref=e84]:
+              - generic [ref=e86]:
+                - button "Projects" [expanded] [ref=e87]:
+                  - img [ref=e88]
+                  - generic [ref=e90]: Projects
+                - button "New project" [ref=e91]:
+                  - img [ref=e92]
+              - generic [ref=e93]:
+                - button "Sprint 001 — Phase 2.5 Hardening" [ref=e95]:
+                  - link "Sprint 001 — Phase 2.5 Hardening" [ref=e97] [cursor=pointer]:
+                    - /url: /SPR/projects/sprint-001-phase-2-5-hardening/issues
+                    - generic [ref=e99]: Sprint 001 — Phase 2.5 Hardening
+                - status [ref=e100]
+            - generic [ref=e101]:
+              - generic [ref=e103]:
+                - button "Agents" [expanded] [ref=e104]:
+                  - img [ref=e105]
+                  - generic [ref=e107]: Agents
+                - button "New agent" [ref=e108]:
+                  - img [ref=e109]
+              - generic [ref=e111]:
+                - link "Delivery Engineer" [ref=e112] [cursor=pointer]:
+                  - /url: /SPR/agents/delivery-engineer
+                  - img [ref=e113]
+                  - generic [ref=e116]: Delivery Engineer
+                - link "Engineer Alpha" [ref=e117] [cursor=pointer]:
+                  - /url: /SPR/agents/engineer-alpha
+                  - img [ref=e118]
+                  - generic [ref=e121]: Engineer Alpha
+                - link "Engineer Beta" [ref=e122] [cursor=pointer]:
+                  - /url: /SPR/agents/engineer-beta
+                  - img [ref=e123]
+                  - generic [ref=e126]: Engineer Beta
+                - link "Product Planner" [ref=e127] [cursor=pointer]:
+                  - /url: /SPR/agents/product-planner
+                  - img [ref=e128]
+                  - generic [ref=e131]: Product Planner
+                - link "QA Engineer" [ref=e132] [cursor=pointer]:
+                  - /url: /SPR/agents/qa-engineer
+                  - img [ref=e133]
+                  - generic [ref=e136]: QA Engineer
+                - link "Scrum Master" [ref=e137] [cursor=pointer]:
+                  - /url: /SPR/agents/scrum-master
+                  - img [ref=e138]
+                  - generic [ref=e141]: Scrum Master
+                - link "Sprint Lead" [ref=e142] [cursor=pointer]:
+                  - /url: /SPR/agents/sprint-lead
+                  - img [ref=e143]
+                  - generic [ref=e146]: Sprint Lead
+            - generic [ref=e147]:
+              - generic [ref=e148]: Company
+              - generic [ref=e149]:
+                - link "Org" [ref=e150] [cursor=pointer]:
+                  - /url: /SPR/org
+                  - img [ref=e152]
+                  - generic [ref=e157]: Org
+                - link "Skills" [ref=e158] [cursor=pointer]:
+                  - /url: /SPR/skills
+                  - img [ref=e160]
+                  - generic [ref=e170]: Skills
+                - link "Costs" [ref=e171] [cursor=pointer]:
+                  - /url: /SPR/costs
+                  - img [ref=e173]
+                  - generic [ref=e175]: Costs
+                - link "Activity" [ref=e176] [cursor=pointer]:
+                  - /url: /SPR/activity
+                  - img [ref=e178]
+                  - generic [ref=e182]: Activity
+                - link "Settings" [ref=e183] [cursor=pointer]:
+                  - /url: /SPR/company/settings
+                  - img [ref=e185]
+                  - generic [ref=e188]: Settings
+      - generic [ref=e190]:
+        - link "Documentation" [ref=e191] [cursor=pointer]:
+          - /url: https://docs.paperclip.ing/
+          - img [ref=e192]
+          - generic [ref=e194]: Documentation
+        - generic [ref=e195]: v
+        - link "Instance settings" [ref=e196] [cursor=pointer]:
+          - /url: /instance/settings/general
+          - img
+        - button "Switch to light mode" [ref=e197]:
+          - img
+    - main [ref=e202]
+  - generic [ref=e203]:
+    - heading "Command Palette" [level=2] [ref=e204]
+    - paragraph [ref=e205]: Search for a command to run...

@@ -1,0 +1,142 @@
+- generic [ref=e3]:
+  - link "Skip to Main Content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - img [ref=e10]
+          - generic [ref=e12]:
+            - button "J" [ref=e13]:
+              - link "J" [ref=e14] [cursor=pointer]:
+                - /url: /JER/dashboard
+                - generic [ref=e16]:
+                  - img [ref=e17]
+                  - generic [ref=e18]: J
+            - button "S" [ref=e19]:
+              - link "S" [ref=e20] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - generic [ref=e23]:
+                  - img [ref=e24]
+                  - generic [ref=e25]: S
+            - status [ref=e26]
+          - button "Add company" [ref=e29]:
+            - img [ref=e30]
+        - complementary [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]: Sprint Co
+            - button [ref=e35]:
+              - img
+          - navigation [ref=e36]:
+            - generic [ref=e37]:
+              - button "New Issue" [ref=e38]:
+                - img [ref=e39]
+                - generic [ref=e42]: New Issue
+              - link "Dashboard" [ref=e43] [cursor=pointer]:
+                - /url: /SPR/dashboard
+                - img [ref=e45]
+                - generic [ref=e50]: Dashboard
+              - link "Inbox" [ref=e51] [cursor=pointer]:
+                - /url: /SPR/inbox
+                - img [ref=e53]
+                - generic [ref=e56]: Inbox
+            - generic [ref=e57]:
+              - generic [ref=e58]: Work
+              - generic [ref=e59]:
+                - link "Issues" [ref=e60] [cursor=pointer]:
+                  - /url: /SPR/issues
+                  - img [ref=e62]
+                  - generic [ref=e65]: Issues
+                - link "Routines Beta" [ref=e66] [cursor=pointer]:
+                  - /url: /SPR/routines
+                  - img [ref=e68]
+                  - generic [ref=e73]: Routines
+                  - generic [ref=e74]: Beta
+                - link "Goals" [ref=e75] [cursor=pointer]:
+                  - /url: /SPR/goals
+                  - img [ref=e77]
+                  - generic [ref=e81]: Goals
+            - generic [ref=e82]:
+              - generic [ref=e84]:
+                - button "Projects" [expanded] [ref=e85]:
+                  - img [ref=e86]
+                  - generic [ref=e88]: Projects
+                - button "New project" [ref=e89]:
+                  - img [ref=e90]
+              - status [ref=e91]
+            - generic [ref=e92]:
+              - generic [ref=e94]:
+                - button "Agents" [expanded] [ref=e95]:
+                  - img [ref=e96]
+                  - generic [ref=e98]: Agents
+                - button "New agent" [ref=e99]:
+                  - img [ref=e100]
+              - generic [ref=e102]:
+                - link "Delivery Engineer" [ref=e103] [cursor=pointer]:
+                  - /url: /SPR/agents/delivery-engineer
+                  - img [ref=e104]
+                  - generic [ref=e107]: Delivery Engineer
+                - link "Engineer Alpha" [ref=e108] [cursor=pointer]:
+                  - /url: /SPR/agents/engineer-alpha
+                  - img [ref=e109]
+                  - generic [ref=e112]: Engineer Alpha
+                - link "Engineer Beta" [ref=e113] [cursor=pointer]:
+                  - /url: /SPR/agents/engineer-beta
+                  - img [ref=e114]
+                  - generic [ref=e117]: Engineer Beta
+                - link "Product Planner" [ref=e118] [cursor=pointer]:
+                  - /url: /SPR/agents/product-planner
+                  - img [ref=e119]
+                  - generic [ref=e122]: Product Planner
+                - link "QA Engineer" [ref=e123] [cursor=pointer]:
+                  - /url: /SPR/agents/qa-engineer
+                  - img [ref=e124]
+                  - generic [ref=e127]: QA Engineer
+                - link "Scrum Master" [ref=e128] [cursor=pointer]:
+                  - /url: /SPR/agents/scrum-master
+                  - img [ref=e129]
+                  - generic [ref=e132]: Scrum Master
+                - link "Sprint Lead" [ref=e133] [cursor=pointer]:
+                  - /url: /SPR/agents/sprint-lead
+                  - img [ref=e134]
+                  - generic [ref=e137]: Sprint Lead
+            - generic [ref=e138]:
+              - generic [ref=e139]: Company
+              - generic [ref=e140]:
+                - link "Org" [ref=e141] [cursor=pointer]:
+                  - /url: /SPR/org
+                  - img [ref=e143]
+                  - generic [ref=e148]: Org
+                - link "Skills" [ref=e149] [cursor=pointer]:
+                  - /url: /SPR/skills
+                  - img [ref=e151]
+                  - generic [ref=e161]: Skills
+                - link "Costs" [ref=e162] [cursor=pointer]:
+                  - /url: /SPR/costs
+                  - img [ref=e164]
+                  - generic [ref=e166]: Costs
+                - link "Activity" [ref=e167] [cursor=pointer]:
+                  - /url: /SPR/activity
+                  - img [ref=e169]
+                  - generic [ref=e173]: Activity
+                - link "Settings" [ref=e174] [cursor=pointer]:
+                  - /url: /SPR/company/settings
+                  - img [ref=e176]
+                  - generic [ref=e179]: Settings
+      - generic [ref=e181]:
+        - link "Documentation" [ref=e182] [cursor=pointer]:
+          - /url: https://docs.paperclip.ing/
+          - img [ref=e183]
+          - generic [ref=e185]: Documentation
+        - generic [ref=e186]: v
+        - link "Instance settings" [ref=e187] [cursor=pointer]:
+          - /url: /instance/settings/general
+          - img
+        - button "Switch to light mode" [ref=e188]:
+          - img
+    - generic [ref=e189]:
+      - heading "Dashboard" [level=1] [ref=e193]
+      - main [ref=e195]
+  - generic [ref=e211]:
+    - heading "Command Palette" [level=2] [ref=e212]
+    - paragraph [ref=e213]: Search for a command to run...

@@ -1,0 +1,5 @@
+[     218ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:3100/node_modules/.vite/deps/react-dom_client.js?v=16351df5:20102
+[     393ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[    1447ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[    3459ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
+[    7470ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3100/api/companies/22266d4d-5326-4501-ad12-f181b4330d95/sidebar-badges:0
