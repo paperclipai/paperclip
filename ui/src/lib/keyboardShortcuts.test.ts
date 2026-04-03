@@ -33,6 +33,12 @@ describe("keyboardShortcuts helpers", () => {
     expect(hasBlockingShortcutDialog(document.createElement("div"))).toBe(false);
   });
 
+  it("ignores non-dialog elements that happen to be aria-modal", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `<section aria-modal="true"></section>`;
+
+    expect(hasBlockingShortcutDialog(root)).toBe(false);
+  });
   it("archives only the first clean y press", () => {
     const button = document.createElement("button");
 
