@@ -16,6 +16,8 @@ import type {
   PluginToolDeclaration,
   PluginLauncherDeclaration,
   Company,
+  CompanySecret,
+  SecretProviderDescriptor,
   Project,
   Issue,
   IssueComment,
@@ -60,6 +62,8 @@ export type {
   PluginEventType,
   PluginBridgeErrorCode,
   Company,
+  CompanySecret,
+  SecretProviderDescriptor,
   Project,
   Issue,
   IssueComment,
@@ -454,6 +458,27 @@ export interface PluginSecretsClient {
    * @returns The resolved secret value
    */
   resolve(secretRef: string): Promise<string>;
+
+  /** List all secrets for a company. Requires `secrets.list`. */
+  list(companyId: string): Promise<CompanySecret[]>;
+
+  /** List available secret providers. Requires `secrets.list`. */
+  providers(companyId: string): Promise<SecretProviderDescriptor[]>;
+
+  /** Create a new secret. Requires `secrets.manage`. */
+  create(
+    companyId: string,
+    data: { name: string; value: string; provider?: string; description?: string | null; externalRef?: string | null },
+  ): Promise<CompanySecret>;
+
+  /** Rotate a secret's value. Requires `secrets.manage`. */
+  rotate(id: string, data: { value: string; externalRef?: string | null }): Promise<CompanySecret>;
+
+  /** Update secret metadata. Requires `secrets.manage`. */
+  update(id: string, data: { name?: string; description?: string | null; externalRef?: string | null }): Promise<CompanySecret>;
+
+  /** Delete a secret. Requires `secrets.manage`. */
+  remove(id: string): Promise<{ ok: true }>;
 }
 
 /**

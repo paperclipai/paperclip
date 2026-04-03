@@ -500,6 +500,53 @@ export interface WorkerToHostMethods {
     params: { secretRef: string },
     result: string,
   ];
+  "secrets.list": [
+    params: { companyId: string },
+    result: Array<{
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    }>,
+  ];
+  "secrets.providers": [
+    params: { companyId: string },
+    result: Array<{ id: string; label: string; requiresExternalRef: boolean }>,
+  ];
+  "secrets.create": [
+    params: {
+      companyId: string; name: string; value: string;
+      provider?: string; description?: string | null; externalRef?: string | null;
+    },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.rotate": [
+    params: { id: string; value: string; externalRef?: string | null },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.update": [
+    params: { id: string; name?: string; description?: string | null; externalRef?: string | null },
+    result: {
+      id: string; companyId: string; name: string; provider: string;
+      externalRef: string | null; latestVersion: number;
+      description: string | null; createdByAgentId: string | null;
+      createdByUserId: string | null; createdAt: Date | string; updatedAt: Date | string;
+    },
+  ];
+  "secrets.remove": [
+    params: { id: string },
+    result: { ok: true },
+  ];
 
   // Activity
   "activity.log": [

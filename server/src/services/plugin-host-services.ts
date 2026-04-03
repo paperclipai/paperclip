@@ -26,6 +26,7 @@ import { assetService } from "./assets.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
+import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
@@ -597,6 +598,45 @@ export function buildHostServices(
     secrets: {
       async resolve(params) {
         return secretsHandler.resolve(params);
+      },
+      async list(params) {
+        const svc = secretService(db);
+        return svc.list(params.companyId);
+      },
+      async providers(params) {
+        const svc = secretService(db);
+        return svc.listProviders();
+      },
+      async create(params) {
+        const svc = secretService(db);
+        return svc.create(
+          params.companyId,
+          {
+            name: params.name,
+            provider: (params.provider ?? "local_encrypted") as import("@paperclipai/shared").SecretProvider,
+            value: params.value,
+            description: params.description,
+            externalRef: params.externalRef,
+          },
+          { userId: `plugin:${pluginKey}`, agentId: null },
+        );
+      },
+      async rotate(params) {
+        const svc = secretService(db);
+        return svc.rotate(params.id, { value: params.value, externalRef: params.externalRef });
+      },
+      async update(params) {
+        const svc = secretService(db);
+        return svc.update(params.id, {
+          name: params.name,
+          description: params.description,
+          externalRef: params.externalRef,
+        });
+      },
+      async remove(params) {
+        const svc = secretService(db);
+        await svc.remove(params.id);
+        return { ok: true as const };
       },
     },
 

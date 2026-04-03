@@ -460,6 +460,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async resolve(secretRef: string): Promise<string> {
           return callHost("secrets.resolve", { secretRef });
         },
+        async list(companyId: string) {
+          return callHost("secrets.list" as any, { companyId });
+        },
+        async providers(companyId: string) {
+          return callHost("secrets.providers" as any, { companyId });
+        },
+        async create(companyId: string, data: { name: string; value: string; provider?: string; description?: string | null; externalRef?: string | null }) {
+          return callHost("secrets.create" as any, { companyId, ...data });
+        },
+        async rotate(id: string, data: { value: string; externalRef?: string | null }) {
+          return callHost("secrets.rotate" as any, { id, ...data });
+        },
+        async update(id: string, data: { name?: string; description?: string | null; externalRef?: string | null }) {
+          return callHost("secrets.update" as any, { id, ...data });
+        },
+        async remove(id: string) {
+          return callHost("secrets.remove" as any, { id });
+        },
       },
 
       activity: {

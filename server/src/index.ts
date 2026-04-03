@@ -57,6 +57,7 @@ const BUNDLED_PLUGINS = [
   "@lucitra/paperclip-plugin-linear",
   "@lucitra/paperclip-plugin-chat",
   "@lucitra/paperclip-plugin-updater",
+  "@lucitra/paperclip-plugin-secrets",
   "paperclip-plugin-slack",
 ];
 

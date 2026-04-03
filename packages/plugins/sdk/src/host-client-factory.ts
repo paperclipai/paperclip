@@ -114,9 +114,15 @@ export interface HostServices {
     fetch(params: WorkerToHostMethods["http.fetch"][0]): Promise<WorkerToHostMethods["http.fetch"][1]>;
   };
 
-  /** Provides `secrets.resolve`. */
+  /** Provides `secrets.resolve`, `secrets.list`, `secrets.manage`. */
   secrets: {
     resolve(params: WorkerToHostMethods["secrets.resolve"][0]): Promise<string>;
+    list(params: WorkerToHostMethods["secrets.list"][0]): Promise<WorkerToHostMethods["secrets.list"][1]>;
+    providers(params: WorkerToHostMethods["secrets.providers"][0]): Promise<WorkerToHostMethods["secrets.providers"][1]>;
+    create(params: WorkerToHostMethods["secrets.create"][0]): Promise<WorkerToHostMethods["secrets.create"][1]>;
+    rotate(params: WorkerToHostMethods["secrets.rotate"][0]): Promise<WorkerToHostMethods["secrets.rotate"][1]>;
+    update(params: WorkerToHostMethods["secrets.update"][0]): Promise<WorkerToHostMethods["secrets.update"][1]>;
+    remove(params: WorkerToHostMethods["secrets.remove"][0]): Promise<WorkerToHostMethods["secrets.remove"][1]>;
   };
 
   /** Provides `activity.log`. */
@@ -296,6 +302,12 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
+  "secrets.list": "secrets.list",
+  "secrets.providers": "secrets.list",
+  "secrets.create": "secrets.manage",
+  "secrets.rotate": "secrets.manage",
+  "secrets.update": "secrets.manage",
+  "secrets.remove": "secrets.manage",
 
   // Activity
   "activity.log": "activity.log.write",
@@ -469,6 +481,24 @@ export function createHostClientHandlers(
     // Secrets
     "secrets.resolve": gated("secrets.resolve", async (params) => {
       return services.secrets.resolve(params);
+    }),
+    "secrets.list": gated("secrets.list", async (params) => {
+      return services.secrets.list(params);
+    }),
+    "secrets.providers": gated("secrets.providers", async (params) => {
+      return services.secrets.providers(params);
+    }),
+    "secrets.create": gated("secrets.create", async (params) => {
+      return services.secrets.create(params);
+    }),
+    "secrets.rotate": gated("secrets.rotate", async (params) => {
+      return services.secrets.rotate(params);
+    }),
+    "secrets.update": gated("secrets.update", async (params) => {
+      return services.secrets.update(params);
+    }),
+    "secrets.remove": gated("secrets.remove", async (params) => {
+      return services.secrets.remove(params);
     }),
 
     // Activity

@@ -206,6 +206,30 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
         return `resolved:${secretRef}`;
       },
+      async list(_companyId) {
+        requireCapability(manifest, capabilitySet, "secrets.list");
+        return [];
+      },
+      async providers(_companyId) {
+        requireCapability(manifest, capabilitySet, "secrets.list");
+        return [{ id: "local_encrypted", label: "Local Encrypted", requiresExternalRef: false }];
+      },
+      async create(_companyId, data) {
+        requireCapability(manifest, capabilitySet, "secrets.manage");
+        return { id: "test-secret-id", companyId: _companyId, name: data.name, provider: data.provider ?? "local_encrypted", externalRef: null, latestVersion: 1, description: data.description ?? null, createdByAgentId: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() } as any;
+      },
+      async rotate(id, _data) {
+        requireCapability(manifest, capabilitySet, "secrets.manage");
+        return { id } as any;
+      },
+      async update(id, _data) {
+        requireCapability(manifest, capabilitySet, "secrets.manage");
+        return { id } as any;
+      },
+      async remove(_id) {
+        requireCapability(manifest, capabilitySet, "secrets.manage");
+        return { ok: true as const };
+      },
     },
     activity: {
       async log(entry) {
