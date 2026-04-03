@@ -224,7 +224,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   valueRef.current = value;
   const latestValueRef = useRef(value);
   const initialChildOnChangeRef = useRef(true);
-  /** Suppresses the next child onChange when it only echoes an imperative setMarkdown (avoids parent loops). */
+  /**
+   * After imperative `setMarkdown` (prop sync, mentions, image upload), MDXEditor may emit `onChange`
+   * with the same markdown. Skip notifying the parent for that echo so controlled parents that
+   * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
+   */
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -339,6 +343,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   useEffect(() => {
     if (value !== latestValueRef.current) {
       if (ref.current) {
+        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
         echoIgnoreMarkdownRef.current = value;
         ref.current.setMarkdown(value);
         latestValueRef.current = value;
