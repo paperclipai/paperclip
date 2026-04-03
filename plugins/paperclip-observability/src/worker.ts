@@ -75,6 +75,13 @@ import {
   handleCostEventLogs,
 } from "./telemetry/log-handlers.js";
 
+// Activity handlers
+import {
+  handleActivityMetrics,
+  handleActivityTraces,
+  handleActivityLogs,
+} from "./telemetry/activity-handlers.js";
+
 // Session handlers
 import {
   handleSessionCreatedTraces,
@@ -107,6 +114,14 @@ const activeRunSpans = new Map<string, Span>();
 const activeIssueSpans = new Map<string, Span>();
 const activeApprovalSpans = new Map<string, Span>();
 const activeSessionSpans = new Map<string, Span>();
+
+// Lookup maps — shared across handler modules via TelemetryContext
+// projectId → projectName (refreshed by collect-metrics job)
+const projectNameMap = new Map<string, string>();
+// agentId → active issue context (populated from run.started events)
+const agentIssueMap = new Map<string, { issueId: string; issueIdentifier: string; projectId: string }>();
+// issueId → { projectId, identifier, title } (refreshed by collect-metrics job)
+const issueContextMap = new Map<string, { projectId: string; identifier: string; title: string }>();
 
 // Gauge snapshot data — written by the collect-metrics job, read by observable gauge callbacks
 interface AgentSnapshot {
@@ -215,8 +230,11 @@ function createRouter(): EventTelemetryRouter {
   router.register("approval.decided", handleApprovalDecidedTraces);
   router.register("approval.decided", handleApprovalDecidedLogs);
 
-  // activity.logged (generic)
+  // activity.logged
   router.register("activity.logged", handleGenericMetrics);
+  router.register("activity.logged", handleActivityMetrics);
+  router.register("activity.logged", handleActivityTraces);
+  router.register("activity.logged", handleActivityLogs);
 
   // agent.session.created
   router.register("agent.session.created", handleSessionCreatedTraces);
@@ -292,6 +310,9 @@ const plugin: PaperclipPlugin = definePlugin({
             if (!agentId || !otel) return otel!.tracer;
             return otel!.agentTracers.getTracer(agentId, agentName);
           },
+          projectNameMap,
+          agentIssueMap,
+          issueContextMap,
         }
       : null;
 
@@ -408,6 +429,7 @@ const plugin: PaperclipPlugin = definePlugin({
         obs.observe(snap.count, {
           status: snap.status,
           project_id: snap.projectId,
+          project_name: snap.projectName,
           company_id: snap.companyId,
         });
       }
@@ -542,7 +564,7 @@ const plugin: PaperclipPlugin = definePlugin({
 
         // --- Collect issue count gauges ---
 
-        const projectNameMap = new Map<string, string>();
+        projectNameMap.clear();
         for (const company of companies) {
           const projects = await ctx.projects.list({
             companyId: company.id,
@@ -555,6 +577,7 @@ const plugin: PaperclipPlugin = definePlugin({
         }
 
         const issueBuckets = new Map<string, IssueSnapshot>();
+        issueContextMap.clear();
 
         for (const company of companies) {
           const issues = await ctx.issues.list({
@@ -578,6 +601,13 @@ const plugin: PaperclipPlugin = definePlugin({
                 count: 1,
               });
             }
+
+            // Build issue context map for cost attribution
+            issueContextMap.set(issue.id, {
+              projectId,
+              identifier: issue.identifier ?? "",
+              title: issue.title ?? "",
+            });
           }
         }
 
