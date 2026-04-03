@@ -165,6 +165,12 @@ function parseRunLog(logContent: string, maxTurns = 8): RunTurn[] {
 // API helpers
 // ---------------------------------------------------------------------------
 
+function buildAuthHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+  return headers;
+}
+
 async function fetchLiveRuns(
   ctx: PluginContext,
   companyId: string,
@@ -174,7 +180,7 @@ async function fetchLiveRuns(
   try {
     const res = await ctx.http.fetch(
       `${apiUrl}/api/companies/${companyId}/live-runs`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } },
+      { method: "GET", headers: buildAuthHeaders(apiKey) },
     );
     if (!res.ok) return [];
     return (await res.json()) as LiveRun[];
@@ -193,7 +199,7 @@ async function fetchRunLog(
   try {
     const res = await ctx.http.fetch(
       `${apiUrl}/api/heartbeat-runs/${runId}/log?limitBytes=${limitBytes}`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } },
+      { method: "GET", headers: buildAuthHeaders(apiKey) },
     );
     if (!res.ok) return "";
     const data = (await res.json()) as { content?: string };
@@ -212,7 +218,7 @@ async function fetchIssueTitleHttp(
   try {
     const res = await ctx.http.fetch(
       `${apiUrl}/api/issues/${issueId}`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } },
+      { method: "GET", headers: buildAuthHeaders(apiKey) },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as { title?: string };
@@ -291,7 +297,7 @@ async function buildRunSummary(
   try {
     const runRes = await ctx.http.fetch(
       `${apiUrl}/api/heartbeat-runs/${runId}`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } },
+      { method: "GET", headers: buildAuthHeaders(apiKey) },
     );
     if (!runRes.ok) return null;
     const run = (await runRes.json()) as {
@@ -303,7 +309,7 @@ async function buildRunSummary(
 
     const agentRes = await ctx.http.fetch(
       `${apiUrl}/api/agents/${run.agentId}`,
-      { method: "GET", headers: { Authorization: `Bearer ${apiKey}` } },
+      { method: "GET", headers: buildAuthHeaders(apiKey) },
     );
     const agentName: string = agentRes.ok
       ? ((await agentRes.json()) as { name?: string }).name ?? run.agentId
