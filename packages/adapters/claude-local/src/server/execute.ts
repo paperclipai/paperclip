@@ -611,7 +611,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     for (let attempt = 1; attempt <= maxRateLimitRetries; attempt++) {
       if (!checkRateLimit(current)) break;
-      const delaySec = rateLimitRetryDelaySec * attempt;
+      const delaySec = rateLimitRetryDelaySec * Math.pow(2, attempt - 1) + Math.random() * rateLimitRetryDelaySec;
       await onLog(
         "stdout",
         `[paperclip] Rate limit detected; waiting ${delaySec}s before retry ${attempt}/${maxRateLimitRetries}.\n`,
