@@ -8,6 +8,7 @@ import {
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
   formatRuntimeWorkspaceWarningLog,
+  hasMeaningfulWakeContextDelta,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   resolveRuntimeSessionParamsForWorkspace,
@@ -414,6 +415,54 @@ describe("formatRuntimeWorkspaceWarningLog", () => {
       stream: "stdout",
       chunk: "[paperclip] Using fallback workspace\n",
     });
+  });
+});
+
+describe("hasMeaningfulWakeContextDelta", () => {
+  it("returns false when the incoming context adds no new information", () => {
+    expect(
+      hasMeaningfulWakeContextDelta(
+        {
+          issueId: "issue-1",
+          taskKey: "issue-1",
+          wakeSource: "assignment",
+        },
+        {
+          issueId: "issue-1",
+          taskKey: "issue-1",
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("returns true when the incoming context adds a new comment id", () => {
+    expect(
+      hasMeaningfulWakeContextDelta(
+        {
+          issueId: "issue-1",
+          taskKey: "issue-1",
+        },
+        {
+          issueId: "issue-1",
+          commentId: "comment-1",
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true when the incoming context changes an existing field", () => {
+    expect(
+      hasMeaningfulWakeContextDelta(
+        {
+          issueId: "issue-1",
+          wakeReason: "issue_assigned",
+        },
+        {
+          issueId: "issue-1",
+          wakeReason: "manual_retry",
+        },
+      ),
+    ).toBe(true);
   });
 });
 

@@ -31,7 +31,11 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import {
+  classifyHeartbeatCostObservation,
+  classifyHeartbeatSemanticOutcome,
+  summarizeHeartbeatRunResultJson,
+} from "./heartbeat-run-summary.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -378,6 +382,47 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
+}
+
+function buildHeartbeatResultJson(input: {
+  adapterResult: AdapterExecutionResult;
+  status: "succeeded" | "failed" | "cancelled" | "timed_out";
+  issueId: string | null;
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  workspaceWarnings: string[];
+  billingType: BillingType;
+  usage: UsageTotals | null;
+}) {
+  const baseResultJson =
+    input.adapterResult.resultJson &&
+    typeof input.adapterResult.resultJson === "object" &&
+    !Array.isArray(input.adapterResult.resultJson)
+      ? { ...input.adapterResult.resultJson }
+      : {};
+
+  const semantic = classifyHeartbeatSemanticOutcome({
+    status: input.status,
+    issueId: input.issueId,
+    resultJson: baseResultJson,
+    stdoutExcerpt: input.stdoutExcerpt,
+    stderrExcerpt: input.stderrExcerpt,
+    workspaceWarnings: input.workspaceWarnings,
+  });
+  const costObservation = classifyHeartbeatCostObservation({
+    billingType: input.billingType,
+    costUsd: input.adapterResult.costUsd ?? null,
+    usage: input.usage,
+  });
+
+  return {
+    ...baseResultJson,
+    semanticOutcome: semantic.semanticOutcome,
+    ...(semantic.lowSignalReasons.length > 0 ? { lowSignalReasons: semantic.lowSignalReasons } : {}),
+    ...(input.workspaceWarnings.length > 0 ? { workspaceWarnings: input.workspaceWarnings.slice(0, 3) } : {}),
+    costObservation,
+    costObserved: costObservation !== "unknown",
+  };
 }
 
 async function resolveLedgerScopeForRun(
@@ -755,6 +800,28 @@ function mergeCoalescedContextSnapshot(
     merged.wakeCommentId = commentId;
   }
   return merged;
+}
+
+function areWakeContextValuesEqual(left: unknown, right: unknown) {
+  if (left === right) return true;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function hasMeaningfulWakeContextDelta(
+  existingRaw: unknown,
+  incoming: Record<string, unknown>,
+) {
+  const existing = parseObject(existingRaw);
+  for (const [key, value] of Object.entries(incoming)) {
+    if (!(key in existing)) return true;
+    if (!areWakeContextValuesEqual(existing[key], value)) return true;
+  }
+  const commentId = deriveCommentId(incoming, null);
+  if (commentId) {
+    if (!areWakeContextValuesEqual(existing.commentId, commentId)) return true;
+    if (!areWakeContextValuesEqual(existing.wakeCommentId, commentId)) return true;
+  }
+  return false;
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
@@ -2791,6 +2858,26 @@ export function heartbeatService(db: Db) {
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
+      const billingType = normalizeLedgerBillingType(adapterResult.billingType);
+      const costObservation = classifyHeartbeatCostObservation({
+        billingType,
+        costUsd: adapterResult.costUsd ?? null,
+        usage: normalizedUsage ?? rawUsage,
+      });
+      const resultJson = buildHeartbeatResultJson({
+        adapterResult,
+        status,
+        issueId: issueId ?? null,
+        stdoutExcerpt,
+        stderrExcerpt,
+        workspaceWarnings: executionWorkspace.warnings,
+        billingType,
+        usage: normalizedUsage ?? rawUsage,
+      });
+      if (usageJson) {
+        usageJson.costObservation = costObservation;
+        usageJson.costObserved = costObservation !== "unknown";
+      }
 
       await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -2812,7 +2899,7 @@ export function heartbeatService(db: Db) {
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
         usageJson,
-        resultJson: adapterResult.resultJson ?? null,
+        resultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         stdoutExcerpt,
         stderrExcerpt,
@@ -3338,19 +3425,28 @@ export function heartbeatService(db: Db) {
             isSameExecutionAgent;
 
           if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
-            const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+            const hasContextDelta = hasMeaningfulWakeContextDelta(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
             );
-            const mergedRun = await tx
-              .update(heartbeatRuns)
-              .set({
-                contextSnapshot: mergedContextSnapshot,
-                updatedAt: new Date(),
-              })
-              .where(eq(heartbeatRuns.id, activeExecutionRun.id))
-              .returning()
-              .then((rows) => rows[0] ?? activeExecutionRun);
+            const mergedRun = hasContextDelta
+              ? await tx
+                  .update(heartbeatRuns)
+                  .set({
+                    contextSnapshot: mergeCoalescedContextSnapshot(
+                      activeExecutionRun.contextSnapshot,
+                      enrichedContextSnapshot,
+                    ),
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(heartbeatRuns.id, activeExecutionRun.id))
+                  .returning()
+                  .then((rows) => rows[0] ?? activeExecutionRun)
+              : activeExecutionRun;
+
+            if (!hasContextDelta && !wakeCommentId) {
+              return { kind: "coalesced" as const, run: mergedRun };
+            }
 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
@@ -3527,19 +3623,28 @@ export function heartbeatService(db: Db) {
       (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
 
     if (coalescedTargetRun) {
-      const mergedContextSnapshot = mergeCoalescedContextSnapshot(
+      const hasContextDelta = hasMeaningfulWakeContextDelta(
         coalescedTargetRun.contextSnapshot,
         contextSnapshot,
       );
-      const mergedRun = await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+      const mergedRun = hasContextDelta
+        ? await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: mergeCoalescedContextSnapshot(
+                coalescedTargetRun.contextSnapshot,
+                contextSnapshot,
+              ),
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
+            .returning()
+            .then((rows) => rows[0] ?? coalescedTargetRun)
+        : coalescedTargetRun;
+
+      if (!hasContextDelta && !wakeCommentId) {
+        return mergedRun;
+      }
 
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,

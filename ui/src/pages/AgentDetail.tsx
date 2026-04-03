@@ -42,6 +42,7 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -270,6 +271,98 @@ function runMetrics(run: HeartbeatRun) {
     cost,
     totalTokens: input + output,
   };
+}
+
+function runSemanticOutcome(run: HeartbeatRun) {
+  const result = asRecord(run.resultJson);
+  const value = asNonEmptyString(result?.semanticOutcome);
+  return value;
+}
+
+function runCostObservation(run: HeartbeatRun) {
+  const usage = asRecord(run.usageJson);
+  const result = asRecord(run.resultJson);
+  return asNonEmptyString(usage?.costObservation) ?? asNonEmptyString(result?.costObservation);
+}
+
+function outcomeLabel(value: string | null) {
+  switch (value) {
+    case "done_with_evidence":
+      return "done with evidence";
+    case "blocked_with_unblock_task":
+      return "blocked";
+    case "needs_human_decision":
+      return "needs decision";
+    case "noop_telemetry_only":
+      return "noop";
+    default:
+      return null;
+  }
+}
+
+function outcomeBadgeClass(value: string | null) {
+  switch (value) {
+    case "done_with_evidence":
+      return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "blocked_with_unblock_task":
+      return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "needs_human_decision":
+      return "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+    case "noop_telemetry_only":
+      return "border-neutral-500/20 bg-neutral-500/10 text-neutral-700 dark:text-neutral-300";
+    default:
+      return "border-border bg-muted/40 text-muted-foreground";
+  }
+}
+
+function costObservationLabel(value: string | null) {
+  switch (value) {
+    case "reported":
+      return "cost reported";
+    case "unknown":
+      return "cost unknown";
+    case "subscription_included":
+      return "subscription";
+    case "no_usage":
+      return "no usage";
+    default:
+      return null;
+  }
+}
+
+function costObservationBadgeClass(value: string | null) {
+  switch (value) {
+    case "reported":
+      return "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    case "unknown":
+      return "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300";
+    case "subscription_included":
+      return "border-violet-500/20 bg-violet-500/10 text-violet-700 dark:text-violet-300";
+    case "no_usage":
+      return "border-neutral-500/20 bg-neutral-500/10 text-neutral-700 dark:text-neutral-300";
+    default:
+      return "border-border bg-muted/40 text-muted-foreground";
+  }
+}
+
+function RunSemanticBadge({ run }: { run: HeartbeatRun }) {
+  const label = outcomeLabel(runSemanticOutcome(run));
+  if (!label) return null;
+  return (
+    <Badge variant="outline" className={cn("capitalize", outcomeBadgeClass(runSemanticOutcome(run)))}>
+      {label}
+    </Badge>
+  );
+}
+
+function RunCostObservationBadge({ run }: { run: HeartbeatRun }) {
+  const label = costObservationLabel(runCostObservation(run));
+  if (!label) return null;
+  return (
+    <Badge variant="outline" className={cn("capitalize", costObservationBadgeClass(runCostObservation(run)))}>
+      {label}
+    </Badge>
+  );
 }
 
 type RunLogChunk = { ts: string; stream: "stdout" | "stderr" | "system"; chunk: string };
@@ -1127,6 +1220,8 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         <div className="flex items-center gap-2">
           <StatusIcon className={cn("h-3.5 w-3.5", statusInfo.color, run.status === "running" && "animate-spin")} />
           <StatusBadge status={run.status} />
+          <RunSemanticBadge run={run} />
+          <RunCostObservationBadge run={run} />
           <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
           <span className={cn(
             "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
@@ -2778,6 +2873,8 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         <span className="font-mono text-xs text-muted-foreground">
           {run.id.slice(0, 8)}
         </span>
+        <RunSemanticBadge run={run} />
+        <RunCostObservationBadge run={run} />
         <span className={cn(
           "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium shrink-0",
           run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
@@ -3046,6 +3143,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
+              <RunSemanticBadge run={run} />
+              <RunCostObservationBadge run={run} />
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"
@@ -3114,6 +3213,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+              </div>
+            )}
+            {(runSemanticOutcome(run) || runCostObservation(run)) && (
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                {runSemanticOutcome(run) && (
+                  <span>
+                    Semantic outcome: <span className="text-foreground">{outcomeLabel(runSemanticOutcome(run))}</span>
+                  </span>
+                )}
+                {runCostObservation(run) && (
+                  <span>
+                    Cost telemetry: <span className="text-foreground">{costObservationLabel(runCostObservation(run))}</span>
+                  </span>
+                )}
               </div>
             )}
             {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (

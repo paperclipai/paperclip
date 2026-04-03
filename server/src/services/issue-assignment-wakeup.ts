@@ -3,6 +3,13 @@ import { logger } from "../middleware/logger.js";
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
 
+type IssueAssignmentWakeupIssue = {
+  id: string;
+  assigneeAgentId: string | null;
+  status: string;
+  executionRunId?: string | null;
+};
+
 export interface IssueAssignmentWakeupDeps {
   wakeup: (
     agentId: string,
@@ -18,9 +25,19 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+export function getIssueAssignmentWakeupSuppressionReason(issue: IssueAssignmentWakeupIssue) {
+  if (!issue.assigneeAgentId) return "unassigned";
+  if (issue.status === "backlog") return "backlog";
+  if (issue.status === "blocked") return "blocked";
+  if (issue.status === "done") return "done";
+  if (issue.status === "cancelled") return "cancelled";
+  if (issue.executionRunId) return "execution_already_locked";
+  return null;
+}
+
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
-  issue: { id: string; assigneeAgentId: string | null; status: string };
+  issue: IssueAssignmentWakeupIssue;
   reason: string;
   mutation: string;
   contextSource: string;
@@ -28,10 +45,19 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  const suppressionReason = getIssueAssignmentWakeupSuppressionReason(input.issue);
+  if (suppressionReason) {
+    logger.debug(
+      { issueId: input.issue.id, suppressionReason },
+      "suppressed assignment wakeup for issue",
+    );
+    return;
+  }
+  const assigneeAgentId = input.issue.assigneeAgentId;
+  if (!assigneeAgentId) return;
 
   return input.heartbeat
-    .wakeup(input.issue.assigneeAgentId, {
+    .wakeup(assigneeAgentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,

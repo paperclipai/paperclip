@@ -109,14 +109,38 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
+      const [summaryRow] = await db
         .select({
           total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          unknownCostEventCount: sql<number>`
+            coalesce(
+              count(*) filter (
+                where ${costEvents.billingType} = ${METERED_BILLING_TYPE}
+                  and ${costEvents.costCents} = 0
+                  and (${costEvents.inputTokens} > 0 or ${costEvents.cachedInputTokens} > 0 or ${costEvents.outputTokens} > 0)
+              ),
+              0
+            )::int
+          `,
+          unknownCostTokenCount: sql<number>`
+            coalesce(
+              sum(
+                case
+                  when ${costEvents.billingType} = ${METERED_BILLING_TYPE}
+                    and ${costEvents.costCents} = 0
+                    and (${costEvents.inputTokens} > 0 or ${costEvents.cachedInputTokens} > 0 or ${costEvents.outputTokens} > 0)
+                  then ${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}
+                  else 0
+                end
+              ),
+              0
+            )::int
+          `,
         })
         .from(costEvents)
         .where(and(...conditions));
 
-      const spendCents = Number(total);
+      const spendCents = Number(summaryRow?.total ?? 0);
       const utilization =
         company.budgetMonthlyCents > 0
           ? (spendCents / company.budgetMonthlyCents) * 100
@@ -127,6 +151,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         spendCents,
         budgetCents: company.budgetMonthlyCents,
         utilizationPercent: Number(utilization.toFixed(2)),
+        unknownCostEventCount: Number(summaryRow?.unknownCostEventCount ?? 0),
+        unknownCostTokenCount: Number(summaryRow?.unknownCostTokenCount ?? 0),
       };
     },
 

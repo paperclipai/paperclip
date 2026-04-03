@@ -701,6 +701,12 @@ export function Costs() {
                         </div>
                       </div>
                     ) : null}
+                    {(spendData?.summary.unknownCostEventCount ?? 0) > 0 ? (
+                      <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                        Cost telemetry incomplete for {spendData?.summary.unknownCostEventCount ?? 0} metered event{(spendData?.summary.unknownCostEventCount ?? 0) === 1 ? "" : "s"} covering{" "}
+                        {formatTokens(spendData?.summary.unknownCostTokenCount ?? 0)} tokens. Spend shown above is understated.
+                      </div>
+                    ) : null}
                   </CardContent>
                 </Card>
 
