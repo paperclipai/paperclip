@@ -18,6 +18,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  prepareAgentQmdEnvironment,
   resolveCommandForLogs,
   renderTemplate,
   runChildProcess,
@@ -214,6 +215,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = workspaceWorktreePath;
   }
   if (agentHome) {
+    const preparedQmd = await prepareAgentQmdEnvironment(agentHome, {
+      baseEnv: { ...process.env, ...env },
+    });
+    Object.assign(env, preparedQmd.env);
     env.AGENT_HOME = agentHome;
   }
   if (workspaceHints.length > 0) {
