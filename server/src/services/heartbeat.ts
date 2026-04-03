@@ -654,6 +654,13 @@ export function shouldResetTaskSessionForWake(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  const hasExplicitTask =
+    !!readNonEmptyString(contextSnapshot?.taskKey) ||
+    !!readNonEmptyString(contextSnapshot?.taskId) ||
+    !!readNonEmptyString(contextSnapshot?.issueId);
+  if (wakeSource === "on_demand" && !hasExplicitTask) return true;
   return false;
 }
 
@@ -671,6 +678,15 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  const hasExplicitTask =
+    !!readNonEmptyString(contextSnapshot?.taskKey) ||
+    !!readNonEmptyString(contextSnapshot?.taskId) ||
+    !!readNonEmptyString(contextSnapshot?.issueId);
+  if (wakeSource === "on_demand" && !hasExplicitTask) {
+    return "manual on-demand heartbeat without task context";
+  }
   return null;
 }
 
