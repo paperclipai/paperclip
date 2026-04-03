@@ -174,6 +174,14 @@
     "done": "Done",
     "closed": "Closed"
   },
+  "actions": {
+    "assign_task": "Assign Task",
+    "run_heartbeat": "Run Heartbeat",
+    "pause": "Pause",
+    "resume": "Resume",
+    "retry": "Retry",
+    "retrying": "Retrying..."
+  },
   "page": {
     "dashboard": {
       "title": "Dashboard"
@@ -187,12 +195,6 @@
       "no_match_filters": "No inbox items match these filters.",
       "search_placeholder": "Search inbox...",
       "earlier": "Earlier",
-      "tabs": {
-        "mine": "Mine",
-        "recent": "Recent",
-        "unread": "Unread",
-        "all": "All"
-      },
       "categories": {
         "placeholder": "Category",
         "everything": "All categories",
@@ -341,6 +343,65 @@
       "count_one": "{{count}} agent",
       "count_other": "{{count}} agents",
       "live": "Live"
+    },
+    "agentDetail": {
+      "runs": {
+        "transcript": "Transcript",
+        "failureDetails": "Failure details",
+        "events": "Events",
+        "retry": "Retry",
+        "retrying": "Retrying...",
+        "jumpToLive": "Jump to live",
+        "live": "Live",
+        "waitingTranscript": "Waiting for transcript...",
+        "noTranscript": "No persisted transcript for this run.",
+        "stderrExcerpt": "stderr excerpt",
+        "stdoutExcerpt": "stdout excerpt",
+        "adapterResult": "adapter result JSON",
+        "sources": {
+          "timer": "Timer",
+          "assignment": "Assignment",
+          "on_demand": "On-demand",
+          "automation": "Automation"
+        },
+        "workspace": {
+          "worktreeSetup": "Worktree setup",
+          "provision": "Provision",
+          "teardown": "Teardown",
+          "worktreeCleanup": "Worktree cleanup",
+          "command": "Command",
+          "workingDir": "Working dir",
+          "branch": "Branch",
+          "baseRef": "Base ref",
+          "worktree": "Worktree",
+          "repoRoot": "Repo root",
+          "cleanup": "Cleanup",
+          "created": "Created by this run",
+          "reused": "Reused existing workspace"
+        },
+        "loadingLogs": "Loading run logs...",
+        "noEvents": "No log events."
+      },
+      "keys": {
+        "created": "API key created — copy it now, it will not be shown again.",
+        "hide": "Hide",
+        "show": "Show",
+        "copy": "Copy",
+        "copied": "Copied!",
+        "dismiss": "Dismiss",
+        "createTitle": "Create API Key",
+        "description": "API keys allow this agent to authenticate calls to the Paperclip server.",
+        "placeholder": "Key name (e.g. CLI, Prod)",
+        "creating": "Creating...",
+        "create": "Create Key"
+      },
+      "breadcrumbs": {
+        "agents": "Agents",
+        "runs": "Runs",
+        "instructions": "Instructions",
+        "configuration": "Configuration",
+        "run": "Run {{id}}"
+      }
     },
     "org": {
       "title": "Org",

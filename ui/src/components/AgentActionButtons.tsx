@@ -1,5 +1,6 @@
 import { Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "react-i18next";
 
 export function RunButton({
   onClick,
@@ -12,10 +13,13 @@ export function RunButton({
   label?: string;
   size?: "sm" | "default";
 }) {
+  const { t } = useTranslation();
+  const displayLabel = label === "Run now" ? t("actions.run_now", "Run now") : label;
+
   return (
     <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">{label}</span>
+      <span className="hidden sm:inline">{displayLabel}</span>
     </Button>
   );
 }
@@ -33,11 +37,12 @@ export function PauseResumeButton({
   disabled?: boolean;
   size?: "sm" | "default";
 }) {
+  const { t } = useTranslation();
   if (isPaused) {
     return (
       <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
         <Play className="h-3.5 w-3.5 sm:mr-1" />
-        <span className="hidden sm:inline">Resume</span>
+        <span className="hidden sm:inline">{t("actions.resume", "Resume")}</span>
       </Button>
     );
   }
@@ -45,7 +50,7 @@ export function PauseResumeButton({
   return (
     <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">Pause</span>
+      <span className="hidden sm:inline">{t("actions.pause", "Pause")}</span>
     </Button>
   );
 }

@@ -174,6 +174,14 @@
     "done": "Concluído",
     "closed": "Fechado"
   },
+  "actions": {
+    "assign_task": "Atribuir Tarefa",
+    "run_heartbeat": "Executar Monitoramento",
+    "pause": "Pausar",
+    "resume": "Retomar",
+    "retry": "Tentar novamente",
+    "retrying": "Tentando..."
+  },
   "page": {
     "dashboard": {
       "title": "Painel"
@@ -332,9 +340,67 @@
       "active": "Ativos",
       "paused": "Pausados",
       "error": "Erro",
-      "count_one": "{{count}} agente",
       "count_other": "{{count}} agentes",
       "live": "Ao vivo"
+    },
+    "agentDetail": {
+      "runs": {
+        "transcript": "Transcrição",
+        "failureDetails": "Detalhes da falha",
+        "events": "Eventos",
+        "retry": "Tentar novamente",
+        "retrying": "Tentando...",
+        "jumpToLive": "Ir para o vivo",
+        "live": "Ao vivo",
+        "waitingTranscript": "Aguardando transcrição...",
+        "noTranscript": "Nenhuma transcrição persistida para esta execução.",
+        "stderrExcerpt": "saída de erro (excerto)",
+        "stdoutExcerpt": "saída padrão (excerto)",
+        "adapterResult": "resultado JSON do adaptador",
+        "sources": {
+          "timer": "Agendado",
+          "assignment": "Atribuição",
+          "on_demand": "Sob demanda",
+          "automation": "Automação"
+        },
+        "workspace": {
+          "worktreeSetup": "Configuração da árvore de trabalho",
+          "provision": "Provisionamento",
+          "teardown": "Desativação",
+          "worktreeCleanup": "Limpeza da árvore de trabalho",
+          "command": "Comando",
+          "workingDir": "Diretório de trabalho",
+          "branch": "Branch",
+          "baseRef": "Ref base",
+          "worktree": "Árvore de trabalho",
+          "repoRoot": "Raiz do repositório",
+          "cleanup": "Limpeza",
+          "created": "Criado por esta execução",
+          "reused": "Espaço de trabalho existente reutilizado"
+        },
+        "loadingLogs": "Carregando logs da execução...",
+        "noEvents": "Sem eventos de log."
+      },
+      "keys": {
+        "created": "Chave de API criada — copie agora, ela não será exibida novamente.",
+        "hide": "Ocultar",
+        "show": "Mostrar",
+        "copy": "Copiar",
+        "copied": "Copiado!",
+        "dismiss": "Fechar",
+        "createTitle": "Criar Chave de API",
+        "description": "As chaves de API permitem que este agente se autentique no servidor Paperclip.",
+        "placeholder": "Nome da chave (ex: CLI, Produção)",
+        "creating": "Criando...",
+        "create": "Criar Chave"
+      },
+      "breadcrumbs": {
+        "agents": "Agentes",
+        "runs": "Execuções",
+        "instructions": "Instruções",
+        "configuration": "Configuração",
+        "run": "Execução {{id}}"
+      }
     },
     "org": {
       "title": "Organização",
