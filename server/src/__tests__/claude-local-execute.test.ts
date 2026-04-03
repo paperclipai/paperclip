@@ -15,6 +15,8 @@ const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const appendedSystemPromptFileIndex = argv.indexOf("--append-system-prompt-file");
+const appendedSystemPromptFilePath = appendedSystemPromptFileIndex >= 0 ? argv[appendedSystemPromptFileIndex + 1] : null;
 const payload = {
   argv,
   prompt: fs.readFileSync(0, "utf8"),
@@ -23,6 +25,11 @@ const payload = {
   instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
+  appendedSystemPromptFilePath,
+  appendedSystemPromptFileContents: appendedSystemPromptFilePath ? fs.readFileSync(appendedSystemPromptFilePath, "utf8") : null,
+  agentHome: process.env.AGENT_HOME || null,
+  qmdConfigDir: process.env.QMD_CONFIG_DIR || null,
+  xdgCacheHome: process.env.XDG_CACHE_HOME || null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -45,6 +52,9 @@ type CapturePayload = {
   claudeConfigDir: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
+  agentHome?: string | null;
+  qmdConfigDir?: string | null;
+  xdgCacheHome?: string | null;
 };
 
 async function writeRetryThenSucceedClaudeCommand(commandPath: string): Promise<void> {
@@ -316,11 +326,13 @@ describe("claude execute", () => {
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
     const binDir = path.join(root, "bin");
     const commandPath = path.join(binDir, "claude");
     const capturePath = path.join(root, "capture.json");
     const claudeConfigDir = path.join(root, "claude-config");
     await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
     await fs.mkdir(binDir, { recursive: true });
     await fs.mkdir(claudeConfigDir, { recursive: true });
     await writeFakeClaudeCommand(commandPath);
@@ -358,7 +370,11 @@ describe("claude execute", () => {
           },
           promptTemplate: "Follow the paperclip heartbeat.",
         },
-        context: {},
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
         onMeta: async (meta) => {
@@ -369,10 +385,23 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        claudeConfigDir: string | null;
+        agentHome: string | null;
+        qmdConfigDir: string | null;
+        xdgCacheHome: string | null;
+      };
       expect(loggedCommand).toBe(commandPath);
       expect(loggedEnv.HOME).toBe(root);
       expect(loggedEnv.CLAUDE_CONFIG_DIR).toBe(claudeConfigDir);
+      expect(loggedEnv.AGENT_HOME).toBe(agentHome);
+      expect(loggedEnv.QMD_CONFIG_DIR).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(loggedEnv.XDG_CACHE_HOME).toBe(path.join(agentHome, ".cache"));
       expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
+      expect(capture.claudeConfigDir).toBe(claudeConfigDir);
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

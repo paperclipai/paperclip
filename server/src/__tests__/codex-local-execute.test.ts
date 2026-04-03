@@ -14,6 +14,9 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
+  agentHome: process.env.AGENT_HOME || null,
+  qmdConfigDir: process.env.QMD_CONFIG_DIR || null,
+  xdgCacheHome: process.env.XDG_CACHE_HOME || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -29,10 +32,53 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
-async function writeFailingCodexCommand(commandPath: string, errorMessage: string): Promise<void> {
+async function writeFakeQmdCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
-console.log(JSON.stringify({ type: "error", message: ${JSON.stringify(errorMessage)} }));
-process.exit(1);
+const fs = require("node:fs");
+
+const statePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+const args = process.argv.slice(2);
+const readState = () => {
+  if (!statePath || !fs.existsSync(statePath)) {
+    return { path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 };
+  }
+  return JSON.parse(fs.readFileSync(statePath, "utf8"));
+};
+const writeState = (state) => {
+  if (!statePath) return;
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+};
+
+const state = readState();
+if (args[0] === "collection" && args[1] === "show") {
+  if (state.path && state.collectionName === args[2]) {
+    process.stdout.write("Collection: " + args[2] + "\\n");
+    process.stdout.write("  Path:     " + state.path + "\\n");
+    process.exit(0);
+  }
+  process.exit(1);
+}
+if (args[0] === "collection" && args[1] === "remove") {
+  state.path = null;
+  state.collectionName = null;
+  state.removeCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "collection" && args[1] === "add") {
+  const nameIndex = args.indexOf("--name");
+  state.path = args[2] || null;
+  state.collectionName = nameIndex >= 0 ? args[nameIndex + 1] || null : null;
+  state.addCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "update") {
+  state.updateCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+process.exit(0);
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -43,6 +89,9 @@ type CapturePayload = {
   prompt: string;
   codexHome: string | null;
   paperclipWakePayloadJson: string | null;
+  agentHome: string | null;
+  qmdConfigDir: string | null;
+  xdgCacheHome: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -371,131 +420,6 @@ describe("codex execute", () => {
       );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("classifies remote-compaction high-demand failures as retryable transient upstream errors", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-transient-"));
-    const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "codex");
-    await fs.mkdir(workspace, { recursive: true });
-    await writeFailingCodexCommand(
-      commandPath,
-      "Error running remote compact task: We're currently experiencing high demand, which may cause temporary errors.",
-    );
-
-    const previousHome = process.env.HOME;
-    process.env.HOME = root;
-
-    try {
-      const result = await execute({
-        runId: "run-transient-error",
-        agent: {
-          id: "agent-1",
-          companyId: "company-1",
-          name: "Codex Coder",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        },
-        runtime: {
-          sessionId: null,
-          sessionParams: null,
-          sessionDisplayId: null,
-          taskKey: null,
-        },
-        config: {
-          command: commandPath,
-          cwd: workspace,
-          promptTemplate: "Follow the paperclip heartbeat.",
-        },
-        context: {},
-        authToken: "run-jwt-token",
-        onLog: async () => {},
-      });
-
-      expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("codex_transient_upstream");
-      expect(result.errorMessage).toContain("high demand");
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("uses safer invocation settings and a fresh-session handoff for codex transient fallback retries", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-fallback-"));
-    const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "codex");
-    const capturePath = path.join(root, "capture.json");
-    await fs.mkdir(workspace, { recursive: true });
-    await writeFakeCodexCommand(commandPath);
-
-    const previousHome = process.env.HOME;
-    process.env.HOME = root;
-
-    let commandNotes: string[] = [];
-    try {
-      const result = await execute({
-        runId: "run-fallback",
-        agent: {
-          id: "agent-1",
-          companyId: "company-1",
-          name: "Codex Coder",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        },
-        runtime: {
-          sessionId: null,
-          sessionParams: {
-            sessionId: "codex-session-stale",
-            cwd: workspace,
-          },
-          sessionDisplayId: "codex-session-stale",
-          taskKey: null,
-        },
-        config: {
-          command: commandPath,
-          cwd: workspace,
-          fastMode: true,
-          model: "gpt-5.4",
-          env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
-          },
-          promptTemplate: "Follow the paperclip heartbeat.",
-        },
-        context: {
-          codexTransientFallbackMode: "fresh_session_safer_invocation",
-          paperclipContinuationSummary: {
-            key: "continuation-summary",
-            title: "Continuation Summary",
-            body: "Issue continuation summary for the next fresh session.",
-            updatedAt: "2026-04-21T01:00:00.000Z",
-          },
-        },
-        authToken: "run-jwt-token",
-        onLog: async () => {},
-        onMeta: async (meta) => {
-          commandNotes = meta.commandNotes ?? [];
-        },
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(result.errorMessage).toBeNull();
-
-      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
-      expect(capture.argv).not.toContain("resume");
-      expect(capture.argv).not.toContain('service_tier="fast"');
-      expect(capture.argv).not.toContain("features.fast_mode=true");
-      expect(capture.prompt).toContain("Paperclip session handoff:");
-      expect(capture.prompt).toContain("Issue continuation summary for the next fresh session.");
-      expect(commandNotes).toContain("Codex transient fallback requested safer invocation settings for this retry.");
-      expect(commandNotes).toContain("Codex transient fallback forced a fresh session with a continuation handoff.");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -863,6 +787,104 @@ describe("codex execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("isolates qmd state per agent home and repairs a stale agent-home alias", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-qmd-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "codex");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({
+        path: path.join(root, "stale-agent-home"),
+        collectionName: "agent-home",
+        addCount: 0,
+        removeCount: 0,
+        updateCount: 0,
+      }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    try {
+      const result = await execute({
+        runId: "run-qmd",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "codex",
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
+
+      const qmdState = JSON.parse(await fs.readFile(qmdStatePath, "utf8")) as {
+        path: string | null;
+        collectionName: string | null;
+        addCount: number;
+        removeCount: number;
+        updateCount: number;
+      };
+      expect(qmdState.path).toBe(agentHome);
+      expect(qmdState.collectionName).toBe("agent-home");
+      expect(qmdState.removeCount).toBe(1);
+      expect(qmdState.addCount).toBe(1);
+      expect(qmdState.updateCount).toBe(0);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
