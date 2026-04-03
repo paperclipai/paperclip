@@ -92,6 +92,39 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
+async function resolveBoardUpgradeContext(
+  db: Db,
+  companyId: string,
+  userId: string,
+): Promise<UpgradeContext | null> {
+  const [roleRow, memberships] = await Promise.all([
+    db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ companyId: companyMemberships.companyId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      ),
+  ]);
+
+  const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
+  if (!roleRow && !hasCompanyMembership) return null;
+
+  return {
+    companyId,
+    actorType: "board",
+    actorId: userId,
+  };
+}
+
 async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -104,10 +137,10 @@ async function authorizeUpgrade(
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
-  const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
+  const queryOrAuthToken = queryToken.length > 0 ? queryToken : authToken;
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
-  if (!token) {
+  if (!queryOrAuthToken) {
     if (opts.deploymentMode === "local_trusted") {
       return {
         companyId,
@@ -124,33 +157,20 @@ async function authorizeUpgrade(
     const userId = session?.user?.id;
     if (!userId) return null;
 
-    const [roleRow, memberships] = await Promise.all([
-      db
-        .select({ id: instanceUserRoles.id })
-        .from(instanceUserRoles)
-        .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ companyId: companyMemberships.companyId })
-        .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
-        ),
-    ]);
-
-    const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
-    if (!roleRow && !hasCompanyMembership) return null;
-
-    return {
-      companyId,
-      actorType: "board",
-      actorId: userId,
-    };
+    return resolveBoardUpgradeContext(db, companyId, userId);
   }
+
+  if (authToken && opts.deploymentMode === "authenticated" && opts.resolveSessionFromHeaders) {
+    const session = await opts.resolveSessionFromHeaders(headersFromIncomingMessage(req));
+    const userId = session?.user?.id;
+    if (userId) {
+      const boardContext = await resolveBoardUpgradeContext(db, companyId, userId);
+      if (boardContext) return boardContext;
+    }
+  }
+
+  const token = queryToken.length > 0 ? queryToken : authToken;
+  if (!token) return null;
 
   const tokenHash = hashToken(token);
   const key = await db

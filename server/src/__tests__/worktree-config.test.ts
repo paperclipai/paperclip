@@ -329,6 +329,7 @@ describe("worktree config repair", () => {
   });
 
   it("persists runtime-selected worktree ports back into config", async () => {
+    delete process.env.DATABASE_URL;
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-ports-"));
     const worktreeRoot = path.join(tempRoot, "PAP-878-create-a-mine-tab-in-inbox");
     const paperclipDir = path.join(worktreeRoot, ".paperclip");

@@ -29,48 +29,49 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
-    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
-      if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
-        let session: BetterAuthSessionResult | null = null;
-        try {
-          session = await opts.resolveSession(req);
-        } catch (err) {
-          logger.warn(
-            { err, method: req.method, url: req.originalUrl },
-            "Failed to resolve auth session from request headers",
-          );
-        }
-        if (session?.user?.id) {
-          const userId = session.user.id;
-          const [roleRow, memberships] = await Promise.all([
-            db
-              .select({ id: instanceUserRoles.id })
-              .from(instanceUserRoles)
-              .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-              .then((rows) => rows[0] ?? null),
-            db
-              .select({ companyId: companyMemberships.companyId })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
-          ]);
-          req.actor = {
-            type: "board",
-            userId,
-            companyIds: memberships.map((row) => row.companyId),
-            isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
-            source: "session",
-          };
-          next();
-          return;
-        }
+    if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
+      let session: BetterAuthSessionResult | null = null;
+      try {
+        session = await opts.resolveSession(req);
+      } catch (err) {
+        logger.warn(
+          { err, method: req.method, url: req.originalUrl },
+          "Failed to resolve auth session from request headers",
+        );
       }
+      if (session?.user?.id) {
+        const userId = session.user.id;
+        const [roleRow, memberships] = await Promise.all([
+          db
+            .select({ id: instanceUserRoles.id })
+            .from(instanceUserRoles)
+            .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+            .then((rows) => rows[0] ?? null),
+          db
+            .select({ companyId: companyMemberships.companyId })
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, userId),
+                eq(companyMemberships.status, "active"),
+              ),
+            ),
+        ]);
+        req.actor = {
+          type: "board",
+          userId,
+          companyIds: memberships.map((row) => row.companyId),
+          isInstanceAdmin: Boolean(roleRow),
+          runId: runIdHeader ?? undefined,
+          source: "session",
+        };
+        next();
+        return;
+      }
+    }
+
+    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
