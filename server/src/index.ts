@@ -94,30 +94,6 @@ async function autoInstallBundledPlugins(_db: import("@paperclipai/db").Db) {
     }
   }
 
-  // For dev: if npm install failed for chat plugin, try local path fallback
-  {
-    const listRes2 = await fetch(`${baseUrl}/api/plugins`).catch(() => null);
-    const plugins2 = listRes2?.ok ? (await listRes2.json()) as Array<{ pluginKey: string; status: string }> : [];
-    const chatInstalled = plugins2.some((p) => p.pluginKey === "paperclip-chat" && p.status === "ready");
-    if (!chatInstalled) {
-      try {
-        const { resolve } = await import("path");
-        const absPath = resolve(process.cwd(), "../paperclip-plugin-chat");
-        logger.info({ path: absPath }, "chat plugin not found via npm, trying local path");
-        const res = await fetch(`${baseUrl}/api/plugins/install`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ packageName: absPath, isLocalPath: true }),
-        });
-        if (res.ok) {
-          const result = (await res.json()) as { pluginKey?: string; status?: string };
-          logger.info({ pluginKey: result.pluginKey, status: result.status }, "chat plugin installed from local path");
-        }
-      } catch (err) {
-        logger.warn({ err }, "local chat plugin install failed");
-      }
-    }
-  }
 }
 
 type BetterAuthSessionUser = {
