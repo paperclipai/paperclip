@@ -16,6 +16,7 @@ import { useNavigate } from "@/lib/router";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import {
   fleetosApi,
+  fleetosAuthApi,
   type FleetTemplateField,
   type ProvisionValidateRequest,
   type ProvisionValidateResponse,
@@ -73,9 +74,9 @@ const DEFAULT_FORM: FormValues = {
   agent_name: "",
   agent_role: "",
   model: "claude-sonnet-4-20250514",
-  memory: "4GB",
-  cpu: "2",
-  disk: "30GB",
+  memory: "",
+  cpu: "",
+  disk: "",
   secrets_mode: "env",
   extra_fields: {},
 };
@@ -234,6 +235,7 @@ function StepConfigure({
   formValues,
   onChange,
   validationResult,
+  validationError,
   onValidate,
   isValidating,
 }: {
@@ -241,10 +243,11 @@ function StepConfigure({
   formValues: FormValues;
   onChange: (patch: Partial<FormValues>) => void;
   validationResult: ProvisionValidateResponse | null;
+  validationError: string | null;
   onValidate: () => void;
   isValidating: boolean;
 }) {
-  const { data: templateDetail } = useQuery({
+  const { data: templateDetail, isError: templateError, error: templateFetchError } = useQuery({
     queryKey: queryKeys.fleet.provision.template(templateName),
     queryFn: () => fleetosApi.getTemplate(templateName),
     enabled: !!templateName,
@@ -293,6 +296,14 @@ function StepConfigure({
           Configure the agent identity, model, and resource limits.
         </p>
       </div>
+
+      {templateError && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3">
+          <p className="text-sm text-destructive">
+            Failed to load template details: {templateFetchError instanceof Error ? templateFetchError.message : "Unknown error"}
+          </p>
+        </div>
+      )}
 
       {/* Identity */}
       <div className="grid gap-4 sm:grid-cols-2">
@@ -424,6 +435,15 @@ function StepConfigure({
             </>
           )}
         </Button>
+
+        {validationError && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3">
+            <div className="flex items-center gap-2">
+              <XCircle className="h-4 w-4 text-destructive" />
+              <span className="text-sm text-destructive">{validationError}</span>
+            </div>
+          </div>
+        )}
 
         {validationResult && (
           <ValidationResultDisplay result={validationResult} />
@@ -853,6 +873,13 @@ export function FleetProvisionWizard() {
   const [validationResult, setValidationResult] = useState<ProvisionValidateResponse | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
 
+  // Fetch current tenant for tenant_id in provision requests
+  const { data: meData } = useQuery({
+    queryKey: ["fleetos", "me"],
+    queryFn: () => fleetosAuthApi.me(),
+    staleTime: 60_000,
+  });
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Fleet", href: "/fleet" },
@@ -863,22 +890,24 @@ export function FleetProvisionWizard() {
   const handleFormChange = useCallback(
     (patch: Partial<FormValues>) => {
       setFormValues((prev) => ({ ...prev, ...patch }));
-      // Clear validation when form changes (except for extra_fields which is nested)
-      if (!("extra_fields" in patch && Object.keys(patch).length === 1)) {
-        setValidationResult(null);
-      }
+      // Always clear validation when any field changes (including extra_fields)
+      setValidationResult(null);
     },
     [],
   );
 
   const handleSelectTemplate = useCallback((name: string) => {
     setSelectedTemplate(name);
+    // Reset template-scoped state when switching templates
+    setFormValues((prev) => ({ ...prev, memory: "", cpu: "", disk: "", extra_fields: {} }));
+    setValidationResult(null);
   }, []);
 
   // Build the request body from current form state
   const buildRequestBody = useCallback((): ProvisionValidateRequest => {
     const body: ProvisionValidateRequest = {
       template: selectedTemplate,
+      tenant_id: meData?.tenantId ?? "",
       agent_name: formValues.agent_name.trim(),
       agent_role: formValues.agent_role.trim(),
     };
@@ -892,12 +921,20 @@ export function FleetProvisionWizard() {
     );
     if (Object.keys(extras).length > 0) body.extra_fields = extras;
     return body;
-  }, [selectedTemplate, formValues]);
+  }, [selectedTemplate, formValues, meData?.tenantId]);
 
   // Validate mutation
+  const [validationError, setValidationError] = useState<string | null>(null);
   const validateMutation = useMutation({
     mutationFn: (body: ProvisionValidateRequest) => fleetosApi.validateProvision(body),
-    onSuccess: (result) => setValidationResult(result),
+    onSuccess: (result) => {
+      setValidationResult(result);
+      setValidationError(null);
+    },
+    onError: (err) => {
+      setValidationError(err instanceof Error ? err.message : "Validation request failed");
+      setValidationResult(null);
+    },
   });
 
   const handleValidate = useCallback(() => {
@@ -908,7 +945,7 @@ export function FleetProvisionWizard() {
   const provisionMutation = useMutation({
     mutationFn: () => fleetosApi.startProvision(buildRequestBody()),
     onSuccess: (result) => {
-      setJobId(result.job_id);
+      setJobId(result.id ?? result.job_id ?? "");
       setStep(4);
     },
   });
@@ -993,6 +1030,7 @@ export function FleetProvisionWizard() {
             formValues={formValues}
             onChange={handleFormChange}
             validationResult={validationResult}
+            validationError={validationError}
             onValidate={handleValidate}
             isValidating={validateMutation.isPending}
           />

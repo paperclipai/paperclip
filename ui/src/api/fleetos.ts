@@ -74,7 +74,7 @@ export interface FleetTemplateDetail extends FleetTemplate {
 
 export interface ProvisionValidateRequest {
   template: string;
-  tenant_id?: string;
+  tenant_id: string;
   agent_name: string;
   agent_role: string;
   model?: string;
@@ -107,7 +107,8 @@ export interface ProvisionRequest {
 }
 
 export interface ProvisionStartResponse {
-  job_id: string;
+  id: string;
+  job_id?: string; // legacy alias
   status: string;
   message: string;
 }
@@ -197,7 +198,7 @@ export const fleetosApi = {
 
   /** List available provision templates. */
   listTemplates: () =>
-    api.get<FleetTemplate[]>("/fleetos/templates"),
+    api.get<{ templates: FleetTemplate[] }>("/fleetos/templates").then((r) => r.templates),
 
   /** Get a single template with its field definitions. */
   getTemplate: (name: string) =>
