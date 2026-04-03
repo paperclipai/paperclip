@@ -674,9 +674,11 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
+    // clear any stale executionRunId/checkoutRunId locks left over from a crash,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reapStaleExecutionRunLocks())
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
@@ -738,11 +740,12 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+
+      // Periodically reap orphaned runs (5-min staleness threshold), clear any
+      // stale executionRunId locks, and drive queued work forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reapStaleExecutionRunLocks())
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
