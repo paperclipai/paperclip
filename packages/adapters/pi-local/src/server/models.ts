@@ -131,7 +131,10 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  return sortModels(dedupeModels(parseModelsOutput(result.stdout)));
+  // Pi ≥0.65.0 writes the model table to stderr when spawned as a subprocess.
+  // Try stdout first, then fall back to stderr.
+  const output = result.stdout.trim().length > 0 ? result.stdout : result.stderr;
+  return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
