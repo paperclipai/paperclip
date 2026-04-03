@@ -1748,6 +1748,7 @@ const YAML_KEY_PRIORITY = [
   "role",
   "icon",
   "capabilities",
+  "organizationMode",
   "brandColor",
   "logoPath",
   "adapter",
@@ -2411,6 +2412,8 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
+      organizationMode:
+        asString(paperclipCompany.organizationMode) === "team" ? "team" : "company",
       brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
       requireBoardApprovalForNewAgents:
@@ -3360,6 +3363,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       {
         schema: "paperclip/v1",
         company: stripEmptyValues({
+          organizationMode: company.organizationMode === "team" ? "team" : undefined,
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? undefined : false,
@@ -3877,6 +3881,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
+        organizationMode: include.company ? (sourceManifest.company?.organizationMode ?? "company") : "company",
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
@@ -3908,6 +3913,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
+          organizationMode: sourceManifest.company.organizationMode ?? "company",
           brandColor: sourceManifest.company.brandColor,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,

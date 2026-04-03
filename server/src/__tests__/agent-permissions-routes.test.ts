@@ -113,7 +113,7 @@ function registerServiceMocks() {
   }));
 }
 
-function createDbStub() {
+function createDbStub(organizationMode: "company" | "team" = "company") {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
@@ -121,6 +121,7 @@ function createDbStub() {
           then: vi.fn().mockResolvedValue([{
             id: companyId,
             name: "Paperclip",
+            organizationMode,
             requireBoardApprovalForNewAgents: false,
           }]),
         }),
@@ -129,7 +130,10 @@ function createDbStub() {
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(
+  actor: Record<string, unknown>,
+  options?: { organizationMode?: "company" | "team" },
+) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/agents.js"),
     import("../middleware/index.js"),
@@ -140,7 +144,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes(createDbStub() as any));
+  app.use("/api", agentRoutes(createDbStub(options?.organizationMode) as any));
   app.use(errorHandler);
   return app;
 }
@@ -302,6 +306,30 @@ describe("agent permission routes", () => {
         },
       }),
     );
+  });
+
+  it("uses the team lead default bundle for root agents in team mode", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    }, { organizationMode: "team" });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Team Lead",
+        role: "ceo",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status).toBe(201);
+    const bundleFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls[0]?.[1];
+    expect(bundleFiles["AGENTS.md"]).toContain("You are the Team Lead.");
+    expect(bundleFiles["AGENTS.md"]).toContain("technical tasks** → Founding Engineer");
   });
 
   it("exposes explicit task assignment access on agent detail", async () => {

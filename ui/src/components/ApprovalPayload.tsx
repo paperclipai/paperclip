@@ -1,5 +1,7 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { formatCents } from "../lib/utils";
+import { useCompany } from "../context/CompanyContext";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -27,8 +29,21 @@ export function approvalSubject(payload?: Record<string, unknown> | null): strin
 }
 
 /** Build a contextual label for an approval, e.g. "Hire Agent: Designer" */
-export function approvalLabel(type: string, payload?: Record<string, unknown> | null): string {
-  const base = typeLabel[type] ?? type;
+export function approvalLabel(
+  type: string,
+  payload?: Record<string, unknown> | null,
+  organizationMode?: "company" | "team" | null,
+): string {
+  const base =
+    type === "hire_agent"
+      ? organizationMode === "team"
+        ? "Add Teammate"
+        : "Hire Agent"
+      : type === "approve_ceo_strategy"
+        ? organizationMode === "team"
+          ? "Team Plan"
+          : "CEO Strategy"
+        : (typeLabel[type] ?? type);
   const subject = approvalSubject(payload);
   if (subject) {
     return `${base}: ${subject}`;
@@ -110,10 +125,12 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
+  const { selectedCompany } = useCompany();
+  const terms = getOrganizationTerms(selectedCompany);
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
   return (
     <div className="mt-3 space-y-1.5 text-sm">
-      <PayloadField label="Title" value={payload.title} />
+      <PayloadField label={terms.planApprovalLower === "team plan" ? "Plan" : "Title"} value={payload.title} />
       {!!plan && (
         <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
           {String(plan)}

@@ -3,6 +3,7 @@ import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
+import { getOrganizationTerms } from "../lib/organization-mode";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
@@ -15,15 +16,17 @@ function OrgTree({
   nodes,
   depth = 0,
   hrefFn,
+  leadRoleLabel = "CEO",
 }: {
   nodes: OrgNode[];
   depth?: number;
   hrefFn: (id: string) => string;
+  leadRoleLabel?: string;
 }) {
   return (
     <div>
       {nodes.map((node) => (
-        <OrgTreeNode key={node.id} node={node} depth={depth} hrefFn={hrefFn} />
+        <OrgTreeNode key={node.id} node={node} depth={depth} hrefFn={hrefFn} leadRoleLabel={leadRoleLabel} />
       ))}
     </div>
   );
@@ -33,10 +36,12 @@ function OrgTreeNode({
   node,
   depth,
   hrefFn,
+  leadRoleLabel,
 }: {
   node: OrgNode;
   depth: number;
   hrefFn: (id: string) => string;
+  leadRoleLabel: string;
 }) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.reports.length > 0;
@@ -79,23 +84,26 @@ function OrgTreeNode({
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>
-        <span className="text-xs text-muted-foreground">{node.role}</span>
+        <span className="text-xs text-muted-foreground">
+          {node.role === "ceo" ? leadRoleLabel : node.role}
+        </span>
         <StatusBadge status={node.status} />
       </Link>
       {hasChildren && expanded && (
-        <OrgTree nodes={node.reports} depth={depth + 1} hrefFn={hrefFn} />
+        <OrgTree nodes={node.reports} depth={depth + 1} hrefFn={hrefFn} leadRoleLabel={leadRoleLabel} />
       )}
     </div>
   );
 }
 
 export function Org() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const terms = getOrganizationTerms(selectedCompany);
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: terms.chart }]);
+  }, [setBreadcrumbs, terms.chart]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
@@ -104,7 +112,7 @@ export function Org() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
+    return <EmptyState icon={GitBranch} message={`Select a ${terms.singular} to view the ${terms.chart.toLowerCase()}.`} />;
   }
 
   if (isLoading) {
@@ -118,13 +126,13 @@ export function Org() {
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          message="No agents in the organization. Create agents to build your org chart."
+          message={`No agents in this ${terms.singular}. Create agents to build your ${terms.chart.toLowerCase()}.`}
         />
       )}
 
       {data && data.length > 0 && (
         <div className="border border-border py-1">
-          <OrgTree nodes={data} hrefFn={(id) => `/agents/${id}`} />
+      <OrgTree nodes={data} hrefFn={(id) => `/agents/${id}`} leadRoleLabel={terms.leadRole} />
         </div>
       )}
     </div>

@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
+import type { CompanyOrganizationMode } from "@paperclipai/shared";
 
 const DEFAULT_AGENT_BUNDLE_FILES = {
   default: ["AGENTS.md"],
   ceo: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  ceo_team: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -22,6 +24,10 @@ export async function loadDefaultAgentInstructionsBundle(role: DefaultAgentBundl
   return Object.fromEntries(entries);
 }
 
-export function resolveDefaultAgentInstructionsBundleRole(role: string): DefaultAgentBundleRole {
-  return role === "ceo" ? "ceo" : "default";
+export function resolveDefaultAgentInstructionsBundleRole(input: {
+  role: string;
+  organizationMode?: CompanyOrganizationMode | null;
+}): DefaultAgentBundleRole {
+  if (input.role !== "ceo") return "default";
+  return input.organizationMode === "team" ? "ceo_team" : "ceo";
 }
