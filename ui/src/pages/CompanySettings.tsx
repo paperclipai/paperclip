@@ -265,6 +265,19 @@ export function CompanySettings() {
               onChange={(e) => setCompanyName(e.target.value)}
             />
           </Field>
+          <Field label="Company ID" hint="Use this ID when calling the Paperclip API.">
+            <button
+              type="button"
+              className="w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-sm text-muted-foreground font-mono text-left cursor-copy hover:text-foreground transition-colors"
+              title="Click to copy"
+              onClick={() => {
+                navigator.clipboard.writeText(selectedCompanyId!);
+                pushToast({ title: "Company ID copied", tone: "success" });
+              }}
+            >
+              {selectedCompanyId}
+            </button>
+          </Field>
           <Field
             label="Description"
             hint="Optional description shown in the company profile."
