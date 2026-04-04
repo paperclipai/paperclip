@@ -32,9 +32,14 @@ def draft_text(draft: dict[str, Any]) -> str:
     return ""
 
 
+def html_source(draft: dict[str, Any]) -> str:
+    article_html = draft.get("article_html") or draft.get("wordpress_body_html") or ""
+    return article_html if isinstance(article_html, str) else ""
+
+
 def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     markdown = draft_text(draft)
-    article_html = draft.get("article_html") or draft.get("wordpress_body_html") or ""
+    article_html = html_source(draft)
     parts = paragraphs(markdown)
     first_dropoff = None
     if len(parts) >= 3 and len(parts[0]) + len(parts[1]) > 900:
@@ -59,6 +64,11 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
             or "verification-strength-split" in article_html
             or "<table" in article_html
         )
+    quick_scan_present = any(token in markdown.lower() for token in ["핵심 요약", "quick-scan", "한눈에"]) or "핵심 요약" in article_html or "quick-scan" in article_html.lower()
+    checklist_present = any(token in markdown.lower() for token in ["마지막으로", "체크리스트", "다음 단계", "next steps"]) or "<ol" in article_html.lower() or "체크리스트" in article_html
+    table_or_comparison_present = any(token in markdown.lower() for token in ["비교", "|"]) or "<table" in article_html.lower() or "before vs after" in markdown.lower()
+    early_numbered_promise_visible = any(token in markdown.lower() for token in ["3가지", "세 가지", "핵심 요약"]) or "3가지" in article_html or "세 가지" in article_html
+    dense_article = len(parts) >= 5 or len(markdown) >= 1800
 
     reasons: list[str] = []
     if first_dropoff:
@@ -69,6 +79,14 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
         reasons.append("ending_payoff_missing")
     if not scan_path_ok:
         reasons.append("scan_path_missing")
+    if not quick_scan_present:
+        reasons.append("quick_scan_missing")
+    if not checklist_present:
+        reasons.append("checklist_or_next_steps_missing")
+    if dense_article and not table_or_comparison_present:
+        reasons.append("table_or_comparison_missing")
+    if not early_numbered_promise_visible:
+        reasons.append("numbered_promise_missing")
 
     ok = len(reasons) == 0
     return {
@@ -81,6 +99,10 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
         "keep_reading_hook_present": keep_reading_hook_present,
         "ending_payoff_present": ending_payoff_present,
         "scan_path_ok": scan_path_ok,
+        "quick_scan_present": quick_scan_present,
+        "checklist_present": checklist_present,
+        "table_or_comparison_present": table_or_comparison_present,
+        "early_numbered_promise_visible": early_numbered_promise_visible,
         "artifacts_used": [source_path],
         "summary": "reader experience passed" if ok else f"reader experience failed: {', '.join(reasons)}",
     }

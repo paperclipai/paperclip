@@ -27,8 +27,18 @@ class ExplainerPrecheckTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("jargon_too_dense", result["reasons"])
 
+    def test_fails_when_term_is_not_explained(self):
+        result = self.run_script({"markdown": "what changed why it matters who should care\n\nMCP is now widely discussed."})
+        self.assertFalse(result["ok"])
+        self.assertIn("term_explanation_missing", result["reasons"])
+
+    def test_fails_when_concrete_example_is_missing(self):
+        result = self.run_script({"markdown": "what changed why it matters who should care\n\n쉽게 말하면 연결 규격이다."})
+        self.assertFalse(result["ok"])
+        self.assertIn("concrete_example_missing", result["reasons"])
+
     def test_passes_when_opening_is_clear(self):
-        result = self.run_script({"markdown": "what changed why it matters who should care\n\nThis article explains the change in plain terms."})
+        result = self.run_script({"markdown": "what changed why it matters who should care\n\nPut simply, MCP is a common connection rule for AI tools.\n\nFor example, an AI assistant could connect documents and calendars more naturally."})
         self.assertTrue(result["ok"])
 
 

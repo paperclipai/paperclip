@@ -25,9 +25,51 @@ def first_screen_text(draft: dict[str, Any]) -> str:
     return ""
 
 
+def first_screen_sentences(text: str) -> list[str]:
+    source = re.sub(r"\s+", " ", text or "").strip()
+    if not source:
+        return []
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+|(?<=[다요죠])\s+", source) if part.strip()]
+
+
+def contains_plain_language_bridge(text: str) -> bool:
+    lowered = text.lower()
+    markers = [
+        "쉽게 말하면",
+        "한마디로",
+        "풀어 말하면",
+        "일반 사용자 기준",
+        "쉽게 보면",
+        "in plain english",
+        "put simply",
+        "simply put",
+        "for ordinary users",
+    ]
+    return any(marker in lowered or marker in text for marker in markers)
+
+
+def contains_concrete_example(text: str) -> bool:
+    lowered = text.lower()
+    markers = [
+        "예를 들어",
+        "가령",
+        "대표적으로",
+        "실제로는",
+        "for example",
+        "for instance",
+        "in practice",
+        "for a typical user",
+    ]
+    return any(marker in lowered or marker in text for marker in markers)
+
+
 def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     opening = first_screen_text(draft)
     lowered = opening.lower()
+    full_markdown = (draft.get("markdown") or draft.get("content_markdown") or draft.get("article_html") or draft.get("wordpress_body_html") or "")
+    full_text = re.sub(r"<[^>]+>", " ", str(full_markdown))
+    full_text = re.sub(r"\s+", " ", full_text).strip()
+    opening_sentences = first_screen_sentences(opening)
 
     english_opening_complete = all(
         marker in lowered or marker in opening
@@ -46,16 +88,31 @@ def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any
 
     analogy_risk = "high" if "like " in lowered and "actually" not in lowered else "low"
     uncertainty_loss_risk = "high" if any(term in lowered for term in ["will definitely", "확실히", "반드시"]) else "low"
+    lead_window = " ".join(opening_sentences[:5]) if opening_sentences else opening
+    significance_present = any(token in lead_window.lower() or token in lead_window for token in ["why it matters", "중요", "의미", "체감", "왜"])
+    change_present = any(token in lead_window.lower() or token in lead_window for token in ["what changed", "change", "변화", "달라", "무슨 일"])
+    reader_present = any(token in lead_window.lower() or token in lead_window for token in ["who should care", "reader", "user", "일반 사용자", "비즈니스 사용자", "누가"])
+    lead_quality_ok = change_present and significance_present and reader_present
+    term_explanation_ok = True
+    if any(term.lower() in full_text.lower() for term in jargon_terms):
+      term_explanation_ok = contains_plain_language_bridge(full_text)
+    concrete_example_present = contains_concrete_example(full_text)
 
     reasons: list[str] = []
     if not opening_complete:
         reasons.append("opening_incomplete")
+    if not lead_quality_ok:
+        reasons.append("lead_value_missing")
     if jargon_risk == "high":
         reasons.append("jargon_too_dense")
+    if not term_explanation_ok:
+        reasons.append("term_explanation_missing")
     if analogy_risk == "high":
         reasons.append("analogy_risk_high")
     if uncertainty_loss_risk == "high":
         reasons.append("uncertainty_loss_risk_high")
+    if not concrete_example_present:
+        reasons.append("concrete_example_missing")
 
     ok = len(reasons) == 0
     return {
@@ -65,9 +122,12 @@ def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any
         "reasons": reasons,
         "warnings": [],
         "opening_complete": opening_complete,
+        "lead_quality_ok": lead_quality_ok,
         "jargon_risk": jargon_risk,
+        "term_explanation_ok": term_explanation_ok,
         "analogy_risk": analogy_risk,
         "uncertainty_loss_risk": uncertainty_loss_risk,
+        "concrete_example_present": concrete_example_present,
         "artifacts_used": [source_path],
         "summary": "explainer quality passed" if ok else f"explainer quality failed: {', '.join(reasons)}",
     }

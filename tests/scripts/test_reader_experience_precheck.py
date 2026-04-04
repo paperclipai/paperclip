@@ -27,8 +27,14 @@ class ReaderExperiencePrecheckTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("scan_path_missing", result["reasons"])
 
+    def test_fails_when_quick_scan_and_checklist_are_missing(self):
+        result = self.run_script({"markdown": "## 목차\n\n이번 글에서 볼 3가지\n\n본문 설명만 있고 마지막 행동 포인트가 없다.\n\n판단 문장도 약하다."})
+        self.assertFalse(result["ok"])
+        self.assertIn("quick_scan_missing", result["reasons"])
+        self.assertIn("checklist_or_next_steps_missing", result["reasons"])
+
     def test_passes_with_hook_and_ending(self):
-        result = self.run_script({"markdown": "## 목차\n\n이번 글에서 볼 3가지\n\nbody\n\n지금 써볼 사람과 기다릴 사람을 판단한다."})
+        result = self.run_script({"markdown": "## 목차\n\n핵심 요약\n\n이번 글에서 볼 3가지\n\n| 비교 | 의미 |\n| --- | --- |\n| A | B |\n\nbody\n\n마지막으로 이것만 확인해보세요\n\n지금 써볼 사람과 기다릴 사람을 판단한다."})
         self.assertTrue(result["ok"])
 
 
