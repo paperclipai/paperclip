@@ -59,90 +59,24 @@ rm -rf data/pglite
 pnpm dev
 ```
 
-## 5. Core Engineering Rules
+## 5. Engineering Standards & Workspace Rules
 
-1. Keep changes company-scoped.
-Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
+This project uses formal **Workspace Rules** to ensure architectural consistency, security, and operational excellence. These rules are automatically applied by AI coding assistants.
 
-2. Keep contracts synchronized.
-If you change schema/API behavior, update all impacted layers:
-- `packages/db` schema and exports
-- `packages/shared` types/constants/validators
-- `server` routes/services
-- `ui` API clients and pages
+AI contributors MUST adhere to the rules defined in [`.agents/rules/`](file:///c:/github/paperclip/.agents/rules/):
 
-3. Preserve control-plane invariants.
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause behavior
-- Activity logging for mutating actions
+- **Company Scoping** ([`rule-company-scope.md`](file:///c:/github/paperclip/.agents/rules/rule-company-scope.md)): All entities must belong to a company.
+- **Contract Sync** ([`rule-contract-sync.md`](file:///c:/github/paperclip/.agents/rules/rule-contract-sync.md)): Keep DB, Shared, Server, and UI layers in sync.
+- **Task Invariants** ([`rule-task-invariants.md`](file:///c:/github/paperclip/.agents/rules/rule-task-invariants.md)): Protect single-assignee and atomic checkout.
+- **Activity Logging** ([`rule-activity-logging.md`](file:///c:/github/paperclip/.agents/rules/rule-activity-logging.md)): Mandatory audit trails for mutations.
+- **Secret Management** ([`rule-secret-management.md`](file:///c:/github/paperclip/.agents/rules/rule-secret-management.md)): Redaction and `company_secrets` references.
+- **Database Workflow** ([`rule-db-workflow.md`](file:///c:/github/paperclip/.agents/rules/rule-db-workflow.md)): Guidelines for Drizzle migrations.
+- **CLI Standards** ([`rule-cli-standards.md`](file:///c:/github/paperclip/.agents/rules/rule-cli-standards.md)): Consistent flags and profiles.
+- **UI Expectations** ([`rule-ui-expectations.md`](file:///c:/github/paperclip/.agents/rules/rule-ui-expectations.md)): Premium design and error handling.
+- **Plan Docs** ([`rule-plan-docs.md`](file:///c:/github/paperclip/.agents/rules/rule-plan-docs.md)): Centralized and dated `doc/plans/`.
+- **Definition of Done** ([`rule-definition-of-done.md`](file:///c:/github/paperclip/.agents/rules/rule-definition-of-done.md)): Verification before hand-off.
+- **Contribution Standards** ([`rule-contributing.md`](file:///c:/github/paperclip/.agents/rules/rule-contributing.md)): "Thinking Path" and visual proof.
 
-4. Do not replace strategic docs wholesale unless asked.
-Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
+## 6. Definition of Done
 
-5. Keep plan docs dated and centralized.
-New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
-
-## 6. Database Change Workflow
-
-When changing data model:
-
-1. Edit `packages/db/src/schema/*.ts`
-2. Ensure new tables are exported from `packages/db/src/schema/index.ts`
-3. Generate migration:
-
-```sh
-pnpm db:generate
-```
-
-4. Validate compile:
-
-```sh
-pnpm -r typecheck
-```
-
-Notes:
-- `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
-- `pnpm db:generate` compiles `packages/db` first
-
-## 7. Verification Before Hand-off
-
-Run this full check before claiming done:
-
-```sh
-pnpm -r typecheck
-pnpm test:run
-pnpm build
-```
-
-If anything cannot be run, explicitly report what was not run and why.
-
-## 8. API and Auth Expectations
-
-- Base path: `/api`
-- Board access is treated as full-control operator context
-- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
-
-When adding endpoints:
-
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
-
-## 9. UI Expectations
-
-- Keep routes and nav aligned with available API surface
-- Use company selection context for company-scoped pages
-- Surface failures clearly; do not silently ignore API errors
-
-## 10. Definition of Done
-
-A change is done when all are true:
-
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
-3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+A change is considered complete when it satisfies the requirements in [`rule-definition-of-done.md`](file:///c:/github/paperclip/.agents/rules/rule-definition-of-done.md) and aligns with the contribution standards in [`rule-contributing.md`](file:///c:/github/paperclip/.agents/rules/rule-contributing.md).
