@@ -14,6 +14,7 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  prepareAgentQmdEnvironment,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
   resolvePaperclipDesiredSkillNames,
@@ -253,6 +254,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_WORKSPACE_REPO_REF = workspaceRepoRef;
   }
   if (agentHome) {
+    const preparedQmd = await prepareAgentQmdEnvironment(agentHome, {
+      baseEnv: { ...process.env, ...env },
+      onLog,
+    });
+    Object.assign(env, preparedQmd.env);
     env.AGENT_HOME = agentHome;
   }
   if (workspaceHints.length > 0) {

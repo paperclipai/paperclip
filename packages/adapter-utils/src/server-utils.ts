@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type {
   AdapterSkillEntry,
@@ -372,6 +373,169 @@ export async function ensureAbsoluteDirectory(
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Could not create working directory "${cwd}": ${reason}`);
   }
+}
+
+export interface PreparedAgentQmdEnvironment {
+  configDir: string;
+  cacheHome: string;
+  env: Record<string, string>;
+}
+
+function resolveAgentQmdConfigDir(agentHome: string): string {
+  return path.resolve(agentHome, ".config", "qmd");
+}
+
+function resolveAgentQmdCacheHome(agentHome: string): string {
+  return path.resolve(agentHome, ".cache");
+}
+
+function resolveSharedQmdCacheHome(baseEnv: NodeJS.ProcessEnv | Record<string, string>): string {
+  const configured = typeof baseEnv.XDG_CACHE_HOME === "string" ? baseEnv.XDG_CACHE_HOME.trim() : "";
+  if (configured) return path.resolve(configured);
+  return path.resolve(os.homedir(), ".cache");
+}
+
+async function ensureDirectorySymlink(source: string, target: string): Promise<"created" | "repaired" | "skipped"> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.symlink(source, target);
+    return "created";
+  }
+
+  if (!existing.isSymbolicLink()) {
+    return "skipped";
+  }
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return "skipped";
+
+  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+  if (resolvedLinkedPath === source) {
+    return "skipped";
+  }
+
+  await fs.unlink(target);
+  await fs.symlink(source, target);
+  return "repaired";
+}
+
+function parseQmdCollectionPath(output: string): string | null {
+  const match = output.match(/^\s*Path:\s*(.+)$/m);
+  return match?.[1]?.trim() || null;
+}
+
+export async function prepareAgentQmdEnvironment(
+  agentHome: string,
+  options: {
+    baseEnv?: NodeJS.ProcessEnv | Record<string, string>;
+    collectionName?: string;
+    onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    qmdCommand?: string;
+  } = {},
+): Promise<PreparedAgentQmdEnvironment> {
+  const trimmedAgentHome = agentHome.trim();
+  if (!trimmedAgentHome) {
+    return {
+      configDir: "",
+      cacheHome: "",
+      env: {},
+    };
+  }
+
+  const configDir = resolveAgentQmdConfigDir(trimmedAgentHome);
+  const cacheHome = resolveAgentQmdCacheHome(trimmedAgentHome);
+  const cacheDir = path.join(cacheHome, "qmd");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.mkdir(cacheDir, { recursive: true });
+
+  const sharedQmdModelsDir = path.join(resolveSharedQmdCacheHome(options.baseEnv ?? process.env), "qmd", "models");
+  const agentQmdModelsDir = path.join(cacheDir, "models");
+  if (
+    path.resolve(sharedQmdModelsDir) !== path.resolve(agentQmdModelsDir) &&
+    await fs.stat(sharedQmdModelsDir).then((stats) => stats.isDirectory()).catch(() => false)
+  ) {
+    const symlinkResult = await ensureDirectorySymlink(sharedQmdModelsDir, agentQmdModelsDir);
+    if (symlinkResult !== "skipped" && options.onLog) {
+      await options.onLog(
+        "stdout",
+        `[paperclip] ${symlinkResult === "repaired" ? "Repaired" : "Linked"} shared qmd models into ${agentQmdModelsDir}\n`,
+      );
+    }
+  }
+
+  const env = {
+    QMD_CONFIG_DIR: configDir,
+    XDG_CACHE_HOME: cacheHome,
+  } satisfies Record<string, string>;
+  const runtimeEnv = ensurePathInEnv({
+    ...process.env,
+    ...(options.baseEnv ?? {}),
+    ...env,
+  });
+  const resolvedQmd = await resolveCommandPath(
+    options.qmdCommand?.trim() || "qmd",
+    trimmedAgentHome,
+    runtimeEnv,
+  );
+  if (!resolvedQmd) {
+    return { configDir, cacheHome, env };
+  }
+
+  const collectionName = options.collectionName?.trim() || "agent-home";
+  const qmdRunIdBase = `qmd-bootstrap-${process.pid}-${Date.now().toString(36)}`;
+  const bootstrapEnv = Object.fromEntries(
+    Object.entries({
+      ...(options.baseEnv ?? {}),
+      ...env,
+    }).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+  const runQmd = async (suffix: string, args: string[]) =>
+    runChildProcess(qmdRunIdBase + suffix, resolvedQmd, args, {
+      cwd: trimmedAgentHome,
+      env: bootstrapEnv,
+      timeoutSec: 120,
+      graceSec: 5,
+      onLog: async () => {},
+    });
+
+  const showResult = await runQmd("-show", ["collection", "show", collectionName]);
+  const existingPath = showResult.exitCode === 0 ? parseQmdCollectionPath(showResult.stdout) : null;
+  const indexPath = path.join(cacheDir, "index.sqlite");
+  const hasIndex = await fs.stat(indexPath).then(() => true).catch(() => false);
+
+  if (existingPath && path.resolve(existingPath) === path.resolve(trimmedAgentHome)) {
+    if (!hasIndex) {
+      const updateResult = await runQmd("-update", ["update"]);
+      if (updateResult.exitCode !== 0 && options.onLog) {
+        await options.onLog(
+          "stderr",
+          `[paperclip] Failed to initialize qmd index for "${collectionName}": ${updateResult.stderr || updateResult.stdout}\n`,
+        );
+      }
+    }
+    return { configDir, cacheHome, env };
+  }
+
+  if (showResult.exitCode === 0) {
+    const removeResult = await runQmd("-remove", ["collection", "remove", collectionName]);
+    if (removeResult.exitCode !== 0 && options.onLog) {
+      await options.onLog(
+        "stderr",
+        `[paperclip] Failed to remove stale qmd collection "${collectionName}": ${removeResult.stderr || removeResult.stdout}\n`,
+      );
+    }
+  }
+
+  const addResult = await runQmd("-add", ["collection", "add", trimmedAgentHome, "--name", collectionName]);
+  if (addResult.exitCode !== 0 && options.onLog) {
+    await options.onLog(
+      "stderr",
+      `[paperclip] Failed to bootstrap qmd collection "${collectionName}": ${addResult.stderr || addResult.stdout}\n`,
+    );
+  }
+
+  return { configDir, cacheHome, env };
 }
 
 export async function resolvePaperclipSkillsDir(
