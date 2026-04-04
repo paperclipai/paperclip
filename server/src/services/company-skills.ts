@@ -196,8 +196,13 @@ export function normalizeGitHubSkillDirectory(
   value: string | null | undefined,
   fallback: string,
 ) {
-  const normalized = normalizePortablePath(value ?? "");
-  if (!normalized) return normalizePortablePath(fallback);
+  const raw = (value ?? "").trim();
+  // "." or "./" or empty means repo root — normalizePortablePath strips these
+  // to "", but empty should also mean root for stored metadata where root was
+  // correctly saved as "".
+  if (raw === "." || raw === "./" || raw === "") return "";
+  const normalized = normalizePortablePath(raw);
+  if (!normalized) return "";
   if (path.posix.basename(normalized).toLowerCase() === "skill.md") {
     return normalizePortablePath(path.posix.dirname(normalized));
   }
