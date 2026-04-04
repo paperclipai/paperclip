@@ -6,7 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { goalsApi } from "../api/goals";
 import { issuesApi } from "../api/issues";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { companiesApi } from "../api/companies";
 import { autoLabelRulesApi, type DryRunResult } from "../api/autoLabelRules";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -883,20 +883,21 @@ function AutoLabelRulesSection({
 
 /* ── Blocked Status Enforcement Section ────────────────────────────── */
 
-function BlockedStatusEnforcementSection() {
+function BlockedStatusEnforcementSection({
+  companyId,
+  isEnabled,
+}: {
+  companyId: string;
+  isEnabled: boolean;
+}) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) =>
-      instanceSettingsApi.updateExperimental({ enforceBlockedOnValidation: enabled }),
+      companiesApi.update(companyId, { enforceBlockedOnValidation: enabled }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({ title: "Setting updated", tone: "success" });
     },
     onError: (err) => {
@@ -907,9 +908,6 @@ function BlockedStatusEnforcementSection() {
       });
     },
   });
-
-  const isEnabled = experimentalQuery.data?.enforceBlockedOnValidation === true;
-  const isLoading = experimentalQuery.isLoading;
 
   return (
     <div className="space-y-4">
@@ -931,28 +929,24 @@ function BlockedStatusEnforcementSection() {
               <code className="bg-muted px-1 rounded text-[11px]">external</code>.
             </p>
           </div>
-          {isLoading ? (
-            <div className="h-5 w-9 rounded-full bg-muted animate-pulse" />
-          ) : (
-            <button
-              type="button"
-              data-slot="toggle"
-              aria-label="Toggle mandatory blocked-on enforcement"
-              disabled={toggleMutation.isPending}
+          <button
+            type="button"
+            data-slot="toggle"
+            aria-label="Toggle mandatory blocked-on enforcement"
+            disabled={toggleMutation.isPending}
+            className={cn(
+              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              isEnabled ? "bg-green-600" : "bg-muted",
+            )}
+            onClick={() => toggleMutation.mutate(!isEnabled)}
+          >
+            <span
               className={cn(
-                "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-                isEnabled ? "bg-green-600" : "bg-muted",
+                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                isEnabled ? "translate-x-4.5" : "translate-x-0.5",
               )}
-              onClick={() => toggleMutation.mutate(!isEnabled)}
-            >
-              <span
-                className={cn(
-                  "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                  isEnabled ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
-          )}
+            />
+          </button>
         </div>
       </div>
     </div>
@@ -1042,7 +1036,10 @@ export function IssueSettings() {
       </div>
 
       {/* Blocked Status Enforcement */}
-      <BlockedStatusEnforcementSection />
+      <BlockedStatusEnforcementSection
+        companyId={selectedCompanyId}
+        isEnabled={selectedCompany.enforceBlockedOnValidation === true}
+      />
 
       {/* Goal Fallback */}
       <div className="space-y-4">
