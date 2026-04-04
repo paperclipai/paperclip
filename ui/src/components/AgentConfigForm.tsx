@@ -258,10 +258,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         "env",
         "promptTemplate",
         "instructionsFilePath",
+        "instructionsRootPath",
+        "instructionsEntryFile",
+        "instructionsBundleMode",
         "cwd",
         "timeoutSec",
         "graceSec",
         "bootstrapPromptTemplate",
+        // Skill selections are stored on adapterConfig for all local adapters; preserve across adapter switches.
+        "paperclipSkillSync",
       ];
       const preserved: Record<string, unknown> = {};
       for (const key of adapterAgnosticKeys) {
