@@ -947,18 +947,14 @@ export function IssueDocumentsSection({
               {!isFolded ? (
                 <div
                   className="mt-3 space-y-3"
-                  onBlurCapture={!isHistoricalPreview
+                  onBlurCapture={activeDraft && !isHistoricalPreview
                     ? async (event) => {
-                        if (activeDraft) {
-                          await handleDraftBlur(event);
-                        }
+                        await handleDraftBlur(event);
                       }
                     : undefined}
-                  onKeyDown={!isHistoricalPreview
+                  onKeyDown={activeDraft && !isHistoricalPreview
                     ? async (event) => {
-                        if (activeDraft) {
-                          await handleDraftKeyDown(event);
-                        }
+                        await handleDraftKeyDown(event);
                       }
                     : undefined}
                 >
@@ -1079,15 +1075,14 @@ export function IssueDocumentsSection({
                       </div>
                     ) : activeDraft ? (
                       <MarkdownEditor
-                        value={displayedBody}
+                        value={activeDraft.body}
                         onChange={(body) => {
                           markDocumentDirty(doc.key);
-                          setDraft((current) => {
-                            if (current && current.key === doc.key && !current.isNew) {
-                              return { ...current, body };
-                            }
-                            return current;
-                          });
+                          setDraft((current) =>
+                            current && current.key === doc.key
+                              ? { ...current, body }
+                              : current,
+                          );
                         }}
                         placeholder="Markdown body"
                         bordered={false}
@@ -1095,10 +1090,15 @@ export function IssueDocumentsSection({
                         contentClassName={documentBodyContentClassName}
                         mentions={mentions}
                         imageUploadHandler={imageUploadHandler}
-                        onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
+                        onSubmit={() => void commitDraft(activeDraft, { clearAfterSave: false, trackAutosave: true })}
                       />
                     ) : (
-                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                      <div
+                        className="w-full cursor-text rounded-md p-0 text-left"
+                        onClick={() => {
+                          if (!isHistoricalPreview) beginEdit(doc.key);
+                        }}
+                      >
                         {renderBody(displayedBody, documentBodyContentClassName)}
                       </div>
                     )}
