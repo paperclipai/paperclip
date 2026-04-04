@@ -59,6 +59,3 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
-export { workflows, workflowRevisions } from "./workflows.js";
-export { workflowAgentAssignments } from "./workflow_agent_assignments.js";
-export { workflowRuns, workflowRunSteps } from "./workflow_runs.js";
