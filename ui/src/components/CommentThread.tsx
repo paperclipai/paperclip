@@ -313,10 +313,21 @@ export function CommentThread({
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
-    if (!file || !onAttachImage) return;
+    if (!file) return;
     setAttaching(true);
     try {
-      await onAttachImage(file);
+      const isImage = file.type.startsWith("image/");
+      if (isImage && imageUploadHandler) {
+        const url = await imageUploadHandler(file);
+        const md = `![${file.name}](${url})`;
+        setBody((prev) => prev ? `${prev}\n${md}` : md);
+      } else if (onAttachImage) {
+        await onAttachImage(file);
+        setBody((prev) => {
+          const note = `📎 Attached: ${file.name}`;
+          return prev ? `${prev}\n${note}` : note;
+        });
+      }
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
@@ -364,7 +375,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
+                title="Attach file"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
