@@ -25,6 +25,14 @@ export {
   type UpdateCompanyBranding,
 } from "./company.js";
 export {
+  feedbackDataSharingPreferenceSchema,
+  feedbackTargetTypeSchema,
+  feedbackTraceStatusSchema,
+  feedbackVoteValueSchema,
+  upsertIssueFeedbackVoteSchema,
+  type UpsertIssueFeedbackVote,
+} from "./feedback.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -206,6 +214,7 @@ export {
   updateRoutineSchema,
   createRoutineTriggerSchema,
   updateRoutineTriggerSchema,
+  routineVariableSchema,
   runRoutineSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateRoutine,

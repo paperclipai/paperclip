@@ -82,6 +82,22 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackRoutineCreated: mockTrackRoutineCreated,
+  };
+});
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -104,6 +120,7 @@ function createApp(actor: Record<string, unknown>) {
 describe("routine routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -267,5 +284,6 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
 });

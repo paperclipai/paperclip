@@ -31,18 +31,39 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
-run_isolated_worktree_init() {
+run_paperclipai_command() {
+  local command_args=("$@")
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
-    pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    pnpm paperclipai "${command_args[@]}"
+    return 0
+  fi
+
+  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
+  if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+    node "$base_cli_tsx_path" "$base_cli_entry_path" "${command_args[@]}"
     return 0
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
-    paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    paperclipai "${command_args[@]}"
     return 0
   fi
 
   return 1
+}
+
+run_isolated_worktree_init() {
+  run_paperclipai_command \
+    worktree \
+    init \
+    --force \
+    --seed-mode \
+    minimal \
+    --name \
+    "$worktree_name" \
+    --from-config \
+    "$source_config_path"
 }
 
 write_fallback_worktree_config() {
@@ -299,6 +320,20 @@ if ! run_isolated_worktree_init; then
   echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
   write_fallback_worktree_config
 fi
+
+disable_seeded_routines() {
+  local company_id="${PAPERCLIP_COMPANY_ID:-}"
+  if [[ -z "$company_id" ]]; then
+    echo "PAPERCLIP_COMPANY_ID not set; skipping routine disable post-step." >&2
+    return 0
+  fi
+
+  if ! run_paperclipai_command routines disable-all --config "$worktree_config_path" --company-id "$company_id"; then
+    echo "paperclipai CLI not available in this workspace; skipping routine disable post-step." >&2
+  fi
+}
+
+disable_seeded_routines
 
 while IFS= read -r relative_path; do
   [[ -n "$relative_path" ]] || continue

@@ -1,7 +1,7 @@
 services:
   paperclip:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
@@ -15,4 +15,4 @@ services:
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
-      - "${PAPERCLIP_DATA_DIR:-./data/docker-paperclip}:/paperclip"
+      - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"

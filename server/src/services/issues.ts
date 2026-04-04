@@ -21,7 +21,7 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractAgentMentionIds, extractProjectMentionIds } from "@paperclipai/shared";
+import { extractAgentMentionIds, extractProjectMentionIds, isUuidLike } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -98,6 +98,11 @@ type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
   lastExternalCommentAt: Date | null;
+};
+type IssueLastActivityStat = {
+  issueId: string;
+  latestCommentAt: Date | null;
+  latestLogAt: Date | null;
 };
 type IssueUserContextInput = {
   createdByUserId: string | null;
@@ -262,13 +267,59 @@ function issueLastActivityAtExpr(companyId: string, userId: string) {
   const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
   const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
   return sql<Date>`
-    COALESCE(
-      ${lastExternalCommentAt},
+    GREATEST(
+      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
       CASE
         WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
         THEN ${issues.updatedAt}
         ELSE to_timestamp(0)
       END
+    )
+  `;
+}
+
+const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
+  "issue.read_marked",
+  "issue.read_unmarked",
+  "issue.inbox_archived",
+  "issue.inbox_unarchived",
+] as const;
+
+function issueLatestCommentAtExpr(companyId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${issueComments.createdAt})
+      FROM ${issueComments}
+      WHERE ${issueComments.issueId} = ${issues.id}
+        AND ${issueComments.companyId} = ${companyId}
+    )
+  `;
+}
+
+function issueLatestLogAtExpr(companyId: string) {
+  return sql<Date | null>`
+    (
+      SELECT MAX(${activityLog.createdAt})
+      FROM ${activityLog}
+      WHERE ${activityLog.companyId} = ${companyId}
+        AND ${activityLog.entityType} = 'issue'
+        AND ${activityLog.entityId} = ${issues.id}::text
+        AND ${activityLog.action} NOT IN (${sql.join(
+          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+          sql`, `,
+        )})
+    )
+  `;
+}
+
+function issueCanonicalLastActivityAtExpr(companyId: string) {
+  const latestCommentAt = issueLatestCommentAtExpr(companyId);
+  const latestLogAt = issueLatestLogAtExpr(companyId);
+  return sql<Date>`
+    GREATEST(
+      ${issues.updatedAt},
+      COALESCE(${latestCommentAt}, to_timestamp(0)),
+      COALESCE(${latestLogAt}, to_timestamp(0))
     )
   `;
 }
@@ -383,6 +434,19 @@ export function deriveIssueUserContext(
   };
 }
 
+function latestIssueActivityAt(...values: Array<Date | string | null | undefined>): Date | null {
+  const normalized = values
+    .map((value) => {
+      if (!value) return null;
+      if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    })
+    .filter((value): value is Date => value instanceof Date)
+    .sort((a, b) => b.getTime() - a.getTime());
+  return normalized[0] ?? null;
+}
+
 async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<string, IssueLabelRow[]>> {
   const map = new Map<string, IssueLabelRow[]>();
   if (issueIds.length === 0) return map;
@@ -466,6 +530,28 @@ function withActiveRuns(
 
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
+
+  async function getIssueByUuid(id: string) {
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [enriched] = await withIssueLabels(db, [row]);
+    return enriched;
+  }
+
+  async function getIssueByIdentifier(identifier: string) {
+    const row = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.identifier, identifier.toUpperCase()))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const [enriched] = await withIssueLabels(db, [row]);
+    return enriched;
+  }
 
   function redactIssueComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
@@ -727,66 +813,158 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
+      const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
       const rows = await db
         .select()
         .from(issues)
         .where(and(...conditions))
-        .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
+        .orderBy(
+          hasSearch ? asc(searchOrder) : asc(priorityOrder),
+          asc(priorityOrder),
+          desc(canonicalLastActivityAt),
+          desc(issues.updatedAt),
+        );
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
-      if (!contextUserId || withRuns.length === 0) {
+      if (withRuns.length === 0) {
         return withRuns;
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const statsRows = await db
-        .select({
-          issueId: issueComments.issueId,
-          myLastCommentAt: sql<Date | null>`
-            MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
-          `,
-          lastExternalCommentAt: sql<Date | null>`
-            MAX(
-              CASE
-                WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
-                THEN ${issueComments.createdAt}
-              END
+      const [statsRows, readRows, lastActivityRows] = await Promise.all([
+        contextUserId
+          ? db
+            .select({
+              issueId: issueComments.issueId,
+              myLastCommentAt: sql<Date | null>`
+                MAX(CASE WHEN ${issueComments.authorUserId} = ${contextUserId} THEN ${issueComments.createdAt} END)
+              `,
+              lastExternalCommentAt: sql<Date | null>`
+                MAX(
+                  CASE
+                    WHEN ${issueComments.authorUserId} IS NULL OR ${issueComments.authorUserId} <> ${contextUserId}
+                    THEN ${issueComments.createdAt}
+                  END
+                )
+              `,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, companyId),
+                inArray(issueComments.issueId, issueIds),
+              ),
             )
-          `,
-        })
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.companyId, companyId),
-            inArray(issueComments.issueId, issueIds),
-          ),
-        )
-        .groupBy(issueComments.issueId);
-      const readRows = await db
-        .select({
-          issueId: issueReadStates.issueId,
-          myLastReadAt: issueReadStates.lastReadAt,
-        })
-        .from(issueReadStates)
-        .where(
-          and(
-            eq(issueReadStates.companyId, companyId),
-            eq(issueReadStates.userId, contextUserId),
-            inArray(issueReadStates.issueId, issueIds),
-          ),
-        );
+            .groupBy(issueComments.issueId)
+          : Promise.resolve([]),
+        contextUserId
+          ? db
+            .select({
+              issueId: issueReadStates.issueId,
+              myLastReadAt: issueReadStates.lastReadAt,
+            })
+            .from(issueReadStates)
+            .where(
+              and(
+                eq(issueReadStates.companyId, companyId),
+                eq(issueReadStates.userId, contextUserId),
+                inArray(issueReadStates.issueId, issueIds),
+              ),
+            )
+          : Promise.resolve([]),
+        Promise.all([
+          db
+            .select({
+              issueId: issueComments.issueId,
+              latestCommentAt: sql<Date | null>`MAX(${issueComments.createdAt})`,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, companyId),
+                inArray(issueComments.issueId, issueIds),
+              ),
+            )
+            .groupBy(issueComments.issueId),
+          db
+            .select({
+              issueId: activityLog.entityId,
+              latestLogAt: sql<Date | null>`MAX(${activityLog.createdAt})`,
+            })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, companyId),
+                eq(activityLog.entityType, "issue"),
+                inArray(activityLog.entityId, issueIds),
+                sql`${activityLog.action} NOT IN (${sql.join(
+                  ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+                  sql`, `,
+                )})`,
+              ),
+            )
+            .groupBy(activityLog.entityId),
+        ]).then(([commentRows, logRows]) => {
+          const byIssueId = new Map<string, IssueLastActivityStat>();
+          for (const row of commentRows) {
+            byIssueId.set(row.issueId, {
+              issueId: row.issueId,
+              latestCommentAt: row.latestCommentAt,
+              latestLogAt: null,
+            });
+          }
+          for (const row of logRows) {
+            const existing = byIssueId.get(row.issueId);
+            if (existing) existing.latestLogAt = row.latestLogAt;
+            else {
+              byIssueId.set(row.issueId, {
+                issueId: row.issueId,
+                latestCommentAt: null,
+                latestLogAt: row.latestLogAt,
+              });
+            }
+          }
+          return [...byIssueId.values()];
+        }),
+      ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
+      const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
+
+      if (!contextUserId) {
+        return withRuns.map((row) => {
+          const activity = lastActivityByIssueId.get(row.id);
+          const lastActivityAt = latestIssueActivityAt(
+            row.updatedAt,
+            activity?.latestCommentAt ?? null,
+            activity?.latestLogAt ?? null,
+          ) ?? row.updatedAt;
+          return {
+            ...row,
+            lastActivityAt,
+          };
+        });
+      }
+
       const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
 
-      return withRuns.map((row) => ({
-        ...row,
-        ...deriveIssueUserContext(row, contextUserId, {
-          myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
-          myLastReadAt: readByIssueId.get(row.id) ?? null,
-          lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
-        }),
-      }));
+      return withRuns.map((row) => {
+        const activity = lastActivityByIssueId.get(row.id);
+        const lastActivityAt = latestIssueActivityAt(
+          row.updatedAt,
+          activity?.latestCommentAt ?? null,
+          activity?.latestLogAt ?? null,
+        ) ?? row.updatedAt;
+        return {
+          ...row,
+          lastActivityAt,
+          ...deriveIssueUserContext(row, contextUserId, {
+            myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
+            myLastReadAt: readByIssueId.get(row.id) ?? null,
+            lastExternalCommentAt: statsByIssueId.get(row.id)?.lastExternalCommentAt ?? null,
+          }),
+        };
+      });
     },
 
     countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
@@ -883,26 +1061,19 @@ export function issueService(db: Db) {
       return row ?? null;
     },
 
-    getById: async (id: string) => {
-      const row = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
-      return enriched;
+    getById: async (raw: string) => {
+      const id = raw.trim();
+      if (/^[A-Z]+-\d+$/i.test(id)) {
+        return getIssueByIdentifier(id);
+      }
+      if (!isUuidLike(id)) {
+        return null;
+      }
+      return getIssueByUuid(id);
     },
 
     getByIdentifier: async (identifier: string) => {
-      const row = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.identifier, identifier.toUpperCase()))
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
-      return enriched;
+      return getIssueByIdentifier(identifier);
     },
 
     create: async (
@@ -1542,7 +1713,11 @@ export function issueService(db: Db) {
           return comment ? redactIssueComment(comment, censorUsernameInLogs) : null;
         })),
 
-    addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
+    addComment: async (
+      issueId: string,
+      body: string,
+      actor: { agentId?: string; userId?: string; runId?: string | null },
+    ) => {
       const issue = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -1562,6 +1737,7 @@ export function issueService(db: Db) {
           issueId,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
+          createdByRunId: actor.runId ?? null,
           body: redactedBody,
         })
         .returning();

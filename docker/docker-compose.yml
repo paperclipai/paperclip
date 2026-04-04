@@ -16,7 +16,9 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
-    build: .
+    build:
+      context: ..
+      dockerfile: Dockerfile
     ports:
       - "3100:3100"
     environment:

@@ -143,6 +143,7 @@ export interface Issue {
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
+  lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
   createdAt: Date;
   updatedAt: Date;

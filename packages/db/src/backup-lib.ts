@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import postgres from "postgres";
 
@@ -47,6 +47,7 @@ type TableDefinition = {
 
 const DRIZZLE_SCHEMA = "drizzle";
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
+const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -141,6 +142,102 @@ function tableKey(schemaName: string, tableName: string): string {
   return `${schemaName}.${tableName}`;
 }
 
+export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+  const stream = createWriteStream(filePath, { encoding: "utf8" });
+  const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
+  let bufferedLines: string[] = [];
+  let bufferedBytes = 0;
+  let firstChunk = true;
+  let closed = false;
+  let streamError: Error | null = null;
+  let pendingWrite = Promise.resolve();
+
+  stream.on("error", (error) => {
+    streamError = error;
+  });
+
+  const writeChunk = async (chunk: string): Promise<void> => {
+    if (streamError) throw streamError;
+    const canContinue = stream.write(chunk);
+    if (!canContinue) {
+      await new Promise<void>((resolve, reject) => {
+        const handleDrain = () => {
+          cleanup();
+          resolve();
+        };
+        const handleError = (error: Error) => {
+          cleanup();
+          reject(error);
+        };
+        const cleanup = () => {
+          stream.off("drain", handleDrain);
+          stream.off("error", handleError);
+        };
+        stream.once("drain", handleDrain);
+        stream.once("error", handleError);
+      });
+    }
+    if (streamError) throw streamError;
+  };
+
+  const flushBufferedLines = () => {
+    if (bufferedLines.length === 0) return;
+    const linesToWrite = bufferedLines;
+    bufferedLines = [];
+    bufferedBytes = 0;
+    const chunkBody = linesToWrite.join("\n");
+    const chunk = firstChunk ? chunkBody : `\n${chunkBody}`;
+    firstChunk = false;
+    pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+  };
+
+  return {
+    emit(line: string) {
+      if (closed) {
+        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+      }
+      if (streamError) throw streamError;
+      bufferedLines.push(line);
+      bufferedBytes += Buffer.byteLength(line, "utf8") + 1;
+      if (bufferedBytes >= flushThreshold) {
+        flushBufferedLines();
+      }
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      flushBufferedLines();
+      await pendingWrite;
+      await new Promise<void>((resolve, reject) => {
+        if (streamError) {
+          reject(streamError);
+          return;
+        }
+        stream.end((error?: Error | null) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      if (streamError) throw streamError;
+    },
+    async abort() {
+      if (closed) return;
+      closed = true;
+      bufferedLines = [];
+      bufferedBytes = 0;
+      stream.destroy();
+      await pendingWrite.catch(() => {});
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+        } catch {
+          // Preserve the original backup failure if temporary file cleanup also fails.
+        }
+      }
+    },
+  };
+}
+
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retentionDays = Math.max(1, Math.trunc(opts.retentionDays));
@@ -149,12 +246,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  mkdirSync(opts.backupDir, { recursive: true });
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  const writer = createBufferedTextFileWriter(backupFile);
 
   try {
     await sql`SELECT 1`;
 
-    const lines: string[] = [];
-    const emit = (line: string) => lines.push(line);
+    const emit = (line: string) => writer.emit(line);
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -503,10 +602,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    // Write the backup file
-    mkdirSync(opts.backupDir, { recursive: true });
-    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-    await writeFile(backupFile, lines.join("\n"), "utf8");
+    await writer.close();
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
@@ -516,6 +612,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       sizeBytes,
       prunedCount,
     };
+  } catch (error) {
+    await writer.abort();
+    throw error;
   } finally {
     await sql.end();
   }
