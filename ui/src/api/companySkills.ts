@@ -31,6 +31,10 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/files`,
       { path, content },
     ),
+  delete: (companyId: string, skillId: string) =>
+    api.delete<CompanySkill>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
+    ),
   create: (companyId: string, payload: CompanySkillCreateRequest) =>
     api.post<CompanySkill>(
       `/companies/${encodeURIComponent(companyId)}/skills`,
