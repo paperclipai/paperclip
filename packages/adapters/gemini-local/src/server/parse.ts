@@ -6,21 +6,24 @@ function collectMessageText(message: unknown): string[] {
     return trimmed ? [trimmed] : [];
   }
 
+  // Handle newer format: { type: "message", role: "assistant", content: [...] }
   const record = parseObject(message);
-  const direct = asString(record.text, "").trim();
-  const lines: string[] = direct ? [direct] : [];
-  const content = Array.isArray(record.content) ? record.content : [];
-
-  for (const partRaw of content) {
-    const part = parseObject(partRaw);
-    const type = asString(part.type, "").trim();
-    if (type === "output_text" || type === "text" || type === "content") {
-      const text = asString(part.text, "").trim() || asString(part.content, "").trim();
-      if (text) lines.push(text);
+  if (Array.isArray(record.content)) {
+    const lines: string[] = [];
+    for (const partRaw of record.content) {
+      const part = parseObject(partRaw);
+      const type = asString(part.type, "").trim();
+      if (type === "output_text" || type === "text" || type === "content") {
+        const text = asString(part.text, "").trim() || asString(part.content, "").trim();
+        if (text) lines.push(text);
+      }
     }
+    return lines;
   }
 
-  return lines;
+  // Fallback to direct text field
+  const direct = asString(record.text, "").trim();
+  return direct ? [direct] : [];
 }
 
 function readSessionId(event: Record<string, unknown>): string | null {
@@ -56,7 +59,9 @@ function accumulateUsage(
 ) {
   const usage = parseObject(usageRaw);
   const usageMetadata = parseObject(usage.usageMetadata);
-  const source = Object.keys(usageMetadata).length > 0 ? usageMetadata : usage;
+  const stats = parseObject(usage.stats);
+  // Prefer stats for newer CLI versions, then usageMetadata, then direct usage
+  const source = Object.keys(stats).length > 0 ? stats : Object.keys(usageMetadata).length > 0 ? usageMetadata : usage;
 
   target.inputTokens += asNumber(
     source.input_tokens,
@@ -64,12 +69,18 @@ function accumulateUsage(
   );
   target.cachedInputTokens += asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, 0)),
+    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached, 0))),
   );
   target.outputTokens += asNumber(
     source.output_tokens,
     asNumber(source.outputTokens, asNumber(source.candidatesTokenCount, 0)),
   );
+}
+
+function extractJsonFromLine(line: string): string | null {
+  const trimmed = line.trimStart();
+  if (!trimmed.startsWith("{")) return null;
+  return trimmed;
 }
 
 export function parseGeminiJsonl(stdout: string) {
@@ -89,7 +100,10 @@ export function parseGeminiJsonl(stdout: string) {
     const line = rawLine.trim();
     if (!line) continue;
 
-    const event = parseJson(line);
+    const jsonLine = extractJsonFromLine(line);
+    if (!jsonLine) continue;
+
+    const event = parseJson(jsonLine);
     if (!event) continue;
 
     const foundSessionId = readSessionId(event);
@@ -97,9 +111,11 @@ export function parseGeminiJsonl(stdout: string) {
 
     const type = asString(event.type, "").trim();
 
-    if (type === "assistant") {
-      messages.push(...collectMessageText(event.message));
-      const messageObj = parseObject(event.message);
+    if (type === "assistant" || (type === "message" && asString(event.role, "").trim() === "assistant")) {
+      // Use event.message for old format, event for new format
+      const messageSource = event.message ?? event;
+      messages.push(...collectMessageText(messageSource));
+      const messageObj = parseObject(messageSource);
       const content = Array.isArray(messageObj.content) ? messageObj.content : [];
       for (const partRaw of content) {
         const part = parseObject(partRaw);
@@ -123,7 +139,7 @@ export function parseGeminiJsonl(stdout: string) {
 
     if (type === "result") {
       resultEvent = event;
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       const resultText =
         asString(event.result, "").trim() ||
         asString(event.text, "").trim() ||
@@ -160,8 +176,8 @@ export function parseGeminiJsonl(stdout: string) {
       continue;
     }
 
-    if (type === "step_finish" || event.usage || event.usageMetadata) {
-      accumulateUsage(usage, event.usage ?? event.usageMetadata);
+    if (type === "step_finish" || event.usage || event.usageMetadata || event.stats) {
+      accumulateUsage(usage, event.usage ?? event.usageMetadata ?? event.stats);
       costUsd = asNumber(event.total_cost_usd, asNumber(event.cost_usd, asNumber(event.cost, costUsd ?? 0))) || costUsd;
       continue;
     }
