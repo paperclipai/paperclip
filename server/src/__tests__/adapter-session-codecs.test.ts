@@ -122,6 +122,12 @@ describe("codex resume recovery detection", () => {
     ).toBe(true);
     expect(
       isCodexUnknownSessionError(
+        "",
+        "Error: thread/resume: thread/resume failed: no rollout found for thread id 0337dd7a-4352-40f8-8236-016783657d49",
+      ),
+    ).toBe(true);
+    expect(
+      isCodexUnknownSessionError(
         '{"type":"result","ok":true}',
         "",
       ),
