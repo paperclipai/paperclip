@@ -368,6 +368,10 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  AutoLabelTriggerEvent,
+  AutoLabelRuleAction,
+  AutoLabelRule,
+  AutoLabelRuleExecution,
 } from "./types/index.js";
 
 export {
@@ -628,6 +632,16 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  AUTO_LABEL_TRIGGER_EVENTS,
+  AUTO_LABEL_RULE_ACTIONS,
+  autoLabelTriggerEventSchema,
+  autoLabelRuleActionSchema,
+  createAutoLabelRuleSchema,
+  updateAutoLabelRuleSchema,
+  dryRunAutoLabelRuleSchema,
+  type CreateAutoLabelRule,
+  type UpdateAutoLabelRule,
+  type DryRunAutoLabelRule,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

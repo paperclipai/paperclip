@@ -317,3 +317,16 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  AUTO_LABEL_TRIGGER_EVENTS,
+  AUTO_LABEL_RULE_ACTIONS,
+  autoLabelTriggerEventSchema,
+  autoLabelRuleActionSchema,
+  createAutoLabelRuleSchema,
+  updateAutoLabelRuleSchema,
+  dryRunAutoLabelRuleSchema,
+  type CreateAutoLabelRule,
+  type UpdateAutoLabelRule,
+  type DryRunAutoLabelRule,
+} from "./auto-label-rule.js";

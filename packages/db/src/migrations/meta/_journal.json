@@ -372,6 +372,13 @@
       "when": 1775309749352,
       "tag": "0052_exit_code_bigint",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1775494162000,
+      "tag": "0053_auto_label_rules",
+      "breakpoints": true
     }
   ]
 }
