@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -857,5 +858,211 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService.checkout stale execution lock recovery", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("adopts a stale execution lock when checkoutRunId is null on a blocked issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const staleExecutionRunId = randomUUID();
+    const actorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CheckoutAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const now = new Date();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleExecutionRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        startedAt: new Date(now.getTime() - 60_000),
+        finishedAt: now,
+      },
+      {
+        id: actorRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        startedAt: now,
+      },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale execution lock repro",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: staleExecutionRunId,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], actorRunId);
+
+    expect(checkedOut.status).toBe("in_progress");
+    expect(checkedOut.assigneeAgentId).toBe(agentId);
+    expect(checkedOut.checkoutRunId).toBe(actorRunId);
+    expect(checkedOut.executionRunId).toBe(actorRunId);
+    expect(checkedOut.startedAt).toBeTruthy();
+  });
+
+  it("clears execution lock metadata when status leaves in_progress", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "StatusTransitionAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      startedAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Status transition lock cleanup",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionLockedAt: now,
+    });
+
+    const updated = await svc.update(issueId, { status: "blocked" });
+    expect(updated?.status).toBe("blocked");
+    expect(updated?.checkoutRunId).toBeNull();
+    expect(updated?.executionRunId).toBeNull();
+    expect(updated?.executionLockedAt).toBeNull();
+  });
+
+  it("clears execution lock metadata when releasing an in-progress issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ReleaseAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const now = new Date();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      startedAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Release lock cleanup",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionLockedAt: now,
+    });
+
+    const released = await svc.release(issueId, agentId, runId);
+    expect(released?.status).toBe("todo");
+    expect(released?.assigneeAgentId).toBeNull();
+    expect(released?.checkoutRunId).toBeNull();
+    expect(released?.executionRunId).toBeNull();
+    expect(released?.executionLockedAt).toBeNull();
   });
 });
