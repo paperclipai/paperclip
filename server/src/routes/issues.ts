@@ -1502,7 +1502,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
-        action: "issue.comment_added",
+        action: "issue.comment.created",
         entityType: "issue",
         entityId: issue.id,
         details: {
@@ -2010,7 +2010,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "issue.comment_added",
+      action: "issue.comment.created",
       entityType: "issue",
       entityId: currentIssue.id,
       details: {
