@@ -108,6 +108,7 @@ export type {
   IssueAttachment,
   IssueDependency,
   IssueDependencySummary,
+  IssueDependentSummary,
   IssueLabel,
 } from "./issue.js";
 export type { Goal } from "./goal.js";

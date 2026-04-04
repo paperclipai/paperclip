@@ -249,6 +249,7 @@ export type {
   IssueAttachment,
   IssueDependency,
   IssueDependencySummary,
+  IssueDependentSummary,
   IssueLabel,
   Goal,
   Approval,

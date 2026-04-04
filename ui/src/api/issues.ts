@@ -9,6 +9,7 @@ import type {
   IssueComment,
   IssueDependency,
   IssueDependencySummary,
+  IssueDependentSummary,
   IssueDocument,
   IssueLabel,
   IssueWorkProduct,
@@ -141,6 +142,7 @@ export const issuesApi = {
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
   listDependencies: (id: string) => api.get<IssueDependencySummary[]>(`/issues/${id}/dependencies`),
+  listDependents: (id: string) => api.get<IssueDependentSummary[]>(`/issues/${id}/dependents`),
   addDependency: (id: string, blockerIssueId: string) =>
     api.post<IssueDependency>(`/issues/${id}/dependencies`, { blockerIssueId }),
   removeDependency: (id: string, blockerIssueId: string) =>

@@ -199,3 +199,14 @@ export interface IssueDependencySummary {
   blockerStatus: string;
   createdAt: Date;
 }
+
+export interface IssueDependentSummary {
+  id: string;
+  issueId: string;
+  blockerIssueId: string;
+  dependentIdentifier: string | null;
+  dependentTitle: string;
+  dependentStatus: string;
+  dependentAssigneeAgentId: string | null;
+  createdAt: Date;
+}

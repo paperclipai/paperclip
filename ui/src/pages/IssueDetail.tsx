@@ -296,6 +296,7 @@ export function IssueDetail() {
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     dependencies: false,
+    dependents: false,
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentDragActive, setAttachmentDragActive] = useState(false);
@@ -346,6 +347,12 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.dependencies(issueId!),
     queryFn: () => issuesApi.listDependencies(issueId!),
     enabled: !!issueId && experimentalSettings?.enableDependencies === true,
+  });
+
+  const { data: dependents } = useQuery({
+    queryKey: queryKeys.issues.dependents(issueId!),
+    queryFn: () => issuesApi.listDependents(issueId!),
+    enabled: !!issueId,
   });
 
   const { data: attachments } = useQuery({
@@ -1008,6 +1015,13 @@ export function IssueDetail() {
     ]);
   }, [setBreadcrumbs, sourceBreadcrumb, issue, issueId, hasLiveRuns]);
 
+  // Auto-expand the blockers section when the issue is blocked
+  useEffect(() => {
+    if (issue?.status === "blocked") {
+      setSecondaryOpen((prev) => ({ ...prev, dependencies: true }));
+    }
+  }, [issue?.status]);
+
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
     if (issue?.identifier && issueId !== issue.identifier) {
@@ -1536,6 +1550,149 @@ export function IssueDetail() {
         <IssueWorkProductsSection issueId={issue.id} />
       )}
 
+      {/* Dependencies (blockers) — gated behind enableDependencies experimental flag */}
+      {experimentalSettings?.enableDependencies === true && (
+        <Collapsible
+          open={secondaryOpen.dependencies}
+          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, dependencies: open }))}
+          className="rounded-lg border border-border"
+        >
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+            <span className="text-sm font-medium text-muted-foreground">
+              Blocked By{dependencies && dependencies.length > 0 ? ` (${dependencies.length})` : ""}
+            </span>
+            <ChevronDown
+              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.dependencies && "rotate-180")}
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="border-t border-border divide-y divide-border">
+              {(dependencies ?? []).map((dep) => (
+                <div
+                  key={dep.id}
+                  className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                >
+                  <Link
+                    to={`/issues/${dep.blockerIdentifier ?? dep.blockerIssueId}`}
+                    className="flex items-center gap-2 min-w-0 flex-1"
+                  >
+                    <StatusBadge status={dep.blockerStatus} />
+                    <span className="font-mono text-muted-foreground shrink-0">
+                      {dep.blockerIdentifier ?? dep.blockerIssueId.slice(0, 8)}
+                    </span>
+                    <span className="truncate">{dep.blockerTitle}</span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => removeDependency.mutate(dep.blockerIssueId)}
+                    className="ml-2 p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                    title="Remove dependency"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+
+              {/* Add blocker inline */}
+              <div className="px-3 py-2">
+                <Popover open={addBlockerOpen} onOpenChange={(open) => { setAddBlockerOpen(open); if (!open) setBlockerSearch(""); }}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add blocker
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-72 p-2" align="start">
+                    <div className="flex items-center gap-2 px-2 pb-2 border-b border-border">
+                      <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <input
+                        type="text"
+                        value={blockerSearch}
+                        onChange={(e) => setBlockerSearch(e.target.value)}
+                        placeholder="Search issues..."
+                        className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="max-h-48 overflow-y-auto pt-1">
+                      {blockerSearch.length === 0 && (
+                        <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+                          Type to search for issues
+                        </p>
+                      )}
+                      {blockerSearch.length > 0 && blockerSearchResults && blockerSearchResults.length === 0 && (
+                        <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+                          No matching issues
+                        </p>
+                      )}
+                      {(blockerSearchResults ?? [])
+                        .filter((i) => i.id !== issueId && !(dependencies ?? []).some((d) => d.blockerIssueId === i.id))
+                        .slice(0, 10)
+                        .map((result) => (
+                          <button
+                            key={result.id}
+                            type="button"
+                            onClick={() => addDependency.mutate(result.id)}
+                            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/40 transition-colors text-left"
+                          >
+                            <StatusBadge status={result.status} />
+                            <span className="font-mono text-muted-foreground shrink-0">
+                              {result.identifier ?? result.id.slice(0, 8)}
+                            </span>
+                            <span className="truncate">{result.title}</span>
+                          </button>
+                        ))}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
+      {/* Dependents (issues blocked by this one) — only show when there are dependents */}
+      {experimentalSettings?.enableDependencies === true && dependents && dependents.length > 0 && (
+        <Collapsible
+          open={secondaryOpen.dependents}
+          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, dependents: open }))}
+          className="rounded-lg border border-border"
+        >
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+            <span className="text-sm font-medium text-muted-foreground">
+              Blocks ({dependents.length})
+            </span>
+            <ChevronDown
+              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.dependents && "rotate-180")}
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="border-t border-border divide-y divide-border">
+              {dependents.map((dep) => (
+                <div
+                  key={dep.id}
+                  className="flex items-center px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
+                >
+                  <Link
+                    to={`/issues/${dep.dependentIdentifier ?? dep.issueId}`}
+                    className="flex items-center gap-2 min-w-0 flex-1"
+                  >
+                    <StatusBadge status={dep.dependentStatus} />
+                    <span className="font-mono text-muted-foreground shrink-0">
+                      {dep.dependentIdentifier ?? dep.issueId.slice(0, 8)}
+                    </span>
+                    <span className="truncate">{dep.dependentTitle}</span>
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+
       <Separator />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
@@ -1698,110 +1855,6 @@ export function IssueDetail() {
           </TabsContent>
         )}
       </Tabs>
-
-      {/* Dependencies (blockers) — gated behind enableDependencies experimental flag */}
-      {experimentalSettings?.enableDependencies === true && dependencies && dependencies.length > 0 && (
-        <Collapsible
-          open={secondaryOpen.dependencies}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, dependencies: open }))}
-          className="rounded-lg border border-border"
-        >
-          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
-            <span className="text-sm font-medium text-muted-foreground">
-              Blocked By ({dependencies.length})
-            </span>
-            <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.dependencies && "rotate-180")}
-            />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border-t border-border divide-y divide-border">
-              {dependencies.map((dep) => (
-                <div
-                  key={dep.id}
-                  className="flex items-center justify-between px-3 py-2 text-xs hover:bg-accent/20 transition-colors"
-                >
-                  <Link
-                    to={`/issues/${dep.blockerIdentifier ?? dep.blockerIssueId}`}
-                    className="flex items-center gap-2 min-w-0 flex-1"
-                  >
-                    <StatusBadge status={dep.blockerStatus} />
-                    <span className="font-mono text-muted-foreground shrink-0">
-                      {dep.blockerIdentifier ?? dep.blockerIssueId.slice(0, 8)}
-                    </span>
-                    <span className="truncate">{dep.blockerTitle}</span>
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => removeDependency.mutate(dep.blockerIssueId)}
-                    className="ml-2 p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors shrink-0"
-                    title="Remove dependency"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-
-              {/* Add blocker inline */}
-              <div className="px-3 py-2">
-                <Popover open={addBlockerOpen} onOpenChange={(open) => { setAddBlockerOpen(open); if (!open) setBlockerSearch(""); }}>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      Add blocker
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-72 p-2" align="start">
-                    <div className="flex items-center gap-2 px-2 pb-2 border-b border-border">
-                      <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                      <input
-                        type="text"
-                        value={blockerSearch}
-                        onChange={(e) => setBlockerSearch(e.target.value)}
-                        placeholder="Search issues..."
-                        className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
-                        autoFocus
-                      />
-                    </div>
-                    <div className="max-h-48 overflow-y-auto pt-1">
-                      {blockerSearch.length === 0 && (
-                        <p className="px-2 py-3 text-xs text-muted-foreground text-center">
-                          Type to search for issues
-                        </p>
-                      )}
-                      {blockerSearch.length > 0 && blockerSearchResults && blockerSearchResults.length === 0 && (
-                        <p className="px-2 py-3 text-xs text-muted-foreground text-center">
-                          No matching issues
-                        </p>
-                      )}
-                      {(blockerSearchResults ?? [])
-                        .filter((i) => i.id !== issueId && !dependencies.some((d) => d.blockerIssueId === i.id))
-                        .slice(0, 10)
-                        .map((result) => (
-                          <button
-                            key={result.id}
-                            type="button"
-                            onClick={() => addDependency.mutate(result.id)}
-                            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/40 transition-colors text-left"
-                          >
-                            <StatusBadge status={result.status} />
-                            <span className="font-mono text-muted-foreground shrink-0">
-                              {result.identifier ?? result.id.slice(0, 8)}
-                            </span>
-                            <span className="truncate">{result.title}</span>
-                          </button>
-                        ))}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
 
       {linkedApprovals && linkedApprovals.length > 0 && (
         <Collapsible
