@@ -491,8 +491,8 @@ export function createPluginSecretsHandler(
       }
 
       // Description validation
-      if (params.description !== undefined && params.description !== null && params.description.length > 1024) {
-        throw new Error("Secret description must not exceed 1024 characters.");
+      if (params.description !== undefined && params.description !== null && Buffer.byteLength(params.description, "utf8") > 1024) {
+        throw new Error("Secret description must not exceed 1024 bytes.");
       }
 
       // ---------------------------------------------------------------
@@ -527,16 +527,16 @@ export function createPluginSecretsHandler(
           { userId: pluginActorId, agentId: null }
         );
 
-        // Audit Logging
-        await logActivity(db, {
+        // Audit Logging (Fire and forget to prevent rollback on audit failure)
+        logActivity(db, {
           companyId,
-          actorType: "system", // Internal actor tracking
+          actorType: "system",
           actorId: pluginId,
           action: "secret.rotated",
           entityType: "secret",
           entityId: updated.id,
           details: { name: params.name },
-        });
+        }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret rotation:", err));
 
         return updated.id;
       }
@@ -559,8 +559,8 @@ export function createPluginSecretsHandler(
           { userId: pluginActorId, agentId: null }
         );
 
-        // Audit Logging
-        await logActivity(db, {
+        // Audit Logging (Fire and forget to prevent rollback on audit failure)
+        logActivity(db, {
           companyId,
           actorType: "system",
           actorId: pluginId,
@@ -568,7 +568,7 @@ export function createPluginSecretsHandler(
           entityType: "secret",
           entityId: secret.id,
           details: { name: params.name },
-        });
+        }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret creation:", err));
 
         return secret.id;
       } catch (err: any) {
@@ -591,7 +591,7 @@ export function createPluginSecretsHandler(
               { userId: pluginActorId, agentId: null }
             );
 
-            await logActivity(db, {
+            logActivity(db, {
               companyId,
               actorType: "system",
               actorId: pluginId,
@@ -599,7 +599,7 @@ export function createPluginSecretsHandler(
               entityType: "secret",
               entityId: updated.id,
               details: { name: params.name },
-            });
+            }).catch((err) => console.warn("[plugin-secrets-handler] Failed to write audit log for secret rotation (TOCTOU):", err));
 
             return updated.id;
           }
