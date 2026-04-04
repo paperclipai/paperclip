@@ -714,6 +714,8 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown img {
   border-radius: calc(var(--radius) + 2px);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  max-width: 100%;
+  height: auto;
 }
 
 .paperclip-markdown table {
