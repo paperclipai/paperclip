@@ -23,6 +23,7 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    enforceBlockedOnValidation: boolean("enforce_blocked_on_validation").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

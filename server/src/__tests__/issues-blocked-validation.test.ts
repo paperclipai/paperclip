@@ -32,7 +32,7 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
   const companyId = randomUUID();
   const agentId = randomUUID();
 
-  /** Helper: set the enforceBlockedOnValidation flag */
+  /** Helper: set the instance-level enforceBlockedOnValidation flag */
   async function setEnforceFlag(enabled: boolean) {
     const rows = await db.select().from(instanceSettings);
     if (rows.length === 0) {
@@ -50,6 +50,20 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
         })
         .where(eq(instanceSettings.id, rows[0].id));
     }
+  }
+
+  /** Helper: set the company-level enforceBlockedOnValidation setting */
+  async function setCompanySetting(enabled: boolean) {
+    await db
+      .update(companies)
+      .set({ enforceBlockedOnValidation: enabled, updatedAt: new Date() })
+      .where(eq(companies.id, companyId));
+  }
+
+  /** Helper: enable both instance flag and company setting */
+  async function enableEnforcement() {
+    await setEnforceFlag(true);
+    await setCompanySetting(true);
   }
 
   /** Helper: create a todo issue assigned to the test agent */
@@ -95,15 +109,16 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
   afterEach(async () => {
     await db.delete(issueDependencies);
     await db.delete(issues);
-    // Reset flag to off after each test
+    // Reset both instance flag and company setting
     await setEnforceFlag(false);
+    await setCompanySetting(false);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
   });
 
-  it("allows blocked transition when flag is off (passthrough)", async () => {
+  it("allows blocked transition when instance flag is off (passthrough)", async () => {
     await setEnforceFlag(false);
     const issue = await createTodoIssue("Flag off test");
 
@@ -112,8 +127,28 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
     expect(result!.status).toBe("blocked");
   });
 
-  it("allows blocked transition when flag is on and blockedOn is in the request", async () => {
+  it("allows blocked transition when instance flag is on but company setting is off", async () => {
     await setEnforceFlag(true);
+    await setCompanySetting(false);
+    const issue = await createTodoIssue("Company setting off");
+
+    const result = await svc.update(issue.id, { status: "blocked" });
+    expect(result).toBeTruthy();
+    expect(result!.status).toBe("blocked");
+  });
+
+  it("allows blocked transition when instance flag is off but company setting is on (global kill switch)", async () => {
+    await setEnforceFlag(false);
+    await setCompanySetting(true);
+    const issue = await createTodoIssue("Instance flag off override");
+
+    const result = await svc.update(issue.id, { status: "blocked" });
+    expect(result).toBeTruthy();
+    expect(result!.status).toBe("blocked");
+  });
+
+  it("allows blocked transition when both enabled and blockedOn is in the request", async () => {
+    await enableEnforcement();
     const issue = await createTodoIssue("BlockedOn in request");
 
     const result = await svc.update(issue.id, {
@@ -125,8 +160,8 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
     expect(result!.blockedOn).toBe("board");
   });
 
-  it("allows blocked transition when flag is on and blockedOn is already on the existing issue", async () => {
-    await setEnforceFlag(true);
+  it("allows blocked transition when both enabled and blockedOn is already on the existing issue", async () => {
+    await enableEnforcement();
     const issue = await createTodoIssue("BlockedOn on existing");
 
     // First set blockedOn without changing status
@@ -138,8 +173,8 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
     expect(result!.blockedOn).toBe("agent");
   });
 
-  it("allows blocked transition when flag is on and a dependency edge exists", async () => {
-    await setEnforceFlag(true);
+  it("allows blocked transition when both enabled and a dependency edge exists", async () => {
+    await enableEnforcement();
     const issue = await createTodoIssue("Has dependency");
     const blockerIssue = await createTodoIssue("Blocker issue");
 
@@ -155,8 +190,8 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
     expect(result!.status).toBe("blocked");
   });
 
-  it("rejects blocked transition when flag is on, no blockedOn, and no dependencies", async () => {
-    await setEnforceFlag(true);
+  it("rejects blocked transition when both enabled, no blockedOn, and no dependencies", async () => {
+    await enableEnforcement();
     const issue = await createTodoIssue("No blockedOn or deps");
 
     await expect(svc.update(issue.id, { status: "blocked" })).rejects.toThrow(
@@ -165,13 +200,12 @@ describeEmbeddedPostgres("issueService blockedOn validation", () => {
   });
 
   it("does not validate when issue is already blocked (grandfathered)", async () => {
-    // Create issue as blocked before turning on the flag
-    await setEnforceFlag(false);
+    // Create issue as blocked before turning on enforcement
     const issue = await createTodoIssue("Already blocked");
     await svc.update(issue.id, { status: "blocked" });
 
-    // Turn on the flag
-    await setEnforceFlag(true);
+    // Turn on enforcement
+    await enableEnforcement();
 
     // Updating other fields on an already-blocked issue should not trigger validation
     const result = await svc.update(issue.id, { title: "Still blocked" });

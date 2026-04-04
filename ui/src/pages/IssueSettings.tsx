@@ -6,8 +6,10 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { goalsApi } from "../api/goals";
 import { issuesApi } from "../api/issues";
+import { companiesApi } from "../api/companies";
 import { autoLabelRulesApi, type DryRunResult } from "../api/autoLabelRules";
 import { queryKeys } from "../lib/queryKeys";
+import { cn } from "../lib/utils";
 import { Field, HintIcon, ToggleField, AutoExpandTextarea } from "../components/agent-config-primitives";
 import { EmptyState } from "../components/EmptyState";
 import {
@@ -879,6 +881,80 @@ function AutoLabelRulesSection({
 
 /* ── Main Page ───��──────────────────────────────────────────────────── */
 
+/* ── Blocked Status Enforcement Section ────────────────────────────── */
+
+function BlockedStatusEnforcementSection({
+  companyId,
+  isEnabled,
+}: {
+  companyId: string;
+  isEnabled: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+
+  const toggleMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(companyId, { enforceBlockedOnValidation: enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({ title: "Setting updated", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update setting",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Blocked Status Enforcement
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium">Require blocker reason when blocking issues</span>
+              <HintIcon text="When enabled, issues cannot be moved to blocked status without specifying what is blocking them (blockedOn field or dependency edge)." />
+            </div>
+            <p className="text-xs text-muted-foreground max-w-lg">
+              When enabled, agents and users must provide a <code className="bg-muted px-1 rounded text-[11px]">blockedOn</code> value
+              or have a dependency edge before transitioning an issue to blocked status.
+              Accepted blockedOn values: <code className="bg-muted px-1 rounded text-[11px]">board</code>,{" "}
+              <code className="bg-muted px-1 rounded text-[11px]">agent</code>,{" "}
+              <code className="bg-muted px-1 rounded text-[11px]">external</code>.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-slot="toggle"
+            aria-label="Toggle mandatory blocked-on enforcement"
+            disabled={toggleMutation.isPending}
+            className={cn(
+              "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              isEnabled ? "bg-green-600" : "bg-muted",
+            )}
+            onClick={() => toggleMutation.mutate(!isEnabled)}
+          >
+            <span
+              className={cn(
+                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                isEnabled ? "translate-x-4.5" : "translate-x-0.5",
+              )}
+            />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main Page ────────────────────────────────────────────────────── */
+
 export function IssueSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -958,6 +1034,12 @@ export function IssueSettings() {
           </div>
         </div>
       </div>
+
+      {/* Blocked Status Enforcement */}
+      <BlockedStatusEnforcementSection
+        companyId={selectedCompanyId}
+        isEnabled={selectedCompany.enforceBlockedOnValidation === true}
+      />
 
       {/* Goal Fallback */}
       <div className="space-y-4">

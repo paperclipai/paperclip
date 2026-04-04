@@ -1464,24 +1464,33 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
-      // Enforce blockedOn validation when transitioning to "blocked"
+      // Enforce blockedOn validation when transitioning to "blocked".
+      // Gate: instance feature flag (global kill switch) AND company-level setting.
       if (
         issueData.status === "blocked" &&
         existing.status !== "blocked" &&
         updateExperimentalSettings.enforceBlockedOnValidation
       ) {
-        const nextBlockedOn = issueData.blockedOn ?? existing.blockedOn;
-        if (!nextBlockedOn) {
-          const depCount = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(issueDependencies)
-            .where(eq(issueDependencies.issueId, id))
-            .then((rows) => rows[0]?.count ?? 0);
-          if (depCount === 0) {
-            throw unprocessable(
-              "Cannot transition to blocked without specifying blockedOn or having a dependency. " +
-                "Set blockedOn to one of: board, agent, external — or add a dependency edge.",
-            );
+        const company = await db
+          .select({ enforceBlockedOnValidation: companies.enforceBlockedOnValidation })
+          .from(companies)
+          .where(eq(companies.id, existing.companyId))
+          .then((rows) => rows[0] ?? null);
+
+        if (company?.enforceBlockedOnValidation) {
+          const nextBlockedOn = issueData.blockedOn ?? existing.blockedOn;
+          if (!nextBlockedOn) {
+            const depCount = await db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueDependencies)
+              .where(eq(issueDependencies.issueId, id))
+              .then((rows) => rows[0]?.count ?? 0);
+            if (depCount === 0) {
+              throw unprocessable(
+                "Cannot transition to blocked without specifying blockedOn or having a dependency. " +
+                  "Set blockedOn to one of: board, agent, external — or add a dependency edge.",
+              );
+            }
           }
         }
       }
