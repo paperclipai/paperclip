@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -1130,5 +1131,205 @@ describeEmbeddedPostgres("issueService.addComment Board Comments auto-label", ()
     const issueLabelNames = await getIssueLabels(issue.id);
     const names = issueLabelNames.map((l) => l.labelName).sort();
     expect(names).toEqual(["Board Comments", "Bug"]);
+  });
+});
+
+describeEmbeddedPostgres("issueService stale executionRunId recovery", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId: string;
+  let agentId: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-exec-lock-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  beforeEach(async () => {
+    companyId = randomUUID();
+    agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "TestCo",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+  });
+
+  afterEach(async () => {
+    await db.delete(heartbeatRuns);
+    await db.delete(issueLabels);
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("checkout recovers from stale executionRunId with missing run", async () => {
+    const issueId = randomUUID();
+    const staleRunId = randomUUID(); // not in heartbeat_runs → treated as missing
+    const newRunId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Zombie-locked issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: staleRunId,
+      executionAgentNameKey: "old-agent",
+      executionLockedAt: new Date(),
+      createdByAgentId: agentId,
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], newRunId);
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("in_progress");
+    expect(result!.checkoutRunId).toBe(newRunId);
+    expect(result!.executionRunId).toBe(newRunId);
+    expect(result!.assigneeAgentId).toBe(agentId);
+  });
+
+  it("checkout recovers from stale executionRunId with terminal run", async () => {
+    const issueId = randomUUID();
+    const staleRunId = randomUUID();
+    const newRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      finishedAt: new Date(),
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Zombie-locked issue (terminal run)",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: staleRunId,
+      executionLockedAt: new Date(),
+      createdByAgentId: agentId,
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], newRunId);
+
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("in_progress");
+    expect(result!.executionRunId).toBe(newRunId);
+  });
+
+  it("checkout rejects when executionRunId points to an active run", async () => {
+    const issueId = randomUUID();
+    const activeRunId = randomUUID();
+    const newRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Actively locked issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: activeRunId,
+      executionLockedAt: new Date(),
+      createdByAgentId: agentId,
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], newRunId)).rejects.toThrow(
+      "Issue checkout conflict",
+    );
+  });
+
+  it("update clears executionRunId when status changes away from in_progress", async () => {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "In-progress issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "test-agent",
+      executionLockedAt: new Date(),
+      createdByAgentId: agentId,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.checkoutRunId).toBeNull();
+    expect(updated!.executionRunId).toBeNull();
+    expect(updated!.executionAgentNameKey).toBeNull();
+    expect(updated!.executionLockedAt).toBeNull();
+  });
+
+  it("release clears executionRunId alongside checkoutRunId", async () => {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue to release",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "test-agent",
+      executionLockedAt: new Date(),
+      createdByAgentId: agentId,
+    });
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).not.toBeNull();
+    expect(released!.status).toBe("todo");
+    expect(released!.checkoutRunId).toBeNull();
+    expect(released!.executionRunId).toBeNull();
+    expect(released!.executionAgentNameKey).toBeNull();
+    expect(released!.executionLockedAt).toBeNull();
   });
 });

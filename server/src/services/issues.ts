@@ -1433,12 +1433,18 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
 
       // Clear blockedOn when status transitions away from "blocked"
@@ -1639,6 +1645,43 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      // Recover from stale execution lock: executionRunId references a terminal/missing run
+      // while checkoutRunId is already null (e.g. cleared by a status change or release).
+      // This mirrors the self-healing in the wakeup path.
+      if (checkoutRunId && current.executionRunId && current.executionRunId !== checkoutRunId) {
+        const isStale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
+        if (isStale) {
+          const recovered = await db
+            .update(issues)
+            .set({
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              executionLockedAt: now,
+              status: "in_progress",
+              blockedOn: null,
+              startedAt: now,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                inArray(issues.status, expectedStatuses),
+                or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+                eq(issues.executionRunId, current.executionRunId),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (recovered) {
+            await removeNeedBoardLabel(recovered.id, issueCompany.companyId);
+            const [enriched] = await withIssueLabels(db, [recovered]);
+            return enriched;
+          }
+        }
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,
@@ -1734,6 +1777,9 @@ export function issueService(db: Db) {
           status: "todo",
           assigneeAgentId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
