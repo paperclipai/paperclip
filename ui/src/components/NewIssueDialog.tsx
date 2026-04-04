@@ -176,6 +176,7 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
+  const [dueDate, setDueDate] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
@@ -193,7 +194,6 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
@@ -395,6 +395,7 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
+    setDueDate("");
     setAssigneeId("");
     setProjectId("");
     setAssigneeOptionsOpen(false);
@@ -441,6 +442,7 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(dueDate ? { dueDate: new Date(dueDate + "T23:59:59.999Z").toISOString() } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
     });
   }
@@ -928,22 +930,33 @@ export function NewIssueDialog() {
             {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
           </button>
 
-          {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          {/* Due date */}
+          <Popover>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-                <MoreHorizontal className="h-3 w-3" />
+              <button className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                dueDate ? "text-foreground" : "text-muted-foreground"
+              )}>
+                <Calendar className="h-3 w-3" />
+                {dueDate ? new Date(dueDate).toLocaleDateString() : "Due date"}
+                {dueDate && (
+                  <span
+                    className="hover:text-foreground"
+                    onClick={(e) => { e.stopPropagation(); setDueDate(""); }}
+                  >
+                    ×
+                  </span>
+                )}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
+            <PopoverContent className="w-auto p-3" align="start">
+              <input
+                type="date"
+                className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm outline-none w-full"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                autoFocus
+              />
             </PopoverContent>
           </Popover>
         </div>
