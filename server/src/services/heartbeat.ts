@@ -19,6 +19,7 @@ import {
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
+import { logActivity } from "./activity-log.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
@@ -2663,6 +2664,24 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // ── Emit agent.run.started plugin event ─────────────────
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        action: "agent.run.started",
+        entityType: "agent",
+        entityId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          agentName: agent.name,
+          issueId: issueId ?? null,
+          projectId: executionProjectId ?? null,
+          wakeReason: readNonEmptyString(context.wakeReason) ?? null,
+        },
+      }).catch(() => {});
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -2866,6 +2885,37 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // ── Emit agent.run.finished/failed/cancelled plugin event ──
+      const runEventAction =
+        outcome === "succeeded"
+          ? "agent.run.finished"
+          : outcome === "failed"
+            ? "agent.run.failed"
+            : "agent.run.cancelled";
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        action: runEventAction,
+        entityType: "agent",
+        entityId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          agentName: agent.name,
+          issueId: issueId ?? null,
+          projectId: executionProjectId ?? null,
+          wakeReason: readNonEmptyString(context.wakeReason) ?? null,
+          exitCode: adapterResult.exitCode ?? null,
+          durationMs: Date.now() - startedAt.getTime(),
+          model: readNonEmptyString(adapterResult.model) ?? null,
+          costUsd: adapterResult.costUsd ?? null,
+          inputTokens: normalizedUsage?.inputTokens ?? null,
+          outputTokens: normalizedUsage?.outputTokens ?? null,
+          summary: adapterResult.summary ?? null,
+        },
+      }).catch(() => {});
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -2905,6 +2955,27 @@ export function heartbeatService(db: Db) {
           message,
         });
         await releaseIssueExecutionAndPromote(failedRun);
+
+        // ── Emit agent.run.failed plugin event (exception path) ──
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          action: "agent.run.failed",
+          entityType: "agent",
+          entityId: agent.id,
+          agentId: agent.id,
+          runId: run.id,
+          details: {
+            agentName: agent.name,
+            issueId: issueId ?? null,
+            projectId: executionProjectId ?? null,
+            wakeReason: readNonEmptyString(context.wakeReason) ?? null,
+            exitCode: null,
+            durationMs: run.startedAt ? Date.now() - run.startedAt.getTime() : null,
+            error: message,
+          },
+        }).catch(() => {});
 
         await updateRuntimeState(agent, failedRun, {
           exitCode: null,
