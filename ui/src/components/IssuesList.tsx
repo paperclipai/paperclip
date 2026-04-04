@@ -697,6 +697,11 @@ export function IssuesList({
                         issue={issue}
                         issueLinkState={issueLinkState}
                         className={isChild ? "pl-6 sm:pl-7" : undefined}
+                        titleSuffix={hasChildren && !isExpanded ? (
+                          <span className="ml-1.5 text-xs text-muted-foreground">
+                            ({children.length} sub-task{children.length !== 1 ? "s" : ""})
+                          </span>
+                        ) : undefined}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" onClick={toggleCollapse}>
