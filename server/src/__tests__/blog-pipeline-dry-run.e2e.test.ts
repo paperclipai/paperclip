@@ -81,6 +81,7 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       runService: runSvc,
       artifactRoot: scratchRoot,
       publisher: publisher as any,
+      runGrokArtifactStep: vi.fn().mockResolvedValue({ ok: true, source: "grok-web-artifact-step" }),
       runResearchStep: vi.fn().mockResolvedValue({ summary: "research ok", sources: 4 }),
       runDraftStep: vi.fn().mockResolvedValue({
         title: "Dry run title",
@@ -91,6 +92,17 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       runDraftPolishStep: vi.fn().mockResolvedValue({ verdict: "pass" }),
       runFinalReviewStep: vi.fn().mockResolvedValue({ verdict: "approve" }),
       runValidateStep: vi.fn().mockResolvedValue({ ok: true }),
+      runQualityGateBundle: vi.fn().mockResolvedValue({
+        operator_summary_path: "/tmp/preflight.publish_ready.md",
+        results: {
+          research_grounding: { ok: true, status: "pass", summary: "research grounding complete" },
+          topic_alignment: { ok: true, status: "pass", summary: "topic alignment passed" },
+          explainer_quality: { ok: true, status: "pass", summary: "explainer quality passed" },
+          reader_experience: { ok: true, status: "pass", summary: "reader experience passed" },
+          visual_quality: { ok: true, status: "pass", summary: "visual quality passed" },
+          publish_ready: { ok: true, status: "pass", failed_gates: [], gate_reason_summary: {}, summary: "all publish-ready gates passed" },
+        },
+      }),
       runPublicVerifyStep: vi.fn(),
     });
 
@@ -168,6 +180,7 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       runService: runSvc,
       artifactRoot: scratchRoot,
       publisher: { publishDraft: vi.fn(), publishPost: vi.fn() } as any,
+      runGrokArtifactStep: vi.fn().mockResolvedValue({ ok: true, source: "grok-web-artifact-step" }),
       runResearchStep: vi.fn().mockResolvedValue({ summary: "research ok", notebook_reference: "n1", fact_pack: { items: [1] }, source_registry: [{ url: "https://example.com" }], uncertainty_ledger: [{ claim: "x" }] }),
       runDraftStep: vi.fn().mockResolvedValue({
         title: "Dry run title",
@@ -229,28 +242,34 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       publishDraft: vi.fn(),
       publishPost: vi.fn(),
     };
-    const runQualityGateBundle = vi.fn()
-      .mockResolvedValueOnce({
-        results: {
-          publish_ready: {
-            ok: false,
-            status: "fail",
-            failed_gates: ["explainer_quality"],
-            gate_reason_summary: { explainer_quality: ["term_explanation_missing"] },
+    let bundleCall = 0;
+    const runQualityGateBundle = vi.fn().mockImplementation(async () => {
+      bundleCall += 1;
+      if (bundleCall === 4) {
+        return {
+          results: {
+            publish_ready: {
+              ok: false,
+              status: "fail",
+              failed_gates: ["explainer_quality"],
+              gate_reason_summary: { explainer_quality: ["term_explanation_missing"] },
+            },
           },
-        },
-      })
-      .mockResolvedValueOnce({
-        results: {
-          publish_ready: {
-            ok: false,
-            status: "fail",
-            failed_gates: ["reader_experience"],
-            gate_reason_summary: { reader_experience: ["quick_scan_missing"] },
+        };
+      }
+      if (bundleCall === 7) {
+        return {
+          results: {
+            publish_ready: {
+              ok: false,
+              status: "fail",
+              failed_gates: ["reader_experience"],
+              gate_reason_summary: { reader_experience: ["quick_scan_missing"] },
+            },
           },
-        },
-      })
-      .mockResolvedValue({
+        };
+      }
+      return {
         results: {
           publish_ready: {
             ok: true,
@@ -259,13 +278,15 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
             gate_reason_summary: {},
           },
         },
-      });
+      };
+    });
 
     const worker = blogRunWorkerService(db, {
       runService: runSvc,
       artifactRoot: scratchRoot,
       publisher: publisher as any,
       runResearchStep: vi.fn().mockResolvedValue({ summary: "research ok", notebook_reference: "n1", fact_pack: { items: [1] }, source_registry: [{ url: "https://example.com" }], uncertainty_ledger: [{ claim: "x" }] }),
+      runGrokArtifactStep: vi.fn().mockResolvedValue({ ok: true, source: "grok-web-artifact-step" }),
       runDraftStep: vi.fn().mockResolvedValue({
         title: "Loop draft title",
         article_html: "<p>Loop dry run body</p>",
@@ -298,7 +319,7 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       },
     });
 
-    for (let i = 0; i < 14; i += 1) {
+    for (let i = 0; i < 24; i += 1) {
       const current = await runSvc.getById(run!.id);
       if (!current?.currentStep) break;
       await worker.runNext(run!.id);
@@ -307,7 +328,7 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
     const finalDetail = await runSvc.getDetail(run!.id);
     expect(finalDetail?.run.status).toBe("public_verified");
     expect((finalDetail?.run.contextJson as any)?.articleLoop?.articleAttempt).toBe(3);
-    expect(runQualityGateBundle).toHaveBeenCalledTimes(5);
+    expect(runQualityGateBundle).toHaveBeenCalledTimes(10);
     expect(publisher.publishDraft).not.toHaveBeenCalled();
     expect(publisher.publishPost).not.toHaveBeenCalled();
   }, 20_000);
