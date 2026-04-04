@@ -78,6 +78,8 @@ const mockSecretService = vi.hoisted(() => ({
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
+const mockLoadDefaultAgentInstructionsBundle = vi.hoisted(() => vi.fn());
+const mockResolveDefaultAgentInstructionsBundleRole = vi.hoisted(() => vi.fn());
 const mockCompanySkillService = vi.hoisted(() => ({
   listRuntimeSkillEntries: vi.fn(),
   resolveRequestedSkillKeys: vi.fn(),
@@ -114,18 +116,21 @@ function registerServiceMocks() {
   }));
 }
 
+vi.mock("../services/default-agent-instructions.js", () => ({
+  loadDefaultAgentInstructionsBundle: mockLoadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole: mockResolveDefaultAgentInstructionsBundleRole,
+}));
+
 function createDbStub(organizationMode: "company" | "team" = "company") {
   return {
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          then: vi.fn().mockResolvedValue([{
+        where: vi.fn().mockResolvedValue([{
             id: companyId,
             name: "Paperclip",
             organizationMode,
             requireBoardApprovalForNewAgents: false,
           }]),
-        }),
       }),
     }),
   };
@@ -197,6 +202,26 @@ describe("agent permission routes", () => {
         },
       }),
     );
+    mockResolveDefaultAgentInstructionsBundleRole.mockImplementation((input: {
+      role: string;
+      organizationMode?: "company" | "team" | null;
+    }) => {
+      if (input.role !== "ceo") return "default";
+      return input.organizationMode === "team" ? "ceo_team" : "ceo";
+    });
+    mockLoadDefaultAgentInstructionsBundle.mockImplementation(async (role: string) => {
+      if (role === "ceo_team") {
+        return {
+          "AGENTS.md": "You are the Team Lead.\n\ntechnical tasks** → Founding Engineer",
+        };
+      }
+      if (role === "ceo") {
+        return {
+          "AGENTS.md": "You are the CEO.\n\ntechnical tasks** → CTO",
+        };
+      }
+      return { "AGENTS.md": "# Agent" };
+    });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => requested,
@@ -343,6 +368,11 @@ describe("agent permission routes", () => {
       });
 
     expect(res.status).toBe(201);
+    expect(mockResolveDefaultAgentInstructionsBundleRole).toHaveBeenCalledWith({
+      role: "ceo",
+      organizationMode: "team",
+    });
+    expect(mockLoadDefaultAgentInstructionsBundle).toHaveBeenCalledWith("ceo_team");
     const bundleFiles = mockAgentInstructionsService.materializeManagedBundle.mock.calls[0]?.[1];
     expect(bundleFiles["AGENTS.md"]).toContain("You are the Team Lead.");
     expect(bundleFiles["AGENTS.md"]).toContain("technical tasks** → Founding Engineer");
