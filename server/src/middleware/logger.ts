@@ -71,7 +71,7 @@ export const logger = pino({
   targets: [
     {
       target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: "1" },
       level: "info",
     },
     ...fileTransportTarget,
