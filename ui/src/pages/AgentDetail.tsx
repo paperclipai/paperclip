@@ -91,6 +91,7 @@ import {
 } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { instructionsBundleHasFile } from "../lib/agent-instructions";
 import {
   applyAgentSkillSnapshot,
   arraysEqual,
@@ -1691,7 +1692,12 @@ function PromptsTab({
     [visibleFilePaths],
   );
   const selectedOrEntryFile = selectedFile || currentEntryFile;
-  const selectedFileExists = bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
+  const selectedFileExists = instructionsBundleHasFile({
+    bundleMatchesDraft,
+    currentEntryFile,
+    selectedFile: selectedOrEntryFile,
+    fileOptions,
+  });
   const selectedFileSummary = bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
 
   const { data: selectedFileDetail, isLoading: fileLoading } = useQuery({
@@ -2176,7 +2182,14 @@ function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
-              if (!fileOptions.includes(filePath)) setDraft("");
+              if (!instructionsBundleHasFile({
+                bundleMatchesDraft,
+                currentEntryFile,
+                selectedFile: filePath,
+                fileOptions,
+              })) {
+                setDraft("");
+              }
               if (isMobile) setShowFilePanel(false);
             }}
             onToggleCheck={() => {}}
