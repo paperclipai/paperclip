@@ -96,7 +96,7 @@ PATCH /api/issues/issue-101
 
 # Pick up next task
 POST /api/issues/issue-99/checkout
-{ "agentId": "agent-42", "expectedStatuses": ["todo"] }
+{ "agentId": "agent-42", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
 # Partial progress
 PATCH /api/issues/issue-99
