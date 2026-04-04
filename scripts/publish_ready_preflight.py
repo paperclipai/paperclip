@@ -54,20 +54,41 @@ def merge_gate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         if owner and owner not in owner_routing:
             owner_routing.append(owner)
 
+    gate_reason_summary: dict[str, list[str]] = {}
+    for result in results:
+        if result["ok"]:
+            continue
+        reasons = [str(reason).strip() for reason in result["reasons"] if str(reason).strip()]
+        if reasons:
+            gate_reason_summary[result["gate"]] = reasons
+
     next_action_hint = None
     if failed:
-        next_action_hint = f"Resolve failed gates before publish-ready review: {', '.join(failed)}"
+        detail_bits = []
+        for gate in failed:
+          reasons = gate_reason_summary.get(gate) or []
+          if reasons:
+              detail_bits.append(f"{gate} ({', '.join(reasons[:3])})")
+          else:
+              detail_bits.append(gate)
+        next_action_hint = f"Resolve failed gates before publish-ready review: {', '.join(detail_bits)}"
 
     return {
         "ok": len(failed) == 0,
         "gate": "publish_ready",
         "status": "pass" if len(failed) == 0 else "fail",
         "failed_gates": failed,
+        "gate_reason_summary": gate_reason_summary,
         "warnings": warnings,
         "owner_routing": owner_routing,
         "next_action_hint": next_action_hint,
         "artifacts_used": [result["source_path"] for result in results],
-        "summary": "all publish-ready gates passed" if len(failed) == 0 else f"failed gates: {', '.join(failed)}",
+        "summary": "all publish-ready gates passed" if len(failed) == 0 else (
+            "failed gates: " + ", ".join(
+                f"{gate} ({', '.join(gate_reason_summary.get(gate, [])[:2])})" if gate in gate_reason_summary else gate
+                for gate in failed
+            )
+        ),
     }
 
 

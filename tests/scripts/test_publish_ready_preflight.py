@@ -26,11 +26,14 @@ class PublishReadyPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ok_path = self.write_json(root, "grounding.json", {"gate": "research_grounding", "ok": True})
-            fail_path = self.write_json(root, "visual.json", {"gate": "visual_quality", "ok": False, "warnings": ["dup"]})
+            fail_path = self.write_json(root, "visual.json", {"gate": "visual_quality", "ok": False, "warnings": ["dup"], "reasons": ["duplicate_assets"]})
             result = self.run_script(ok_path, fail_path)
             self.assertFalse(result["ok"])
             self.assertEqual(result["failed_gates"], ["visual_quality"])
             self.assertEqual(result["owner_routing"], ["Visual Editor"])
+            self.assertEqual(result["gate_reason_summary"]["visual_quality"], ["duplicate_assets"])
+            self.assertIn("duplicate_assets", result["summary"])
+            self.assertIn("duplicate_assets", result["next_action_hint"])
 
     def test_passes_when_all_gates_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
