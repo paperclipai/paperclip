@@ -134,6 +134,7 @@ Must not own:
 - detailed visual execution
 - repetitive explainer rewrites as a first pass
 - deterministic validation logic
+- canonical standards authorship when those standards already live in shared project docs
 
 ### Explainer Editor
 

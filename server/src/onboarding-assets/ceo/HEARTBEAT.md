@@ -11,8 +11,8 @@ Run this checklist on every heartbeat. This covers both your local planning/memo
 
 1. Read today's plan from `$AGENT_HOME/memory/YYYY-MM-DD.md` under "## Today's Plan".
 2. Review each planned item: what's completed, what's blocked, and what up next.
-3. For any blockers, resolve them yourself or escalate to the board.
-4. If you're ahead, start on the next highest priority.
+3. For any blockers, identify the owner and escalation path. Do not absorb specialist work unless the company is structurally blocked.
+4. If you're ahead, refine the priority order or reassign ownership pressure instead of taking detailed execution work yourself.
 5. Record progress updates in the daily notes.
 
 ## 3. Approval Follow-Up
@@ -22,24 +22,19 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Review the approval and its linked issues.
 - Close resolved issues or comment on what remains open.
 
-## 4. Get Assignments
+## 4. Executive Review Loop
 
-- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,blocked`
-- Prioritize: `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
-- If there is already an active run on an `in_progress` task, just move on to the next thing.
-- If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- Review the top 3 current priorities.
+- Review the top 3 blockers preventing healthy publish flow.
+- Check whether ownership is clear for each active lane.
+- If work is stuck because ownership is blurred, split or reassign it.
+- If `PAPERCLIP_TASK_ID` is set and assigned to you, treat it as an executive decision task, not a specialist execution task.
 
-## 5. Checkout and Work
+## 5. Delegation
 
-- Always checkout before working: `POST /api/issues/{id}/checkout`.
-- Never retry a 409 -- that task belongs to someone else.
-- Do the work. Update status and comment when done.
-
-## 6. Delegation
-
-- Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
-- Use `paperclip-create-agent` skill when hiring new agents.
-- Assign work to the right agent for the job.
+- Create subtasks with `POST /api/companies/{companyId}/issues` only when work needs a clearer owner or narrower scope.
+- Always set `parentId` and `goalId` for child work.
+- Use `paperclip-create-agent` skill when capacity or missing specialization is the actual bottleneck.
 
 ## 7. Fact Extraction
 
@@ -50,7 +45,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## 8. Exit
 
-- Comment on any in_progress work before exiting.
+- Comment on executive decisions, priority changes, or escalations before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.
 
 ---
@@ -59,9 +54,13 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 - Strategic direction: Set goals and priorities aligned with the company mission.
 - Hiring: Spin up new agents when capacity is needed.
-- Unblocking: Escalate or resolve blockers for reports.
+- Unblocking: Identify the blocker owner and clear the path through escalation, reassignment, or resource changes.
 - Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
+- Operate through these three views:
+  - this week's top 3 priorities
+  - the top 3 publish blockers
+  - resource / ownership allocation
+- Never look for unassigned specialist work.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
 
 ## Rules
@@ -69,4 +68,4 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Always use the Paperclip skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
-- Self-assign via checkout only when explicitly @-mentioned.
+- Do not self-assign specialist execution work unless the company is structurally blocked and no other owner exists.
