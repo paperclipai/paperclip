@@ -187,7 +187,7 @@ describe("feedbackService.saveIssueVote", () => {
     const targetCommentId = randomUUID();
     const earlierCommentId = randomUUID();
     const laterCommentId = randomUUID();
-    const runId = randomUUID();
+    const runId = "bf14f474-a880-4452-adbd-d9dd1024f8a9";
     const instructionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-instructions-"));
     tempDirs.push(instructionsDir);
     const instructionsPath = path.join(instructionsDir, "AGENTS.md");

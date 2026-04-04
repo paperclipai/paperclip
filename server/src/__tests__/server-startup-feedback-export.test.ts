@@ -56,6 +56,7 @@ vi.mock("@paperclipai/db", () => ({
   companies: {},
   companyMemberships: {},
   instanceUserRoles: {},
+  subscriptionPlans: { id: "id" },
 }));
 
 vi.mock("../app.js", () => ({
