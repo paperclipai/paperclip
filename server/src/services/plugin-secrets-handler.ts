@@ -461,21 +461,44 @@ export function createPluginSecretsHandler(
       // ---------------------------------------------------------------
       // 5. Secure Creation
       // ---------------------------------------------------------------
+      // 5. Secure Creation / Update
       // Crucial Security Requirement: Delegate to secretService to ensure
       // proper provider-level encryption (e.g. AES-256-GCM) is applied before
       // the secret is ever persisted to the database.
-      const secret = await secretService(db).create(
-        companyId,
-        {
-          name: params.name,
-          provider: defaultProvider,
-          value: params.value,
-          description: params.description,
-        },
-        { userId: pluginActorId, agentId: null }
-      );
+      try {
+        const secret = await secretService(db).create(
+          companyId,
+          {
+            name: params.name,
+            provider: defaultProvider,
+            value: params.value,
+            description: params.description,
+          },
+          { userId: pluginActorId, agentId: null }
+        );
 
-      return secret.id;
+        return secret.id;
+      } catch (err: any) {
+        // Handle TOCTOU race: if creation fails due to a name conflict that 
+        // happened between our check and the insert, perform one final 
+        // ownership check to provide the correct error message.
+        if (err.name === "ConflictError" || err.message?.includes("already exists")) {
+          const raced = await secretService(db).getByName(companyId, params.name);
+          if (raced && raced.createdByUserId !== pluginActorId) {
+            throw new Error(`Collision: A secret named "${params.name}" already exists and was not created by this plugin.`);
+          }
+          // If it IS our secret now (won the race), we can try to rotate it
+          if (raced) {
+            const updated = await secretService(db).rotate(
+              raced.id, 
+              { value: params.value },
+              { userId: pluginActorId, agentId: null }
+            );
+            return updated.id;
+          }
+        }
+        throw err;
+      }
     },
   };
 }

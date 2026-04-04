@@ -31,7 +31,6 @@ describe("plugin telemetry bridge", () => {
 
     const services = buildHostServices(
       {} as never,
-      "test-company",
       "plugin-record-id",
       "linear",
       createEventBusStub(),
@@ -58,7 +57,6 @@ describe("plugin telemetry bridge", () => {
 
     const services = buildHostServices(
       {} as never,
-      "test-company",
       "plugin-record-id",
       "linear",
       createEventBusStub(),
@@ -74,7 +72,6 @@ describe("plugin telemetry bridge", () => {
   it("rejects telemetry tracking when the plugin lacks the capability", async () => {
     const services = buildHostServices(
       {} as never,
-      "test-company",
       "plugin-record-id",
       "linear",
       createEventBusStub(),
@@ -97,7 +94,6 @@ describe("plugin telemetry bridge", () => {
   it("passes telemetry requests through when the plugin declares the capability", async () => {
     const services = buildHostServices(
       {} as never,
-      "test-company",
       "plugin-record-id",
       "linear",
       createEventBusStub(),
