@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { parseProjectMentionHref } from "@paperclipai/shared";
+import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { useTheme } from "../context/ThemeContext";
 
@@ -58,10 +59,14 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
 
             // Agent mention links (agent://agentId)
             if (href?.startsWith("agent://")) {
+              const agentId = href.replace("agent://", "");
               return (
-                <span className="inline-flex items-center rounded-sm border border-purple-500/30 bg-purple-500/10 px-1 py-0.5 text-xs font-medium text-purple-500 select-none">
+                <Link
+                  to={`/agents/${agentId}`}
+                  className="border border-purple-500/30 bg-purple-500/10 text-purple-500 rounded-sm px-1 py-0.5 text-xs font-medium no-underline hover:bg-purple-500/20 transition-colors"
+                >
                   {linkChildren}
-                </span>
+                </Link>
               );
             }
 

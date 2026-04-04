@@ -553,39 +553,45 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         </PropertyPicker>
 
         <PropertyRow label="Due date">
-          <div className="flex items-center gap-1.5">
-            <input
-              type="date"
-              className={cn(
-                "rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none cursor-pointer hover:bg-accent/50 transition-colors",
-                issue.dueDate && new Date(issue.dueDate) < new Date() && issue.status !== "done" && issue.status !== "cancelled"
-                  ? "text-red-500 border-red-500/30"
-                  : "text-foreground"
-              )}
-              value={issue.dueDate ? new Date(issue.dueDate).toISOString().split("T")[0] : ""}
-              onChange={(e) => {
-                if (e.target.value) {
-                  onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
-                } else {
-                  onUpdate({ dueDate: null });
-                }
-              }}
-            />
-            {issue.dueDate && (
-              <>
-                <span className={cn("text-xs", new Date(issue.dueDate) < new Date() && issue.status !== "done" && issue.status !== "cancelled" ? "text-red-500 font-medium" : "text-muted-foreground")}>
-                  {formatDueDate(issue.dueDate)}
-                </span>
-                <button
-                  className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                  onClick={() => onUpdate({ dueDate: null })}
-                  title="Remove due date"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </>
-            )}
-          </div>
+          {(() => {
+            const overdue = issue.dueDate && new Date(issue.dueDate) < new Date() && issue.status !== "done" && issue.status !== "cancelled";
+            return (
+              <div className="flex items-center gap-1.5">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button className="inline-flex items-center gap-1.5 hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors text-sm">
+                      <Calendar className={cn("h-3.5 w-3.5", overdue ? "text-red-500" : "text-muted-foreground")} />
+                      <span className={cn(overdue ? "text-red-500 font-medium" : issue.dueDate ? "" : "text-muted-foreground")}>
+                        {issue.dueDate ? formatDueDate(issue.dueDate) : "No due date"}
+                      </span>
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-3" align="start">
+                    <input
+                      type="date"
+                      className="rounded-md border border-border bg-transparent px-2 py-1.5 text-sm outline-none w-full"
+                      value={issue.dueDate ? new Date(issue.dueDate).toISOString().split("T")[0] : ""}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
+                        }
+                      }}
+                      autoFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+                {issue.dueDate && (
+                  <button
+                    className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                    onClick={() => onUpdate({ dueDate: null })}
+                    title="Remove due date"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         </PropertyRow>
 
         {issue.parentId && (

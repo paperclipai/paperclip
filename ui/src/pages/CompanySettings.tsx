@@ -1292,7 +1292,7 @@ function CredentialsSection({ companyId }: { companyId: string }) {
             </Field>
             <Field label="Type">
               <select
-                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none appearance-none cursor-pointer"
                 value={addType}
                 onChange={(e) => setAddType(e.target.value as CredentialType)}
               >

@@ -702,16 +702,27 @@ export function IssuesList({
                     const isSoon = diffDays >= 0 && diffDays <= 3 && !isDone;
                     const label = diffDays === 0 ? "Today" : diffDays === 1 ? "Tomorrow" : diffDays === -1 ? "1d overdue" : diffDays < -1 ? `${Math.abs(diffDays)}d overdue` : `${diffDays}d`;
                     return (
-                      <span
-                        className={cn(
-                          "hidden md:inline-flex items-center gap-1 shrink-0 text-[10px] font-medium",
-                          isOverdue ? "text-red-500" : isSoon ? "text-orange-500" : "text-muted-foreground"
+                      <>
+                        {/* Overdue: show red icon on all screens, full label from sm */}
+                        {isOverdue && (
+                          <span
+                            className="inline-flex sm:hidden items-center shrink-0 text-red-500"
+                            title={`Due ${formatDate(issue.dueDate)}`}
+                          >
+                            <Calendar className="h-3 w-3" />
+                          </span>
                         )}
-                        title={`Due ${formatDate(issue.dueDate)}`}
-                      >
-                        <Calendar className="h-3 w-3" />
-                        {label}
-                      </span>
+                        <span
+                          className={cn(
+                            "hidden sm:inline-flex items-center gap-1 shrink-0 text-[10px] font-medium",
+                            isOverdue ? "text-red-500" : isSoon ? "text-orange-500" : "text-muted-foreground"
+                          )}
+                          title={`Due ${formatDate(issue.dueDate)}`}
+                        >
+                          <Calendar className="h-3 w-3" />
+                          {label}
+                        </span>
+                      </>
                     );
                   })()}
                   <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
