@@ -1,4 +1,16 @@
 export type { Company } from "./company.js";
+export type {
+  FeedbackVote,
+  FeedbackDataSharingPreference,
+  FeedbackTargetType,
+  FeedbackVoteValue,
+  FeedbackTrace,
+  FeedbackTraceStatus,
+  FeedbackTraceTargetSummary,
+  FeedbackTraceBundleCaptureStatus,
+  FeedbackTraceBundleFile,
+  FeedbackTraceBundle,
+} from "./feedback.js";
 export type { InstanceExperimentalSettings, InstanceGeneralSettings, InstanceSettings } from "./instance.js";
 export type {
   CompanySkillSourceType,
@@ -50,7 +62,16 @@ export type { AssetImage } from "./asset.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
   ExecutionWorkspace,
+  ExecutionWorkspaceConfig,
+  ExecutionWorkspaceCloseAction,
+  ExecutionWorkspaceCloseActionKind,
+  ExecutionWorkspaceCloseGitReadiness,
+  ExecutionWorkspaceCloseLinkedIssue,
+  ExecutionWorkspaceCloseReadiness,
+  ExecutionWorkspaceCloseReadinessState,
+  ProjectWorkspaceRuntimeConfig,
   WorkspaceRuntimeService,
+  WorkspaceRuntimeDesiredState,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceProviderType,
@@ -109,6 +130,8 @@ export type {
 } from "./secrets.js";
 export type {
   Routine,
+  RoutineVariable,
+  RoutineVariableDefaultValue,
   RoutineTrigger,
   RoutineRun,
   RoutineTriggerSecretMaterial,
@@ -120,6 +143,8 @@ export type {
 export type { CostEvent, CostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
+  AgentWakeupResponse,
+  AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
   AgentRuntimeState,

@@ -14,6 +14,18 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => ({ canUser: vi.fn(async () => true), canAgent: vi.fn(async () => true) }),
+  agentService: () => ({ findById: vi.fn(async () => null), findByCompany: vi.fn(async () => []), update: vi.fn(async (id: string, data: any) => ({ id, ...data })) }),
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
+  issueService: () => ({ findById: vi.fn(async () => null), update: vi.fn(async (id: string, data: any) => ({ id, ...data })), countRecentByAgent: vi.fn(async () => 0) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
+  feedbackService: () => ({}),
   instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));
@@ -35,6 +47,8 @@ describe("instance settings routes", () => {
     vi.clearAllMocks();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -44,6 +58,8 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
+        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
       },
     });
     mockInstanceSettingsService.updateExperimental.mockResolvedValue({
@@ -110,20 +126,30 @@ describe("instance settings routes", () => {
 
     const getRes = await request(app).get("/api/instance/settings/general");
     expect(getRes.status).toBe(200);
-    expect(getRes.body).toEqual({ censorUsernameInLogs: false });
+    expect(getRes.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
 
     const patchRes = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true });
+      .send({
+        censorUsernameInLogs: true,
+        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
+      });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
+      keyboardShortcuts: true,
+      feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects non-admin board users", async () => {
+  it("allows non-admin board users to read general settings", async () => {
     const app = createApp({
       type: "board",
       userId: "user-1",
@@ -134,8 +160,25 @@ describe("instance settings routes", () => {
 
     const res = await request(app).get("/api/instance/settings/general");
 
+    expect(res.status).toBe(200);
+    expect(mockInstanceSettingsService.getGeneral).toHaveBeenCalled();
+  });
+
+  it("rejects non-admin board users from updating general settings", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({ censorUsernameInLogs: true, keyboardShortcuts: true });
+
     expect(res.status).toBe(403);
-    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+    expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects agent callers", async () => {
@@ -148,7 +191,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true });
+      .send({ feedbackDataSharingPreference: "not_allowed" });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();

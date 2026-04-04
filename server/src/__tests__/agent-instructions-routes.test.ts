@@ -34,6 +34,14 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
+  feedbackService: () => ({}),
   agentService: () => mockAgentService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,

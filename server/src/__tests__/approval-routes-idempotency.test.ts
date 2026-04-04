@@ -32,7 +32,18 @@ const mockSecretService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => ({ canUser: vi.fn(async () => true), canAgent: vi.fn(async () => true) }),
+  agentService: () => ({ findById: vi.fn(async () => null), findByCompany: vi.fn(async () => []), update: vi.fn(async (id: string, data: any) => ({ id, ...data })) }),
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  issueService: () => ({ findById: vi.fn(async () => null), update: vi.fn(async (id: string, data: any) => ({ id, ...data })), countRecentByAgent: vi.fn(async () => 0) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
   approvalService: () => mockApprovalService,
+  feedbackService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
   issueApprovalService: () => mockIssueApprovalService,
   logActivity: mockLogActivity,

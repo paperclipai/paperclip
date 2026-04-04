@@ -1,5 +1,5 @@
 {
-  "id": "b8e2c1f0-4d3a-4e7b-9c1d-2a5f8e3b6d4c",
+  "id": "869b0102-2cb8-48e8-a6d8-cab88f0fa7a8",
   "prevId": "a7a034eb-984f-4884-b6e1-87c453404b4e",
   "version": "7",
   "dialect": "postgresql",
@@ -2147,7 +2147,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6768,6 +6768,162 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.issue_inbox_archives": {
+      "name": "issue_inbox_archives",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_inbox_archives_company_issue_idx": {
+          "name": "issue_inbox_archives_company_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_inbox_archives_company_user_idx": {
+          "name": "issue_inbox_archives_company_user_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_inbox_archives_company_issue_user_idx": {
+          "name": "issue_inbox_archives_company_issue_user_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_inbox_archives_company_id_companies_id_fk": {
+          "name": "issue_inbox_archives_company_id_companies_id_fk",
+          "tableFrom": "issue_inbox_archives",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "issue_inbox_archives_issue_id_issues_id_fk": {
+          "name": "issue_inbox_archives_issue_id_issues_id_fk",
+          "tableFrom": "issue_inbox_archives",
+          "tableTo": "issues",
+          "columnsFrom": [
+            "issue_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.issue_labels": {
       "name": "issue_labels",
       "schema": "",
@@ -7597,13 +7753,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "activation_retrigger_count": {
-          "name": "activation_retrigger_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         }
       },
       "indexes": {

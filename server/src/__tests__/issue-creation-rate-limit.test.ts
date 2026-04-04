@@ -23,6 +23,8 @@ const mockWorkProductService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  feedbackService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
     hasPermission: vi.fn(async () => true),

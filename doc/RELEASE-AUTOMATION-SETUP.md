@@ -46,6 +46,7 @@ At minimum that includes:
 
 - `@paperclipai/cli`
 - `@paperclipai/server`
+- `@paperclipai/ui`
 - public packages under `packages/`
 
 ### 2.1. In npm, open each package settings page

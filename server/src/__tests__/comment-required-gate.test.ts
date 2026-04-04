@@ -45,6 +45,8 @@ const agentMap: Record<string, { id: string; companyId: string; name: string; ro
 };
 
 vi.mock("../services/index.js", () => ({
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  feedbackService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
     hasPermission: vi.fn(async () => true),

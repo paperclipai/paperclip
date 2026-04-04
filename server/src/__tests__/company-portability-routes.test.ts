@@ -32,13 +32,30 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
+  issueService: () => ({ findById: vi.fn(async () => null), update: vi.fn(async (id: string, data: any) => ({ id, ...data })), countRecentByAgent: vi.fn(async () => 0) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
   logActivity: mockLogActivity,
 }));
 

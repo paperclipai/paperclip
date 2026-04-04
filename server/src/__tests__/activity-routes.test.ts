@@ -22,6 +22,19 @@ vi.mock("../services/activity.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => ({ canUser: vi.fn(async () => true), canAgent: vi.fn(async () => true) }),
+  agentService: () => ({ findById: vi.fn(async () => null), findByCompany: vi.fn(async () => []), update: vi.fn(async (id: string, data: any) => ({ id, ...data })) }),
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  logActivity: vi.fn(async () => {}),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
+  feedbackService: () => ({}),
   issueService: () => mockIssueService,
 }));
 

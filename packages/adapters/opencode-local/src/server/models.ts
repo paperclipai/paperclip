@@ -127,7 +127,8 @@ export async function discoverOpenCodeModels(input: {
     // /etc/passwd entry (e.g. `docker run --user 1234` with a minimal
     // image). Fall back to process.env.HOME.
   }
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}) }));
+  // Prevent OpenCode from writing an opencode.json into the working directory.
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
   for (let attempt = 0; ; attempt++) {
     const result = await runChildProcess(

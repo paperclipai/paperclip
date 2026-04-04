@@ -320,8 +320,43 @@
     {
       "idx": 45,
       "version": "7",
+      "when": 1774530504348,
+      "tag": "0045_workable_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1774960197878,
+      "tag": "0046_smooth_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1775137972687,
+      "tag": "0047_overjoyed_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1775145655557,
+      "tag": "0048_flashy_marrow",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
       "when": 1774310400000,
-      "tag": "0045_activation_retrigger",
+      "tag": "0049_activation_retrigger",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1774396800000,
+      "tag": "0050_process_lost_retry_at",
       "breakpoints": true
     }
   ]

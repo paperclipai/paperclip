@@ -1,89 +1,46 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  applyPendingMigrations,
-  createDb,
-  ensurePostgresDatabase,
   agents,
   agentWakeupRequests,
   companies,
+  createDb,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
+const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+
+vi.mock("../telemetry.ts", () => ({
+  getTelemetryClient: () => mockTelemetryClient,
+}));
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackAgentFirstHeartbeat: mockTrackAgentFirstHeartbeat,
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
-}
-
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-heartbeat-recovery-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, instance, dataDir };
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
 function spawnAliveProcess() {
@@ -92,20 +49,18 @@ function spawnAliveProcess() {
   });
 }
 
-describe("heartbeat orphaned process recovery", () => {
+describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const childProcesses = new Set<ChildProcess>();
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
-    db = createDb(started.connectionString);
-    instance = started.instance;
-    dataDir = started.dataDir;
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
+    db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
+    vi.clearAllMocks();
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -125,14 +80,12 @@ describe("heartbeat orphaned process recovery", () => {
     }
     childProcesses.clear();
     runningProcesses.clear();
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    agentStatus?: "paused" | "idle" | "running";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processLossRetryCount?: number;
@@ -160,7 +113,7 @@ describe("heartbeat orphaned process recovery", () => {
       companyId,
       name: "CodexCoder",
       role: "engineer",
-      status: "paused",
+      status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -317,5 +270,19 @@ describe("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    expect(mockTrackAgentFirstHeartbeat).toHaveBeenCalledWith(mockTelemetryClient, {
+      agentRole: "engineer",
+    });
   });
 });

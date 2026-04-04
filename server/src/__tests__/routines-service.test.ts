@@ -1,105 +1,47 @@
 import { createHmac, randomUUID } from "node:crypto";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
-  applyPendingMigrations,
   companies,
   companySecrets,
   companySecretVersions,
   createDb,
-  ensurePostgresDatabase,
+  executionWorkspaces,
   heartbeatRuns,
+  instanceSettings,
   issues,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { routineService } from "../services/routines.ts";
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres routines service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-routines-service-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, dataDir, instance };
-}
-
-describe("routine service live-execution coalescing", () => {
+describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   let db!: ReturnType<typeof createDb>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
-    db = createDb(started.connectionString);
-    instance = started.instance;
-    dataDir = started.dataDir;
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
+    db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -111,16 +53,16 @@ describe("routine service live-execution coalescing", () => {
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   async function seedFixture(opts?: {
@@ -380,6 +322,196 @@ describe("routine service live-execution coalescing", () => {
 
     expect(routineIssues).toHaveLength(1);
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
+  });
+
+  it("interpolates routine variables into the execution issue and stores resolved values", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage",
+        description: "Review {{repo}} for {{priority}} bugs",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+          { name: "priority", label: null, type: "select", defaultValue: "high", required: true, options: ["high", "low"] },
+        ],
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(variableRoutine.id, {
+      source: "manual",
+      variables: { repo: "paperclip" },
+    });
+
+    const storedIssue = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.description).toBe("Review paperclip for high bugs");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        repo: "paperclip",
+        priority: "high",
+      },
+    });
+  });
+
+  it("attaches the selected execution workspace to manually triggered routine issues", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    const run = await svc.runRoutine(routine.id, {
+      source: "manual",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const storedIssue = await db
+      .select({
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue).toEqual({
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  it("blocks schedule triggers when required variables do not have defaults", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "repo triage",
+        description: "Review {{repo}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "repo", label: null, type: "text", defaultValue: null, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    await expect(
+      svc.createTrigger(variableRoutine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {}),
+    ).rejects.toThrow(/require defaults for required variables/i);
+  });
+
+  it("treats malformed stored defaults as missing when validating schedule triggers", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const variableRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "ship check",
+        description: "Review {{approved}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "approved", label: null, type: "boolean", defaultValue: true, required: true, options: [] },
+        ],
+      },
+      {},
+    );
+
+    await db
+      .update(routines)
+      .set({
+        variables: [
+          {
+            name: "approved",
+            label: null,
+            type: "boolean",
+            defaultValue: "definitely",
+            required: true,
+            options: [],
+          },
+        ],
+      })
+      .where(eq(routines.id, variableRoutine.id));
+
+    await expect(
+      svc.createTrigger(variableRoutine.id, {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }, {}),
+    ).rejects.toThrow(/require defaults for required variables/i);
   });
 
   it("serializes concurrent dispatches until the first execution issue is linked to a queued run", async () => {

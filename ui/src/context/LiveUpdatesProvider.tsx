@@ -14,6 +14,17 @@ import { useLocation } from "../lib/router";
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
+
+type LiveUpdatesSocketLike = {
+  readyState: number;
+  onopen: ((this: WebSocket, ev: Event) => unknown) | null;
+  onmessage: ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+  onerror: ((this: WebSocket, ev: Event) => unknown) | null;
+  onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
+  close: (code?: number, reason?: string) => void;
+};
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -244,8 +255,8 @@ function shouldSuppressAgentStatusToastForVisibleIssue(
 }
 
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
-const AGENT_TOAST_STATUSES = new Set(["running", "error"]);
-const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
+const AGENT_TOAST_STATUSES = new Set(["error"]);
+const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
 function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
   if (!details) return null;
@@ -374,7 +385,7 @@ function buildJoinRequestToast(
     title: `${label} wants to join`,
     body: "A new join request is waiting for approval.",
     tone: "info",
-    action: { label: "View inbox", href: "/inbox/unread" },
+    action: { label: "View inbox", href: "/inbox/mine" },
     dedupeKey: `join-request:${entityId}`,
   };
 }
@@ -416,7 +427,7 @@ function buildRunStatusToast(
   const runId = readString(payload.runId);
   const agentId = readString(payload.agentId);
   const status = readString(payload.status);
-  if (!runId || !agentId || !status || !TERMINAL_RUN_STATUSES.has(status)) return null;
+  if (!runId || !agentId || !status || !RUN_TOAST_STATUSES.has(status)) return null;
 
   const error = readString(payload.error);
   const triggerDetail = readString(payload.triggerDetail);
@@ -479,6 +490,7 @@ function invalidateActivityQueries(
 
   if (entityType === "issue") {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
     if (entityId) {
@@ -651,33 +663,90 @@ function handleLiveEvent(
   }
 }
 
+function resolveLiveCompanyId(
+  selectedCompanyId: string | null,
+  selectedCompanyLiveId: string | null,
+): string | null {
+  return selectedCompanyId && selectedCompanyId === selectedCompanyLiveId
+    ? selectedCompanyId
+    : null;
+}
+
+function resetSocketHandlers(target: LiveUpdatesSocketLike) {
+  target.onopen = null;
+  target.onmessage = null;
+  target.onerror = null;
+  target.onclose = null;
+}
+
+function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string) {
+  if (!target) return;
+
+  if (target.readyState === SOCKET_CONNECTING) {
+    // Let the handshake complete and then close. Calling close() while the
+    // socket is still CONNECTING is what triggers the noisy browser error.
+    target.onopen = () => {
+      resetSocketHandlers(target);
+      target.close(1000, reason);
+    };
+    target.onmessage = null;
+    target.onerror = () => undefined;
+    target.onclose = null;
+    return;
+  }
+
+  resetSocketHandlers(target);
+
+  if (target.readyState === SOCKET_OPEN) {
+    target.close(1000, reason);
+  }
+}
+
 export const __liveUpdatesTestUtils = {
+  buildAgentStatusToast,
+  buildRunStatusToast,
+  closeSocketQuietly,
   invalidateActivityQueries,
+  resolveLiveCompanyId,
   shouldSuppressActivityToastForVisibleIssue,
   shouldSuppressRunStatusToastForVisibleIssue,
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);
-  const { data: session } = useQuery({
+  const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
+  const canConnectSocket = sessionStatus === "success" && session !== null && liveCompanyId !== null;
+  const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
+    userId: currentUserId,
+    agentId: null,
+  });
 
   useEffect(() => {
     pathnameRef.current = location.pathname;
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!selectedCompanyId) return;
+    currentActorRef.current = {
+      userId: currentUserId,
+      agentId: null,
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!canConnectSocket || !liveCompanyId) return;
 
     let closed = false;
     let reconnectAttempt = 0;
@@ -704,55 +773,63 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (closed) return;
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(selectedCompanyId)}/events/ws`;
-      socket = new WebSocket(url);
+      const url = `${protocol}://${window.location.host}/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`;
+      const nextSocket = new WebSocket(url);
+      socket = nextSocket;
 
-      socket.onopen = () => {
+      nextSocket.onopen = () => {
+        if (closed || socket !== nextSocket) {
+          closeSocketQuietly(nextSocket, "stale_connection");
+          return;
+        }
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
       };
 
-      socket.onmessage = (message) => {
+      nextSocket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, selectedCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
-            userId: currentUserId,
-            agentId: null,
+          handleLiveEvent(queryClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+            userId: currentActorRef.current.userId,
+            agentId: currentActorRef.current.agentId,
           });
         } catch {
           // Ignore non-JSON payloads.
         }
       };
 
-      socket.onerror = () => {
-        socket?.close();
+      nextSocket.onerror = () => {
+        // Wait for onclose to drive the reconnect. Self-closing here is what
+        // produces the "closed before connection established" browser noise.
       };
 
-      socket.onclose = () => {
+      nextSocket.onclose = () => {
+        if (socket !== nextSocket) return;
+        socket = null;
         if (closed) return;
         scheduleReconnect();
       };
     };
 
-    connect();
+    // Delay initial connect slightly so React StrictMode's double-invoke
+    // cleanup fires before the WebSocket is created, avoiding the
+    // "WebSocket closed before connection established" dev-mode error.
+    const connectTimer = window.setTimeout(connect, 0);
 
     return () => {
       closed = true;
+      window.clearTimeout(connectTimer);
       clearReconnect();
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "provider_unmount");
-      }
+      const activeSocket = socket;
+      socket = null;
+      closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
+  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
   return <>{children}</>;
 }

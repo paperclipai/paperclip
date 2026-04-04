@@ -209,14 +209,31 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
   return redacted;
 }
 
-export function applyLocalAgentFilesystemEnv(
+export function buildInvocationEnvForLogs(
   env: Record<string, string>,
-  _opts: { agentId: string },
-): void {
-  const home = process.env.PAPERCLIP_HOME;
-  if (typeof home === "string" && home.length > 0) env.PAPERCLIP_HOME = home;
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID;
-  if (typeof instanceId === "string" && instanceId.length > 0) env.PAPERCLIP_INSTANCE_ID = instanceId;
+  options: {
+    runtimeEnv?: NodeJS.ProcessEnv | Record<string, string>;
+    includeRuntimeKeys?: string[];
+    resolvedCommand?: string | null;
+    resolvedCommandEnvKey?: string;
+  } = {},
+): Record<string, string> {
+  const merged: Record<string, string> = { ...env };
+  const runtimeEnv = options.runtimeEnv ?? {};
+
+  for (const key of options.includeRuntimeKeys ?? []) {
+    if (key in merged) continue;
+    const value = runtimeEnv[key];
+    if (typeof value !== "string" || value.length === 0) continue;
+    merged[key] = value;
+  }
+
+  const resolvedCommand = options.resolvedCommand?.trim();
+  if (resolvedCommand) {
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+  }
+
+  return redactEnvForLogs(merged);
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
@@ -285,6 +302,10 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   }
 
   return null;
+}
+
+export async function resolveCommandForLogs(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+  return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
 function quoteForCmd(arg: string) {

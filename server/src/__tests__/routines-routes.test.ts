@@ -82,8 +82,35 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackRoutineCreated: mockTrackRoutineCreated,
+  };
+});
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
 vi.mock("../services/index.js", () => ({
+  agentService: () => ({ findById: vi.fn(async () => null), findByCompany: vi.fn(async () => []), update: vi.fn(async (id: string, data: any) => ({ id, ...data })) }),
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
+  issueService: () => ({ findById: vi.fn(async () => null), update: vi.fn(async (id: string, data: any) => ({ id, ...data })), countRecentByAgent: vi.fn(async () => 0) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
+  feedbackService: () => ({}),
   accessService: () => mockAccessService,
   logActivity: mockLogActivity,
   routineService: () => mockRoutineService,
@@ -104,6 +131,7 @@ function createApp(actor: Record<string, unknown>) {
 describe("routine routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.create.mockResolvedValue(routine);
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
@@ -267,5 +295,6 @@ describe("routine routes", () => {
       agentId: null,
       userId: "board-user",
     });
+    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
 });

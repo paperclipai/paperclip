@@ -26,6 +26,9 @@ Before making changes, read in this order:
 - `ui/`: React + Vite board UI
 - `packages/db/`: Drizzle schema, migrations, DB clients
 - `packages/shared/`: shared types, constants, validators, API path constants
+- `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
+- `packages/adapter-utils/`: shared adapter utilities
+- `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
 ## 4. Dev Setup (Auto DB)

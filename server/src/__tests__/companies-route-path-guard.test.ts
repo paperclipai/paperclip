@@ -4,6 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 import { companyRoutes } from "../routes/companies.js";
 
 vi.mock("../services/index.js", () => ({
+  executionWorkspaceService: () => ({ findById: vi.fn(async () => null) }),
+  goalService: () => ({ findById: vi.fn(async () => null) }),
+  heartbeatService: () => ({ findRunById: vi.fn(async () => null), queueIssueAssignmentWakeup: vi.fn() }),
+  instanceSettingsService: () => ({ getSettings: vi.fn(async () => ({})), findByCompany: vi.fn(async () => null) }),
+  issueApprovalService: () => ({ findById: vi.fn(async () => null) }),
+  issueService: () => ({ findById: vi.fn(async () => null), update: vi.fn(async (id: string, data: any) => ({ id, ...data })), countRecentByAgent: vi.fn(async () => 0) }),
+  documentService: () => ({ findByIssueAndKey: vi.fn(async () => null) }),
+  projectService: () => ({ findById: vi.fn(async () => null) }),
+  routineService: () => ({ findById: vi.fn(async () => null) }),
+  workProductService: () => ({ findByIssue: vi.fn(async () => []) }),
   companyService: () => ({
     list: vi.fn(),
     stats: vi.fn(),
@@ -28,6 +38,12 @@ vi.mock("../services/index.js", () => ({
   }),
   agentService: () => ({
     getById: vi.fn(),
+  }),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(),
+    listFeedbackTraces: vi.fn(),
+    getFeedbackTraceById: vi.fn(),
+    saveIssueVote: vi.fn(),
   }),
   logActivity: vi.fn(),
 }));

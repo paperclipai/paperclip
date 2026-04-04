@@ -1,8 +1,4 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
@@ -11,21 +7,25 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
-  applyPendingMigrations,
   companies,
   companyMemberships,
   createDb,
-  ensurePostgresDatabase,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
   issues,
   principalPermissionGrants,
+  projectWorkspaces,
   projects,
   routineRuns,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { accessService } from "../services/access.js";
 
@@ -78,82 +78,22 @@ vi.mock("../services/index.js", async () => {
   };
 });
 
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  return mod.default as EmbeddedPostgresCtor;
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres routine route tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
 }
 
-async function getAvailablePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("Failed to allocate test port")));
-        return;
-      }
-      const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function startTempDatabase() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-routines-e2e-"));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: () => {},
-    onError: () => {},
-  });
-  await instance.initialise();
-  await instance.start();
-
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
-  const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  await applyPendingMigrations(connectionString);
-  return { connectionString, dataDir, instance };
-}
-
-describe("routine routes end-to-end", () => {
+describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
-  let instance: EmbeddedPostgresInstance | null = null;
-  let dataDir = "";
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    const started = await startTempDatabase();
-    db = createDb(started.connectionString);
-    instance = started.instance;
-    dataDir = started.dataDir;
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
+    db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -164,6 +104,8 @@ describe("routine routes end-to-end", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(routines);
@@ -174,10 +116,7 @@ describe("routine routes end-to-end", () => {
   });
 
   afterAll(async () => {
-    await instance?.stop();
-    if (dataDir) {
-      fs.rmSync(dataDir, { recursive: true, force: true });
-    }
+    await tempDb?.cleanup();
   });
 
   async function createApp(actor: Record<string, unknown>) {
@@ -336,5 +275,137 @@ describe("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  });
+
+  it("runs routines with variable inputs and interpolates the execution issue description", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Repository triage",
+        description: "Review {{repo}} for {{priority}} bugs",
+        assigneeAgentId: agentId,
+        variables: [
+          { name: "repo", type: "text", required: true },
+          { name: "priority", type: "select", required: true, defaultValue: "high", options: ["high", "low"] },
+        ],
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        variables: { repo: "paperclip" },
+      });
+
+    expect(runRes.status).toBe(202);
+    expect(runRes.body.triggerPayload).toEqual({
+      variables: {
+        repo: "paperclip",
+        priority: "high",
+      },
+    });
+
+    const [issue] = await db
+      .select({ description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue?.description).toBe("Review paperclip for high bugs");
+  });
+
+  it("persists execution workspace selections from manual routine runs", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      isPrimary: true,
+      sharedWorkspaceKey: "routine-primary",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Routine worktree",
+      status: "active",
+      providerType: "git_worktree",
+    });
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: projectWorkspaceId,
+        },
+      })
+      .where(eq(projects.id, projectId));
+    await db.insert(instanceSettings).values({
+      experimental: { enableIsolatedWorkspaces: true },
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Workspace-aware routine",
+        assigneeAgentId: agentId,
+      });
+
+    expect(createRes.status).toBe(201);
+
+    const runRes = await request(app)
+      .post(`/api/routines/${createRes.body.id}/run`)
+      .send({
+        source: "manual",
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode: "isolated_workspace" },
+      });
+
+    expect(runRes.status).toBe(202);
+
+    const [issue] = await db
+      .select({
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    expect(issue).toEqual({
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
   });
 });

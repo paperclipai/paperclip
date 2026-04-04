@@ -1,2 +1,0 @@
-CREATE INDEX IF NOT EXISTS "cost_events_agent_occurred_idx" ON "cost_events" USING btree ("agent_id","occurred_at");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "heartbeat_runs_agent_status_idx" ON "heartbeat_runs" USING btree ("agent_id","status");

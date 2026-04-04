@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -8,6 +9,7 @@ import {
   useState,
   type DragEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   CodeMirrorEditor,
   MDXEditor,
@@ -31,6 +33,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
+import { looksLikeMarkdownPaste, normalizePastedMarkdown } from "../lib/markdownPaste";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -82,6 +85,9 @@ interface MentionState {
   query: string;
   top: number;
   left: number;
+  /** Viewport-relative coords for portal positioning */
+  viewportTop: number;
+  viewportLeft: number;
   textNode: Text;
   atPos: number;
   endPos: number;
@@ -155,10 +161,30 @@ function detectMention(container: HTMLElement): MentionState | null {
     query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
+    viewportTop: rect.bottom,
+    viewportLeft: rect.left,
     textNode: textNode as Text,
     atPos,
     endPos: offset,
   };
+}
+
+function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
+  if (!node || !container.contains(node)) return false;
+  const el = node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : node.parentElement;
+  return Boolean(el?.closest("pre, code"));
+}
+
+function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
+  if (!container) return false;
+  const selection = window.getSelection();
+  if (!selection) return false;
+  for (const node of [selection.anchorNode, selection.focusNode]) {
+    if (nodeInsideCodeLike(container, node)) return true;
+  }
+  return false;
 }
 
 function mentionMarkdown(option: MentionOption): string {
@@ -194,7 +220,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 }: MarkdownEditorProps, forwardedRef) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const latestValueRef = useRef(value);
+  const initialChildOnChangeRef = useRef(true);
+  /**
+   * After imperative `setMarkdown` (prop sync, mentions, image upload), MDXEditor may emit `onChange`
+   * with the same markdown. Skip notifying the parent for that echo so controlled parents that
+   * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
+   */
+  const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
@@ -228,6 +263,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState?.query, mentions]);
 
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (instance) {
+      const v = valueRef.current;
+      echoIgnoreMarkdownRef.current = v;
+      instance.setMarkdown(v);
+      latestValueRef.current = v;
+    }
+  }, []);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
@@ -257,6 +302,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
+                echoIgnoreMarkdownRef.current = updated;
                 ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
@@ -296,8 +342,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      ref.current?.setMarkdown(value);
-      latestValueRef.current = value;
+      if (ref.current) {
+        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
+        echoIgnoreMarkdownRef.current = value;
+        ref.current.setMarkdown(value);
+        latestValueRef.current = value;
+      }
     }
   }, [value]);
 
@@ -388,6 +438,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
+        echoIgnoreMarkdownRef.current = next;
         ref.current?.setMarkdown(next);
         onChange(next);
       }
@@ -458,6 +509,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard || !ref.current) return;
+    const types = new Set(Array.from(clipboard.types));
+    if (types.has("Files") || types.has("text/html")) return;
+    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+
+    const rawText = clipboard.getData("text/plain");
+    if (!looksLikeMarkdownPaste(rawText)) return;
+
+    event.preventDefault();
+    ref.current.insertMarkdown(normalizePastedMarkdown(rawText));
+  }, []);
 
   return (
     <div
@@ -535,12 +599,31 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         dragDepthRef.current = 0;
         setIsDragOver(false);
       }}
+      onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={ref}
+        ref={setEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
+          const echo = echoIgnoreMarkdownRef.current;
+          if (echo !== null && next === echo) {
+            echoIgnoreMarkdownRef.current = null;
+            latestValueRef.current = next;
+            return;
+          }
+          if (echo !== null) {
+            echoIgnoreMarkdownRef.current = null;
+          }
+
+          if (initialChildOnChangeRef.current) {
+            initialChildOnChangeRef.current = false;
+            if (next === "" && value !== "") {
+              echoIgnoreMarkdownRef.current = value;
+              ref.current?.setMarkdown(value);
+              return;
+            }
+          }
           latestValueRef.current = next;
           onChange(next);
         }}
@@ -554,46 +637,51 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         plugins={plugins}
       />
 
-      {/* Mention dropdown */}
-      {mentionActive && filteredMentions.length > 0 && (
-        <div
-          className="absolute z-50 min-w-[180px] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-          style={{ top: mentionState.top + 4, left: mentionState.left }}
-        >
-          {filteredMentions.map((option, i) => (
-            <button
-              key={option.id}
-              className={cn(
-                "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
-                i === mentionIndex && "bg-accent",
-              )}
-              onMouseDown={(e) => {
-                e.preventDefault(); // prevent blur
-                selectMention(option);
-              }}
-              onMouseEnter={() => setMentionIndex(i)}
-            >
-              {option.kind === "project" && option.projectId ? (
-                <span
-                  className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                  style={{ backgroundColor: option.projectColor ?? "#64748b" }}
-                />
-              ) : (
-                <AgentIcon
-                  icon={option.agentIcon}
-                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                />
-              )}
-              <span>{option.name}</span>
-              {option.kind === "project" && option.projectId && (
-                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Project
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
+      {mentionActive && filteredMentions.length > 0 &&
+        createPortal(
+          <div
+            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            style={{
+              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
+              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
+            }}
+          >
+            {filteredMentions.map((option, i) => (
+              <button
+                key={option.id}
+                className={cn(
+                  "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
+                  i === mentionIndex && "bg-accent",
+                )}
+                onMouseDown={(e) => {
+                  e.preventDefault(); // prevent blur
+                  selectMention(option);
+                }}
+                onMouseEnter={() => setMentionIndex(i)}
+              >
+                {option.kind === "project" && option.projectId ? (
+                  <span
+                    className="inline-flex h-2 w-2 rounded-full border border-border/50"
+                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                  />
+                ) : (
+                  <AgentIcon
+                    icon={option.agentIcon}
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                  />
+                )}
+                <span>{option.name}</span>
+                {option.kind === "project" && option.projectId && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Project
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
 
       {isDragOver && canDropImage && (
         <div

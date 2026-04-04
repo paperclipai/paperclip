@@ -132,8 +132,8 @@ export async function discoverPiModels(input: {
   }
 
   // Pi ≥0.65.0 writes the model table to stderr when spawned as a subprocess.
-  // Try stdout first, then fall back to stderr.
-  const output = result.stdout.trim().length > 0 ? result.stdout : result.stderr;
+  // Try stderr first (newer versions), fall back to stdout for older versions.
+  const output = result.stderr || result.stdout;
   return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 
