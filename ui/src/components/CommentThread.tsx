@@ -276,7 +276,11 @@ function CommentCard({
           <Identity name="You" size="sm" />
         )}
         <span className="flex items-center gap-1.5">
-          {isQueued ? (
+          {isPending ? (
+            <span className="inline-flex items-center rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground animate-pulse">
+              Sending
+            </span>
+          ) : isQueued ? (
             <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               Queued
             </span>
