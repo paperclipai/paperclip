@@ -6,7 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES } from "@paperclipai/shared";
+import { SUGGESTED_AGENT_ROLES } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -256,8 +256,8 @@ export function NewAgent() {
                 {roleLabels[effectiveRole] ?? effectiveRole}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {AGENT_ROLES.map((r) => (
+            <PopoverContent className="w-44 p-1" align="start">
+              {SUGGESTED_AGENT_ROLES.map((r) => (
                 <button
                   key={r}
                   className={cn(
@@ -269,6 +269,25 @@ export function NewAgent() {
                   {roleLabels[r] ?? r}
                 </button>
               ))}
+              <div className="border-t border-border mt-1 pt-1 px-1">
+                <input
+                  className="w-full rounded px-2 py-1 text-xs bg-transparent border border-border outline-none placeholder:text-muted-foreground/50"
+                  placeholder="Custom role…"
+                  maxLength={64}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const v = e.currentTarget.value.trim();
+                      if (v) { setRole(v); setRoleOpen(false); }
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const popover = e.currentTarget.closest("[data-radix-popper-content-wrapper]");
+                    if (popover?.contains(e.relatedTarget as Node)) return;
+                    const v = e.currentTarget.value.trim();
+                    if (v) { setRole(v); setRoleOpen(false); }
+                  }}
+                />
+              </div>
             </PopoverContent>
           </Popover>
 

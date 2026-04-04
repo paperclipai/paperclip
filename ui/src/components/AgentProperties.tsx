@@ -25,7 +25,7 @@ const adapterLabels: Record<string, string> = {
   http: "HTTP",
 };
 
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+const roleLabels = AGENT_ROLE_LABELS;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
