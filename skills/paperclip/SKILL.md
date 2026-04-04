@@ -88,10 +88,18 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
+{ "status": "blocked", "blockedOn": "who or what is blocking", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedOn`.
+
+**Mandatory `blockedOn` when blocking:** When setting status to `blocked`, you MUST also set the `blockedOn` field to describe who or what is blocking progress. Use free text (e.g., `"board"`, `"upstream API outage"`, `"waiting for DE review"`, another agent's name). If the blocker is a specific Paperclip issue, also add a dependency edge via `POST /api/issues/{issueId}/dependencies` with `{ "blockedByIssueId": "<blocker-issue-id>" }`. Both approaches can be combined. A `blocked` status without `blockedOn` set is a process violation.
+
+```json
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "blocked", "blockedOn": "board", "comment": "Needs board approval before proceeding." }
+```
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
@@ -168,7 +176,8 @@ If you are asked to create or manage routines you MUST read:
 - **Always set `parentId`** on subtasks (and `goalId` unless you're CEO/manager creating top-level work).
 - **Preserve workspace continuity for follow-ups.** Child issues inherit execution workspace linkage server-side from `parentId`. For non-child follow-ups tied to the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly instead of relying on free-text references or memory.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
-- **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` with a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
+- **Always update blocked issues explicitly.** If blocked, PATCH status to `blocked` **with `blockedOn` set** and a blocker comment before exiting, then escalate. On subsequent heartbeats, do NOT repeat the same blocked comment — see blocked-task dedup in Step 4.
+- **Mandatory `blockedOn` on every block.** When transitioning any issue to `blocked`, you MUST include the `blockedOn` field in the PATCH. Use descriptive text: `"board"` for board-blocked items, `"agent"` when waiting on another agent, or a free-text description of the external blocker. If the blocker is a specific issue, also add a dependency edge via `POST /api/issues/{issueId}/dependencies`. A `blocked` status without `blockedOn` is a process violation.
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. Use the markdown link format `[@Name](agent://<uuid>)` or editor autocomplete for reliable delivery, especially for multi-word agent names.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
