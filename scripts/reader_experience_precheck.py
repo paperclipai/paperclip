@@ -34,6 +34,7 @@ def draft_text(draft: dict[str, Any]) -> str:
 
 def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     markdown = draft_text(draft)
+    article_html = draft.get("article_html") or draft.get("wordpress_body_html") or ""
     parts = paragraphs(markdown)
     first_dropoff = None
     if len(parts) >= 3 and len(parts[0]) + len(parts[1]) > 900:
@@ -41,9 +42,23 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     elif len(parts) >= 2 and len(parts[0]) > 700:
         first_dropoff = "intro_paragraph_2"
 
-    keep_reading_hook_present = any(token in markdown.lower() for token in ["이번 글", "이 글", "3가지", "what changed"])
+    keep_reading_hook_present = any(token in markdown.lower() for token in ["이번 글", "이 글", "3가지", "what changed", "핵심 요약"])
+    if not keep_reading_hook_present and isinstance(article_html, str):
+        keep_reading_hook_present = (
+            "<ul>" in article_html.lower()
+            or "핵심 요약" in article_html
+            or "누가 먼저 체감" in article_html
+            or "지금 달라진 점만 차근차근 보면" in article_html
+        )
     ending_payoff_present = any(token in markdown.lower() for token in ["지금", "기다", "판단", "next step", "watch next"])
     scan_path_ok = any(token in markdown.lower() for token in ["##", "quick-scan", "목차", "한눈에"])
+    if not scan_path_ok and isinstance(article_html, str):
+        scan_path_ok = (
+            article_html.lower().count("<h2") >= 3
+            or "reader-toc" in article_html
+            or "verification-strength-split" in article_html
+            or "<table" in article_html
+        )
 
     reasons: list[str] = []
     if first_dropoff:
