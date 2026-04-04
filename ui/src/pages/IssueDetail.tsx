@@ -989,7 +989,7 @@ export function IssueDetail() {
       );
     }
     return () => closePanel();
-  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [issue, childIssues]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
