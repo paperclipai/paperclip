@@ -134,30 +134,62 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     if (runs.length === 0) return;
 
+    seenChunkKeysRef.current.clear();
+    pendingLogRowsByRunRef.current.clear();
+    logOffsetByRunRef.current.clear();
+
     let cancelled = false;
 
-    const readRunLog = async (run: LiveRunForIssue) => {
-      const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
-      try {
-        const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
-        if (cancelled) return;
+    const readAll = async () => {
+      const results = await Promise.allSettled(
+        runs.map(async (run) => {
+          const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
+          const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);
+          return { run, result, offset };
+        }),
+      );
+      if (cancelled) return;
 
-        appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
-
+      const parsedByRun = new Map<string, Array<RunLogChunk & { dedupeKey: string }>>();
+      for (const settled of results) {
+        if (settled.status !== "fulfilled") continue;
+        const { run, result, offset } = settled.value;
+        const parsed = parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current);
+        if (parsed.length > 0) {
+          parsedByRun.set(run.id, parsed);
+        }
         if (result.nextOffset !== undefined) {
           logOffsetByRunRef.current.set(run.id, result.nextOffset);
-          return;
-        }
-        if (result.content.length > 0) {
+        } else if (result.content.length > 0) {
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
-      } catch {
-        // Ignore log read errors while output is initializing.
       }
-    };
 
-    const readAll = async () => {
-      await Promise.all(runs.map((run) => readRunLog(run)));
+      if (parsedByRun.size === 0) return;
+
+      setChunksByRun((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+
+        for (const [runId, chunks] of parsedByRun) {
+          const existing = [...(next.get(runId) ?? [])];
+          for (const chunk of chunks) {
+            if (seenChunkKeysRef.current.has(chunk.dedupeKey)) continue;
+            seenChunkKeysRef.current.add(chunk.dedupeKey);
+            existing.push({ ts: chunk.ts, stream: chunk.stream, chunk: chunk.chunk });
+            changed = true;
+          }
+          if (existing.length > 0) {
+            next.set(runId, existing.slice(-maxChunksPerRun));
+          }
+        }
+
+        if (!changed) return prev;
+        if (seenChunkKeysRef.current.size > 12000) {
+          seenChunkKeysRef.current.clear();
+        }
+        return next;
+      });
     };
 
     void readAll();
@@ -169,7 +201,7 @@ export function useLiveRunTranscripts({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [runIdsKey, runs]);
+  }, [maxChunksPerRun, runIdsKey, runs]);
 
   useEffect(() => {
     if (!companyId || activeRunIds.size === 0) return;
