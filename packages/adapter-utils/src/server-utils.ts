@@ -793,6 +793,10 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
 
         if (opts.stdin != null && child.stdin) {
+          child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+            // EPIPE / ECONNRESET when the child dies before we finish writing — non-fatal.
+            onLogError(err, runId, `stdin write error (${err.code})`);
+          });
           child.stdin.write(opts.stdin);
           child.stdin.end();
         }
@@ -822,6 +826,17 @@ export async function runChildProcess(
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
+
+        // Attach error handlers to stdout/stderr BEFORE data handlers.
+        // Without these, an EPIPE or ECONNRESET emitted on a stdio stream
+        // (e.g. when the child process dies unexpectedly) becomes an unhandled
+        // 'error' event that crashes the entire Node.js process.
+        child.stdout?.on("error", (err: NodeJS.ErrnoException) => {
+          onLogError(err, runId, `stdout stream error (${err.code})`);
+        });
+        child.stderr?.on("error", (err: NodeJS.ErrnoException) => {
+          onLogError(err, runId, `stderr stream error (${err.code})`);
+        });
 
         child.stdout?.on("data", (chunk: unknown) => {
           const text = String(chunk);
