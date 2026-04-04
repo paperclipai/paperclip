@@ -3722,11 +3722,28 @@ export function heartbeatService(db: Db) {
 
     const running = runningProcesses.get(run.id);
     if (running) {
-      running.child.kill("SIGTERM");
+      const child = running.child;
+      if (typeof child.pid === "number" && child.pid > 0 && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      } else {
+        child.kill("SIGTERM");
+      }
       const graceMs = Math.max(1, running.graceSec) * 1000;
       setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
+        if (!child.killed && typeof child.pid === "number" && child.pid > 0) {
+          if (process.platform !== "win32") {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              child.kill("SIGKILL");
+            }
+          } else {
+            child.kill("SIGKILL");
+          }
         }
       }, graceMs);
     }
@@ -3778,7 +3795,16 @@ export function heartbeatService(db: Db) {
 
       const running = runningProcesses.get(run.id);
       if (running) {
-        running.child.kill("SIGTERM");
+        const child = running.child;
+        if (typeof child.pid === "number" && child.pid > 0 && process.platform !== "win32") {
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            child.kill("SIGTERM");
+          }
+        } else {
+          child.kill("SIGTERM");
+        }
         runningProcesses.delete(run.id);
       }
       await releaseIssueExecutionAndPromote(run);

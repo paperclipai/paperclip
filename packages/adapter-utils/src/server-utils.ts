@@ -788,8 +788,10 @@ export async function runChildProcess(
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,
+          detached: true,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        child.unref();
         const startedAt = new Date().toISOString();
 
         if (opts.stdin != null && child.stdin) {
@@ -814,10 +816,26 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                if (typeof child.pid === "number" && child.pid > 0 && process.platform !== "win32") {
+                  try {
+                    process.kill(-child.pid, "SIGTERM");
+                  } catch {
+                    child.kill("SIGTERM");
+                  }
+                } else {
+                  child.kill("SIGTERM");
+                }
                 setTimeout(() => {
-                  if (!child.killed) {
-                    child.kill("SIGKILL");
+                  if (!child.killed && typeof child.pid === "number" && child.pid > 0) {
+                    if (process.platform !== "win32") {
+                      try {
+                        process.kill(-child.pid, "SIGKILL");
+                      } catch {
+                        child.kill("SIGKILL");
+                      }
+                    } else {
+                      child.kill("SIGKILL");
+                    }
                   }
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
