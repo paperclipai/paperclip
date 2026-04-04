@@ -176,6 +176,16 @@ function resolveInitialPublishReadyGateMode(
   return "compat";
 }
 
+function resolveInitialHighThroughputQualityLoop(
+  lane: string,
+  publishMode: string,
+  contextJson: Record<string, unknown> | null | undefined,
+) {
+  if (contextJson?.highThroughputQualityLoop === true) return true;
+  if (contextJson?.highThroughputQualityLoop === false) return false;
+  return lane === "publish" && publishMode === "dry_run";
+}
+
 function buildInitialContextJson(
   lane: string,
   publishMode: string,
@@ -184,11 +194,13 @@ function buildInitialContextJson(
   const base = contextJson && typeof contextJson === "object" && !Array.isArray(contextJson)
     ? { ...contextJson }
     : {};
+  const highThroughputQualityLoop = resolveInitialHighThroughputQualityLoop(lane, publishMode, base);
   return {
     ...base,
     publicVerifyContractMode: resolveInitialPublicVerifyContractMode(lane, publishMode, base),
     publishReadyGateMode: resolveInitialPublishReadyGateMode(lane, publishMode, base),
-    ...(base.highThroughputQualityLoop === true
+    highThroughputQualityLoop,
+    ...(highThroughputQualityLoop
       ? {
           articleLoop: {
             enabled: true,

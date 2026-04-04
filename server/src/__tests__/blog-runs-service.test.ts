@@ -200,7 +200,35 @@ describeEmbeddedPostgres("blog run service", () => {
     expect(run?.contextJson).toMatchObject({
       publishReadyGateMode: "strict",
       publicVerifyContractMode: "compat",
+      highThroughputQualityLoop: true,
+      articleLoop: expect.objectContaining({
+        enabled: true,
+        articleAttempt: 1,
+        maxAttempts: 3,
+      }),
     });
+  });
+
+  it("preserves an explicit high-throughput loop override", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const run = await svc.create({
+      companyId,
+      projectId,
+      topic: "No loop override topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        highThroughputQualityLoop: false,
+      },
+    });
+
+    expect(run?.contextJson).toMatchObject({
+      highThroughputQualityLoop: false,
+      publishReadyGateMode: "strict",
+    });
+    expect((run?.contextJson as any)?.articleLoop).toBeUndefined();
   });
 
   it("claims and completes the research step, advancing to draft", async () => {
