@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type {
   Company,
   FeedbackTrace,
@@ -76,6 +77,7 @@ interface CompanyImportOptions extends BaseClientOptions {
   paperclipUrl?: string;
   yes?: boolean;
   dryRun?: boolean;
+  adapter?: string;
 }
 
 const DEFAULT_EXPORT_INCLUDE: CompanyPortabilityInclude = {
@@ -371,6 +373,7 @@ export function buildSelectedFilesFromImportSelection(
 
 export function buildDefaultImportAdapterOverrides(
   preview: Pick<CompanyPortabilityPreviewResult, "manifest" | "selectedAgentSlugs">,
+  adapterType: string,
 ): Record<string, { adapterType: string }> | undefined {
   const selectedAgentSlugs = new Set(preview.selectedAgentSlugs);
   const overrides = Object.fromEntries(
@@ -380,8 +383,7 @@ export function buildDefaultImportAdapterOverrides(
       .map((agent) => [
         agent.slug,
         {
-          // TODO: replace this temporary claude_local fallback with adapter selection in the import TUI.
-          adapterType: "claude_local",
+          adapterType,
         },
       ]),
   );
@@ -398,6 +400,34 @@ function buildDefaultImportAdapterMessages(
   return [
     `Using ${adapterTypes.join(", ")} adapter${adapterTypes.length === 1 ? "" : "s"} for ${agentCount} imported ${pluralize(agentCount, "agent")} without an explicit adapter.`,
   ];
+}
+
+export function validateImportAdapterFlag(value: string): string {
+  const normalized = value.trim();
+  if (!(AGENT_ADAPTER_TYPES as readonly string[]).includes(normalized)) {
+    throw new Error(
+      `Invalid --adapter value "${normalized}". Valid types: ${AGENT_ADAPTER_TYPES.join(", ")}`,
+    );
+  }
+  return normalized;
+}
+
+async function promptForAdapterType(): Promise<string> {
+  const selected = await p.select({
+    message: "Select adapter type for imported agents without an explicit adapter",
+    options: [
+      { value: "claude_local", label: "claude-local", hint: "Claude Code (default)" },
+      { value: "codex_local", label: "codex-local", hint: "Codex CLI" },
+      { value: "gemini_local", label: "gemini-local", hint: "Gemini CLI" },
+      { value: "opencode_local", label: "opencode-local", hint: "OpenCode" },
+    ],
+    initialValue: "claude_local",
+  });
+  if (p.isCancel(selected)) {
+    p.cancel("Import cancelled.");
+    process.exit(0);
+  }
+  return selected as string;
 }
 
 async function promptForImportSelection(preview: CompanyPortabilityPreviewResult): Promise<string[]> {
@@ -1278,6 +1308,7 @@ export function registerCompanyCommands(program: Command): void {
       .option("--paperclip-url <url>", "Alias for --api-base on this command")
       .option("--yes", "Accept default selection and skip the pre-import confirmation prompt", false)
       .option("--dry-run", "Run preview only without applying", false)
+      .option("--adapter <type>", `Adapter type for imported agents without an explicit adapter (skips prompt). Valid: ${AGENT_ADAPTER_TYPES.join(", ")}`)
       .action(async (fromPathOrUrl: string, opts: CompanyImportOptions) => {
         try {
           if (!opts.apiBase?.trim() && opts.paperclipUrl?.trim()) {
@@ -1381,7 +1412,18 @@ export function registerCompanyCommands(program: Command): void {
           if (!preview) {
             throw new Error("Import preview returned no data.");
           }
-          const adapterOverrides = buildDefaultImportAdapterOverrides(preview);
+          const selectedAgentSlugs = new Set(preview.selectedAgentSlugs);
+          const hasProcessAgents = preview.manifest.agents.some(
+            (agent) =>
+              agent.adapterType === "process" &&
+              (selectedAgentSlugs.size === 0 || selectedAgentSlugs.has(agent.slug)),
+          );
+          const adapterType = opts.adapter
+            ? validateImportAdapterFlag(opts.adapter)
+            : hasProcessAgents && interactiveView && !opts.yes
+              ? await promptForAdapterType()
+              : "claude_local";
+          const adapterOverrides = buildDefaultImportAdapterOverrides(preview, adapterType);
           const adapterMessages = buildDefaultImportAdapterMessages(adapterOverrides);
 
           if (opts.dryRun) {

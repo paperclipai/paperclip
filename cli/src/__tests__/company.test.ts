@@ -10,6 +10,7 @@ import {
   renderCompanyImportResult,
   resolveCompanyImportApplyConfirmationMode,
   resolveCompanyImportApiPath,
+  validateImportAdapterFlag,
 } from "../commands/client/company.js";
 
 describe("resolveCompanyImportApiPath", () => {
@@ -586,10 +587,35 @@ describe("default adapter overrides", () => {
       errors: [],
     };
 
-    expect(buildDefaultImportAdapterOverrides(preview)).toEqual({
+    expect(buildDefaultImportAdapterOverrides(preview, "claude_local")).toEqual({
       "legacy-agent": {
         adapterType: "claude_local",
       },
     });
+  });
+});
+
+describe("validateImportAdapterFlag", () => {
+  it("accepts valid adapter types", () => {
+    expect(validateImportAdapterFlag("claude_local")).toBe("claude_local");
+    expect(validateImportAdapterFlag("codex_local")).toBe("codex_local");
+    expect(validateImportAdapterFlag("gemini_local")).toBe("gemini_local");
+    expect(validateImportAdapterFlag("opencode_local")).toBe("opencode_local");
+    expect(validateImportAdapterFlag("process")).toBe("process");
+    expect(validateImportAdapterFlag("http")).toBe("http");
+  });
+
+  it("trims whitespace before validating", () => {
+    expect(validateImportAdapterFlag("  claude_local  ")).toBe("claude_local");
+  });
+
+  it("throws for unknown adapter types", () => {
+    expect(() => validateImportAdapterFlag("unknown_adapter")).toThrow(/invalid --adapter value/i);
+    expect(() => validateImportAdapterFlag("")).toThrow(/invalid --adapter value/i);
+    expect(() => validateImportAdapterFlag("CLAUDE_LOCAL")).toThrow(/invalid --adapter value/i);
+  });
+
+  it("error message lists the invalid value", () => {
+    expect(() => validateImportAdapterFlag("bad-type")).toThrow('"bad-type"');
   });
 });
