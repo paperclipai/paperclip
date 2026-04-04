@@ -36,6 +36,7 @@ import {
   issueService,
   documentService,
   logActivity,
+  notifyIssueStakeholderProgress,
   projectService,
   routineService,
   workProductService,
@@ -242,6 +243,21 @@ export function issueRoutes(
       }
     }
     return rawId;
+  }
+
+  function requestBaseUrl(req: Request) {
+    const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim();
+    if (publicUrl) return publicUrl.replace(/\/+$/, "");
+
+    const forwardedProto = req.header("x-forwarded-proto");
+    const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
+    const host =
+      req.header("x-forwarded-host")?.split(",")[0]?.trim() ||
+      req.header("host") ||
+      process.env.PAPERCLIP_API_URL?.trim();
+    if (!host) return "";
+    if (host.startsWith("http://") || host.startsWith("https://")) return host.replace(/\/+$/, "");
+    return `${proto}://${host}`;
   }
 
   async function resolveIssueProjectAndGoal(issue: {
@@ -1232,6 +1248,31 @@ export function issueRoutes(
       });
 
     }
+
+    await notifyIssueStakeholderProgress(db, {
+      existingIssue: {
+        id: existing.id,
+        companyId: existing.companyId,
+        identifier: existing.identifier ?? null,
+        title: existing.title,
+        status: existing.status,
+        assigneeAgentId: existing.assigneeAgentId,
+        assigneeUserId: existing.assigneeUserId,
+        createdByUserId: existing.createdByUserId ?? null,
+      },
+      issue: {
+        id: issue.id,
+        companyId: issue.companyId,
+        identifier: issue.identifier ?? null,
+        title: issue.title,
+        status: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        createdByUserId: issue.createdByUserId ?? null,
+      },
+      comment: commentBody ?? null,
+      baseUrl: requestBaseUrl(req),
+    });
 
     const assigneeChanged = assigneeWillChange;
     const statusChangedFromBacklog =
