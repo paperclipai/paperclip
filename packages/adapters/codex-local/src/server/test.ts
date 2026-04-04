@@ -14,6 +14,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
+import { prepareManagedCodexHome } from "./codex-home.js";
 import { parseCodexJsonl } from "./parse.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 
@@ -49,6 +50,23 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+async function configureCodexRuntimeEnv(
+  ctx: AdapterEnvironmentTestContext,
+  env: Record<string, string>,
+): Promise<void> {
+  const explicitCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  if (explicitCodexHome) {
+    env.CODEX_HOME = explicitCodexHome;
+    return;
+  }
+
+  env.CODEX_HOME = await prepareManagedCodexHome(
+    { ...process.env, ...env },
+    async () => {},
+    ctx.companyId,
+  );
+}
+
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
@@ -81,6 +99,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  await configureCodexRuntimeEnv(ctx, env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);

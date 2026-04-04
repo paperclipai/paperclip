@@ -99,6 +99,50 @@ describe("codex_local environment diagnostics", () => {
     }
   });
 
+  it("reads native auth from the managed CODEX_HOME when testing an existing agent", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-codex-managed-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const expectedManagedHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const cwd = path.join(root, "workspace");
+
+    try {
+      vi.stubEnv("CODEX_HOME", sharedCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        JSON.stringify({ accessToken: "fake-token", accountId: "acct-managed" }),
+      );
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        config: {
+          command: process.execPath,
+          cwd,
+        },
+      });
+
+      expect(result.checks.some((check) => check.code === "codex_native_auth_present")).toBe(true);
+      expect(result.checks.some((check) => check.code === "codex_openai_api_key_missing")).toBe(false);
+      expect(await fs.stat(path.join(expectedManagedHome, "auth.json"))).toBeTruthy();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   itWindows("runs the hello probe when Codex is available via a Windows .cmd wrapper", async () => {
     const root = path.join(
       os.tmpdir(),

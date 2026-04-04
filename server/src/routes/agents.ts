@@ -771,6 +771,23 @@ export function agentRoutes(db: Db) {
 
       const inputAdapterConfig =
         (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const requestedAgentId =
+        typeof req.body?.agentId === "string" && req.body.agentId.trim().length > 0
+          ? req.body.agentId.trim()
+          : null;
+      let runtimeAgentId: string | undefined;
+      if (requestedAgentId) {
+        const targetAgent = await svc.getById(requestedAgentId);
+        if (!targetAgent || targetAgent.companyId !== companyId) {
+          res.status(404).json({ error: "Agent not found" });
+          return;
+        }
+        if (targetAgent.adapterType !== type) {
+          res.status(400).json({ error: "Agent adapter type does not match requested adapter type" });
+          return;
+        }
+        runtimeAgentId = targetAgent.id;
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
@@ -783,6 +800,7 @@ export function agentRoutes(db: Db) {
 
       const result = await adapter.testEnvironment({
         companyId,
+        agentId: runtimeAgentId,
         adapterType: type,
         config: runtimeAdapterConfig,
       });

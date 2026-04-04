@@ -15,6 +15,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import path from "node:path";
+import { prepareManagedClaudeHome } from "./claude-home.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -49,6 +50,56 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function buildClaudeBaseProcessEnv(): Record<string, string> {
+  const baseEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value !== "string") continue;
+    if (key.startsWith("ANTHROPIC_")) continue;
+    if (key.startsWith("CLAUDE_")) continue;
+    baseEnv[key] = value;
+  }
+  return baseEnv;
+}
+
+function maskInheritedClaudeEnv(env: Record<string, string>): void {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (!key.startsWith("ANTHROPIC_") && !key.startsWith("CLAUDE_")) continue;
+    if (env[key] !== undefined) continue;
+    env[key] = "";
+  }
+}
+
+async function configureClaudeRuntimeEnv(
+  ctx: AdapterEnvironmentTestContext,
+  env: Record<string, string>,
+): Promise<void> {
+  const explicitHome = isNonEmpty(env.HOME) ? path.resolve(env.HOME) : null;
+  const explicitConfigDir = isNonEmpty(env.CLAUDE_CONFIG_DIR) ? path.resolve(env.CLAUDE_CONFIG_DIR) : null;
+
+  if (!explicitHome && !explicitConfigDir) {
+    const managedHome = await prepareManagedClaudeHome(
+      { ...process.env, ...env },
+      async () => {},
+      ctx.companyId,
+      ctx.agentId,
+    );
+    env.HOME = managedHome.homeDir;
+    env.CLAUDE_CONFIG_DIR = managedHome.configDir;
+  } else {
+    if (explicitHome) {
+      env.HOME = explicitHome;
+    }
+    if (explicitConfigDir) {
+      env.CLAUDE_CONFIG_DIR = explicitConfigDir;
+    } else if (explicitHome) {
+      env.CLAUDE_CONFIG_DIR = path.join(explicitHome, ".claude");
+    }
+  }
+
+  maskInheritedClaudeEnv(env);
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -78,7 +129,8 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  await configureClaudeRuntimeEnv(ctx, env);
+  const runtimeEnv = ensurePathInEnv({ ...buildClaudeBaseProcessEnv(), ...env });
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -97,15 +149,21 @@ export async function testEnvironment(
 
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = process.env.ANTHROPIC_API_KEY;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+  if (isNonEmpty(configApiKey)) {
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
       level: "warn",
       message:
         "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
-      detail: `Detected in ${source}.`,
+      detail: "Detected in adapter config env.",
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+    });
+  } else if (isNonEmpty(hostApiKey)) {
+    checks.push({
+      code: "claude_inherited_anthropic_api_key_masked",
+      level: "info",
+      message: "Server ANTHROPIC_API_KEY is ignored for Claude local runs unless it is set in adapter config env.",
+      hint: "Set ANTHROPIC_API_KEY in adapter env if you want API-key auth for this agent.",
     });
   } else {
     checks.push({

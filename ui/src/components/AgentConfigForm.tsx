@@ -400,6 +400,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+        ...(isCreate ? {} : { agentId: props.agent.id }),
       });
     },
   });
