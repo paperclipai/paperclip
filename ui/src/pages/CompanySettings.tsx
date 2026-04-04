@@ -1316,6 +1316,7 @@ function RiskThresholdsSection({ companyId }: { companyId: string }) {
             <span className="text-sm text-muted-foreground">$</span>
             <input
               type="number"
+              inputMode="decimal"
               min={1}
               step={1}
               value={spendDollars}
@@ -1330,6 +1331,7 @@ function RiskThresholdsSection({ companyId }: { companyId: string }) {
           <label className="text-sm font-medium">Performance alert threshold</label>
           <input
             type="number"
+            inputMode="decimal"
             min={0}
             max={100}
             value={perfThreshold}
@@ -1343,6 +1345,7 @@ function RiskThresholdsSection({ companyId }: { companyId: string }) {
           <label className="text-sm font-medium">Auto-resolve timeout (hours)</label>
           <input
             type="number"
+            inputMode="decimal"
             min={1}
             value={resolveHours}
             onChange={(e) => setResolveHours(e.target.value)}

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Edit2,
   Eye,
   EyeOff,
   File,
@@ -16,7 +17,9 @@ import {
   FolderOpen,
   Globe,
   Lock,
+  Plus,
   RefreshCw,
+  Save,
   Search,
   Users,
 } from "lucide-react";
@@ -45,6 +48,20 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { LibrarySettingsButton } from "../components/LibrarySettings";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -333,9 +350,11 @@ function WorkspaceDocViewer({
 function KnowledgePageViewer({
   companyId,
   pageId,
+  onEdit,
 }: {
   companyId: string;
   pageId: string;
+  onEdit?: (page: KnowledgePage) => void;
 }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["knowledge-page", pageId],
@@ -371,13 +390,21 @@ function KnowledgePageViewer({
             <DocTypeBadge documentType={data.documentType} />
           </div>
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">
-          {new Date(data.updatedAt).toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-          })}
-        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-xs text-muted-foreground">
+            {new Date(data.updatedAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </span>
+          {onEdit && (
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => onEdit(data)}>
+              <Edit2 className="h-3 w-3 mr-1" />
+              Edit
+            </Button>
+          )}
+        </div>
       </div>
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-6 max-w-none">
@@ -686,6 +713,70 @@ export function Library() {
   const [searchInput, setSearchInput] = useState("");
   const [searchContent, setSearchContent] = useState(false);
 
+  // KB page create/edit dialog
+  const [kbDialogOpen, setKbDialogOpen] = useState(false);
+  const [kbEditPageId, setKbEditPageId] = useState<string | null>(null);
+  const [kbTitle, setKbTitle] = useState("");
+  const [kbBody, setKbBody] = useState("");
+  const [kbVisibility, setKbVisibility] = useState<"company" | "private">("company");
+  const [kbDepartment, setKbDepartment] = useState("");
+
+  function openKbCreate() {
+    setKbEditPageId(null);
+    setKbTitle("");
+    setKbBody("");
+    setKbVisibility("company");
+    setKbDepartment("");
+    setKbDialogOpen(true);
+  }
+
+  function openKbEdit(page: KnowledgePage) {
+    setKbEditPageId(page.id);
+    setKbTitle(page.title);
+    setKbBody(page.body);
+    setKbVisibility(page.visibility === "private" ? "private" : "company");
+    setKbDepartment(page.department ?? "");
+    setKbDialogOpen(true);
+  }
+
+  const createKbPage = useMutation({
+    mutationFn: () =>
+      knowledgeApi.create(selectedCompanyId!, {
+        title: kbTitle.trim(),
+        body: kbBody,
+        visibility: kbVisibility,
+        department: kbDepartment.trim() || undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["knowledge-agent"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
+      setKbDialogOpen(false);
+      pushToast({ title: "Page created", body: "KB page created successfully.", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to create page", body: "Could not create KB page.", tone: "error" });
+    },
+  });
+
+  const updateKbPage = useMutation({
+    mutationFn: () =>
+      knowledgeApi.update(kbEditPageId!, {
+        title: kbTitle.trim(),
+        body: kbBody,
+        visibility: kbVisibility,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["knowledge-agent"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.knowledge.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: ["knowledge-page", kbEditPageId] });
+      setKbDialogOpen(false);
+      pushToast({ title: "Page saved", body: "KB page updated.", tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to save page", body: "Could not update KB page.", tone: "error" });
+    },
+  });
+
   // Workspace state: null = file tree view, string = agent workspace view
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   // Selected knowledge page (used in workspace view)
@@ -776,6 +867,10 @@ export function Library() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={openKbCreate}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Page
+          </Button>
           <LibrarySettingsButton />
           <Button
             variant="outline"
@@ -937,7 +1032,7 @@ export function Library() {
       {/* Right pane: File reader or Knowledge page viewer */}
       <div className="flex-1 min-w-0 bg-background">
         {selectedAgentId !== null && selectedPageId ? (
-          <KnowledgePageViewer companyId={selectedCompanyId!} pageId={selectedPageId} />
+          <KnowledgePageViewer companyId={selectedCompanyId!} pageId={selectedPageId} onEdit={openKbEdit} />
         ) : selectedAgentId !== null ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6">
             <Bot className="h-12 w-12 text-muted-foreground/20 mb-3" />
@@ -973,6 +1068,74 @@ export function Library() {
         )}
       </div>
       </div>
+
+      {/* KB Page Create/Edit Dialog */}
+      <Dialog open={kbDialogOpen} onOpenChange={setKbDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{kbEditPageId ? "Edit Page" : "New Page"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Title</label>
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                value={kbTitle}
+                onChange={(e) => setKbTitle(e.target.value)}
+                placeholder="Page title..."
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs text-muted-foreground mb-1 block">Visibility</label>
+                <Select value={kbVisibility} onValueChange={(v) => setKbVisibility(v as "company" | "private")}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="company">Company</SelectItem>
+                    <SelectItem value="private">Private</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {!kbEditPageId && (
+                <div className="flex-1">
+                  <label className="text-xs text-muted-foreground mb-1 block">Department (optional)</label>
+                  <input
+                    className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-xs outline-none h-8 focus:ring-1 focus:ring-ring"
+                    value={kbDepartment}
+                    onChange={(e) => setKbDepartment(e.target.value)}
+                    placeholder="e.g. Engineering"
+                  />
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Body (Markdown)</label>
+              <textarea
+                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none resize-none focus:ring-1 focus:ring-ring"
+                value={kbBody}
+                onChange={(e) => setKbBody(e.target.value)}
+                placeholder="Write content in markdown..."
+                rows={12}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setKbDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!kbTitle.trim() || (kbEditPageId ? updateKbPage.isPending : createKbPage.isPending)}
+              onClick={() => kbEditPageId ? updateKbPage.mutate() : createKbPage.mutate()}
+            >
+              <Save className="h-3.5 w-3.5 mr-1.5" />
+              {kbEditPageId ? (updateKbPage.isPending ? "Saving..." : "Save") : (createKbPage.isPending ? "Creating..." : "Create")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

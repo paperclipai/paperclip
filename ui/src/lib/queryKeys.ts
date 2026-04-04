@@ -164,6 +164,12 @@ export const queryKeys = {
     list: (companyId: string, agentId: string, memoryType?: string) =>
       ["agent-memory", companyId, agentId, memoryType ?? "__all__"] as const,
   },
+  agentChat: {
+    issue: (companyId: string, agentId: string) =>
+      ["agent-chat", companyId, agentId, "issue"] as const,
+    comments: (companyId: string, agentId: string, issueId: string) =>
+      ["agent-chat", companyId, agentId, "comments", issueId] as const,
+  },
   roleTemplates: {
     list: (companyId: string) => ["role-templates", companyId] as const,
     detail: (companyId: string, id: string) => ["role-templates", companyId, id] as const,

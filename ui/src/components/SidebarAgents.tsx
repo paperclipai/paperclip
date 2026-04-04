@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { NavLink, useLocation } from "@/lib/router";
+import { NavLink, useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus, LayoutGrid, List } from "lucide-react";
+import { ChevronRight, Plus, LayoutGrid, List, MessageSquare } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -28,6 +28,7 @@ export function SidebarAgents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { isMobile, setSidebarOpen } = useSidebar();
+  const navigate = useNavigate();
   const location = useLocation();
 
   const { data: agents } = useQuery({
@@ -102,51 +103,74 @@ export function SidebarAgents() {
 
   function renderAgentLink(agent: Agent) {
     const runCount = liveCountByAgent.get(agent.id) ?? 0;
+    const ref = agentRouteRef(agent);
+    const isActive = activeAgentId === ref;
     return (
-      <NavLink
+      <div
         key={agent.id}
-        to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
-        onClick={() => {
-          if (isMobile) setSidebarOpen(false);
-        }}
         className={cn(
-          "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
-          activeAgentId === agentRouteRef(agent)
+          "group/agent-link flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+          isActive
             ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
         )}
       >
-        <AgentIcon
-          icon={agent.icon}
-          className={cn(
-            "shrink-0 h-3.5 w-3.5",
-            getRoleLevel(agent.role) === "executive"
-              ? "text-amber-500 dark:text-amber-400"
-              : getRoleLevel(agent.role) === "management"
-                ? "text-blue-500 dark:text-blue-400"
-                : "text-muted-foreground",
-          )}
-        />
-        <span className="flex-1 truncate">{agent.name}</span>
-        {(agent.pauseReason === "budget" || runCount > 0) && (
-          <span className="ml-auto flex items-center gap-1.5 shrink-0">
-            {agent.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Agent paused by budget" />
-            ) : null}
-            {runCount > 0 ? (
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-              </span>
-            ) : null}
-            {runCount > 0 ? (
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                {runCount} live
-              </span>
-            ) : null}
-          </span>
-        )}
-      </NavLink>
+        <NavLink
+          to={activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent)}
+          onClick={() => {
+            if (isMobile) setSidebarOpen(false);
+          }}
+          className="flex items-center gap-2.5 flex-1 min-w-0 no-underline text-inherit"
+        >
+          <AgentIcon
+            icon={agent.icon}
+            className={cn(
+              "shrink-0 h-3.5 w-3.5",
+              getRoleLevel(agent.role) === "executive"
+                ? "text-amber-500 dark:text-amber-400"
+                : getRoleLevel(agent.role) === "management"
+                  ? "text-blue-500 dark:text-blue-400"
+                  : "text-muted-foreground",
+            )}
+          />
+          <span className="flex-1 truncate">{agent.name}</span>
+        </NavLink>
+
+        {/* Status indicators + chat button */}
+        <span className="ml-auto flex items-center gap-1 shrink-0">
+          {agent.pauseReason === "budget" ? (
+            <BudgetSidebarMarker title="Agent paused by budget" />
+          ) : null}
+          {runCount > 0 ? (
+            <span className="relative flex h-2 w-2">
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            </span>
+          ) : null}
+          {runCount > 0 ? (
+            <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+              {runCount} live
+            </span>
+          ) : null}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isMobile) setSidebarOpen(false);
+              navigate(`${agentUrl(agent)}/chat`);
+            }}
+            title={`Chat with ${agent.name}`}
+            aria-label={`Chat with ${agent.name}`}
+            className={cn(
+              "flex items-center justify-center h-4 w-4 rounded transition-colors",
+              activeTab === "chat" && isActive
+                ? "text-foreground/70 bg-accent/50"
+                : "text-muted-foreground/0 group-hover/agent-link:text-muted-foreground/60 hover:!text-foreground hover:bg-accent/50",
+            )}
+          >
+            <MessageSquare className="h-3 w-3" />
+          </button>
+        </span>
+      </div>
     );
   }
 

@@ -417,6 +417,7 @@ export function GoalDetail() {
                 <Input
                   placeholder="Target"
                   type="number"
+                  inputMode="decimal"
                   value={krTarget}
                   onChange={(e) => setKrTarget(e.target.value)}
                   className="w-24"
@@ -478,6 +479,7 @@ export function GoalDetail() {
                           <div className="flex items-center gap-1">
                             <Input
                               type="number"
+                              inputMode="decimal"
                               value={editingKrValue}
                               onChange={(e) => setEditingKrValue(e.target.value)}
                               className="w-20 h-7 text-xs"

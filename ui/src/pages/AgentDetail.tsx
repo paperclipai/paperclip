@@ -55,6 +55,7 @@ import {
   AgentMemoryTab,
   RunsTab,
 } from "../components/agent-detail";
+import { AgentChat } from "../components/AgentChat";
 
 export function AgentDetail() {
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
@@ -317,7 +318,9 @@ export function AgentDetail() {
                 ? "runs"
                 : activeView === "budget"
                   ? "budget"
-                : "dashboard";
+                  : activeView === "chat"
+                    ? "chat"
+                    : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -351,6 +354,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Memory" });
       } else if (activeView === "budget") {
         crumbs.push({ label: "Budget" });
+      } else if (activeView === "chat") {
+        crumbs.push({ label: "Chat" });
       } else {
         crumbs.push({ label: "Dashboard" });
       }
@@ -523,6 +528,7 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "dashboard", label: "Dashboard" },
+              { value: "chat", label: "Chat" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
               { value: "configuration", label: "Configuration" },
@@ -657,6 +663,13 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+        />
+      )}
+
+      {activeView === "chat" && resolvedCompanyId && (
+        <AgentChat
+          agent={agent}
+          companyId={resolvedCompanyId}
         />
       )}
 

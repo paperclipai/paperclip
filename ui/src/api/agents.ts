@@ -226,6 +226,17 @@ export const agentsApi = {
     api.post<Agent>(`/companies/${companyId}/agents/${agentId}/terminate`, { terminationReason }),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
+  /** Send a chat message to an agent. Returns the issueId + commentId. */
+  sendChat: (companyId: string, agentId: string, message: string) =>
+    api.post<{ issueId: string; commentId: string }>(
+      `/companies/${companyId}/agents/${encodeURIComponent(agentId)}/chat`,
+      { message },
+    ),
+  /** Get the active chat issue for an agent (or null). */
+  getChatIssue: (companyId: string, agentId: string) =>
+    api.get<import("@ironworksai/shared").Issue | null>(
+      `/companies/${companyId}/agents/${encodeURIComponent(agentId)}/chat/issue`,
+    ),
 };
 
 export interface HeadcountResponse {

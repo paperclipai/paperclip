@@ -2980,5 +2980,174 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Chat endpoints (Task 1 + Task 5)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Get or create the single active chat issue for an agent.
+   * Chat issues use originKind="chat" and are reused across sessions.
+   * Inactive for 24 hours -> close automatically (handled by auto-close logic).
+   */
+  async function getOrCreateChatIssue(
+    companyId: string,
+    agentId: string,
+    createdByUserId: string | null,
+  ) {
+    const issueSvc = issueService(db);
+
+    // Look for an open chat issue already assigned to this agent
+    const existing = await db
+      .select()
+      .from(issuesTable)
+      .where(
+        and(
+          eq(issuesTable.companyId, companyId),
+          eq(issuesTable.assigneeAgentId, agentId),
+          eq(issuesTable.originKind, "chat"),
+          not(inArray(issuesTable.status, ["done", "cancelled"])),
+        ),
+      )
+      .orderBy(desc(issuesTable.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (existing) {
+      return existing;
+    }
+
+    // Create a new chat issue
+    const agent = await svc.getById(agentId);
+    const title = agent ? `Chat with ${agent.name}` : "Agent Chat";
+
+    const created = await issueSvc.create(companyId, {
+      title,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "chat",
+      createdByUserId,
+      createdByAgentId: null,
+    } as Parameters<typeof issueSvc.create>[1]);
+
+    return created;
+  }
+
+  /**
+   * POST /api/companies/:companyId/agents/:agentId/chat
+   * Body: { message: string }
+   * Creates or reuses the active chat issue, posts the user message as a comment,
+   * wakes the agent, and returns { issueId, commentId }.
+   */
+  router.post("/companies/:companyId/agents/:agentId/chat", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentIdParam = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required for chat" });
+      return;
+    }
+    if (!req.actor.userId) {
+      res.status(403).json({ error: "User context required for chat" });
+      return;
+    }
+
+    const message = typeof req.body.message === "string" ? req.body.message.trim() : "";
+    if (!message) {
+      res.status(400).json({ error: "message is required" });
+      return;
+    }
+
+    const agentId = await normalizeAgentReference(req, agentIdParam);
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const issueSvc = issueService(db);
+    const chatIssue = await getOrCreateChatIssue(companyId, agentId, req.actor.userId);
+
+    const actor = getActorInfo(req);
+    const comment = await issueSvc.addComment(chatIssue.id, message, {
+      userId: req.actor.userId,
+      agentId: undefined,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: chatIssue.id,
+      details: { commentId: comment.id, source: "chat" },
+    });
+
+    // Wake the agent so it can respond
+    const heartbeatSvc = heartbeatService(db);
+    heartbeatSvc
+      .wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId: chatIssue.id,
+          commentId: comment.id,
+          mutation: "comment",
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: chatIssue.id,
+          taskId: chatIssue.id,
+          commentId: comment.id,
+          wakeCommentId: comment.id,
+          source: "chat",
+          wakeReason: "issue_commented",
+        },
+      })
+      .catch((err) => logger.warn({ err, agentId, issueId: chatIssue.id }, "failed to wake agent for chat"));
+
+    res.status(201).json({ issueId: chatIssue.id, commentId: comment.id });
+  });
+
+  /**
+   * GET /api/companies/:companyId/agents/:agentId/chat/issue
+   * Returns the active chat issue for the agent (or null).
+   */
+  router.get("/companies/:companyId/agents/:agentId/chat/issue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentIdParam = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+
+    const agentId = await normalizeAgentReference(req, agentIdParam);
+    const agent = await svc.getById(agentId);
+    if (!agent || agent.companyId !== companyId) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const existing = await db
+      .select()
+      .from(issuesTable)
+      .where(
+        and(
+          eq(issuesTable.companyId, companyId),
+          eq(issuesTable.assigneeAgentId, agentId),
+          eq(issuesTable.originKind, "chat"),
+          not(inArray(issuesTable.status, ["done", "cancelled"])),
+        ),
+      )
+      .orderBy(desc(issuesTable.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    res.json(existing ?? null);
+  });
+
   return router;
 }

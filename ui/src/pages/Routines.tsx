@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { ChevronDown, ChevronRight, MoreHorizontal, Play, Plus, Repeat, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Filter, MoreHorizontal, Plus, Repeat, Search } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -70,6 +70,8 @@ export function Routines() {
   const navigate = useNavigate();
   const { pushToast } = useToast();
   const [routineSearch, setRoutineSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "paused" | "draft" | "archived">("all");
+  const [agentFilter, setAgentFilter] = useState<string>("all");
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
@@ -496,16 +498,44 @@ export function Routines() {
         </Card>
       ) : null}
 
-      {/* Search */}
+      {/* Search + Filters */}
       {(routines ?? []).length > 0 && (
-        <div className="relative w-48 sm:w-64">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={routineSearch}
-            onChange={(e) => setRoutineSearch(e.target.value)}
-            placeholder="Search routines..."
-            className="pl-7 text-xs sm:text-sm"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-48 sm:w-64">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={routineSearch}
+              onChange={(e) => setRoutineSearch(e.target.value)}
+              placeholder="Search routines..."
+              className="pl-7 text-xs sm:text-sm"
+            />
+          </div>
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+            <SelectTrigger className="h-8 w-auto min-w-[120px] text-xs">
+              <Filter className="h-3 w-3 mr-1" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="paused">Paused</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="archived">Archived</SelectItem>
+            </SelectContent>
+          </Select>
+          {(agents ?? []).filter((a) => a.status !== "terminated").length > 0 && (
+            <Select value={agentFilter} onValueChange={setAgentFilter}>
+              <SelectTrigger className="h-8 w-auto min-w-[130px] text-xs">
+                <SelectValue placeholder="All agents" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All agents</SelectItem>
+                {(agents ?? []).filter((a) => a.status !== "terminated").map((agent) => (
+                  <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
       )}
 
@@ -532,7 +562,12 @@ export function Routines() {
                 </tr>
               </thead>
               <tbody>
-                {(routines ?? []).filter((r) => !routineSearch.trim() || r.title.toLowerCase().includes(routineSearch.toLowerCase())).map((routine) => {
+                {(routines ?? []).filter((r) => {
+                  if (routineSearch.trim() && !r.title.toLowerCase().includes(routineSearch.toLowerCase())) return false;
+                  if (statusFilter !== "all" && r.status !== statusFilter) return false;
+                  if (agentFilter !== "all" && r.assigneeAgentId !== agentFilter) return false;
+                  return true;
+                }).map((routine) => {
                   const enabled = routine.status === "active";
                   const isArchived = routine.status === "archived";
                   const isStatusPending = statusMutationRoutineId === routine.id;
