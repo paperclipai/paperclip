@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Copy,
   TerminalSquare,
   User,
   Wrench,
@@ -1159,6 +1160,16 @@ function TranscriptStdoutRow({
   );
 }
 
+function serializeRawEntry(entry: TranscriptEntry): string {
+  if (entry.kind === "tool_call") return `${entry.name}\n${formatToolPayload(entry.input)}`;
+  if (entry.kind === "tool_result") return formatToolPayload(entry.content);
+  if (entry.kind === "result")
+    return `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`;
+  if (entry.kind === "init")
+    return `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`;
+  return entry.text;
+}
+
 function RawTranscriptView({
   entries,
   density,
@@ -1167,8 +1178,63 @@ function RawTranscriptView({
   density: TranscriptDensity;
 }) {
   const compact = density === "compact";
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const handleCopy = useCallback(() => {
+    const text = entries
+      .map((e) => `[${e.kind}] ${serializeRawEntry(e)}`)
+      .join("\n\n");
+    navigator.clipboard.writeText(text).then(() => {
+      clearTimeout(timerRef.current);
+      setCopyState("copied");
+      timerRef.current = setTimeout(() => setCopyState("idle"), 2000);
+    }).catch(() => {
+      clearTimeout(timerRef.current);
+      setCopyState("failed");
+      timerRef.current = setTimeout(() => setCopyState("idle"), 2000);
+    });
+  }, [entries]);
+
   return (
     <div className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
+      <div className="flex justify-end mb-1.5">
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-2 py-1 text-[11px] font-medium transition-colors",
+            copyState === "copied"
+              ? "text-green-600 dark:text-green-400"
+              : copyState === "failed"
+                ? "text-red-600 dark:text-red-400"
+                : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={handleCopy}
+        >
+          {copyState === "copied" ? (
+            <>
+              <Check className="h-3 w-3" />
+              Copied!
+            </>
+          ) : copyState === "failed" ? (
+            <>
+              <Copy className="h-3 w-3" />
+              Failed
+            </>
+          ) : (
+            <>
+              <Copy className="h-3 w-3" />
+              Copy
+            </>
+          )}
+        </button>
+      </div>
       {entries.map((entry, idx) => (
         <div
           key={`${entry.kind}-${entry.ts}-${idx}`}
@@ -1181,15 +1247,7 @@ function RawTranscriptView({
             {entry.kind}
           </span>
           <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">
-            {entry.kind === "tool_call"
-              ? `${entry.name}\n${formatToolPayload(entry.input)}`
-              : entry.kind === "tool_result"
-                ? formatToolPayload(entry.content)
-                : entry.kind === "result"
-                  ? `${entry.text}\n${formatTokens(entry.inputTokens)} / ${formatTokens(entry.outputTokens)} / $${entry.costUsd.toFixed(6)}`
-                  : entry.kind === "init"
-                    ? `model=${entry.model}${entry.sessionId ? ` session=${entry.sessionId}` : ""}`
-                    : entry.text}
+            {serializeRawEntry(entry)}
           </pre>
         </div>
       ))}
