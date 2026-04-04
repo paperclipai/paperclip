@@ -2,12 +2,12 @@ export const type = "dashscope_local";
 export const label = "阿里云百炼 (DashScope)";
 
 export const models = [
-  { id: "qwen3.5-plus", label: "✨ Qwen 3.5 Plus (推荐)" },
-  { id: "qwen3-max", label: "✨ Qwen 3 Max (最强)" },
   { id: "qwen-max", label: "Qwen Max" },
   { id: "qwen-plus", label: "Qwen Plus" },
-  { id: "qwen-turbo", label: "Qwen Turbo (快速)" },
-  { id: "qwen-long", label: "Qwen Long (长文本)" },
+  { id: "qwen-turbo", label: "Qwen Turbo" },
+  { id: "qwen-long", label: "Qwen Long" },
+  { id: "qwen3.5-plus", label: "Qwen 3.5 Plus" },
+  { id: "qwen3-max", label: "Qwen 3 Max" },
   { id: "qwen-vl-max", label: "Qwen VL Max (多模态)" },
   { id: "qwen-vl-plus", label: "Qwen VL Plus (多模态)" },
   { id: "qwen-coder-plus", label: "Qwen Coder Plus (代码)" },
@@ -22,8 +22,8 @@ Adapter: dashscope_local
 
 Use when:
 - You want Paperclip to use Alibaba Cloud DashScope (百炼) models
-- You have a DASHSCOPE_API_KEY configured (阿里云百炼专属 API Key)
-- You need Chinese-optimized LLM capabilities (通义千问系列)
+- You have a DASHSCOPE_API_KEY configured
+- You need Chinese-optimized LLM capabilities
 
 Don't use when:
 - You don't have DashScope API access
@@ -32,7 +32,7 @@ Don't use when:
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file
-- model (string, required): DashScope model id (e.g., "qwen3.5-plus", "qwen-max", "qwen-plus", "qwen-turbo")
+- model (string, required): DashScope model id (e.g., "qwen-max", "qwen-plus", "qwen-turbo")
 - temperature (number, optional): sampling temperature (0.0-2.0, default 0.7)
 - topP (number, optional): nucleus sampling threshold (0.0-1.0, default 0.8)
 - maxTokens (number, optional): max completion tokens
@@ -46,8 +46,7 @@ Operational fields:
 
 Notes:
 - Requires DASHSCOPE_API_KEY environment variable
-- API endpoint: https://coding.dashscope.aliyuncs.com/v1/chat/completions (OpenAI 兼容接口)
-- Uses OpenAI-compatible API format (阿里云百炼专属套餐)
-- Models support: qwen3.5-plus, qwen-max, qwen-plus, qwen-turbo, qwen-coder, qwen-vl, etc.
-- Billing: via Alibaba Cloud DashScope subscription
+- API endpoint: https://coding.dashscope.aliyuncs.com/v1
+- Models support: text generation, vision, code, math
+- Billing: pay-per-token via Alibaba Cloud account
 `;
