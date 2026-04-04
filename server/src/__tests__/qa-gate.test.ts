@@ -205,9 +205,26 @@ describe("qa gate", () => {
     expect(res.status).toBe(200);
   });
 
-  it("agent → done, non-code issue (no workspace) → 200 (skip)", async () => {
+  it("agent → done, non-code issue (no workspace), no QA pass → 422", async () => {
+    mockIssueService.getById.mockResolvedValue(nonCodeIssue);
+    mockIssueService.listComments.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
+
+    const app = createAgentApp();
+    const res = await request(app)
+      .patch(`/api/issues/${nonCodeIssue.id}`)
+      .send({ status: "done", comment: "Done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.gate).toBe("done_requires_qa_pass");
+  });
+
+  it("agent → done, non-code issue (no workspace), with QA pass → 200", async () => {
     mockIssueService.getById.mockResolvedValue(nonCodeIssue);
     mockIssueService.update.mockResolvedValue({ ...nonCodeIssue, status: "done" });
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "QA: PASS — verified in production", authorAgentId: "qa-agent-1", authorUserId: null },
+    ]);
     mockWorkProductService.listForIssue.mockResolvedValue([]);
 
     const app = createAgentApp();

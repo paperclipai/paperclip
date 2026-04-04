@@ -97,6 +97,10 @@ describe("issue telemetry routes", () => {
       role: "engineer",
       adapterType: "codex_local",
     });
+    // QA gate requires a QA PASS from a non-assignee before agents can mark done
+    mockIssueService.listComments.mockResolvedValue([
+      { body: "QA: PASS", authorAgentId: "qa-agent-1", authorUserId: null },
+    ]);
 
     const res = await request(createApp({
       type: "agent",

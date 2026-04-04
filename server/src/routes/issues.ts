@@ -255,7 +255,6 @@ export function issueRoutes(
     targetStatus: string,
   ): Promise<{ gate: string; reason: string } | null> {
     if (req.actor.type !== "agent") return null;
-    if (!issue.executionWorkspaceId) return null;
     if (targetStatus !== "done") return null;
 
     const comments = await issueSvc.listComments(issue.id, { order: "asc" });
