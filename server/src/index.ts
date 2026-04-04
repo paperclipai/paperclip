@@ -630,6 +630,18 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "stale execution lock sweep failed");
         });
 
+      // Cancel queued runs whose target issue is done or cancelled.
+      void heartbeat
+        .cancelQueuedRunsForTerminalIssues()
+        .then((result) => {
+          if (result.cancelled > 0) {
+            logger.info({ ...result }, "cancelled queued runs for terminal issues");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "terminal issue queued run sweep failed");
+        });
+
       // Retrigger unpicked assignments past the SLA window.
       void heartbeat
         .sweepUnpickedAssignments()

@@ -4201,6 +4201,48 @@ export function heartbeatService(db: Db) {
       return { expired: expired.length };
     },
 
+    async cancelQueuedRunsForTerminalIssues() {
+      // Find queued heartbeat runs whose target issue has reached a terminal state (done/cancelled).
+      // These runs will never be useful — cancel them to prevent queue bloat.
+      const terminalStatuses = ["done", "cancelled"];
+
+      const staleRuns = await db
+        .select({
+          runId: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          issueStatus: issues.status,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(
+          issues,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}`,
+        )
+        .where(
+          and(
+            eq(heartbeatRuns.status, "queued"),
+            inArray(issues.status, terminalStatuses),
+          ),
+        );
+
+      if (staleRuns.length === 0) return { cancelled: 0 };
+
+      const runIds = staleRuns.map((r) => r.runId);
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "cancelled", finishedAt: new Date() })
+        .where(inArray(heartbeatRuns.id, runIds));
+
+      for (const run of staleRuns) {
+        logger.warn(
+          { runId: run.runId, agentId: run.agentId, issueId: run.issueId, issueStatus: run.issueStatus },
+          "cancelled queued run for terminal issue",
+        );
+      }
+      logger.info({ count: staleRuns.length }, "cancelled queued runs for terminal issues");
+      return { cancelled: staleRuns.length };
+    },
+
     async enqueueProcessLostRetries() {
       // Find issues whose process_lost_retry_at has elapsed and enqueue a wakeup.
       const now = new Date();
