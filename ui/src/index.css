@@ -651,6 +651,47 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   color: var(--muted-foreground);
 }
 
+.paperclip-markdown .contains-task-list {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+
+.paperclip-markdown .task-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.paperclip-markdown .task-list-item input[type="checkbox"] {
+  appearance: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 1.5px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+  top: 0.125rem;
+  cursor: default;
+}
+
+.paperclip-markdown .task-list-item input[type="checkbox"]:checked {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+
+.paperclip-markdown .task-list-item input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 2.5px;
+  top: 0.5px;
+  width: 5px;
+  height: 8px;
+  border: solid var(--primary-foreground);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
 .paperclip-markdown h1,
 .paperclip-markdown h2,
 .paperclip-markdown h3,
