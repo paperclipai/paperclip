@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { REDACTED_EVENT_VALUE, sanitizeLogValue } from "../redaction.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -28,6 +29,22 @@ const sharedOpts = {
 
 export const logger = pino({
   level: "debug",
+  redact: {
+    paths: [
+      "req.headers.authorization",
+      "req.headers.cookie",
+      "req.headers.x-api-key",
+      "req.raw.headers.authorization",
+      "req.raw.headers.cookie",
+      "req.raw.headers.x-api-key",
+      "errorContext.authorization",
+      "reqBody.authorization",
+      "reqBody.apiKey",
+      "reqBody.token",
+      "reqBody.secret",
+    ],
+    censor: REDACTED_EVENT_VALUE,
+  },
 }, pino.transport({
   targets: [
     {
@@ -45,6 +62,17 @@ export const logger = pino({
 
 export const httpLogger = pinoHttp({
   logger,
+  serializers: {
+    req(req) {
+      return sanitizeLogValue(pino.stdSerializers.req(req));
+    },
+    res(res) {
+      return sanitizeLogValue(pino.stdSerializers.res(res));
+    },
+    err(err) {
+      return sanitizeLogValue(pino.stdSerializers.err(err));
+    },
+  },
   customLogLevel(_req, res, err) {
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
@@ -63,22 +91,22 @@ export const httpLogger = pinoHttp({
       const ctx = (res as any).__errorContext;
       if (ctx) {
         return {
-          errorContext: ctx.error,
-          reqBody: ctx.reqBody,
-          reqParams: ctx.reqParams,
-          reqQuery: ctx.reqQuery,
+          errorContext: sanitizeLogValue(ctx.error),
+          reqBody: sanitizeLogValue(ctx.reqBody),
+          reqParams: sanitizeLogValue(ctx.reqParams),
+          reqQuery: sanitizeLogValue(ctx.reqQuery),
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeLogValue(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
-        props.reqParams = params;
+        props.reqParams = sanitizeLogValue(params);
       }
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
+        props.reqQuery = sanitizeLogValue(query);
       }
       if ((req as any).route?.path) {
         props.routePath = (req as any).route.path;

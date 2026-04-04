@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { redactSensitiveText } from "../redaction.js";
 
 export type RunLogStoreType = "local_file";
 
@@ -109,10 +110,11 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     async append(handle, event) {
       if (handle.store !== "local_file") return;
       const absPath = resolveWithin(basePath, handle.logRef);
+      const sanitizedChunk = redactSensitiveText(event.chunk);
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: sanitizedChunk,
       });
       await fs.appendFile(absPath, `${line}\n`, "utf8");
     },
@@ -153,4 +155,3 @@ export function getRunLogStore() {
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }
-
