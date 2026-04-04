@@ -75,10 +75,26 @@ export function dashboardService(db: Db) {
           ),
         );
 
+      // Aggregate budget and spend from individual agents (company-level fields
+      // are often 0 because budgets are set per-agent, not per-company).
+      const [agentBudgetAgg] = await db
+        .select({
+          totalBudget: sql<number>`coalesce(sum(${agents.budgetMonthlyCents}), 0)::int`,
+          totalSpent: sql<number>`coalesce(sum(${agents.spentMonthlyCents}), 0)::int`,
+        })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+
+      const agentBudgetCents = Number(agentBudgetAgg.totalBudget);
+      const agentSpentCents = Number(agentBudgetAgg.totalSpent);
+
+      // Prefer agent-level aggregation; fall back to company-level if agents have no budgets.
       const monthSpendCents = Number(monthSpend);
+      const monthBudgetCents = agentBudgetCents > 0 ? agentBudgetCents : company.budgetMonthlyCents;
+      const monthAgentSpendCents = agentSpentCents > 0 ? agentSpentCents : monthSpendCents;
       const utilization =
-        company.budgetMonthlyCents > 0
-          ? (monthSpendCents / company.budgetMonthlyCents) * 100
+        monthBudgetCents > 0
+          ? (monthAgentSpendCents / monthBudgetCents) * 100
           : 0;
       const budgetOverview = await budgets.overview(companyId);
 
@@ -92,8 +108,8 @@ export function dashboardService(db: Db) {
         },
         tasks: taskCounts,
         costs: {
-          monthSpendCents,
-          monthBudgetCents: company.budgetMonthlyCents,
+          monthSpendCents: monthAgentSpendCents,
+          monthBudgetCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
