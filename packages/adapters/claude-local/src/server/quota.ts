@@ -479,7 +479,8 @@ function formatProviderError(source: string, error: unknown): string {
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   if (
     process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    process.env.CLAUDE_CODE_USE_BEDROCK === "true"
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyProcessEnv("ANTHROPIC_BEDROCK_BASE_URL")
   ) {
     return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
   }
