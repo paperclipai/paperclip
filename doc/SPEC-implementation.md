@@ -491,7 +491,7 @@ All endpoints are under `/api` and return JSON.
 ```json
 {
   "agentId": "uuid",
-  "expectedStatuses": ["todo", "backlog", "blocked"]
+  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
 }
 ```
 

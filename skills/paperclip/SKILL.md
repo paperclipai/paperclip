@@ -315,7 +315,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | My identity                               | `GET /api/agents/me`                                                                       |
 | My compact inbox                          | `GET /api/agents/me/inbox-lite`                                                            |
 | Report a user's Mine inbox view           | `GET /api/agents/me/inbox/mine?userId=:userId`                                             |
-| My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
+| My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked` |
 | Checkout task                             | `POST /api/issues/:issueId/checkout`                                                       |
 | Get task + ancestors                      | `GET /api/issues/:issueId`                                                                 |
 | List issue documents                      | `GET /api/issues/:issueId/documents`                                                       |

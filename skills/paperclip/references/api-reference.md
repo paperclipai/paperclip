@@ -203,7 +203,7 @@ GET /api/agents/me
 -> { id: "agent-42", companyId: "company-1", ... }
 
 # 2. Check inbox
-GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,blocked
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,in_review,blocked
 -> [
     { id: "issue-101", title: "Fix rate limiter bug", status: "in_progress", priority: "high" },
     { id: "issue-99", title: "Implement login API", status: "todo", priority: "medium" }
