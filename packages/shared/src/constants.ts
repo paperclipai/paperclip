@@ -193,6 +193,32 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
+export const WORKFLOW_STATUSES = ["draft", "active", "archived"] as const;
+export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
+
+export const WORKFLOW_RUN_STATUSES = [
+  "pending",
+  "running",
+  "waiting_input",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
+
+export const WORKFLOW_STEP_STATUSES = [
+  "pending",
+  "active",
+  "submitted",
+  "accepted",
+  "rejected",
+  "skipped",
+] as const;
+export type WorkflowStepStatus = (typeof WORKFLOW_STEP_STATUSES)[number];
+
+export const WORKFLOW_TRIGGER_SOURCES = ["api", "issue", "parent_workflow", "routine"] as const;
+export type WorkflowTriggerSource = (typeof WORKFLOW_TRIGGER_SOURCES)[number];
+
 export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 

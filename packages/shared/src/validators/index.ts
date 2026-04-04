@@ -228,6 +228,19 @@ export {
 } from "./routine.js";
 
 export {
+  createWorkflowSchema,
+  updateWorkflowSchema,
+  assignWorkflowSchema,
+  createWorkflowRunSchema,
+  submitWorkflowStepSchema,
+  type CreateWorkflow,
+  type UpdateWorkflow,
+  type AssignWorkflow,
+  type CreateWorkflowRun,
+  type SubmitWorkflowStep,
+} from "./workflow.js";
+
+export {
   createCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,
