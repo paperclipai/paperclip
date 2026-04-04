@@ -78,9 +78,8 @@ function accumulateUsage(
 }
 
 function extractJsonFromLine(line: string): string | null {
-  const trimmed = line.trimStart();
-  if (!trimmed.startsWith("{")) return null;
-  return trimmed;
+  if (!line.startsWith("{")) return null;
+  return line;
 }
 
 export function parseGeminiJsonl(stdout: string) {
