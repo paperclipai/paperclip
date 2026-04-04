@@ -174,6 +174,7 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId,
+    refetchInterval: 10_000, // Poll every 10s as fallback for dropped WebSocket
   });
 
   const { data: activity } = useQuery({
