@@ -15,16 +15,55 @@ function resolveServerLogDir(): string {
   return resolveDefaultLogsDir();
 }
 
-const logDir = resolveServerLogDir();
-fs.mkdirSync(logDir, { recursive: true });
+function resolveWritableLogDir(): string {
+  const preferred = resolveServerLogDir();
+  try {
+    fs.mkdirSync(preferred, { recursive: true });
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch (err: any) {
+    const fallbacks = [
+      path.join("/tmp", "paperclip-logs"),
+      path.join(process.cwd(), "logs"),
+    ];
+    for (const fallback of fallbacks) {
+      try {
+        fs.mkdirSync(fallback, { recursive: true });
+        fs.accessSync(fallback, fs.constants.W_OK);
+        console.warn(
+          `[logger] Cannot write to preferred log directory '${preferred}' (${err?.code ?? err?.message}). ` +
+          `Falling back to '${fallback}'.`
+        );
+        return fallback;
+      } catch {
+        // try next fallback
+      }
+    }
+    // Last resort: log only to stdout by returning a path we'll handle below
+    console.warn(
+      `[logger] Cannot write to any log directory. File logging will be disabled.`
+    );
+    return "";
+  }
+}
 
-const logFile = path.join(logDir, "server.log");
+const logDir = resolveWritableLogDir();
+
+const logFile = logDir ? path.join(logDir, "server.log") : "";
 
 const sharedOpts = {
   translateTime: "HH:MM:ss",
   ignore: "pid,hostname",
   singleLine: true,
 };
+
+const fileTransportTarget = logFile
+  ? [{
+      target: "pino-pretty",
+      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      level: "debug" as const,
+    }]
+  : [];
 
 export const logger = pino({
   level: "debug",
@@ -35,11 +74,7 @@ export const logger = pino({
       options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
       level: "info",
     },
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
-      level: "debug",
-    },
+    ...fileTransportTarget,
   ],
 }));
 
