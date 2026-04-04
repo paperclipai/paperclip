@@ -526,6 +526,7 @@ export function AgentDetail() {
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -821,6 +822,15 @@ export function AgentDetail() {
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
               {agent.title ? ` - ${agent.title}` : ""}
+              <span className="mx-1.5 opacity-30">·</span>
+              <button
+                type="button"
+                className="font-mono text-xs hover:text-foreground transition-colors cursor-pointer"
+                title="Click to copy agent ID"
+                onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(agent.id); pushToast({ title: "Agent ID copied", tone: "success" }); }}
+              >
+                {agent.id.slice(0, 8)}
+              </button>
             </p>
           </div>
         </div>
