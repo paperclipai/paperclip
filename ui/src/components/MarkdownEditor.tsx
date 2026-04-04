@@ -33,7 +33,9 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
-import { looksLikeMarkdownPaste, normalizePastedMarkdown } from "../lib/markdownPaste";
+import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
+import { normalizeMarkdown } from "../lib/normalize-markdown";
+import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -326,6 +328,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       linkPlugin({ validateUrl: isSafeMarkdownLinkUrl }),
       linkDialogPlugin(),
       mentionDeletionPlugin(),
+      pasteNormalizationPlugin(),
       thematicBreakPlugin(),
       codeBlockPlugin({
         defaultCodeBlockLanguage: "txt",
@@ -520,7 +523,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
-    ref.current.insertMarkdown(normalizePastedMarkdown(rawText));
+    ref.current.insertMarkdown(normalizeMarkdown(rawText));
   }, []);
 
   return (
