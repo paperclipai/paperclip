@@ -116,7 +116,12 @@ export function NewGoalDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn(
+          "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
+          expanded
+            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
+            : "sm:max-w-lg",
+        )}
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
@@ -168,14 +173,17 @@ export function NewGoalDialog() {
         </div>
 
         {/* Description */}
-        <div className="px-4 pb-2">
+        <div className={cn("px-4 pb-2 overflow-y-auto min-h-0", expanded && "flex-1")}>
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
             placeholder="Add description..."
             bordered={false}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            contentClassName={cn(
+              "text-sm text-muted-foreground pb-12",
+              expanded ? "min-h-[220px]" : "min-h-[120px]",
+            )}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
               return asset.contentPath;
@@ -184,7 +192,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Property chips */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
+        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
           {/* Status */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -267,7 +275,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border shrink-0">
           <Button
             size="sm"
             disabled={!title.trim() || createGoal.isPending}
