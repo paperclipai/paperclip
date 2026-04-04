@@ -35,6 +35,9 @@ const mockBoardAuthService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockPrepareAdapterConfigForPersistence = vi.hoisted(
+  () => vi.fn(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig),
+);
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -42,6 +45,11 @@ vi.mock("../services/index.js", () => ({
   boardAuthService: () => mockBoardAuthService,
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
+  prepareAdapterConfigForPersistence: mockPrepareAdapterConfigForPersistence,
+  secretService: vi.fn(() => ({
+    normalizeAdapterConfigForPersistence: vi.fn(),
+    resolveAdapterConfigForRuntime: vi.fn(),
+  })),
   notifyHireApproved: vi.fn(),
 }));
 

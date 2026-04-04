@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockPrepareAdapterConfigForPersistence = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
@@ -15,6 +16,17 @@ vi.mock("../services/agents.js", () => ({
 
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
+}));
+
+vi.mock("../services/agent-adapter-config.js", () => ({
+  prepareAdapterConfigForPersistence: mockPrepareAdapterConfigForPersistence,
+}));
+
+vi.mock("../services/secrets.js", () => ({
+  secretService: vi.fn(() => ({
+    normalizeAdapterConfigForPersistence: vi.fn(),
+    resolveAdapterConfigForRuntime: vi.fn(),
+  })),
 }));
 
 type ApprovalRecord = {
@@ -58,6 +70,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPrepareAdapterConfigForPersistence.mockImplementation(async ({ adapterConfig }: { adapterConfig: Record<string, unknown> }) => adapterConfig);
     mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
     mockAgentService.terminate.mockResolvedValue(undefined);
@@ -95,7 +108,7 @@ describe("approvalService resolution idempotency", () => {
 
   it("still performs side effects when the resolution update is newly applied", async () => {
     const approved = createApproval("approved");
-    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+    const dbStub = createDbStub([[createApproval("pending")], [createApproval("pending")]], [approved]);
 
     const svc = approvalService(dbStub.db as any);
     const result = await svc.approve("approval-1", "board", "ship it");
@@ -103,5 +116,52 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects approval-created opencode_local agents without model", async () => {
+    const pending = createApproval("pending");
+    pending.payload = {
+      name: "OpenCode Agent",
+      role: "general",
+      adapterType: "opencode_local",
+      adapterConfig: {},
+    };
+    const approved = { ...pending, status: "approved" };
+    const dbStub = createDbStub([[pending]], [approved]);
+    mockPrepareAdapterConfigForPersistence.mockRejectedValueOnce(
+      new Error("OpenCode requires an explicit model in provider/model format."),
+    );
+
+    const svc = approvalService(dbStub.db as any);
+
+    await expect(svc.approve("approval-1", "board", "ship it")).rejects.toThrow(
+      "OpenCode requires an explicit model in provider/model format.",
+    );
+    expect(dbStub.returning).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps repeated approve retries as no-ops for already-approved opencode_local hires", async () => {
+    const approved = createApproval("approved");
+    approved.payload = {
+      name: "OpenCode Agent",
+      role: "general",
+      adapterType: "opencode_local",
+      adapterConfig: {},
+    };
+    const dbStub = createDbStub([[approved], [approved]], []);
+    mockPrepareAdapterConfigForPersistence.mockRejectedValueOnce(
+      new Error("OpenCode requires an explicit model in provider/model format."),
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(false);
+    expect(result.approval.status).toBe("approved");
+    expect(mockPrepareAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 });

@@ -34,6 +34,7 @@ Common adapter choices:
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.
+That same validation now applies across direct creation, governed hires, imports, and approved agent joins — not just the New Agent page.
 
 ## Agent Hiring via Governance
 

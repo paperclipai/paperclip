@@ -49,6 +49,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
+import { prepareAdapterConfigForPersistence } from "./agent-adapter-config.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
@@ -60,6 +61,7 @@ import { validateCron } from "./cron.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -2667,9 +2669,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
   const access = accessService(db);
+  const secrets = secretService(db);
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function resolveSource(source: CompanyPortabilityPreview["source"]): Promise<ResolvedSource> {
     if (source.type === "inline") {
@@ -3952,38 +3956,72 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported with an empty managed bundle.`);
         }
 
-        // Apply adapter overrides from request if present
-        const adapterOverride = input.adapterOverrides?.[planAgent.slug];
-        const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
-        const baseAdapterConfig = adapterOverride?.adapterConfig
-          ? { ...adapterOverride.adapterConfig }
-          : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
-
-        const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
-        const adapterConfigWithSkills = writePaperclipSkillSyncPreference(
-          baseAdapterConfig,
-          desiredSkills,
-        );
-        delete adapterConfigWithSkills.promptTemplate;
-        delete adapterConfigWithSkills.bootstrapPromptTemplate; // deprecated
-        delete adapterConfigWithSkills.instructionsFilePath;
-        delete adapterConfigWithSkills.instructionsBundleMode;
-        delete adapterConfigWithSkills.instructionsRootPath;
-        delete adapterConfigWithSkills.instructionsEntryFile;
-        const patch = {
-          name: planAgent.plannedName,
-          role: manifestAgent.role,
-          title: manifestAgent.title,
-          icon: manifestAgent.icon,
-          capabilities: manifestAgent.capabilities,
-          reportsTo: null,
-          adapterType: effectiveAdapterType,
-          adapterConfig: adapterConfigWithSkills,
-          runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
-          budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
-          permissions: manifestAgent.permissions,
-          metadata: manifestAgent.metadata,
+        let patch: {
+          name: string;
+          role: string;
+          title: string | null;
+          icon: string | null;
+          capabilities: string | null;
+          reportsTo: null;
+          adapterType: string;
+          adapterConfig: Record<string, unknown>;
+          runtimeConfig: Record<string, unknown>;
+          budgetMonthlyCents: number;
+          permissions: Record<string, unknown>;
+          metadata: Record<string, unknown> | null;
         };
+        try {
+          // Apply adapter overrides from request if present
+          const adapterOverride = input.adapterOverrides?.[planAgent.slug];
+          const effectiveAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
+          const baseAdapterConfig = adapterOverride?.adapterConfig
+            ? { ...adapterOverride.adapterConfig }
+            : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
+
+          const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
+          const adapterConfigWithSkills = writePaperclipSkillSyncPreference(
+            baseAdapterConfig,
+            desiredSkills,
+          );
+          delete adapterConfigWithSkills.promptTemplate;
+          delete adapterConfigWithSkills.bootstrapPromptTemplate; // deprecated
+          delete adapterConfigWithSkills.instructionsFilePath;
+          delete adapterConfigWithSkills.instructionsBundleMode;
+          delete adapterConfigWithSkills.instructionsRootPath;
+          delete adapterConfigWithSkills.instructionsEntryFile;
+          const normalizedAdapterConfig = await prepareAdapterConfigForPersistence({
+            companyId: targetCompany.id,
+            adapterType: effectiveAdapterType,
+            adapterConfig: adapterConfigWithSkills,
+            strictMode: strictSecretsMode,
+            secretsSvc: secrets,
+          });
+          patch = {
+            name: planAgent.plannedName,
+            role: manifestAgent.role,
+            title: manifestAgent.title,
+            icon: manifestAgent.icon,
+            capabilities: manifestAgent.capabilities,
+            reportsTo: null,
+            adapterType: effectiveAdapterType,
+            adapterConfig: normalizedAdapterConfig,
+            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
+            permissions: manifestAgent.permissions,
+            metadata: manifestAgent.metadata,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          warnings.push(`Skipped agent ${manifestAgent.slug}: invalid adapter config (${message})`);
+          resultAgents.push({
+            slug: planAgent.slug,
+            id: null,
+            action: "skipped",
+            name: planAgent.plannedName,
+            reason: "Invalid adapter config.",
+          });
+          continue;
+        }
 
         if (planAgent.action === "update" && planAgent.existingAgentId) {
           let updated = await agents.update(planAgent.existingAgentId, patch);
@@ -4003,7 +4041,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            updated = await agents.update(updated.id, { adapterConfig: materialized.adapterConfig }) ?? updated;
+            const normalizedMaterializedConfig = await prepareAdapterConfigForPersistence({
+              companyId: targetCompany.id,
+              adapterType: updated.adapterType,
+              adapterConfig: materialized.adapterConfig as Record<string, unknown>,
+              strictMode: strictSecretsMode,
+              secretsSvc: secrets,
+            });
+            updated = await agents.update(updated.id, { adapterConfig: normalizedMaterializedConfig }) ?? updated;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -4034,7 +4079,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             clearLegacyPromptTemplate: true,
             replaceExisting: true,
           });
-          created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+          const normalizedMaterializedConfig = await prepareAdapterConfigForPersistence({
+            companyId: targetCompany.id,
+            adapterType: created.adapterType,
+            adapterConfig: materialized.adapterConfig as Record<string, unknown>,
+            strictMode: strictSecretsMode,
+            secretsSvc: secrets,
+          });
+          created = await agents.update(created.id, { adapterConfig: normalizedMaterializedConfig }) ?? created;
         } catch (err) {
           warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
         }

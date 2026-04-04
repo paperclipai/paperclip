@@ -46,6 +46,8 @@ import {
   boardAuthService,
   deduplicateAgentName,
   logActivity,
+  prepareAdapterConfigForPersistence,
+  secretService,
   notifyHireApproved
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -1579,6 +1581,8 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const secrets = secretService(db);
+  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -2662,6 +2666,18 @@ export function accessRoutes(
           }))
         );
 
+        const adapterType = existing.adapterType ?? "process";
+        const normalizedAdapterConfig = await prepareAdapterConfigForPersistence({
+          companyId,
+          adapterType,
+          adapterConfig:
+            existing.agentDefaultsPayload &&
+            typeof existing.agentDefaultsPayload === "object"
+              ? (existing.agentDefaultsPayload as Record<string, unknown>)
+              : {},
+          strictMode: strictSecretsMode,
+          secretsSvc: secrets,
+        });
         const created = await agents.create(companyId, {
           name: agentName,
           role: "general",
@@ -2669,12 +2685,8 @@ export function accessRoutes(
           status: "idle",
           reportsTo: managerId,
           capabilities: existing.capabilities ?? null,
-          adapterType: existing.adapterType ?? "process",
-          adapterConfig:
-            existing.agentDefaultsPayload &&
-            typeof existing.agentDefaultsPayload === "object"
-              ? (existing.agentDefaultsPayload as Record<string, unknown>)
-              : {},
+          adapterType,
+          adapterConfig: normalizedAdapterConfig,
           runtimeConfig: {},
           budgetMonthlyCents: 0,
           spentMonthlyCents: 0,

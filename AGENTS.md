@@ -146,3 +146,8 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+
+## 11. Local PR authoring preference
+
+For this local project workflow, do **not** include a `Thinking Path` section in pull request bodies unless the human explicitly asks for it.
+If the upstream PR template asks for `Thinking Path`, omit that section and omit the matching checklist item in the authored PR body.

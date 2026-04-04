@@ -93,4 +93,41 @@ describe("opencode_local environment diagnostics", () => {
       await fs.rm(binDir, { recursive: true, force: true });
     }
   });
+
+  it("may still pass environment diagnostics when no model is configured but model discovery succeeds", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-no-model-cwd-"));
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-no-model-bin-"));
+    const fakeOpencode = path.join(binDir, "opencode");
+    const script = [
+      "#!/bin/sh",
+      'if [ "$1" = "models" ]; then',
+      '  echo "openai/gpt-5-codex"',
+      "  exit 0",
+      "fi",
+      'echo "unexpected command" 1>&2',
+      "exit 1",
+      "",
+    ].join("\n");
+
+    try {
+      await fs.writeFile(fakeOpencode, script, "utf8");
+      await fs.chmod(fakeOpencode, 0o755);
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "opencode_local",
+        config: {
+          command: fakeOpencode,
+          cwd,
+        },
+      });
+
+      expect(result.status).toBe("pass");
+      expect(result.checks.some((check) => check.code === "opencode_model_invalid")).toBe(false);
+      expect(result.checks.some((check) => check.code === "opencode_models_discovered")).toBe(true);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
 });
