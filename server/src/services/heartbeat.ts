@@ -1755,7 +1755,15 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
+      if (!tracksLocalChild) {
+        logger.debug(
+          { runId: run.id, adapterType },
+          "skipping orphan reap for adapter without tracked local child process",
+        );
+        continue;
+      }
+
+      if (run.processPid && isProcessAlive(run.processPid)) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
