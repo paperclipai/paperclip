@@ -42,18 +42,16 @@ function buildTransportTargets() {
 
   const lokiUrl = process.env.PAPERCLIP_LOKI_URL?.trim();
   if (lokiUrl) {
-    const lokiLabels: Record<string, string> = {
-      job: "paperclip",
-      service: "paperclip-server",
-    };
     const agentId = process.env.PAPERCLIP_AGENT_ID?.trim();
-    if (agentId) lokiLabels.agentId = agentId;
-
     targets.push({
       target: "pino-loki",
       options: {
         host: lokiUrl,
-        labels: lokiLabels,
+        labels: {
+          job: "paperclip",
+          service: "paperclip-server",
+          ...(agentId ? { agentId } : {}),
+        },
         propsToLabels: ["runId"],
         replaceTimestamp: true,
         silenceErrors: true,
