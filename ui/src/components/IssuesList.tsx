@@ -47,6 +47,7 @@ export type IssueViewState = {
   groupBy: "status" | "priority" | "assignee" | "none";
   viewMode: "list" | "board";
   collapsedGroups: string[];
+  collapsedParents: string[];
 };
 
 const defaultViewState: IssueViewState = {
@@ -60,6 +61,7 @@ const defaultViewState: IssueViewState = {
   groupBy: "none",
   viewMode: "list",
   collapsedGroups: [],
+  collapsedParents: [],
 };
 
 const quickFilterPresets = [
@@ -219,7 +221,6 @@ export function IssuesList({
     return getViewState(scopedKey);
   });
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
-  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(new Set());
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const deferredIssueSearch = useDeferredValue(issueSearch);
@@ -680,14 +681,14 @@ export function IssuesList({
                 const renderIssueRow = (issue: Issue, depth: number) => {
                   const children = childMap.get(issue.id) ?? [];
                   const hasChildren = children.length > 0;
-                  const isExpanded = !collapsedParents.has(issue.id);
+                  const isExpanded = !viewState.collapsedParents.includes(issue.id);
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    setCollapsedParents((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(issue.id)) next.delete(issue.id); else next.add(issue.id);
-                      return next;
+                    updateView({
+                      collapsedParents: isExpanded
+                        ? [...viewState.collapsedParents, issue.id]
+                        : viewState.collapsedParents.filter((id) => id !== issue.id),
                     });
                   };
 
