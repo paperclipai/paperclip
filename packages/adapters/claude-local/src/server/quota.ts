@@ -477,6 +477,13 @@ function formatProviderError(source: string, error: unknown): string {
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+  if (
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true"
+  ) {
+    return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
+  }
+
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
   const token = await readClaudeToken();
