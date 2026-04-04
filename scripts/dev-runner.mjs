@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -14,7 +15,9 @@ const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const serverRoot = path.join(repoRoot, "server");
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
+const require = createRequire(import.meta.url);
 
 const watchedDirectories = [
   "cli",
@@ -111,6 +114,31 @@ let child = null;
 let childExitPromise = null;
 let scanTimer = null;
 let autoRestartTimer = null;
+
+function resolveTsxCliPath() {
+  const candidateRequires = [
+    require,
+    createRequire(path.join(serverRoot, "package.json")),
+  ];
+
+  for (const requireFn of candidateRequires) {
+    try {
+      const tsxRoot = path.dirname(requireFn.resolve("tsx/package.json"));
+      const tsxCliCandidates = [
+        path.resolve(tsxRoot, "dist", "cli.mjs"),
+        path.resolve(tsxRoot, "dist", "cli.js"),
+      ];
+      const tsxCliPath = tsxCliCandidates.find((candidate) => existsSync(candidate));
+      if (tsxCliPath) {
+        return tsxCliPath;
+      }
+    } catch {
+      // Keep trying fallback resolution strategies.
+    }
+  }
+
+  throw new Error("Failed to locate tsx CLI entrypoint for server dev process");
+}
 
 function toError(error, context = "Dev runner command failed") {
   if (error instanceof Error) return error;
@@ -455,11 +483,12 @@ async function stopChildForRestart() {
 async function startServerChild() {
   await buildPluginSdk();
 
-  const serverScript = mode === "watch" ? "dev:watch" : "dev";
+  const tsxCliPath = resolveTsxCliPath();
+  const serverEntryPoint = mode === "watch" ? "./scripts/dev-watch.ts" : "src/index.ts";
   child = spawn(
-    pnpmBin,
-    ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    process.execPath,
+    [tsxCliPath, serverEntryPoint, ...forwardedArgs],
+    { stdio: "inherit", env, cwd: serverRoot },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
