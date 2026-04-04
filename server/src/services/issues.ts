@@ -1211,14 +1211,29 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
+      const mentionedIds = new Set<string>();
+
+      // 1. Parse agent:// URI links: [@Name](agent://uuid)
+      const linkRe = /\[.*?\]\(agent:\/\/([a-f0-9-]+)\)/gi;
+      let lm: RegExpExecArray | null;
+      while ((lm = linkRe.exec(body)) !== null) mentionedIds.add(lm[1]);
+
+      // 2. Fallback: plain @name mentions (backward compat)
+      const plainRe = /\B@([^\s@,!?.[\]()]+)/g;
       const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) tokens.add(m[1].toLowerCase());
-      if (tokens.size === 0) return [];
+      let pm: RegExpExecArray | null;
+      while ((pm = plainRe.exec(body)) !== null) tokens.add(pm[1].toLowerCase());
+
+      if (mentionedIds.size === 0 && tokens.size === 0) return [];
+
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+
+      for (const a of rows) {
+        if (tokens.has(a.name.toLowerCase())) mentionedIds.add(a.id);
+      }
+
+      return Array.from(mentionedIds);
     },
 
     findMentionedProjectIds: async (issueId: string) => {

@@ -155,8 +155,9 @@ function mentionMarkdown(option: MentionOption): string {
     const userId = option.id.replace("user:", "");
     return `[@${option.name}](user://${userId}) `;
   }
-  // Agents: plain @mention
-  return `@${option.name} `;
+  // Agents: link mention with agent:// URI
+  const agentId = option.id.replace("agent:", "");
+  return `[@${option.name}](agent://${agentId}) `;
 }
 
 /** Replace `@<query>` in the markdown string with the selected mention token. */
@@ -309,6 +310,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         link.style.borderColor = "rgb(59 130 246 / 0.4)";
         link.style.backgroundColor = "rgb(59 130 246 / 0.1)";
         link.style.color = "rgb(59 130 246)";
+        continue;
+      }
+
+      // Agent mention links (agent://agentId)
+      if (href.startsWith("agent://")) {
+        link.dataset.agentMention = "true";
+        link.classList.add("paperclip-agent-mention-chip");
+        link.setAttribute("contenteditable", "false");
+        link.style.borderColor = "rgb(168 85 247 / 0.4)";
+        link.style.backgroundColor = "rgb(168 85 247 / 0.1)";
+        link.style.color = "rgb(168 85 247)";
         continue;
       }
 
