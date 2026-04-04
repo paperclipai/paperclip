@@ -1100,6 +1100,15 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId) {
+          const parent = await tx
+            .select({ id: issues.id, companyId: issues.companyId })
+            .from(issues)
+            .where(eq(issues.id, issueData.parentId))
+            .then((rows) => rows[0] ?? null);
+          if (!parent) throw notFound("Parent issue not found");
+          if (parent.companyId !== companyId) throw unprocessable("Parent issue must belong to the same company");
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
