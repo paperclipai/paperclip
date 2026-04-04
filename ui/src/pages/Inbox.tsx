@@ -906,6 +906,7 @@ export function Inbox() {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        kind: "task",
       }),
     enabled: !!selectedCompanyId,
   });
@@ -918,6 +919,7 @@ export function Inbox() {
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        kind: "task",
       }),
     enabled: !!selectedCompanyId,
   });

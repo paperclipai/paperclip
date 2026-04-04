@@ -19,6 +19,7 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  ISSUE_KINDS,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -341,6 +342,9 @@ export function issueRoutes(
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
+      kind: req.query.kind && (ISSUE_KINDS as readonly string[]).includes(req.query.kind as string)
+        ? (req.query.kind as string)
+        : undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,

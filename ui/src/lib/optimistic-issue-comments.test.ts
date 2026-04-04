@@ -137,6 +137,7 @@ describe("optimistic issue comments", () => {
         description: null,
         status: "done",
         priority: "medium",
+        kind: "task",
         assigneeAgentId: "agent-1",
         assigneeUserId: null,
         checkoutRunId: null,

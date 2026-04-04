@@ -27,6 +27,7 @@ export const issues = pgTable(
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    kind: text("kind").notNull().default("task"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("backlog"),
@@ -59,6 +60,7 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    companyKindIdx: index("issues_company_kind_idx").on(table.companyId, table.kind),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,

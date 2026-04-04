@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_KINDS, ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -41,6 +41,7 @@ export const createIssueSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  kind: z.enum(ISSUE_KINDS).optional().default("task"),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
@@ -66,7 +67,7 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueSchema.partial().extend({
+export const updateIssueSchema = createIssueSchema.omit({ kind: true }).partial().extend({
   comment: z.string().min(1).optional(),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),

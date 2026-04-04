@@ -133,6 +133,9 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 
+export const ISSUE_KINDS = ["task", "conversation"] as const;
+export type IssueKind = (typeof ISSUE_KINDS)[number];
+
 export const ISSUE_ORIGIN_KINDS = ["manual", "routine_execution"] as const;
 export type IssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 
