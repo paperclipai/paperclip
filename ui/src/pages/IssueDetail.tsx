@@ -1134,7 +1134,7 @@ export function IssueDetail() {
   );
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="w-full space-y-6 px-4 sm:px-6 lg:px-8">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
