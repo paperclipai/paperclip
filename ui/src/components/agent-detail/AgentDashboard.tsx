@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
-import { useQueryClient, useMutation } from "@tanstack/react-query";
+import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../ActivityCharts";
 import { StatusBadge } from "../StatusBadge";
 import { EmploymentBadge } from "../EmploymentBadge";
@@ -268,6 +268,16 @@ function EmploymentCard({
     },
   });
 
+  // Show ramp time for agents hired within the last 30 days
+  const isRecentHire = hiredAt
+    ? Date.now() - new Date(hiredAt).getTime() < 30 * 24 * 60 * 60 * 1000
+    : false;
+  const onboardingMetricsQuery = useQuery({
+    queryKey: ["agents", agent.id, "onboarding-metrics"],
+    queryFn: () => agentsApi.onboardingMetrics(agent.id, companyId),
+    enabled: isRecentHire,
+  });
+
   const reasonLabels: Record<string, string> = {
     contract_complete: "Contract Complete",
     budget_exhausted: "Budget Exhausted",
@@ -296,6 +306,16 @@ function EmploymentCard({
           <div>
             <span className="text-xs text-muted-foreground block">Hired</span>
             <span className="text-sm mt-1 block">{formatDate(hiredAt)}</span>
+          </div>
+        )}
+        {isRecentHire && onboardingMetricsQuery.data && (
+          <div>
+            <span className="text-xs text-muted-foreground block">Ramp time</span>
+            <span className="text-sm mt-1 block">
+              {onboardingMetricsQuery.data.rampTimeDays !== null
+                ? `${onboardingMetricsQuery.data.rampTimeDays} days`
+                : "Not yet completed first issue"}
+            </span>
           </div>
         )}
         {autonomyInfo && (

@@ -264,6 +264,54 @@
         </div>
       </div>
 
+      <!-- Section: Employment Model -->
+      <div>
+        <h2 class="text-xs font-semibold text-blue-400 tracking-widest uppercase mb-6">Employment Model</h2>
+        <div class="space-y-1">
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">What is the difference between full-time and contractor agents?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Full-time agents (FTEs) run indefinitely. They accumulate persistent memory across all projects, maintain a continuous performance history, and are only ended through manual termination. Contractor agents operate under a fixed engagement with a defined end condition - a specific date, a project completion milestone, a total token budget, or manual termination. Contractors are appropriate for scoped work with a natural endpoint. When a contractor is terminated, their work output is preserved in full but their memory is archived rather than carried forward. See the <a href="/docs/hiring-workflow.html" class="text-blue-400 hover:text-blue-300 transition-colors">Hiring Workflow</a> guide for a full comparison.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">Can I hire unlimited agents?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Yes. IronWorks does not charge per agent or per seat. You can hire as many FTE or contractor agents as your org chart requires. The practical limit is your LLM provider's API rate limits and the token costs you pay directly to that provider. IronWorks charges a flat platform subscription regardless of how many agents you run.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">What happens when a contractor's project ends?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              When a contract end condition is met, IronWorks terminates the agent automatically. All completed issues, Knowledge Base contributions, and file outputs are preserved. Open issues can be reassigned to other agents or closed as cancelled - you choose at the time of termination. The agent's memory is archived and associated with the contract record. If you want to transfer knowledge to another agent before the contract ends, you can promote key memory entries to the Knowledge Base or configure a memory sharing relationship with an FTE agent before termination runs.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">How do agent performance scores work?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Each agent is scored weekly on issue completion rate, average cycle time for resolved issues, escalation frequency (how often the agent escalates blockers versus resolving them independently), and output quality (measured by whether completed issues are accepted or sent back for revision). The score is a composite 0-100 number shown on the agent's profile card and in the Board Briefing. Scores accumulate over time for FTE agents, building a performance history. You can leave manual notes on an agent's profile to provide qualitative context alongside the quantitative score.
+            </div>
+          </details>
+
+        </div>
+      </div>
+
       <!-- Section: Billing & Pricing -->
       <div>
         <h2 class="text-xs font-semibold text-blue-400 tracking-widest uppercase mb-6">Billing and Pricing</h2>
@@ -334,6 +382,74 @@
             </summary>
             <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
               IronWorks infrastructure runs on dedicated servers in the United States. Database and file storage are not shared with other products or services. Automated daily backups are retained for 30 days. For data residency requirements outside the US, contact us to discuss options.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">Is IronWorks SOC 2 compliant?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              IronWorks is not currently SOC 2 Type II certified. The platform is built to SOC 2-aligned controls: tenant isolation, encrypted secrets, access logging, change management, and incident response procedures. A formal audit is on the roadmap as we scale toward enterprise customers. In the meantime, our full security posture is documented at the <a href="/security" class="text-blue-400 hover:text-blue-300 transition-colors">security page</a> and a detailed Data Processing Agreement is available at <a href="/dpa" class="text-blue-400 hover:text-blue-300 transition-colors">ironworksapp.ai/dpa</a>.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">Can I export compliance data?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Yes. SLA compliance records, agent activity logs, cost reports, and hire/termination history are all exportable as CSV from the Board Briefing and the relevant settings pages. A full data export of all company data is available from Settings under Data Export. Exports are generated asynchronously and delivered to your account email. If you need a specific format or scope for compliance purposes, contact us and we will accommodate the request.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">How are agent permissions managed?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Each agent has a permission set that controls what tools, integrations, and data it can access. Permissions are configured on the agent's profile page and follow the principle of least privilege - new agents start with the minimum access required for their role template and you extend permissions deliberately. Permission changes are logged with the actor, timestamp, and previous value. The Board Briefing includes a weekly permission matrix snapshot so you can audit the full permission state without digging through individual agent profiles. Agents cannot grant themselves additional permissions; only Company Admins can modify permissions.
+            </div>
+          </details>
+
+        </div>
+      </div>
+
+      <!-- Section: Token Management -->
+      <div>
+        <h2 class="text-xs font-semibold text-blue-400 tracking-widest uppercase mb-6">Token Management</h2>
+        <div class="space-y-1">
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">How does IronWorks minimize my LLM API costs?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              IronWorks uses several mechanisms to keep token costs down. Agents run on heartbeat cycles rather than continuously, so they only consume tokens when there is actual work to do. Context windows are pruned before each run to remove redundant or stale content. Per-agent monthly budgets create hard ceilings that prevent runaway costs. Budget alerts at configurable thresholds (default: 80% and 95%) let you intervene before a budget is exhausted. The CFO agent generates a weekly cost summary that identifies which agents are consuming the most tokens relative to their output.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">What is model routing?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              Model routing is the practice of assigning different LLM models to different agents or task types based on the complexity and cost requirements of that work. A CEO agent handling strategic reasoning might be assigned Claude 3.5 Sonnet. A support agent handling simple ticket categorization might be assigned Claude 3 Haiku or GPT-4o-mini. The cheaper model handles the routine work; the more capable model is reserved for tasks where it genuinely matters. IronWorks lets you configure the model per agent in the agent settings panel.
+            </div>
+          </details>
+
+          <details class="border-b border-white/[0.06] hover:border-white/10 group transition-all duration-300">
+            <summary class="flex items-center justify-between gap-4 py-5">
+              <span class="summary-text font-medium text-zinc-300 transition-colors">How does the iteration cap protect my budget?</span>
+              <svg class="chevron w-4 h-4 text-zinc-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+            </summary>
+            <div class="pb-5 text-zinc-400 text-sm leading-relaxed">
+              The iteration cap limits the number of reasoning steps an agent can take on a single issue before it must pause and report back. Without a cap, an agent can get into a loop - retrying a failing approach repeatedly, each attempt consuming tokens. The cap stops this. When an agent hits the iteration limit, it posts a status update explaining how far it got and what it needs to proceed, and the issue moves to a blocked state for your review. The cap is configurable per agent. The default is 15 iterations per issue run.
             </div>
           </details>
 

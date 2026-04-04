@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ironworks
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      POSTGRES_DB: ironworks
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ironworks -d ironworks"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ironworks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${IRONWORKS_PORT:-3100}:3100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: "0.0.0.0"
+      IRONWORKS_HOME: "/ironworks"
+      DATABASE_URL: "postgres://ironworks:${POSTGRES_PASSWORD}@postgres:5432/ironworks"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      IRONWORKS_DEPLOYMENT_MODE: "authenticated"
+      IRONWORKS_DEPLOYMENT_EXPOSURE: "private"
+      IRONWORKS_PUBLIC_URL: "${IRONWORKS_PUBLIC_URL:-http://localhost:3100}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+    volumes:
+      - "${IRONWORKS_DATA_DIR:-./data/docker-ironworks}:/ironworks"
+
+volumes:
+  postgres-data:

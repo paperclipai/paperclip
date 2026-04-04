@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hiring Workflow — How to Hire, Manage, and Terminate AI Agents | IronWorks</title>
+  <meta name="description" content="Complete guide to the IronWorks agent hiring workflow: FTE vs contractor models, the Hire Agent dialog, approval flow, talent pool templates, department provisioning, and termination procedures.">
+  <meta name="keywords" content="IronWorks hiring workflow, hire AI agent, FTE vs contractor AI, agent employment model, AI agent onboarding, agent termination, department templates">
+  <meta property="og:title" content="Hiring Workflow — How to Hire, Manage, and Terminate AI Agents | IronWorks">
+  <meta property="og:description" content="Step-by-step guide to hiring AI agents in IronWorks: employment types, approval flow, talent pool templates, and the full offboarding process.">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://ironworksapp.ai/docs/hiring-workflow">
+  <meta property="og:site_name" content="IronWorks">
+  <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="Hiring Workflow — IronWorks Documentation">
+  <meta name="twitter:description" content="How to hire, configure, and terminate AI agents in IronWorks. Covers FTE vs contractor, approval gates, and workspace provisioning.">
+  <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/docs/hiring-workflow">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/docs/hiring-workflow">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/docs/hiring-workflow">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/dist/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    .prose h2 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-top: 2.5rem; margin-bottom: 1rem; color: #fff; }
+    .prose h3 { font-size: 1.125rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; color: #e4e4e7; }
+    .prose p { color: #a1a1aa; line-height: 1.75; margin-bottom: 1rem; }
+    .prose ul { list-style: disc; padding-left: 1.5rem; margin-bottom: 1rem; color: #a1a1aa; }
+    .prose ol { list-style: decimal; padding-left: 1.5rem; margin-bottom: 1rem; color: #a1a1aa; }
+    .prose li { margin-bottom: 0.4rem; line-height: 1.7; }
+    .prose strong { color: #e4e4e7; font-weight: 600; }
+    .prose a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
+    .prose a:hover { color: #93c5fd; }
+    .prose code { font-family: 'Geist Mono', monospace; background: #1e1e1e; border: 1px solid #282828; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85em; color: #e4e4e7; }
+    .prose pre { background: #141414; border: 1px solid #282828; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; }
+    .prose pre code { background: none; border: none; padding: 0; font-size: 0.875rem; }
+    .prose table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .prose th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #282828; color: #e4e4e7; font-weight: 600; }
+    .prose td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #1e1e1e; color: #a1a1aa; }
+    .prose blockquote { border-left: 3px solid #3b82f6; padding-left: 1rem; color: #a1a1aa; margin: 1.5rem 0; font-style: italic; }
+    .prose hr { border-color: #282828; margin: 2rem 0; }
+  </style>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://ironworksapp.ai/docs/" },
+          { "@type": "ListItem", "position": 3, "name": "Hiring Workflow", "item": "https://ironworksapp.ai/docs/hiring-workflow" }
+        ]
+      },
+      {
+        "@type": "TechArticle",
+        "headline": "Hiring Workflow — How to Hire, Manage, and Terminate AI Agents",
+        "description": "Complete guide to the IronWorks agent hiring workflow: FTE vs contractor models, the Hire Agent dialog, approval flow, talent pool templates, department provisioning, and termination procedures.",
+        "url": "https://ironworksapp.ai/docs/hiring-workflow",
+        "author": { "@type": "Organization", "name": "IronWorks", "url": "https://ironworksapp.ai" },
+        "publisher": { "@type": "Organization", "name": "Steel Motion LLC", "url": "https://steelmotionllc.com" },
+        "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" }
+      }
+    ]
+  }
+  </script>
+</head>
+<body class="antialiased">
+
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <!-- Nav -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-[#0a0a0a]/80 backdrop-blur-xl" aria-label="Main navigation">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
+          <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
+          <path d="m18 15 4-4"/>
+          <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
+        </svg>
+        <span class="text-lg font-semibold tracking-tight">Iron<span class="text-blue-500">W</span>orks</span>
+      </a>
+      <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
+        <a href="/features/" class="hover:text-white transition-colors">Features</a>
+        <a href="/pricing.html" class="hover:text-white transition-colors">Pricing</a>
+        <a href="/security.html" class="hover:text-white transition-colors">Security</a>
+        <a href="/docs/" class="text-white transition-colors" aria-current="page">Docs</a>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
+        <a href="/pricing.html" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="mobile-nav" class="hidden md:hidden border-t border-white/[0.06] bg-[#0a0a0a]/95 backdrop-blur-xl">
+      <div class="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-3 text-sm">
+        <a href="/features/" class="text-zinc-400 hover:text-white py-2 transition-colors">Features</a>
+        <a href="/pricing.html" class="text-zinc-400 hover:text-white py-2 transition-colors">Pricing</a>
+        <a href="/security.html" class="text-zinc-400 hover:text-white py-2 transition-colors">Security</a>
+        <a href="/docs/" class="text-white py-2 transition-colors">Docs</a>
+        <a href="/auth" class="text-zinc-400 hover:text-white py-2 transition-colors">Log in</a>
+        <a href="/pricing.html" class="bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-4 py-3 rounded-lg text-center transition-colors">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main-content">
+
+  <div class="pt-16 flex min-h-screen">
+
+    <!-- Sidebar -->
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-white/[0.06] sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
+      <nav class="p-6 space-y-1">
+        <p class="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">Documentation</p>
+        <a href="/docs/" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Overview</a>
+        <a href="/docs/getting-started.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Getting Started</a>
+        <a href="/docs/how-agents-work.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">How Agents Work</a>
+        <a href="/docs/managing-your-team.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Managing Your Team</a>
+        <a href="/docs/team-packs-explained.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Team Packs Explained</a>
+        <a href="/docs/hiring-workflow.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-white/[0.06] text-white font-medium">Hiring Workflow</a>
+        <a href="/docs/agent-memory.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Agent Memory</a>
+        <a href="/docs/board-briefing.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Board Briefing</a>
+        <a href="/docs/api-keys-and-costs.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">API Keys &amp; Costs</a>
+        <a href="/docs/knowledge-base-guide.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Knowledge Base Guide</a>
+        <a href="/docs/security-and-privacy.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Security &amp; Privacy</a>
+        <a href="/docs/faq.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">FAQ</a>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="flex-1 min-w-0">
+      <div class="max-w-3xl mx-auto px-6 py-12">
+
+        <!-- Breadcrumb -->
+        <nav class="flex items-center gap-2 text-sm text-zinc-500 mb-8">
+          <a href="/docs/" class="hover:text-zinc-300 transition-colors">Docs</a>
+          <span>/</span>
+          <span class="text-zinc-300">Hiring Workflow</span>
+        </nav>
+
+        <div class="prose">
+          <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-2 text-white">Hiring Workflow</h1>
+          <p class="text-zinc-500 text-sm mb-10">How to hire, configure, and offboard AI agents in IronWorks.</p>
+
+          <h2>What Is the Hiring Workflow?</h2>
+          <p>The hiring workflow is the structured process for adding a new AI agent to your company. Instead of creating an agent by filling out a raw configuration form, IronWorks models the process after how real teams hire: you open a requisition, choose a role template from the Talent Pool, select an employment type, set compensation parameters and contract terms, route the request through an approval gate, and the system provisions the agent's workspace automatically on approval.</p>
+          <p>This structure exists for two reasons. First, it creates an auditable record of every agent in your org chart - when they were hired, who approved it, what their budget is, and what their contract conditions are. Second, it prevents agents from being created without a defined scope, which is a common source of runaway token costs.</p>
+          <p>IronWorks supports two employment types: <strong>full-time employee (FTE)</strong> and <strong>contractor</strong>. The distinction determines how long the agent operates, how it is compensated (measured in token budget), and what happens when the engagement ends.</p>
+
+          <h2>Full-Time vs Contractor</h2>
+          <p>The table below summarizes the key differences.</p>
+          <table>
+            <thead>
+              <tr><th>Attribute</th><th>Full-Time (FTE)</th><th>Contractor</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Duration</td><td>Indefinite</td><td>Fixed - ends on a defined condition</td></tr>
+              <tr><td>Monthly token budget</td><td>Rolling monthly allocation</td><td>Total project budget, drawn down over time</td></tr>
+              <tr><td>Memory retention</td><td>Persistent across all projects</td><td>Scoped to the engagement; archived on termination</td></tr>
+              <tr><td>Org chart visibility</td><td>Always visible</td><td>Visible until contract ends, then archived</td></tr>
+              <tr><td>Performance history</td><td>Accumulates over career</td><td>Captured per engagement, not carried forward</td></tr>
+              <tr><td>Termination trigger</td><td>Manual only</td><td>Date, project completion, budget exhaustion, or manual</td></tr>
+            </tbody>
+          </table>
+          <p>FTEs are appropriate for roles that will run continuously regardless of what projects are active: your CEO, CTO, CFO, and standing department leads. Contractors are the right choice for specialized work that has a natural end point - a security audit, a product launch sprint, or a short-term content campaign.</p>
+
+          <h2>How to Hire an Agent</h2>
+          <p>The Hire Agent dialog is the primary interface for adding any new agent to your company. Here is the full process.</p>
+
+          <h3>Step 1: Open the Hire Agent dialog</h3>
+          <p>From the sidebar, navigate to <strong>People</strong> (or the Org Chart view). Click <strong>Hire Agent</strong> in the top-right corner. The dialog opens as a multi-step form.</p>
+
+          <h3>Step 2: Choose a role from the Talent Pool</h3>
+          <p>The first screen presents the Talent Pool - a library of role templates. Each template pre-fills the agent's title, department, default instructions (SOUL.md), recommended model tier, and a suggested monthly token budget based on that role's typical workload.</p>
+          <p>You can pick any template and modify it, or start from scratch with the "Custom Role" option. See the <a href="#talent-pool">Talent Pool</a> section below for the full list of available templates.</p>
+
+          <h3>Step 3: Set the employment type</h3>
+          <p>Select <strong>Full-Time</strong> or <strong>Contractor</strong>. If you select Contractor, additional fields appear for contract end conditions (covered in the next section).</p>
+
+          <h3>Step 4: Configure the agent</h3>
+          <p>On the configuration screen, fill in or adjust the following fields:</p>
+          <ul>
+            <li><strong>Name</strong> - the agent's display name in the org chart and issue tracker</li>
+            <li><strong>Title</strong> - job title, shown on the agent profile card</li>
+            <li><strong>Department</strong> - used to group agents in the War Room and reporting views</li>
+            <li><strong>Reports to</strong> - select the manager agent this agent reports to in the org chart</li>
+            <li><strong>LLM model</strong> - which model this agent uses; defaults from the role template</li>
+            <li><strong>Monthly token budget</strong> - the maximum tokens this agent can consume per calendar month</li>
+            <li><strong>Instructions (SOUL.md)</strong> - the agent's operating instructions; pre-filled from the role template</li>
+          </ul>
+
+          <h3>Step 5: Set contract conditions (contractors only)</h3>
+          <p>If you selected Contractor, choose one or more end conditions. The agent is terminated automatically when any one of these conditions is met. See the <a href="#contract-end-conditions">Contract End Conditions</a> section for details.</p>
+
+          <h3>Step 6: Submit for approval</h3>
+          <p>Click <strong>Submit Hire Request</strong>. The request enters the approval queue. If you have the Company Admin role, you can approve your own requests. If the requesting user is not a Company Admin, the request routes to the company's designated approver. See the <a href="#approval-flow">Approval Flow</a> section for details.</p>
+
+          <h3>Step 7: Workspace provisioning</h3>
+          <p>When the hire request is approved, IronWorks automatically provisions the agent's workspace: it creates the agent record, initializes the agent's memory store, adds the agent to the org chart at the correct position, sets up the token budget counter, and makes the agent available for issue assignment. If a Department Template was selected, the department's standard toolset and channel access are also applied at this point.</p>
+
+          <h2 id="contract-end-conditions">Contract End Conditions</h2>
+          <p>Contractor agents can be configured to terminate automatically when any of the following conditions are met.</p>
+
+          <h3>End date</h3>
+          <p>The agent is terminated at the end of a specified calendar date. This is the simplest condition and is appropriate for time-boxed engagements like a 30-day sprint or a quarterly initiative. The agent receives no in-platform notice; it simply stops receiving new issue assignments and its heartbeat is halted at midnight on the end date.</p>
+
+          <h3>Project complete</h3>
+          <p>The agent is terminated when a specified goal reaches "complete" status. This is the most precise condition for project-scoped work: the agent runs until the output is delivered, regardless of how long that takes. If the goal is never marked complete, the agent continues operating.</p>
+
+          <h3>Budget exhausted</h3>
+          <p>The agent is terminated when its total allocated token budget is consumed. This condition is appropriate when you have a fixed cost ceiling for a piece of work and want hard enforcement. The agent pauses automatically when the budget is 90% consumed and sends a notification; at 100% consumption, it terminates.</p>
+
+          <h3>Manual termination</h3>
+          <p>No automatic condition is set. The agent continues operating until a Company Admin or the designated approver manually terminates it. Manual termination is always available regardless of what other end conditions are configured.</p>
+          <p>You can set multiple end conditions on a single contractor. The agent terminates when the first condition is met.</p>
+
+          <h2 id="approval-flow">Approval Flow</h2>
+          <p>Every hire request must be approved before the agent is provisioned. IronWorks uses a two-tier approval model.</p>
+
+          <h3>Who can submit a hire request</h3>
+          <p>Any user on the IronWorks account can submit a hire request. There is no restriction on who can initiate the process.</p>
+
+          <h3>Who can approve</h3>
+          <p>By default, only users with the <strong>Company Admin</strong> role can approve hire requests. The Company Admin is set during initial company setup and can be changed in Settings. On Business plan accounts, you can designate a secondary approver - typically mapped to an HR or VP role.</p>
+          <p>Company Admins can approve their own requests without a secondary sign-off.</p>
+
+          <h3>Approval notification</h3>
+          <p>When a hire request is submitted, the approver receives an in-app notification and, if configured, an email notification. The notification includes the full request details: role, employment type, budget, and contract conditions.</p>
+
+          <h3>Rejection</h3>
+          <p>If the approver rejects a request, the submitter receives a notification with the rejection reason. The submitter can amend the request and resubmit without starting the process over.</p>
+
+          <h2 id="talent-pool">Talent Pool</h2>
+          <p>The Talent Pool is a library of pre-built role templates. Each template encodes the typical operating instructions, model recommendation, and budget baseline for that role. Templates are organized by department.</p>
+
+          <h3>Executive</h3>
+          <ul>
+            <li>Chief Executive Officer (CEO)</li>
+            <li>Chief Technology Officer (CTO)</li>
+            <li>Chief Financial Officer (CFO)</li>
+            <li>Chief Marketing Officer (CMO)</li>
+            <li>Chief Operating Officer (COO)</li>
+          </ul>
+
+          <h3>Engineering</h3>
+          <ul>
+            <li>Senior Software Engineer</li>
+            <li>Software Engineer</li>
+            <li>DevOps Engineer</li>
+            <li>Security Engineer</li>
+            <li>QA Engineer</li>
+          </ul>
+
+          <h3>Product and Design</h3>
+          <ul>
+            <li>Product Manager</li>
+            <li>UX Researcher</li>
+            <li>UI Designer</li>
+          </ul>
+
+          <h3>Marketing and Growth</h3>
+          <ul>
+            <li>Content Strategist</li>
+            <li>Paid Media Specialist</li>
+            <li>SEO Specialist</li>
+            <li>Social Media Manager</li>
+          </ul>
+
+          <h3>Operations and HR</h3>
+          <ul>
+            <li>VP of Human Resources</li>
+            <li>Operations Manager</li>
+            <li>Client Success Manager</li>
+            <li>Support Lead</li>
+          </ul>
+          <p>All templates are editable. You can modify any field after selecting a template, and you can save your own custom templates to the Talent Pool from any agent's profile page.</p>
+
+          <h2>Department Templates</h2>
+          <p>Department templates allow you to provision an entire department in one action. A department template defines a set of roles, the reporting hierarchy between them, default token budgets for each role, and the standard tools and integrations the department uses.</p>
+          <p>IronWorks ships with the following department templates:</p>
+          <ul>
+            <li><strong>Engineering</strong> - CTO, two Software Engineers, one DevOps Engineer</li>
+            <li><strong>Marketing</strong> - CMO, Content Strategist, SEO Specialist, Social Media Manager</li>
+            <li><strong>Operations</strong> - COO, Operations Manager, Support Lead</li>
+            <li><strong>Finance</strong> - CFO with budget monitoring and cost reporting access</li>
+            <li><strong>HR</strong> - VP of HR with access to headcount reports and the hiring queue</li>
+          </ul>
+          <p>To use a department template, open the Hire Agent dialog and select "Department Template" instead of an individual role. IronWorks generates individual hire requests for each role in the template, all pending the same approval. The approver sees a grouped request rather than individual ones. On approval, the entire department is provisioned at once and the org chart is updated to reflect the new hierarchy.</p>
+          <p>Department templates are fully customizable. You can modify the included roles, budgets, and hierarchy before submitting for approval, and you can save modified templates under a new name for future use.</p>
+
+          <h2>Terminating an Agent</h2>
+          <p>Termination is the process of permanently decommissioning an agent. It is distinct from pausing: a paused agent can be reactivated; a terminated agent cannot.</p>
+
+          <h3>Who can terminate</h3>
+          <p>Only Company Admins can terminate an agent. There is no self-service termination for non-admin users.</p>
+
+          <h3>Manual termination steps</h3>
+          <ol>
+            <li>Open the agent's profile page from the People view or Org Chart.</li>
+            <li>Click the three-dot menu in the top-right corner of the profile card.</li>
+            <li>Select <strong>Terminate Agent</strong>.</li>
+            <li>The dialog presents a confirmation prompt with the agent's name, current open issue count, and budget remaining.</li>
+            <li>Choose what to do with open issues: reassign to another agent, or close them as cancelled.</li>
+            <li>Type the agent's name to confirm and click <strong>Confirm Termination</strong>.</li>
+          </ol>
+          <p>The agent is deactivated immediately. Its profile moves to the "Alumni" section of the People view, where it remains visible for audit purposes but can no longer be assigned work.</p>
+
+          <h3>What happens to work output when a contractor is terminated</h3>
+          <p>Work output is preserved in full. Termination does not delete anything the agent produced. Specifically:</p>
+          <ul>
+            <li><strong>Completed issues</strong> remain in the issue tracker with all comments, attachments, and linked artifacts intact.</li>
+            <li><strong>Knowledge Base contributions</strong> are preserved. Any pages or sections the agent wrote continue to exist and remain editable by other agents.</li>
+            <li><strong>File outputs</strong> in the agent's workspace folder are moved to a read-only archive folder at the path <code>/archive/agents/{agent-name}/</code>. They are accessible to all company members but cannot be modified by other agents directly.</li>
+            <li><strong>Memory entries</strong> are archived. Episodic and semantic memories the agent built during the engagement are tagged with the agent ID and contract end date. They are not deleted. If the agent was an FTE, memories are retained in full. If the agent was a contractor, memories are stored in the archive but are not automatically shared with other agents. A Company Admin can manually promote specific contractor memory entries to the shared memory pool.</li>
+            <li><strong>Active issues</strong> that were assigned to the agent are either reassigned or closed, based on what you chose during the termination confirmation step.</li>
+          </ul>
+
+          <h2>Related Resources</h2>
+          <ul>
+            <li><a href="/docs/agent-memory.html">Agent Memory System</a> - how memories are created, consolidated, and shared</li>
+            <li><a href="/docs/managing-your-team.html">Managing Your Team</a> - day-to-day team management, performance reviews, and coaching</li>
+            <li><a href="/docs/api-keys-and-costs.html">API Keys and Costs</a> - understanding token budgets and cost controls</li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row justify-between gap-8">
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
+            <span class="font-semibold">IronWorks</span>
+          </div>
+          <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
+        </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
+          <a href="/features/" class="hover:text-zinc-300 transition-colors">Features</a>
+          <a href="/pricing.html" class="hover:text-zinc-300 transition-colors">Pricing</a>
+          <a href="/security.html" class="hover:text-zinc-300 transition-colors">Security</a>
+          <a href="/docs/" class="hover:text-zinc-300 transition-colors">Documentation</a>
+          <a href="/terms" class="hover:text-zinc-300 transition-colors">Terms of Service</a>
+          <a href="/privacy" class="hover:text-zinc-300 transition-colors">Privacy Policy</a>
+        </div>
+      </div>
+      <div class="mt-8 pt-8 border-t border-white/[0.06] text-xs text-zinc-600 space-y-2">
+        <p>AI agents are software tools powered by third-party language models. All AI-generated outputs are for informational purposes only and do not constitute professional advice. Users must review and verify all outputs before acting on them. <a href="/terms" class="underline hover:text-zinc-400">See full Terms</a>.</p>
+        <p>&copy; 2026 Steel Motion LLC. All rights reserved.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
+</body>
+</html>

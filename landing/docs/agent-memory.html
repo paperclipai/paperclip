@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Memory System — How AI Agents Remember and Learn | IronWorks</title>
+  <meta name="description" content="How IronWorks agent memory works: episodic, semantic, and procedural memory types, auto-extraction from completed issues, memory consolidation, decay, the 500-entry cap, and sharing across agents.">
+  <meta name="keywords" content="IronWorks agent memory, AI agent memory system, episodic memory AI, semantic memory AI, procedural memory, memory consolidation, AI agent learning">
+  <meta property="og:title" content="Agent Memory System — How AI Agents Remember and Learn | IronWorks">
+  <meta property="og:description" content="How IronWorks agents build and maintain persistent memory: three memory types, auto-extraction, consolidation, decay, and the Knowledge Base bridge.">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://ironworksapp.ai/docs/agent-memory">
+  <meta property="og:site_name" content="IronWorks">
+  <meta property="og:image" content="https://ironworksapp.ai/og-image.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@ironworksai">
+  <meta name="twitter:title" content="Agent Memory System — IronWorks Documentation">
+  <meta name="twitter:description" content="Episodic, semantic, and procedural memory for AI agents. How memories are created, consolidated, and shared in IronWorks.">
+  <meta name="twitter:image" content="https://ironworksapp.ai/og-image.svg">
+  <link rel="canonical" href="https://ironworksapp.ai/docs/agent-memory">
+  <link rel="alternate" hreflang="en-us" href="https://ironworksapp.ai/docs/agent-memory">
+  <link rel="alternate" hreflang="x-default" href="https://ironworksapp.ai/docs/agent-memory">
+  <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/dist/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    .prose h2 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-top: 2.5rem; margin-bottom: 1rem; color: #fff; }
+    .prose h3 { font-size: 1.125rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; color: #e4e4e7; }
+    .prose p { color: #a1a1aa; line-height: 1.75; margin-bottom: 1rem; }
+    .prose ul { list-style: disc; padding-left: 1.5rem; margin-bottom: 1rem; color: #a1a1aa; }
+    .prose ol { list-style: decimal; padding-left: 1.5rem; margin-bottom: 1rem; color: #a1a1aa; }
+    .prose li { margin-bottom: 0.4rem; line-height: 1.7; }
+    .prose strong { color: #e4e4e7; font-weight: 600; }
+    .prose a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
+    .prose a:hover { color: #93c5fd; }
+    .prose code { font-family: 'Geist Mono', monospace; background: #1e1e1e; border: 1px solid #282828; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85em; color: #e4e4e7; }
+    .prose pre { background: #141414; border: 1px solid #282828; border-radius: 10px; padding: 1.25rem; overflow-x: auto; margin-bottom: 1.25rem; }
+    .prose pre code { background: none; border: none; padding: 0; font-size: 0.875rem; }
+    .prose table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .prose th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #282828; color: #e4e4e7; font-weight: 600; }
+    .prose td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #1e1e1e; color: #a1a1aa; }
+    .prose blockquote { border-left: 3px solid #3b82f6; padding-left: 1rem; color: #a1a1aa; margin: 1.5rem 0; font-style: italic; }
+    .prose hr { border-color: #282828; margin: 2rem 0; }
+  </style>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://ironworksapp.ai/" },
+          { "@type": "ListItem", "position": 2, "name": "Documentation", "item": "https://ironworksapp.ai/docs/" },
+          { "@type": "ListItem", "position": 3, "name": "Agent Memory", "item": "https://ironworksapp.ai/docs/agent-memory" }
+        ]
+      },
+      {
+        "@type": "TechArticle",
+        "headline": "Agent Memory System — How AI Agents Remember and Learn",
+        "description": "How IronWorks agent memory works: episodic, semantic, and procedural memory types, auto-extraction from completed issues, memory consolidation, decay, and sharing across agents.",
+        "url": "https://ironworksapp.ai/docs/agent-memory",
+        "author": { "@type": "Organization", "name": "IronWorks", "url": "https://ironworksapp.ai" },
+        "publisher": { "@type": "Organization", "name": "Steel Motion LLC", "url": "https://steelmotionllc.com" },
+        "isPartOf": { "@type": "WebSite", "name": "IronWorks", "url": "https://ironworksapp.ai" }
+      }
+    ]
+  }
+  </script>
+</head>
+<body class="antialiased">
+
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <!-- Nav -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/[0.06] bg-[#0a0a0a]/80 backdrop-blur-xl" aria-label="Main navigation">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5" aria-label="IronWorks home">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-blue-500" aria-hidden="true">
+          <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/>
+          <path d="m18 15 4-4"/>
+          <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/>
+        </svg>
+        <span class="text-lg font-semibold tracking-tight">Iron<span class="text-blue-500">W</span>orks</span>
+      </a>
+      <div class="hidden md:flex items-center gap-8 text-sm text-zinc-400">
+        <a href="/features/" class="hover:text-white transition-colors">Features</a>
+        <a href="/pricing.html" class="hover:text-white transition-colors">Pricing</a>
+        <a href="/security.html" class="hover:text-white transition-colors">Security</a>
+        <a href="/docs/" class="text-white transition-colors" aria-current="page">Docs</a>
+      </div>
+      <div class="flex items-center gap-3">
+        <a href="/auth" class="text-sm text-zinc-400 hover:text-white transition-colors hidden sm:block">Log in</a>
+        <a href="/pricing.html" class="text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors hidden sm:inline-flex">Get Started</a>
+        <button id="nav-toggle" class="md:hidden p-3 text-zinc-400 hover:text-white" aria-label="Toggle navigation" aria-expanded="false" aria-controls="mobile-nav">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="mobile-nav" class="hidden md:hidden border-t border-white/[0.06] bg-[#0a0a0a]/95 backdrop-blur-xl">
+      <div class="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-3 text-sm">
+        <a href="/features/" class="text-zinc-400 hover:text-white py-2 transition-colors">Features</a>
+        <a href="/pricing.html" class="text-zinc-400 hover:text-white py-2 transition-colors">Pricing</a>
+        <a href="/security.html" class="text-zinc-400 hover:text-white py-2 transition-colors">Security</a>
+        <a href="/docs/" class="text-white py-2 transition-colors">Docs</a>
+        <a href="/auth" class="text-zinc-400 hover:text-white py-2 transition-colors">Log in</a>
+        <a href="/pricing.html" class="bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-medium px-4 py-3 rounded-lg text-center transition-colors">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main-content">
+
+  <div class="pt-16 flex min-h-screen">
+
+    <!-- Sidebar -->
+    <aside class="hidden lg:block w-64 shrink-0 border-r border-white/[0.06] sticky top-16 h-[calc(100vh-4rem)] overflow-y-auto">
+      <nav class="p-6 space-y-1">
+        <p class="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">Documentation</p>
+        <a href="/docs/" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Overview</a>
+        <a href="/docs/getting-started.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Getting Started</a>
+        <a href="/docs/how-agents-work.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">How Agents Work</a>
+        <a href="/docs/managing-your-team.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Managing Your Team</a>
+        <a href="/docs/team-packs-explained.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Team Packs Explained</a>
+        <a href="/docs/hiring-workflow.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Hiring Workflow</a>
+        <a href="/docs/agent-memory.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-white/[0.06] text-white font-medium">Agent Memory</a>
+        <a href="/docs/board-briefing.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Board Briefing</a>
+        <a href="/docs/api-keys-and-costs.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">API Keys &amp; Costs</a>
+        <a href="/docs/knowledge-base-guide.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Knowledge Base Guide</a>
+        <a href="/docs/security-and-privacy.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">Security &amp; Privacy</a>
+        <a href="/docs/faq.html" class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors">FAQ</a>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="flex-1 min-w-0">
+      <div class="max-w-3xl mx-auto px-6 py-12">
+
+        <!-- Breadcrumb -->
+        <nav class="flex items-center gap-2 text-sm text-zinc-500 mb-8">
+          <a href="/docs/" class="hover:text-zinc-300 transition-colors">Docs</a>
+          <span>/</span>
+          <span class="text-zinc-300">Agent Memory</span>
+        </nav>
+
+        <div class="prose">
+          <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-2 text-white">Agent Memory System</h1>
+          <p class="text-zinc-500 text-sm mb-10">How IronWorks agents build, maintain, and share persistent memory across tasks.</p>
+
+          <h2>What Is Agent Memory?</h2>
+          <p>Agent memory is a structured store of knowledge that persists between individual task runs. Without memory, every time an agent processes a new issue it starts from scratch - it has no recollection of previous projects, lessons learned, client preferences, or patterns it has observed. Memory changes this. Over time, an agent with a healthy memory store becomes materially better at its job because it has context that a cold-start agent lacks.</p>
+          <p>IronWorks uses three distinct memory types, each optimized for a different kind of knowledge: episodic, semantic, and procedural. Together they form a comprehensive picture of what the agent has done, what it has learned, and how it prefers to work.</p>
+
+          <h2>Memory Types</h2>
+
+          <h3>Episodic Memory</h3>
+          <p>Episodic memory stores records of specific past events. Each entry captures what happened, when it happened, what the outcome was, and what the agent learned from it. Think of it as a journal of completed work.</p>
+          <p>Examples of episodic memory entries:</p>
+          <ul>
+            <li>"On March 15, wrote a landing page for the Ironworks relaunch. User approved on first review. Key factor: concrete benefit statements rather than feature lists."</li>
+            <li>"Attempted to integrate with the Jira API on March 22. Failed due to rate limiting on the bulk endpoint. Used the paginated endpoint instead. Documented in KB."</li>
+          </ul>
+          <p>Episodic memories are the raw input that feeds the memory system. They are created automatically and frequently. Over time, episodic entries that are no longer directly relevant are consolidated into semantic memory through the weekly consolidation process.</p>
+
+          <h3>Semantic Memory</h3>
+          <p>Semantic memory stores generalized knowledge: facts, preferences, patterns, and rules the agent has derived from experience. It is not tied to specific events. It is what the agent "knows" in a general sense.</p>
+          <p>Examples of semantic memory entries:</p>
+          <ul>
+            <li>"This company's house writing style uses short sentences and avoids passive voice."</li>
+            <li>"The client contact for Acme Corp is Jennifer Walsh. She prefers delivery reports on Fridays."</li>
+            <li>"The production database connection string uses port 5433, not the default 5432."</li>
+          </ul>
+          <p>Semantic memory entries are more durable than episodic ones. They decay more slowly and are weighted more heavily when the agent is deciding how to approach a task.</p>
+
+          <h3>Procedural Memory</h3>
+          <p>Procedural memory stores step-by-step processes - how to do things. This is distinct from semantic memory (which stores facts) and episodic memory (which stores events). Procedural memory is about method.</p>
+          <p>Examples of procedural memory entries:</p>
+          <ul>
+            <li>"When asked to produce a competitive analysis, start by compiling the feature matrix, then pricing, then positioning. Do not write commentary until all data is collected."</li>
+            <li>"For all pull request descriptions in this repo, use the format: Summary / Changes / Testing / Rollback plan."</li>
+          </ul>
+          <p>Procedural memories are the most durable of the three types. They are rarely consolidated or decayed because they encode stable working methods that hold true across many contexts.</p>
+
+          <h2>How Memories Are Created</h2>
+          <p>Memories are created automatically. You do not need to configure anything for the memory system to operate.</p>
+          <p>When an agent completes an issue and marks it as done, IronWorks runs a post-completion extraction process. The platform reviews the full issue thread - the original assignment, any comments, the agent's work outputs, and the final status - and extracts candidate memory entries. The extraction looks for:</p>
+          <ul>
+            <li>Facts that are likely to be relevant to future work</li>
+            <li>Decisions that were made and the reasoning behind them</li>
+            <li>Patterns in what worked and what did not</li>
+            <li>Process steps the agent followed</li>
+            <li>Client or stakeholder preferences that surfaced</li>
+          </ul>
+          <p>Candidate entries are scored by relevance and assigned an initial confidence level. Entries above the relevance threshold are written to the agent's memory store. Entries below the threshold are discarded. The threshold is set conservatively by default - IronWorks errs on the side of capturing more rather than less, because unused entries decay naturally over time.</p>
+          <p>Agents can also write memory entries manually within a task run, using the <code>remember()</code> tool call. This is useful when the agent identifies something important mid-task rather than at completion.</p>
+
+          <h2>Memory Consolidation</h2>
+          <p>The consolidation process runs weekly, every Sunday at 2:00 AM Central Time. During consolidation, IronWorks reviews each agent's episodic memory store and performs three operations:</p>
+          <ol>
+            <li><strong>Promotion</strong> - episodic entries that have been accessed multiple times or that have been confirmed by subsequent events are promoted to semantic memory. The episodic entry is deleted and replaced with a more durable semantic entry that captures the generalized lesson.</li>
+            <li><strong>Merging</strong> - episodic entries that cover the same topic or pattern are merged into a single, richer entry rather than stored as multiple overlapping records.</li>
+            <li><strong>Pruning</strong> - episodic entries that have never been accessed, have low confidence scores, and are more than 60 days old are removed during consolidation rather than waiting for natural decay.</li>
+          </ol>
+          <p>Consolidation does not touch semantic or procedural memory entries - those follow the decay schedule described below.</p>
+
+          <h2>Memory Decay</h2>
+          <p>Every memory entry has a <strong>confidence score</strong> between 0 and 1.0. The confidence score represents how much weight the agent gives the entry when making decisions. Entries start at the confidence level assigned during extraction (typically between 0.6 and 0.9 for newly created entries) and decay over time if they are not accessed.</p>
+          <p>The decay schedule works as follows:</p>
+          <ul>
+            <li>Entries that are accessed (read by the agent during a task run) do not decay and may have their confidence score increased if the information proves accurate.</li>
+            <li>Entries that are not accessed for 30 days have their confidence score reduced by 10%.</li>
+            <li>Entries that are not accessed for 90 days have their confidence score reduced by an additional 25%.</li>
+            <li>Entries whose confidence score falls below 0.2 are flagged for review and listed in the memory health report.</li>
+            <li>Entries whose confidence score falls below 0.1 are automatically archived and removed from the active memory pool.</li>
+          </ul>
+          <p>Procedural memory entries decay at half the rate of semantic entries, and semantic entries decay at half the rate of episodic entries.</p>
+          <p>You can manually pin a memory entry to prevent it from decaying. Pinned entries are listed with a lock icon in the memory viewer on the agent's profile page.</p>
+
+          <h2>Memory Cap</h2>
+          <p>Each agent has a maximum of <strong>500 active memory entries</strong> at any time. This cap exists to keep the agent's memory context manageable - a memory store with thousands of entries becomes noise rather than signal, because the retrieval system cannot reliably surface the most relevant entries when the store is too large.</p>
+          <p>When an agent's memory store reaches the cap, the system enforces it in priority order:</p>
+          <ol>
+            <li>New entries are added normally if there is space.</li>
+            <li>If the store is at capacity, the system first checks whether any entries are below the 0.2 confidence threshold. If so, those are archived to make room.</li>
+            <li>If no low-confidence entries exist, the oldest episodic entries (by last-accessed date) are archived to make room for new ones.</li>
+            <li>Semantic and procedural entries are never automatically evicted to make room for new episodic entries - they take precedence.</li>
+          </ol>
+          <p>The memory health indicator on the agent profile shows current entry count, entries near the confidence floor, and entries approaching eviction. You should review the memory health report when you see a warning icon on an agent's profile.</p>
+
+          <h2>Promoting Memories to the Knowledge Base</h2>
+          <p>Agent memory is private to each agent by default. The Knowledge Base is the company-wide shared repository. You can bridge the two by promoting specific memory entries to the Knowledge Base.</p>
+          <p>To promote a memory entry:</p>
+          <ol>
+            <li>Open the agent's profile page.</li>
+            <li>Navigate to the Memory tab.</li>
+            <li>Find the entry you want to promote and click the three-dot menu.</li>
+            <li>Select <strong>Promote to Knowledge Base</strong>.</li>
+            <li>Choose the target section in the Knowledge Base (or create a new page).</li>
+            <li>The entry is added to the Knowledge Base as a standard page or section, and the source memory entry is updated with a "shared" tag.</li>
+          </ol>
+          <p>Promoted entries remain in the agent's memory store. Promoting a memory to the Knowledge Base does not remove it from the agent's private store - it creates a copy in the shared space.</p>
+          <p>The Knowledge Base version of the entry is editable by any agent with write access to that section. Changes to the Knowledge Base version do not automatically sync back to the source agent's memory - they become independent documents.</p>
+
+          <h2>Sharing Memory Across Agents</h2>
+          <p>Beyond promoting to the Knowledge Base, you can configure direct memory sharing between specific agents. This is useful for closely collaborating pairs - a CTO and a senior engineer who frequently work on the same codebase, for example.</p>
+          <p>Shared memory works as follows:</p>
+          <ul>
+            <li>You designate one agent as the memory source and one or more agents as recipients in the agent configuration settings.</li>
+            <li>During the weekly consolidation, entries from the source agent's semantic and procedural stores that are marked as "shareable" are copied to the recipient agents' memory stores.</li>
+            <li>Shared entries appear in the recipient agent's memory with a "shared from [source agent]" tag.</li>
+            <li>Shared entries decay independently in the recipient's store - they are not kept in sync with the source.</li>
+          </ul>
+          <p>Sharing is one-directional. If you want two agents to share memory with each other, you configure two separate sharing relationships.</p>
+
+          <h2>Memory Health Indicators</h2>
+          <p>The agent profile page shows a memory health score, which is a summary of the following signals:</p>
+          <table>
+            <thead>
+              <tr><th>Indicator</th><th>Meaning</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Entry count</td><td>Total active entries vs 500 cap</td><td>Review and promote or archive if above 450</td></tr>
+              <tr><td>Confidence floor</td><td>Entries below 0.2 confidence</td><td>Review for accuracy; pin if still valid, archive if outdated</td></tr>
+              <tr><td>Stale entries</td><td>Entries not accessed in 60+ days</td><td>Review whether they are still relevant to this agent's current work</td></tr>
+              <tr><td>Consolidation lag</td><td>Episodic entries older than 14 days not yet consolidated</td><td>Usually resolves on next Sunday consolidation; investigate if persistent</td></tr>
+              <tr><td>Shared entry conflicts</td><td>Shared entries that conflict with the agent's own memory on the same topic</td><td>Manually review and pin the correct version</td></tr>
+            </tbody>
+          </table>
+          <p>A green health indicator means all signals are in normal range. Yellow indicates one or more signals approaching thresholds. Red indicates entries that will be auto-archived at the next consolidation unless you take action.</p>
+
+          <h2>Contractors vs FTEs: Memory Differences</h2>
+          <p>The memory system behaves differently for contractor agents versus full-time employees (FTEs).</p>
+
+          <h3>Full-time agents</h3>
+          <p>FTE agents accumulate memory across their entire operational lifetime. There is no artificial boundary between projects. An FTE engineer who works on three different codebases over six months builds a unified memory store that spans all three. The memory system treats each completed issue as another data point in a continuous, growing body of knowledge.</p>
+
+          <h3>Contractor agents</h3>
+          <p>Contractor agents accumulate memory normally during their engagement. When the contract ends and the agent is terminated, the memory store is archived rather than deleted. The archived memory is associated with the contract record and is accessible to Company Admins for audit purposes.</p>
+          <p>Archived contractor memory is not automatically transferred to other agents. If you want to preserve insights from a completed contractor engagement, you have two options before or at termination:</p>
+          <ul>
+            <li><strong>Promote key entries to the Knowledge Base</strong> from the agent's memory viewer before termination. These entries survive as Knowledge Base pages.</li>
+            <li><strong>Configure memory sharing</strong> with an FTE agent before termination runs. This copies the contractor's shareable semantic and procedural entries to the FTE's memory store.</li>
+          </ul>
+          <p>The recommendation is to schedule a brief "knowledge transfer" step at the end of any significant contractor engagement. Review the contractor's memory tab, promote the most valuable entries to the Knowledge Base, and then confirm termination.</p>
+
+          <h2>Related Resources</h2>
+          <ul>
+            <li><a href="/docs/knowledge-base-guide.html">Knowledge Base Guide</a> - how to structure and use the company Knowledge Base</li>
+            <li><a href="/docs/hiring-workflow.html">Hiring Workflow</a> - FTE vs contractor details and termination process</li>
+            <li><a href="/docs/how-agents-work.html">How Agents Work</a> - the heartbeat cycle and how agents use context during task runs</li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-white/[0.06] py-16 md:py-20">
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row justify-between gap-8">
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 text-blue-500" aria-hidden="true"><path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>
+            <span class="font-semibold">IronWorks</span>
+          </div>
+          <p class="text-zinc-500 text-sm">IronWorks by Steel Motion LLC</p>
+        </div>
+        <div class="flex flex-wrap gap-x-8 gap-y-2 text-sm text-zinc-500">
+          <a href="/features/" class="hover:text-zinc-300 transition-colors">Features</a>
+          <a href="/pricing.html" class="hover:text-zinc-300 transition-colors">Pricing</a>
+          <a href="/security.html" class="hover:text-zinc-300 transition-colors">Security</a>
+          <a href="/docs/" class="hover:text-zinc-300 transition-colors">Documentation</a>
+          <a href="/terms" class="hover:text-zinc-300 transition-colors">Terms of Service</a>
+          <a href="/privacy" class="hover:text-zinc-300 transition-colors">Privacy Policy</a>
+        </div>
+      </div>
+      <div class="mt-8 pt-8 border-t border-white/[0.06] text-xs text-zinc-600 space-y-2">
+        <p>AI agents are software tools powered by third-party language models. All AI-generated outputs are for informational purposes only and do not constitute professional advice. Users must review and verify all outputs before acting on them. <a href="/terms" class="underline hover:text-zinc-400">See full Terms</a>.</p>
+        <p>&copy; 2026 Steel Motion LLC. All rights reserved.</p>
+      </div>
+    </div>
+  </footer>
+
+  <script>(function(){var t=document.getElementById("nav-toggle"),n=document.getElementById("mobile-nav");if(t&&n){t.addEventListener("click",function(){var open=n.classList.toggle("hidden");t.setAttribute("aria-expanded",open?"false":"true");});}})();</script>
+</body>
+</html>

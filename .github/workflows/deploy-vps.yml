@@ -32,11 +32,11 @@ jobs:
             git reset --hard origin/master
 
             echo "==> Rebuilding Docker image..."
-            docker compose -f docker-compose.quickstart.yml build --no-cache
+            docker compose -f docker-compose.production.yml build --no-cache
 
             echo "==> Restarting container..."
-            docker compose -f docker-compose.quickstart.yml down
-            docker compose -f docker-compose.quickstart.yml up -d
+            docker compose -f docker-compose.production.yml down
+            docker compose -f docker-compose.production.yml up -d
 
             echo "==> Pruning old images..."
             docker image prune -f
@@ -51,5 +51,5 @@ jobs:
             done
 
             echo "==> WARNING: Health check timed out after 60s"
-            docker compose -f docker-compose.quickstart.yml logs --tail=50
+            docker compose -f docker-compose.production.yml logs --tail=50
             exit 1

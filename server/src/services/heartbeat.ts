@@ -2284,6 +2284,100 @@ export function heartbeatService(db: Db) {
     const taskKey = deriveTaskKey(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
+
+    // ── Autonomy Enforcement ────────────────────────────────────────────────
+    // h3 (Pre-Approval): create an approval request instead of executing when
+    //   the task involves creating or modifying issues.
+    // h4/h5 (Supervised/Human Only): skip execution entirely.
+    const autonomyRuntimeConfig = parseObject(agent.runtimeConfig);
+    const autonomyLevel = readNonEmptyString(autonomyRuntimeConfig.autonomyLevel);
+    if (autonomyLevel === "h4" || autonomyLevel === "h5") {
+      await setRunStatus(run.id, "cancelled", {
+        error: `Execution skipped: autonomy level ${autonomyLevel} requires human to perform this work`,
+        errorCode: "autonomy_blocked",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: new Date() });
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        action: "agent.run_skipped",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          reason: "autonomy_blocked",
+          autonomyLevel,
+          issueId: issueId ?? null,
+          phase: "plan",
+        },
+      });
+      await finalizeAgentStatus(agent.id, "cancelled");
+      return;
+    }
+
+    if (autonomyLevel === "h3" && issueId) {
+      // h3 Pre-Approval: create an approval request before acting on issue work
+      const { approvals: approvalsTable } = await import("@ironworksai/db");
+      const existingApproval = await db
+        .select({ id: approvalsTable.id, status: approvalsTable.status })
+        .from(approvalsTable)
+        .where(
+          and(
+            eq(approvalsTable.companyId, agent.companyId),
+            eq(approvalsTable.type, "approve_ceo_strategy"),
+            sql`${approvalsTable.payload} ->> 'issueId' = ${issueId}`,
+            sql`${approvalsTable.status} in ('pending', 'revision_requested')`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (!existingApproval) {
+        const issueLabel = issueId.slice(0, 8);
+        await db.insert(approvalsTable).values({
+          companyId: agent.companyId,
+          type: "approve_ceo_strategy",
+          status: "pending",
+          requestedByAgentId: agent.id,
+          requestedByUserId: null,
+          payload: {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            autonomyLevel: "h3",
+            note: `Pre-approval required before agent acts on issue ${issueLabel}`,
+          },
+        });
+      }
+
+      await setRunStatus(run.id, "cancelled", {
+        error: `Pre-approval required (h3): pending board approval before acting on issue ${issueId.slice(0, 8)}`,
+        errorCode: "approval_required",
+        finishedAt: new Date(),
+      });
+      await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: new Date() });
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "system",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        action: "agent.approval_requested",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          reason: "autonomy_h3_pre_approval",
+          autonomyLevel: "h3",
+          issueId,
+          phase: "plan",
+        },
+      });
+      await finalizeAgentStatus(agent.id, "cancelled");
+      return;
+    }
+    // ── End Autonomy Enforcement ─────────────────────────────────────────────
     const issueContext = issueId
       ? await db
           .select({
@@ -2759,11 +2853,16 @@ export function heartbeatService(db: Db) {
       }
 
       const currentRun = run;
+      // PDCA: Plan phase - analyzing task before execution
       await appendRunEvent(currentRun, seq++, {
         eventType: "lifecycle",
         stream: "system",
         level: "info",
         message: "run started",
+        payload: {
+          phase: "plan",
+          details: issueId ? `Analyzing issue ${issueId}` : "Analyzing task",
+        },
       });
 
       handle = await runLogStore.begin({
@@ -2873,12 +2972,17 @@ export function heartbeatService(db: Db) {
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
+        // PDCA: Do phase - executing task
         await appendRunEvent(currentRun, seq++, {
           eventType: "adapter.invoke",
           stream: "system",
           level: "info",
           message: "adapter invocation",
-          payload: meta as unknown as Record<string, unknown>,
+          payload: {
+            ...(meta as unknown as Record<string, unknown>),
+            phase: "do",
+            details: "Executing task",
+          },
         });
       };
 
@@ -3098,6 +3202,7 @@ export function heartbeatService(db: Db) {
 
       const finalizedRun = await getRun(run.id);
       if (finalizedRun) {
+        // PDCA: Check phase - reviewing run outcome
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
           stream: "system",
@@ -3106,6 +3211,8 @@ export function heartbeatService(db: Db) {
           payload: {
             status,
             exitCode: adapterResult.exitCode,
+            phase: "check",
+            details: `Run ${outcome}`,
           },
         });
         await releaseIssueExecutionAndPromote(finalizedRun);
@@ -3152,6 +3259,20 @@ export function heartbeatService(db: Db) {
           });
         } catch (sessionStateErr) {
           logger.warn({ err: sessionStateErr, runId }, "failed to save session state after run");
+        }
+
+        // PDCA: Act phase - log any adjustments made post-run
+        if (outcome !== "succeeded") {
+          await appendRunEvent(finalizedRun, seq++, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: `adjustments logged after ${outcome} run`,
+            payload: {
+              phase: "act",
+              details: `Run ${outcome} - session state updated for next iteration`,
+            },
+          });
         }
       }
       await finalizeAgentStatus(agent.id, outcome);

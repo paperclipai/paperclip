@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Db } from "@ironworksai/db";
 import { agents } from "@ironworksai/db";
 import { and, eq, ne, inArray } from "drizzle-orm";
-import { executiveAnalyticsService, budgetForecast, departmentSpendingSummary } from "../services/executive-analytics.js";
+import { executiveAnalyticsService, budgetForecast, departmentSpendingSummary, modelHealthCheck } from "../services/executive-analytics.js";
 import { computeDORAMetrics } from "../services/dora-metrics.js";
 import { getMemoryHealth } from "../services/agent-memory.js";
 import { logActivity } from "../services/activity-log.js";
@@ -294,6 +294,14 @@ export function executiveRoutes(db: Db) {
     const agentId = req.params.agentId as string;
     assertCompanyAccess(req, companyId);
     const data = await getMemoryHealth(db, agentId);
+    res.json(data);
+  });
+
+  // -- Model Health --
+  router.get("/companies/:companyId/executive/model-health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const data = await modelHealthCheck(db, companyId);
     res.json(data);
   });
 

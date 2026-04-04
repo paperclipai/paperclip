@@ -17,6 +17,7 @@ import {
   heartbeatService,
   logActivity,
 } from "../services/index.js";
+import { costPerIssue } from "../services/costs.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
@@ -414,6 +415,23 @@ export function costRoutes(db: Db) {
       `attachment; filename="ironworks-costs-${projectId.slice(0, 8)}-${fromStr}-${toStr}.csv"`,
     );
     res.send(lines.join("\n"));
+  });
+
+  /**
+   * GET /companies/:companyId/cost-per-issue?days=30
+   * Aggregate LLM cost per issue for a company.
+   */
+  router.get("/companies/:companyId/cost-per-issue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const daysRaw = req.query.days as string | undefined;
+    const days = daysRaw ? parseInt(daysRaw, 10) : 30;
+    if (daysRaw && (!Number.isFinite(days) || days <= 0)) {
+      res.status(400).json({ error: "invalid 'days' query parameter" });
+      return;
+    }
+    const rows = await costPerIssue(db, companyId, days);
+    res.json(rows);
   });
 
   router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {

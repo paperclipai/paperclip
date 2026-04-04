@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -23,15 +23,26 @@ import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { Button } from "@/components/ui/button";
 import { cn, formatCents } from "../lib/utils";
-import { AlertTriangle, Bot, Briefcase, ChevronDown, ChevronRight, CircleDot, DollarSign, Megaphone, ShieldCheck, Swords, PauseCircle, Users, UserPlus, Zap } from "lucide-react";
+import { AlertTriangle, Bot, Briefcase, ChevronDown, ChevronRight, CircleDot, DollarSign, Megaphone, Radio, ShieldCheck, Swords, PauseCircle, Users, UserPlus, Zap } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, PriorityChart, IssueStatusChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@ironworksai/shared";
+import type { Agent, Issue, LiveEvent } from "@ironworksai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { computeAgentPerformance } from "./AgentPerformance";
 import { WelcomeBanner } from "../components/WelcomeBanner";
 import { ApiKeyOnboardingBanner } from "../components/ApiKeyOnboardingBanner";
+
+/* ── Live Feed types ── */
+
+interface LiveFeedEvent {
+  id: string;
+  sseType: string;
+  receivedAt: Date;
+  event: LiveEvent;
+}
+
+const MAX_LIVE_EVENTS = 50;
 
 /* ── Activity noise filter + aggregation ── */
 
@@ -230,6 +241,78 @@ export function Dashboard() {
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
+
+  /* ── Live Feed state ── */
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveConnected, setLiveConnected] = useState(false);
+  const [liveEvents, setLiveEvents] = useState<LiveFeedEvent[]>([]);
+  const liveFeedBottomRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  const toggleLiveMode = useCallback(() => {
+    setLiveMode((prev) => !prev);
+  }, []);
+
+  /* Open / close SSE connection when liveMode or company changes */
+  useEffect(() => {
+    // Close any existing connection first
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+      setLiveConnected(false);
+    }
+
+    if (!liveMode || !selectedCompanyId) return;
+
+    const es = new EventSource(`/api/companies/${selectedCompanyId}/events`);
+    eventSourceRef.current = es;
+
+    es.onopen = () => {
+      setLiveConnected(true);
+    };
+
+    es.onerror = () => {
+      setLiveConnected(false);
+    };
+
+    function handleLiveEvent(sseType: string) {
+      return (e: MessageEvent) => {
+        try {
+          const event = JSON.parse(e.data as string) as LiveEvent;
+          const feedEntry: LiveFeedEvent = {
+            id: `${Date.now()}-${Math.random()}`,
+            sseType,
+            receivedAt: new Date(),
+            event,
+          };
+          setLiveEvents((prev) => [...prev.slice(-(MAX_LIVE_EVENTS - 1)), feedEntry]);
+        } catch {
+          // Ignore malformed events
+        }
+      };
+    }
+
+    es.addEventListener("activity", handleLiveEvent("activity"));
+    es.addEventListener("agent_run", handleLiveEvent("agent_run"));
+    es.addEventListener("heartbeat_run_event", handleLiveEvent("heartbeat_run_event"));
+
+    return () => {
+      es.close();
+      eventSourceRef.current = null;
+      setLiveConnected(false);
+    };
+  }, [liveMode, selectedCompanyId]);
+
+  /* Auto-scroll to newest live event */
+  useEffect(() => {
+    if (liveEvents.length > 0 && liveFeedBottomRef.current) {
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      liveFeedBottomRef.current.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "nearest",
+      });
+    }
+  }, [liveEvents]);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -1082,9 +1165,32 @@ export function Dashboard() {
           {aggregatedActivity.length > 0 && (
             <div>
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                  Recent Activity
-                </h3>
+                <div className="flex items-center gap-3">
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                    Recent Activity
+                  </h3>
+                  <button
+                    onClick={toggleLiveMode}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      liveMode
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"
+                        : "border-border bg-background text-muted-foreground hover:text-foreground hover:border-foreground/20",
+                    )}
+                    aria-pressed={liveMode}
+                    title={liveMode ? "Disable live feed" : "Enable live feed"}
+                  >
+                    {liveMode && liveConnected ? (
+                      <span className="relative flex h-1.5 w-1.5 shrink-0">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                    ) : (
+                      <Radio className="h-3 w-3 shrink-0" />
+                    )}
+                    Live
+                  </button>
+                </div>
                 <Link to="/activity" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
                   View all activity
                 </Link>
@@ -1155,8 +1261,134 @@ export function Dashboard() {
               </div>
             </div>
           )}
-        </>
+        {/* ── 7. LIVE FEED ── */}
+        {liveMode && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Live Feed
+                </h3>
+                {liveConnected ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400">
+                    <span className="relative flex h-1.5 w-1.5 shrink-0">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    </span>
+                    Connected
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-muted-foreground">Connecting...</span>
+                )}
+              </div>
+              {liveEvents.length > 0 && (
+                <button
+                  onClick={() => setLiveEvents([])}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-border overflow-hidden">
+              {liveEvents.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-muted-foreground text-center">
+                  Waiting for events...
+                </div>
+              ) : (
+                <div className="divide-y divide-border max-h-80 overflow-y-auto">
+                  {liveEvents.map((entry) => (
+                    <LiveFeedRow
+                      key={entry.id}
+                      entry={entry}
+                      agentMap={agentMap}
+                    />
+                  ))}
+                  <div ref={liveFeedBottomRef} />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </>
       )}
+    </div>
+  );
+}
+
+/* ── Live Feed row component ── */
+
+function liveFeedEventColor(sseType: string, payload: Record<string, unknown>): string {
+  if (sseType === "agent_run") {
+    const status = payload.status as string | undefined;
+    if (status === "completed" || status === "done") return "text-emerald-400";
+    if (status === "failed" || status === "error") return "text-red-400";
+    return "text-blue-400";
+  }
+  if (sseType === "activity") {
+    const action = payload.action as string | undefined;
+    if (action?.includes("completed") || action?.includes("done")) return "text-emerald-400";
+    if (action?.includes("fail") || action?.includes("error") || action?.includes("blocked")) return "text-red-400";
+  }
+  return "text-muted-foreground";
+}
+
+function liveFeedDescription(
+  sseType: string,
+  event: LiveEvent,
+  agentMap: Map<string, Agent>,
+): string {
+  const payload = event.payload;
+  if (sseType === "activity") {
+    const action = (payload.action as string | undefined) ?? event.type;
+    const agentId = payload.agentId as string | undefined;
+    const entityType = (payload.entityType as string | undefined) ?? "";
+    const entityId = (payload.entityId as string | undefined) ?? "";
+    const actorName = agentId
+      ? (agentMap.get(agentId)?.name ?? agentId.slice(0, 8))
+      : (payload.actorId as string | undefined) ?? "System";
+    const label = action.replace(/[._]/g, " ");
+    const entity = entityType ? `${entityType} ${entityId.slice(0, 8)}` : "";
+    return entity ? `${actorName} - ${label} (${entity})` : `${actorName} - ${label}`;
+  }
+  if (sseType === "agent_run") {
+    const status = (payload.status as string | undefined) ?? "";
+    const agentId = payload.agentId as string | undefined;
+    const agentName = agentId ? (agentMap.get(agentId)?.name ?? agentId.slice(0, 8)) : "Agent";
+    return status ? `${agentName} run ${status}` : `${agentName} run updated`;
+  }
+  return event.type.replace(/[._]/g, " ");
+}
+
+function LiveFeedRow({
+  entry,
+  agentMap,
+}: {
+  entry: LiveFeedEvent;
+  agentMap: Map<string, Agent>;
+}) {
+  const color = liveFeedEventColor(entry.sseType, entry.event.payload);
+  const description = liveFeedDescription(entry.sseType, entry.event, agentMap);
+  const timeStr = entry.receivedAt.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 text-sm live-feed-row-enter hover:bg-accent/20 transition-colors">
+      <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/70 font-mono w-[62px]">
+        {timeStr}
+      </span>
+      <span className={cn("shrink-0 h-1.5 w-1.5 rounded-full", {
+        "bg-emerald-500": color === "text-emerald-400",
+        "bg-red-500": color === "text-red-400",
+        "bg-blue-500": color === "text-blue-400",
+        "bg-muted-foreground/50": color === "text-muted-foreground",
+      })} />
+      <span className={cn("truncate", color)}>{description}</span>
     </div>
   );
 }

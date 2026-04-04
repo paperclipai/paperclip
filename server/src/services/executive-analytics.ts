@@ -1054,6 +1054,68 @@ export async function budgetForecast(
 }
 
 // ---------------------------------------------------------------------------
+// Model Health Check
+// ---------------------------------------------------------------------------
+
+const DEPRECATED_MODELS = ["claude-2", "claude-instant", "gpt-3.5-turbo", "gpt-4-0314"];
+
+/**
+ * Check each agent's configured model against known deprecated models.
+ * Returns all agents using deprecated models with an upgrade recommendation.
+ */
+export async function modelHealthCheck(
+  db: Db,
+  companyId: string,
+): Promise<Array<{
+  agentId: string;
+  agentName: string;
+  model: string;
+  isDeprecated: boolean;
+  recommendation: string | null;
+}>> {
+  const rows = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      adapterConfig: agents.adapterConfig,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+      ),
+    );
+
+  return rows.map((row) => {
+    const config = (typeof row.adapterConfig === "object" && row.adapterConfig !== null
+      ? row.adapterConfig
+      : {}) as Record<string, unknown>;
+    const model = typeof config.model === "string" ? config.model : "";
+    const isDeprecated = model.length > 0 && DEPRECATED_MODELS.some((d) => model.startsWith(d));
+    let recommendation: string | null = null;
+    if (isDeprecated) {
+      if (model.startsWith("claude-2") || model.startsWith("claude-instant")) {
+        recommendation = "Upgrade to claude-sonnet-4-20250514 or later";
+      } else if (model.startsWith("gpt-3.5-turbo")) {
+        recommendation = "Upgrade to gpt-4o-mini for better price-performance";
+      } else if (model.startsWith("gpt-4-0314")) {
+        recommendation = "Upgrade to gpt-4o";
+      } else {
+        recommendation = "Upgrade to a current model";
+      }
+    }
+    return {
+      agentId: row.id,
+      agentName: row.name,
+      model: model || "(not set)",
+      isDeprecated,
+      recommendation,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Standalone exports
 // ---------------------------------------------------------------------------
 

@@ -256,6 +256,28 @@
   }
 }
 
+/* Live feed row entry motion */
+@keyframes live-feed-row-enter {
+  0% {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.live-feed-row-enter {
+  animation: live-feed-row-enter 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-feed-row-enter {
+    animation: none;
+  }
+}
+
 /* Synchronized skeleton shimmer — background-attachment: fixed keeps all
    shimmer gradients in the same viewport coordinate space so they move
    in perfect unison regardless of where each element sits on the page. */

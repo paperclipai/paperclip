@@ -59,6 +59,7 @@ import {
   buildOnboardingPacket,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { onboardingMetrics } from "../services/performance-score.js";
 import { assertBoard, assertCanWrite, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
@@ -1178,6 +1179,18 @@ export function agentRoutes(db: Db) {
 
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
+  });
+
+  router.get("/agents/:id/onboarding-metrics", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+    const metrics = await onboardingMetrics(db, id);
+    res.json(metrics);
   });
 
   router.get("/agents/:id/task-sessions", async (req, res) => {

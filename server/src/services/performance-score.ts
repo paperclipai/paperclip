@@ -1,4 +1,4 @@
-import { and, eq, gte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, ne, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
 import { agents, agentMemoryEntries, companies, heartbeatRuns, issues } from "@ironworksai/db";
 import { logger } from "../middleware/logger.js";
@@ -203,6 +203,70 @@ export async function computeAgentUtilization(
 }
 
 // ── Performance Snapshots ──────────────────────────────────────────────────
+
+// ── Onboarding Effectiveness Metrics ──────────────────────────────────────────
+
+/**
+ * Compute onboarding effectiveness metrics for a single agent.
+ *
+ * Returns:
+ *   - hiredAt: when the agent was created/hired
+ *   - firstIssueCompletedAt: timestamp of their first completed issue
+ *   - rampTimeDays: days from hire to first completed issue (null if no issues done yet)
+ *   - firstWeekIssues: number of issues completed within 7 days of hire
+ */
+export async function onboardingMetrics(
+  db: Db,
+  agentId: string,
+): Promise<{
+  hiredAt: Date | null;
+  firstIssueCompletedAt: Date | null;
+  rampTimeDays: number | null;
+  firstWeekIssues: number;
+}> {
+  const agentRow = await db
+    .select({ hiredAt: agents.hiredAt })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .then((rows) => rows[0] ?? null);
+
+  const hiredAt = agentRow?.hiredAt ? new Date(agentRow.hiredAt) : null;
+
+  const completedIssues = await db
+    .select({ completedAt: issues.completedAt })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.assigneeAgentId, agentId),
+        eq(issues.status, "done"),
+        sql`${issues.completedAt} is not null`,
+      ),
+    )
+    .orderBy(asc(issues.completedAt));
+
+  const firstIssueCompletedAt =
+    completedIssues.length > 0 && completedIssues[0]?.completedAt
+      ? new Date(completedIssues[0].completedAt)
+      : null;
+
+  let rampTimeDays: number | null = null;
+  if (hiredAt && firstIssueCompletedAt) {
+    const diffMs = firstIssueCompletedAt.getTime() - hiredAt.getTime();
+    rampTimeDays = Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+  }
+
+  let firstWeekIssues = 0;
+  if (hiredAt) {
+    const oneWeekAfterHire = new Date(hiredAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+    firstWeekIssues = completedIssues.filter((i) => {
+      if (!i.completedAt) return false;
+      const d = new Date(i.completedAt);
+      return d >= hiredAt && d <= oneWeekAfterHire;
+    }).length;
+  }
+
+  return { hiredAt, firstIssueCompletedAt, rampTimeDays, firstWeekIssues };
+}
 
 /**
  * Capture a weekly performance snapshot for all agents in a company.

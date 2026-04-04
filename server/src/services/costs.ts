@@ -44,6 +44,53 @@ async function getMonthlySpendTotal(
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Aggregate cost events per issue for a company over an optional rolling window.
+ * Returns the top issues by spend, ordered by totalCost descending.
+ */
+export async function costPerIssue(
+  db: Db,
+  companyId: string,
+  periodDays?: number,
+): Promise<Array<{
+  issueId: string;
+  issueTitle: string;
+  totalCost: number;
+  runCount: number;
+}>> {
+  const conditions = [
+    eq(costEvents.companyId, companyId),
+    sql`${costEvents.issueId} is not null`,
+  ];
+
+  if (periodDays && periodDays > 0) {
+    const since = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000);
+    conditions.push(gte(costEvents.occurredAt, since));
+  }
+
+  const rows = await db
+    .select({
+      issueId: costEvents.issueId,
+      issueTitle: issues.title,
+      totalCost: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
+    })
+    .from(costEvents)
+    .innerJoin(issues, and(eq(costEvents.issueId, sql`${issues.id}::text`), eq(issues.companyId, companyId)))
+    .where(and(...conditions))
+    .groupBy(costEvents.issueId, issues.title)
+    .orderBy(desc(sql`coalesce(sum(${costEvents.costCents}), 0)::int`));
+
+  return rows
+    .filter((row) => row.issueId != null)
+    .map((row) => ({
+      issueId: row.issueId as string,
+      issueTitle: row.issueTitle ?? "Untitled",
+      totalCost: Number(row.totalCost),
+      runCount: Number(row.runCount),
+    }));
+}
+
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {

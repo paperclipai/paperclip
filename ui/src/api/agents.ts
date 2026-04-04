@@ -180,6 +180,13 @@ export const agentsApi = {
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
+  onboardingMetrics: (id: string, companyId?: string) =>
+    api.get<{
+      hiredAt: string | null;
+      firstIssueCompletedAt: string | null;
+      rampTimeDays: number | null;
+      firstWeekIssues: number;
+    }>(agentPath(id, companyId, "/onboarding-metrics")),
   runtimeState: (id: string, companyId?: string) =>
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
   taskSessions: (id: string, companyId?: string) =>
