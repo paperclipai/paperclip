@@ -306,6 +306,11 @@ function quoteForCmd(arg: string) {
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
+function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
+  const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
+  return path.join(fallbackRoot, "System32", "cmd.exe");
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -320,7 +325,9 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
-    const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
+    // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
+    // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
+    const shell = resolveWindowsCmdShell(env);
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
