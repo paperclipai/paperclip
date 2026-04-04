@@ -162,6 +162,28 @@ describeEmbeddedPostgres("blog run service", () => {
     });
   });
 
+  it("upgrades dry-run canary runs to strict publishReadyGateMode", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const canaryRun = await svc.create({
+      companyId,
+      projectId,
+      topic: "Canary gate topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        publishReadyGateCanary: true,
+      },
+    });
+
+    expect(canaryRun?.contextJson).toMatchObject({
+      publishReadyGateCanary: true,
+      publishReadyGateMode: "strict",
+      publicVerifyContractMode: "compat",
+    });
+  });
+
   it("claims and completes the research step, advancing to draft", async () => {
     const { companyId, projectId } = await seedProject();
     const svc = blogRunService(db);

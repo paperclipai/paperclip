@@ -158,4 +158,64 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       next_step: null,
     });
   });
+
+  it("fails dry-run validate when strict publish-ready canary returns a failed merged preflight", async () => {
+    const { companyId, projectId } = await seedProject();
+    const mirror = blogArtifactMirrorService({ baseDir: scratchRoot });
+    const runSvc = blogRunService(db, { artifactMirror: mirror });
+    const worker = blogRunWorkerService(db, {
+      runService: runSvc,
+      artifactRoot: scratchRoot,
+      publisher: { publishDraft: vi.fn(), publishPost: vi.fn() } as any,
+      runResearchStep: vi.fn().mockResolvedValue({ summary: "research ok", notebook_reference: "n1", fact_pack: { items: [1] }, source_registry: [{ url: "https://example.com" }], uncertainty_ledger: [{ claim: "x" }] }),
+      runDraftStep: vi.fn().mockResolvedValue({
+        title: "Dry run title",
+        article_html: "<p>Dry run body</p>",
+        markdown: "## 목차\n\n이번 글에서 볼 3가지\n\nbody\n\n지금 써볼 사람과 기다릴 사람을 판단한다.",
+        sections: [{ title: "변화 1" }, { title: "변화 2" }, { title: "변화 3" }],
+        ending_judgment: "지금 써볼 사람과 기다릴 사람을 판단한다.",
+      }),
+      runImageStep: vi.fn().mockResolvedValue({
+        featured: { sha256: "a" },
+        "support-1": { sha256: "b", role: "comparison" },
+        "support-2": { sha256: "c", role: "workflow" },
+      }),
+      runDraftReviewStep: vi.fn().mockResolvedValue({ verdict: "pass" }),
+      runDraftPolishStep: vi.fn().mockResolvedValue({ verdict: "pass" }),
+      runFinalReviewStep: vi.fn().mockResolvedValue({ verdict: "approve" }),
+      runValidateStep: vi.fn().mockResolvedValue({ ok: true }),
+      runQualityGateBundle: vi.fn().mockResolvedValue({
+        results: {
+          publish_ready: {
+            ok: false,
+            status: "fail",
+            failed_gates: ["visual_quality"],
+          },
+        },
+      }),
+    });
+
+    const run = await runSvc.create({
+      companyId,
+      projectId,
+      topic: "Dry run canary topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        title: "Dry run title",
+        article_html: "<p>Dry run body</p>",
+        publishReadyGateCanary: true,
+      },
+    });
+
+    for (let i = 0; i < 7; i += 1) {
+      const current = await runSvc.getById(run!.id);
+      if (!current?.currentStep) break;
+      await worker.runNext(run!.id);
+    }
+
+    const finalDetail = await runSvc.getDetail(run!.id);
+    expect(finalDetail?.run.status).toBe("failed");
+    expect(finalDetail?.run.failedReason).toBe("blog_run_publish_ready_failed:visual_quality");
+  });
 });

@@ -159,6 +159,7 @@ function resolveInitialPublishReadyGateMode(
 ) {
   const explicit = String(contextJson?.publishReadyGateMode ?? "").trim().toLowerCase();
   if (explicit === "strict" || explicit === "compat") return explicit;
+  if (contextJson?.publishReadyGateCanary === true) return "strict";
   return "compat";
 }
 
