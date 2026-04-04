@@ -391,7 +391,17 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Safety check — reserved prefixes
+      // 2. Input validation — secret name
+      // ---------------------------------------------------------------
+      if (!params.name || params.name.trim().length === 0) {
+        throw new Error("Secret name must not be empty.");
+      }
+      if (params.name.length > 255) {
+        throw new Error("Secret name must not exceed 255 characters.");
+      }
+
+      // ---------------------------------------------------------------
+      // 3. Safety check — reserved prefixes
       // ---------------------------------------------------------------
       const upperName = params.name.toUpperCase();
       if (upperName.startsWith("PAPERCLIP_") || upperName.startsWith("BETTER_AUTH_")) {
@@ -399,7 +409,7 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 3. Secure Creation
+      // 4. Secure Creation
       // ---------------------------------------------------------------
       // Crucial Security Requirement: Delegate to secretService to ensure
       // proper provider-level encryption (e.g. AES-256-GCM) is applied before
