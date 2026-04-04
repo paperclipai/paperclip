@@ -4184,6 +4184,9 @@ export function heartbeatService(db: Db) {
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        // remote_trigger agents are driven by external schedulers (e.g. CoWork RemoteTriggers);
+        // skip native interval-based scheduling so they don't get double-fired.
+        if (agent.adapterType === "remote_trigger") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
