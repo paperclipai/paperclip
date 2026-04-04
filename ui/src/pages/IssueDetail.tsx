@@ -985,7 +985,7 @@ export function IssueDetail() {
   useEffect(() => {
     if (issue) {
       openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
+        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} childIssues={childIssues} />
       );
     }
     return () => closePanel();
@@ -1699,7 +1699,7 @@ export function IssueDetail() {
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline childIssues={childIssues} />
             </div>
           </ScrollArea>
         </SheetContent>
