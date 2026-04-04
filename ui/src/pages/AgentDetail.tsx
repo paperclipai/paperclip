@@ -494,6 +494,18 @@ export function AgentDetail() {
             <Play className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">Invoke</span>
           </Button>
+          {agent.status === "error" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-red-500/30 text-red-500 hover:bg-red-500/10"
+              onClick={() => agentAction.mutate("resume")}
+              disabled={agentAction.isPending}
+            >
+              <span className="hidden sm:inline">Clear Error</span>
+              <span className="sm:hidden">Clear</span>
+            </Button>
+          )}
           {agent.status === "paused" ? (
             <Button
               variant="outline"
