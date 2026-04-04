@@ -632,7 +632,25 @@ export function IssueDetail() {
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
-    onSuccess: () => {
+    onMutate: async (data) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
+      if (previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), { ...previousIssue, ...data });
+      }
+      return { previousIssue };
+    },
+    onError: (err, _data, context) => {
+      if (context?.previousIssue) {
+        queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
+      }
+      pushToast({
+        title: "Update failed",
+        body: err instanceof Error ? err.message : "Unable to update issue",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
       invalidateIssue();
     },
   });
