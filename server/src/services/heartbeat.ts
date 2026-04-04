@@ -32,6 +32,7 @@ import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
+import { agentInstructionsService } from "./agent-instructions.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -111,6 +112,27 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
   const nextConfig = { ...config };
   delete nextConfig.workspaceRuntime;
   return nextConfig;
+}
+
+export async function materializeAgentHomeInstructions(
+  agent: typeof agents.$inferSelect,
+  agentHome: string,
+  filesOverride?: Record<string, string>,
+) {
+  await fs.mkdir(agentHome, { recursive: true });
+  const files = filesOverride ?? (await agentInstructionsService().exportFiles(agent)).files;
+  const absoluteAgentHome = path.resolve(agentHome);
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    const absolutePath = path.resolve(absoluteAgentHome, relativePath);
+    const relativeToHome = path.relative(absoluteAgentHome, absolutePath);
+    if (relativeToHome === ".." || relativeToHome.startsWith(`..${path.sep}`)) {
+      throw new Error(`Instruction file path must stay within AGENT_HOME: ${relativePath}`);
+    }
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, content, "utf8");
+  }
 }
 
 export function buildRealizedExecutionWorkspaceFromPersisted(input: {
@@ -2423,7 +2445,15 @@ export function heartbeatService(db: Db) {
       worktreePath: executionWorkspace.worktreePath,
       agentHome: await (async () => {
         const home = resolveDefaultAgentWorkspaceDir(agent.id);
-        await fs.mkdir(home, { recursive: true });
+        try {
+          await materializeAgentHomeInstructions(agent, home);
+        } catch (err) {
+          logger.warn(
+            { err, agentId: agent.id, runId: run.id, agentHome: home },
+            "failed to sync managed instruction bundle into AGENT_HOME; continuing with workspace only",
+          );
+          await fs.mkdir(home, { recursive: true });
+        }
         return home;
       })(),
     };
