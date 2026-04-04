@@ -68,6 +68,15 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
 } from "@paperclipai/adapter-pi-local";
 import {
+  execute as dashscopeExecute,
+  testEnvironment as dashscopeTestEnvironment,
+  sessionCodec as dashscopeSessionCodec,
+} from "@paperclipai/adapter-dashscope-local/server";
+import {
+  agentConfigurationDoc as dashscopeAgentConfigurationDoc,
+  models as dashscopeModels,
+} from "@paperclipai/adapter-dashscope-local";
+import {
   execute as hermesExecute,
   testEnvironment as hermesTestEnvironment,
   sessionCodec as hermesSessionCodec,
@@ -175,6 +184,17 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const dashscopeLocalAdapter: ServerAdapterModule = {
+  type: "dashscope_local",
+  execute: dashscopeExecute,
+  testEnvironment: dashscopeTestEnvironment,
+  sessionCodec: dashscopeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("dashscope_local") ?? undefined,
+  models: dashscopeModels,
+  supportsLocalAgentJwt: false,
+  agentConfigurationDoc: dashscopeAgentConfigurationDoc,
+};
+
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
   execute: hermesExecute,
@@ -194,6 +214,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     codexLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    dashscopeLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     openclawGatewayAdapter,

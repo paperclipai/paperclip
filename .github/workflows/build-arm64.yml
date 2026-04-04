@@ -1,0 +1,67 @@
+name: Build ARM64 Docker Image
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    branches: [master]
+    paths:
+      - 'Dockerfile'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'packages/**'
+      - 'server/**'
+      - 'ui/**'
+      - 'cli/**'
+
+jobs:
+  build-arm64:
+    runs-on: ubuntu-24.04-arm  # GitHub ARM64 runner
+    permissions:
+      contents: read
+      packages: write  # 允许推送镜像到 ghcr.io
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest-arm64
+            ghcr.io/${{ github.repository }}:arm64
+            ghcr.io/${{ github.repository }}:${{ github.sha }}-arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_ENV=production
+            NODE_OPTIONS=--max-old-space-size=4096
+
+      - name: Export image to tar (optional artifact)
+        run: |
+          docker pull ghcr.io/${{ github.repository }}:latest-arm64
+          docker save ghcr.io/${{ github.repository }}:latest-arm64 -o paperclip-arm64.tar
+          
+      - name: Upload tar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip-arm64-tar
+          path: paperclip-arm64.tar
+          retention-days: 7

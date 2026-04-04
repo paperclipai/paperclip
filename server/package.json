@@ -48,6 +48,7 @@
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-local": "workspace:*",
+    "@paperclipai/adapter-dashscope-local": "workspace:*",
     "@paperclipai/adapter-gemini-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",

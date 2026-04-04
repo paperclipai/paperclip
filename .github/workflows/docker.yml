@@ -43,7 +43,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
-      - name: Build and push
+      - name: Build and push multi-platform
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -53,3 +53,6 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NODE_ENV=production
+            NODE_OPTIONS=--max-old-space-size=4096

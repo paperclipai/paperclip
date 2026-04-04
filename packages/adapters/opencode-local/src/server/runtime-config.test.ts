@@ -22,7 +22,7 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
   await fs.mkdir(configDir, { recursive: true });
   if (initialConfig) {
     await fs.writeFile(
-      path.join(configDir, "opencode.json"),
+      path.join(configDir, "config.json"),
       `${JSON.stringify(initialConfig, null, 2)}\n`,
       "utf8",
     );
@@ -48,7 +48,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.env.XDG_CONFIG_HOME).not.toBe(configHome);
     const runtimeConfig = JSON.parse(
       await fs.readFile(
-        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "config.json"),
         "utf8",
       ),
     ) as Record<string, unknown>;

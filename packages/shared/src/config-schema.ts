@@ -14,7 +14,7 @@ export const configMetaSchema = z.object({
 });
 
 export const llmConfigSchema = z.object({
-  provider: z.enum(["claude", "openai"]),
+  provider: z.enum(["claude", "openai", "dashscope"]),
   apiKey: z.string().optional(),
 });
 

@@ -47,7 +47,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
-  const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
+  const runtimeConfigPath = path.join(runtimeConfigDir, "config.json");
 
   await fs.mkdir(runtimeConfigDir, { recursive: true });
   try {
