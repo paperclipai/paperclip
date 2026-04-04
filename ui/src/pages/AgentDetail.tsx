@@ -290,9 +290,11 @@ function asNonEmptyString(value: unknown): string | null {
 export function RunInvocationCard({
   payload,
   censorUsernameInLogs,
+  workspaceOperations = [],
 }: {
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
+  workspaceOperations?: Array<{ phase?: string; metadata?: unknown }>;
 }) {
   const commandLine = [
     typeof payload.command === "string" ? payload.command : null,
@@ -319,6 +321,27 @@ export function RunInvocationCard({
       {typeof payload.cwd === "string" && (
         <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
       )}
+      {workspaceOperations.length > 0 && (() => {
+        const provisionOp = workspaceOperations.find((op) => op.phase === "workspace_provision" || op.phase === "worktree_prepare");
+        const metadata = provisionOp?.metadata as Record<string, unknown> | null | undefined;
+        const mode = metadata?.mode ?? metadata?.strategyType ?? (provisionOp?.phase === "worktree_prepare" ? "git_worktree" : null);
+        if (!mode) return null;
+        const modeLabels: Record<string, string> = {
+          shared_workspace: "Shared",
+          isolated_workspace: "Isolated",
+          operator_branch: "Operator branch",
+          git_worktree: "Git worktree",
+          project_primary: "Project primary",
+          adapter_managed: "Adapter managed",
+          cloud_sandbox: "Cloud sandbox",
+        };
+        return (
+          <div className="text-xs">
+            <span className="text-muted-foreground">Isolation: </span>
+            <span>{typeof mode === "string" ? modeLabels[mode] ?? mode.replace(/_/g, " ") : String(mode)}</span>
+          </div>
+        );
+      })()}
       {hasAdvancedDetails && (
         <Collapsible>
           <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -3828,7 +3851,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
+        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} workspaceOperations={workspaceOperations} />
       )}
 
       <div className="flex items-center justify-between">

@@ -19,7 +19,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, HardDrive } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function defaultProjectWorkspaceIdForProject(project: {
@@ -559,6 +559,36 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           {projectContent}
         </PropertyPicker>
+
+        <PropertyRow label="Workspace">
+          {(() => {
+            const mode =
+              issue.currentExecutionWorkspace?.mode
+              ?? issue.executionWorkspaceSettings?.mode
+              ?? issue.executionWorkspacePreference;
+            const modeLabels: Record<string, string> = {
+              shared_workspace: "Shared",
+              isolated_workspace: "Isolated",
+              operator_branch: "Operator branch",
+              agent_default: "Agent default",
+              reuse_existing: "Reuse existing",
+              adapter_managed: "Adapter managed",
+              cloud_sandbox: "Cloud sandbox",
+            };
+            const label = mode ? modeLabels[mode] ?? mode.replace(/_/g, " ") : null;
+            return label ? (
+              <>
+                <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">{label}</span>
+              </>
+            ) : (
+              <>
+                <HardDrive className="h-3.5 w-3.5 text-muted-foreground opacity-50" />
+                <span className="text-sm text-muted-foreground">Not configured</span>
+              </>
+            );
+          })()}
+        </PropertyRow>
 
         {issue.parentId && (
           <PropertyRow label="Parent">

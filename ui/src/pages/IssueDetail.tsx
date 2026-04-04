@@ -65,6 +65,7 @@ import {
   EyeOff,
   Hexagon,
   ListTree,
+  Lock,
   MessageSquare,
   MoreHorizontal,
   Paperclip,
@@ -1260,6 +1261,16 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+
+          {issue.checkoutRunId && issue.executionAgentNameKey && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400 shrink-0">
+              <Lock className="h-2.5 w-2.5" />
+              <span className="capitalize">{issue.executionAgentNameKey}</span>
+              {issue.executionLockedAt && (
+                <span className="text-amber-600/70 dark:text-amber-400/70">· {relativeTime(issue.executionLockedAt)}</span>
+              )}
+            </span>
+          )}
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
