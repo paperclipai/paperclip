@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
+// Windows: codex execute tests require symlinks (codex-home.ts ensureSymlink)
+// and extensionless shebanged scripts (fake codex binary), neither of which
+// work reliably on Windows without elevated privileges or Developer Mode.
+const isWindows = process.platform === "win32";
+
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -40,7 +45,7 @@ type LogEntry = {
   chunk: string;
 };
 
-describe("codex execute", () => {
+describe.skipIf(isWindows)("codex execute", () => {
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");

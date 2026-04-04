@@ -4,6 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-claude-local/server";
 
+// Windows: claude execute tests require symlinks (buildSkillsDir in execute.ts)
+// and extensionless shebanged scripts (fake claude binary), neither of which
+// work reliably on Windows without elevated privileges or Developer Mode.
+const isWindows = process.platform === "win32";
+
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
@@ -25,7 +30,7 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", res
   await fs.chmod(commandPath, 0o755);
 }
 
-describe("claude execute", () => {
+describe.skipIf(isWindows)("claude execute", () => {
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
