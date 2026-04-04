@@ -696,7 +696,7 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
-                        className={isChild ? "pl-6" : undefined}
+                        className={isChild ? "pl-6 sm:pl-7" : undefined}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" onClick={toggleCollapse}>
