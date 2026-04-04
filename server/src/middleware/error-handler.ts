@@ -61,6 +61,30 @@ export function errorHandler(
     return;
   }
 
+  // Defense-in-depth: catch http-errors style objects (e.g. from body-parser
+  // verify callbacks) that have a numeric .status but are not HttpError.
+  if (
+    err &&
+    typeof err === "object" &&
+    "status" in err &&
+    typeof (err as any).status === "number" &&
+    (err as any).status >= 400 &&
+    (err as any).status < 600
+  ) {
+    const status = (err as any).status as number;
+    const expose = (err as any).expose === true;
+    const message =
+      status < 500 && expose && (err as any).message
+        ? (err as any).message
+        : "Internal server error";
+    if (status >= 500) {
+      const rootErr = err instanceof Error ? err : new Error(String(err));
+      attachErrorContext(req, res, { message: rootErr.message, stack: rootErr.stack, name: rootErr.name }, rootErr);
+    }
+    res.status(status).json({ error: message });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
   attachErrorContext(
     req,
