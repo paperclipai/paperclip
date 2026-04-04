@@ -793,6 +793,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      telemetry: {
+        async track(
+          eventName: string,
+          dimensions?: Record<string, string | number | boolean>,
+        ): Promise<void> {
+          await callHost("telemetry.track", { eventName, dimensions });
+        },
+      },
+
       logger: {
         info(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "info", message, meta });

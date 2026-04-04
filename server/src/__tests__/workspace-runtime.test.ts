@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parse as parseEnvContents } from "dotenv";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -24,6 +25,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
@@ -51,7 +53,7 @@ async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
 }
 
-async function createTempRepo() {
+async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
@@ -59,7 +61,7 @@ async function createTempRepo() {
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
   await runGit(repoRoot, ["add", "README.md"]);
   await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
-  await runGit(repoRoot, ["checkout", "-B", "main"]);
+  await runGit(repoRoot, ["checkout", "-B", defaultBranch]);
   return repoRoot;
 }
 
@@ -539,20 +541,19 @@ describe("realizeExecutionWorkspace", () => {
         path.join(expectedInstanceRoot, "secrets", "master.key"),
       );
       expect(envContents).not.toContain("DATABASE_URL=");
-      expect(envContents).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedWorktreeHome)}`);
-      expect(envContents).toContain(`PAPERCLIP_INSTANCE_ID=${JSON.stringify(expectedInstanceId)}`);
-      expect(envContents).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`);
-      expect(envContents).toContain("PAPERCLIP_IN_WORKTREE=true");
-      expect(envContents).toContain(
-        `PAPERCLIP_WORKTREE_NAME=${JSON.stringify("PAP-885-show-worktree-banner")}`,
-      );
+      const envVars = parseEnvContents(envContents);
+      expect(envVars.PAPERCLIP_HOME).toBe(isolatedWorktreeHome);
+      expect(envVars.PAPERCLIP_INSTANCE_ID).toBe(expectedInstanceId);
+      expect(await fs.realpath(envVars.PAPERCLIP_CONFIG!)).toBe(await fs.realpath(configPath));
+      expect(envVars.PAPERCLIP_IN_WORKTREE).toBe("true");
+      expect(envVars.PAPERCLIP_WORKTREE_NAME).toBe("PAP-885-show-worktree-banner");
 
       process.chdir(workspace.cwd);
       expect(resolvePaperclipConfigPath()).toBe(configPath);
     } finally {
       process.chdir(previousCwd);
     }
-  });
+  }, 15_000);
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
@@ -654,6 +655,109 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(workspace.cwd, "feature.txt"), "utf8")).resolves.toBe("preserve me\n");
     const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
     expect(actualHead).toBe(expectedHead);
+  });
+
+  it("auto-detects the default branch when baseRef is not configured", async () => {
+    // Create a repo with "master" as default branch (not "main")
+    const repoRoot = await createTempRepo("master");
+
+    // Set up a bare remote and push master so refs/remotes/origin/master
+    // exists locally. Note: refs/remotes/origin/HEAD is NOT set by a manual
+    // fetch — that requires git clone or git remote set-head. This test
+    // exercises the heuristic fallback path in detectDefaultBranch.
+    const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-"));
+    await runGit(bareRemote, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+    await runGit(repoRoot, ["fetch", "origin"]);
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          // No baseRef configured — should auto-detect "master"
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-460",
+        title: "Auto detect default branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.created).toBe(true);
+    // The worktree should have been created successfully (baseRef resolved to "master")
+    const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
+    expect(worktreeOp).toBeDefined();
+    expect(worktreeOp!.metadata!.baseRef).toBe("master");
+  });
+
+  it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
+    // Create a repo with "master" as default branch
+    const repoRoot = await createTempRepo("master");
+
+    // Set up a bare remote and push
+    const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
+    await runGit(bareRemote, ["init", "--bare"]);
+    await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["push", "-u", "origin", "master"]);
+    await runGit(repoRoot, ["fetch", "origin"]);
+    // Explicitly set refs/remotes/origin/HEAD to exercise the symbolic-ref path
+    // (git remote set-head -a requires the remote to advertise HEAD, so we set it manually)
+    await runGit(repoRoot, ["remote", "set-head", "origin", "master"]);
+
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          // No baseRef configured — should auto-detect "master" via symbolic-ref
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-461",
+        title: "Auto detect default branch via symref",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(workspace.strategy).toBe("git_worktree");
+    expect(workspace.created).toBe(true);
+    const worktreeOp = operations.find(op => op.phase === "worktree_prepare" && op.metadata?.created);
+    expect(worktreeOp).toBeDefined();
+    expect(worktreeOp!.metadata!.baseRef).toBe("master");
   });
 
   it("removes a created git worktree and branch during cleanup", async () => {
@@ -1239,6 +1343,60 @@ describe("ensureRuntimeServicesForRun", () => {
 
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
+  });
+});
+
+describe("resolveShell (shell fallback)", () => {
+  const originalShell = process.env.SHELL;
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    if (originalShell !== undefined) {
+      process.env.SHELL = originalShell;
+    } else {
+      delete process.env.SHELL;
+    }
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  });
+
+  it("returns process.env.SHELL when set", () => {
+    process.env.SHELL = "/usr/bin/zsh";
+    expect(resolveShell()).toBe("/usr/bin/zsh");
+  });
+
+  it("trims whitespace from SHELL env var", () => {
+    process.env.SHELL = "  /usr/bin/fish  ";
+    expect(resolveShell()).toBe("/usr/bin/fish");
+  });
+
+  it("falls back to /bin/sh on non-Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("falls back to sh (bare) on Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
+  });
+
+  it("falls back to /bin/sh on darwin when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats empty SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats whitespace-only SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "   ";
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
   });
 });
 

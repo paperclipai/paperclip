@@ -16,14 +16,14 @@ By default this workflow does **not** mount your host repo checkout, your host h
 ## Files
 
 - `docker/untrusted-review/Dockerfile`
-- `docker-compose.untrusted-review.yml`
+- `docker/docker-compose.untrusted-review.yml`
 - `review-checkout-pr` inside the container
 
 ## Build and start a shell
 
 ```sh
-docker compose -f docker-compose.untrusted-review.yml build
-docker compose -f docker-compose.untrusted-review.yml run --rm --service-ports review
+docker compose -f docker/docker-compose.untrusted-review.yml build
+docker compose -f docker/docker-compose.untrusted-review.yml run --rm --service-ports review
 ```
 
 That opens an interactive shell in the review container with:
@@ -47,7 +47,7 @@ claude login
 If you prefer API-key auth instead of CLI login, pass keys through Compose env:
 
 ```sh
-OPENAI_API_KEY=... ANTHROPIC_API_KEY=... docker compose -f docker-compose.untrusted-review.yml run --rm review
+OPENAI_API_KEY=... ANTHROPIC_API_KEY=... docker compose -f docker/docker-compose.untrusted-review.yml run --rm review
 ```
 
 ## Check out a PR safely
@@ -117,7 +117,7 @@ Notes:
 Remove the review container volumes when you want a clean environment:
 
 ```sh
-docker compose -f docker-compose.untrusted-review.yml down -v
+docker compose -f docker/docker-compose.untrusted-review.yml down -v
 ```
 
 That deletes:

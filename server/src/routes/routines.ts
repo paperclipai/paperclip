@@ -8,10 +8,12 @@ import {
   updateRoutineSchema,
   updateRoutineTriggerSchema,
 } from "@paperclipai/shared";
+import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 export function routineRoutes(db: Db) {
   const router = Router();
@@ -76,6 +78,10 @@ export function routineRoutes(db: Db) {
       entityId: created.id,
       details: { title: created.title, assigneeAgentId: created.assigneeAgentId },
     });
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      trackRoutineCreated(telemetryClient);
+    }
     res.status(201).json(created);
   });
 
