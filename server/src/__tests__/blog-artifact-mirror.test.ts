@@ -126,4 +126,70 @@ describeEmbeddedPostgres("blog artifact mirror integration", () => {
       next_step: "draft",
     });
   });
+
+  it("writes a structured stop reason for automatic stop and follow-up failures", async () => {
+    const { companyId, projectId } = await seedProject();
+    const mirror = blogArtifactMirrorService({ baseDir: scratchRoot });
+    const svc = blogRunService(db, { artifactMirror: mirror });
+
+    const publishRun = await svc.create({
+      companyId,
+      projectId,
+      topic: "Publish verify failure",
+      lane: "publish",
+      publishMode: "publish",
+    });
+    const publishClaim = await svc.claimNextStep(publishRun!.id);
+    await svc.failStep(publishRun!.id, "research", {
+      attemptId: publishClaim!.attempt!.id,
+      errorCode: "BLOG_RUN_PUBLIC_VERIFY_FAILED",
+      errorMessage: "blog_run_public_verify_failed:PUBLIC_VERIFY_REGRESSION",
+    });
+
+    const publishStatus = JSON.parse(await fs.readFile(path.join(scratchRoot, publishRun!.id, "status.json"), "utf8"));
+    const publishStopReason = JSON.parse(await fs.readFile(path.join(scratchRoot, publishRun!.id, "stop-reason.json"), "utf8"));
+
+    expect(publishStatus.stop_reason).toMatchObject({
+      failureName: "PUBLIC_VERIFY_FAILURE",
+      classification: "auto_stop",
+      stopScope: "article",
+      stopActive: true,
+      primaryOwner: "publish-verify",
+    });
+    expect(publishStopReason).toMatchObject({
+      failureName: "PUBLIC_VERIFY_FAILURE",
+      classification: "auto_stop",
+      resumeRequirements: ["passing public verify verdict on the corrected or quarantined state"],
+    });
+
+    const draftRun = await svc.create({
+      companyId,
+      projectId,
+      topic: "Research wobble",
+      lane: "publish",
+      publishMode: "draft",
+    });
+    const draftClaim = await svc.claimNextStep(draftRun!.id);
+    await svc.failStep(draftRun!.id, "research", {
+      attemptId: draftClaim!.attempt!.id,
+      errorCode: "RESEARCH_ERROR",
+      errorMessage: "research_bundle_missing",
+    });
+
+    const draftStatus = JSON.parse(await fs.readFile(path.join(scratchRoot, draftRun!.id, "status.json"), "utf8"));
+    const draftStopReason = JSON.parse(await fs.readFile(path.join(scratchRoot, draftRun!.id, "stop-reason.json"), "utf8"));
+
+    expect(draftStatus.stop_reason).toMatchObject({
+      failureName: "RESEARCH_QUALITY_WOBBLE",
+      classification: "follow_up",
+      stopScope: "article",
+      stopActive: false,
+      primaryOwner: "research-draft",
+    });
+    expect(draftStopReason).toMatchObject({
+      failureName: "RESEARCH_QUALITY_WOBBLE",
+      classification: "follow_up",
+      nextAction: "repair the article or explicitly reject the run",
+    });
+  });
 });

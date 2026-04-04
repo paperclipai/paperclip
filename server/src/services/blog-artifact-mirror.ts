@@ -21,6 +21,7 @@ type MirrorStatusInput = {
   lastCompletedStep: string | null;
   nextStep: string | null;
   error: string | null;
+  stopReason?: Record<string, unknown> | null;
 };
 
 type MirrorContextRun = {
@@ -76,10 +77,17 @@ export function blogArtifactMirrorService(input?: { baseDir?: string }) {
       last_completed_step: status.lastCompletedStep,
       next_step: status.nextStep,
       error: status.error,
+      stop_reason: status.stopReason ?? null,
       updated_at: new Date().toISOString(),
     };
     await writeJson(path.join(resolveRunDir(runId), "status.json"), payload);
     return payload;
+  }
+
+  async function writeStopReason(runId: string, stopReason: Record<string, unknown>) {
+    const filePath = path.join(resolveRunDir(runId), "stop-reason.json");
+    await writeJson(filePath, stopReason);
+    return filePath;
   }
 
   async function writeStepResult(runId: string, stepKey: string, result: unknown) {
@@ -114,6 +122,7 @@ export function blogArtifactMirrorService(input?: { baseDir?: string }) {
     resolveRunDir,
     writeContext,
     writeStatus,
+    writeStopReason,
     writeStepResult,
     writeStepArtifacts,
     createScratchRoot,

@@ -76,6 +76,28 @@ type FailStepInput = {
   errorMessage?: string | null;
 };
 
+type PublishStopReason = {
+  incidentId: string;
+  openedAt: string;
+  runId: string;
+  pipelineKey: string;
+  verticalKey: string;
+  stepKey: string;
+  failureName: string;
+  classification: "auto_stop" | "follow_up";
+  stopScope: "article" | "lane" | "step" | "none" | "global";
+  stopActive: boolean;
+  primaryOwner: string;
+  supportingOwners: string[];
+  publicRisk: "low" | "medium" | "high";
+  recoverabilityRisk: "low" | "medium" | "high";
+  artifactRefs: string[];
+  currentDecision: string;
+  resumeRequirements: string[];
+  nextAction: string;
+  lastUpdatedAt: string;
+};
+
 type RequestPublishApprovalInput = {
   targetSlug: string;
   siteId?: string | null;
@@ -174,6 +196,175 @@ function nextStateAfterStep(stepKey: string) {
     default:
       return { status: "failed" as BlogRunStatus, nextStep: null };
   }
+}
+
+function buildRunArtifactRefs(runId: string, stepKey: string) {
+  const refs = [`${runId}/status.json`];
+  if (stepKey === "publish") refs.push(`${runId}/publish.json`);
+  if (stepKey === "public_verify") {
+    refs.push(`${runId}/publish.json`);
+    refs.push(`${runId}/verify.json`);
+  }
+  if (stepKey === "research") refs.push(`${runId}/research.json`);
+  if (stepKey === "draft") refs.push(`${runId}/draft.json`);
+  if (stepKey === "validate") refs.push(`${runId}/validation.json`);
+  return refs;
+}
+
+function derivePublishStopReason(
+  run: typeof blogRuns.$inferSelect,
+  stepKey: string,
+  input: FailStepInput,
+): PublishStopReason {
+  const raw = `${String(input.errorCode ?? "")} ${String(input.errorMessage ?? "")}`.trim().toUpperCase();
+  const context = (run.contextJson && typeof run.contextJson === "object" && !Array.isArray(run.contextJson))
+    ? run.contextJson
+    : {};
+  const now = new Date().toISOString();
+  const base = {
+    incidentId: `incident-${run.id}-${stepKey}`,
+    openedAt: now,
+    runId: run.id,
+    pipelineKey: "blog-os",
+    verticalKey: String(context.verticalKey ?? context.category_family ?? "unknown"),
+    stepKey,
+    lastUpdatedAt: now,
+    artifactRefs: buildRunArtifactRefs(run.id, stepKey),
+  };
+
+  if (raw.includes("APPROVAL")) {
+    return {
+      ...base,
+      failureName: "APPROVAL_FAILURE",
+      classification: "auto_stop",
+      stopScope: "article",
+      stopActive: true,
+      primaryOwner: "draft-approval",
+      supportingOwners: ["publish-pipeline"],
+      publicRisk: "high",
+      recoverabilityRisk: "medium",
+      currentDecision: "block publish path until a fresh approval is attached",
+      resumeRequirements: ["fresh approval ID bound to the corrected approved package"],
+      nextAction: "obtain a fresh approval for the corrected approved package",
+    };
+  }
+
+  if (raw.includes("IDEMPOTENCY")) {
+    return {
+      ...base,
+      failureName: "IDEMPOTENCY_ANOMALY",
+      classification: "auto_stop",
+      stopScope: "lane",
+      stopActive: true,
+      primaryOwner: "publish-pipeline",
+      supportingOwners: ["operations"],
+      publicRisk: "high",
+      recoverabilityRisk: "high",
+      currentDecision: "freeze the lane until one canonical publish outcome is proven",
+      resumeRequirements: ["one canonical publish outcome proven from ledger, receipt, and public state"],
+      nextAction: "reconcile idempotency state across publish execution surfaces",
+    };
+  }
+
+  if (raw.includes("WORDPRESS_WRITE_FORBIDDEN") || raw.includes("PUBLIC_VERIFY_CONTRACT_MISSING") || raw.includes("PUBLISH_BOUNDARY")) {
+    return {
+      ...base,
+      failureName: "PUBLISH_BOUNDARY_MISMATCH",
+      classification: "auto_stop",
+      stopScope: "lane",
+      stopActive: true,
+      primaryOwner: "publish-pipeline",
+      supportingOwners: ["harness"],
+      publicRisk: "high",
+      recoverabilityRisk: "medium",
+      currentDecision: "block the publish lane until the boundary contract is corrected",
+      resumeRequirements: ["approved package checksum matches publish input bundle and boundary smoke passes"],
+      nextAction: "repair the publish boundary contract and rerun the boundary smoke suite",
+    };
+  }
+
+  if (raw.includes("BLOG_RUN_PUBLIC_VERIFY_FAILED") || raw.includes("PUBLIC_VERIFY_") || raw.includes("VERIFY_FAILED")) {
+    return {
+      ...base,
+      failureName: "PUBLIC_VERIFY_FAILURE",
+      classification: "auto_stop",
+      stopScope: "article",
+      stopActive: true,
+      primaryOwner: "publish-verify",
+      supportingOwners: ["verifier", "harness"],
+      publicRisk: "high",
+      recoverabilityRisk: "medium",
+      currentDecision: "quarantine the affected article and block replay",
+      resumeRequirements: ["passing public verify verdict on the corrected or quarantined state"],
+      nextAction: "repair or quarantine the public state and rerun public verify",
+    };
+  }
+
+  if (raw.includes("BACKUP")) {
+    return {
+      ...base,
+      failureName: "BACKUP_DELAY",
+      classification: "follow_up",
+      stopScope: "none",
+      stopActive: false,
+      primaryOwner: "operations",
+      supportingOwners: ["harness"],
+      publicRisk: "low",
+      recoverabilityRisk: "medium",
+      currentDecision: "keep publish running but record the backup delay incident",
+      resumeRequirements: ["required artifacts mirrored or manual stop decision recorded"],
+      nextAction: "restore backup coverage or record a manual stop decision",
+    };
+  }
+
+  if (raw.includes("COST")) {
+    return {
+      ...base,
+      failureName: "EARLY_COST_ANOMALY",
+      classification: "follow_up",
+      stopScope: "none",
+      stopActive: false,
+      primaryOwner: "operations",
+      supportingOwners: ["ceo"],
+      publicRisk: "low",
+      recoverabilityRisk: "low",
+      currentDecision: "record the anomaly and keep the pipeline running",
+      resumeRequirements: ["cost spike explained or policy changed explicitly"],
+      nextAction: "inspect spend anomaly and record operator decision",
+    };
+  }
+
+  if (stepKey === "research" || stepKey === "draft" || stepKey === "draft_review" || stepKey === "draft_polish" || stepKey === "final_review" || stepKey === "validate") {
+    return {
+      ...base,
+      failureName: "RESEARCH_QUALITY_WOBBLE",
+      classification: "follow_up",
+      stopScope: "article",
+      stopActive: false,
+      primaryOwner: "research-draft",
+      supportingOwners: ["editorial"],
+      publicRisk: "medium",
+      recoverabilityRisk: "low",
+      currentDecision: "record the article-level quality incident without global stop",
+      resumeRequirements: ["editorial correction or explicit rejection recorded"],
+      nextAction: "repair the article or explicitly reject the run",
+    };
+  }
+
+  return {
+    ...base,
+    failureName: "ROUTINE_PARTIAL_FAILURE",
+    classification: "follow_up",
+    stopScope: "step",
+    stopActive: false,
+    primaryOwner: "owning-specialist",
+    supportingOwners: ["operations"],
+    publicRisk: "low",
+    recoverabilityRisk: "medium",
+    currentDecision: "keep the broader pipeline active while this step incident stays open",
+    resumeRequirements: ["step either succeeds on allowed retry path or incident stays open"],
+    nextAction: "route the failure to the owning specialist and retry if allowed",
+  };
 }
 
 export function blogRunService(
@@ -400,6 +591,8 @@ export function blogRunService(
         })
         .where(eq(blogRunStepAttempts.id, attempt.id));
 
+      const stopReason = derivePublishStopReason(run, stepKey, input);
+
       await db
         .update(blogRuns)
         .set({
@@ -415,7 +608,9 @@ export function blogRunService(
         lastCompletedStep: null,
         nextStep: stepKey,
         error: input.errorMessage ?? input.errorCode ?? stepKey,
+        stopReason,
       });
+      await artifactMirror.writeStopReason(runId, stopReason);
 
       return this.getDetail(runId);
     },
