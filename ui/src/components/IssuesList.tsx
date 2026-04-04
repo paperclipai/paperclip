@@ -5,6 +5,7 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useHasPermission } from "../hooks/usePermissions";
 import { issuesApi } from "../api/issues";
+import { accessApi } from "../api/access";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { groupBy } from "../lib/groupBy";
@@ -221,10 +222,23 @@ export function IssuesList({
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
   });
 
+  const { data: teamMembers = [] } = useQuery({
+    queryKey: queryKeys.access.team(selectedCompanyId!),
+    queryFn: () => accessApi.listTeam(selectedCompanyId!).catch(() => [] as any[]),
+    enabled: !!selectedCompanyId,
+    retry: false,
+  });
+
   const agentName = useCallback((id: string | null) => {
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
+
+  const humanName = useCallback((id: string | null) => {
+    if (!id) return null;
+    const member = teamMembers.find((m: any) => m.id === id);
+    return member?.displayName ?? member?.name ?? member?.email ?? null;
+  }, [teamMembers]);
 
   const filtered = useMemo(() => {
     const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
@@ -753,6 +767,13 @@ export function IssuesList({
                           >
                             {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
                               <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
+                            ) : issue.assigneeUserId && humanName(issue.assigneeUserId) ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs">
+                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-blue-500/15 text-blue-600 text-[10px] font-medium shrink-0">
+                                  {humanName(issue.assigneeUserId)!.charAt(0).toUpperCase()}
+                                </span>
+                                <span className="truncate">{humanName(issue.assigneeUserId)}</span>
+                              </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                                 <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
