@@ -354,6 +354,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const skillsDir = await buildSkillsDir(config);
 
+  // If mcpServers is configured in adapter_config, write a temp mcp.json into
+  // the skillsDir tmpdir and pass it via --mcp-config so Claude CLI registers
+  // the MCP tools on startup. This is the persistent, first-class way to
+  // configure MCPs per agent — stored in adapter_config.mcpServers.
+  const mcpServersConfig = parseObject(config.mcpServers);
+  const mcpConfigArgs: string[] = [];
+  const hasMcpConfigInExtraArgs = extraArgs.some((a) => a === "--mcp-config");
+  if (Object.keys(mcpServersConfig).length > 0 && !hasMcpConfigInExtraArgs) {
+    const mcpConfigPath = path.join(skillsDir, "mcp.json");
+    await fs.writeFile(
+      mcpConfigPath,
+      JSON.stringify({ mcpServers: mcpServersConfig }, null, 2),
+      "utf-8",
+    );
+    mcpConfigArgs.push("--mcp-config", mcpConfigPath);
+  }
+
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
   // --append-system-prompt-file (Claude CLI forbids using both flags together).
@@ -428,6 +445,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);
+    if (mcpConfigArgs.length > 0) args.push(...mcpConfigArgs);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
