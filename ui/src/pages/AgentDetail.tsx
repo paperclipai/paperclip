@@ -909,9 +909,9 @@ export function AgentDetail() {
           <PageTabBar
             items={[
               { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
+              { value: "instructions", label: configDirty ? <span>Instructions <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" /></span> : "Instructions" },
               { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
+              { value: "configuration", label: configDirty ? <span>Configuration <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" /></span> : "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
