@@ -43,7 +43,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? context.approvalStatus.trim()
       : null;
   const linkedIssueIds = Array.isArray(context.issueIds)
-    ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    ? context.issueIds
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim())
     : [];
 
   if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
