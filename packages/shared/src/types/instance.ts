@@ -19,6 +19,7 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableWorkProducts: boolean;
   enableDependencies: boolean;
+  enforceBlockedOnValidation: boolean;
   autoLabelRulesEngine: boolean;
   crashMonitoring: CrashMonitoringSettings;
 }

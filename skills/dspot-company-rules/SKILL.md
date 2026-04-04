@@ -206,6 +206,28 @@ All agent comments on GitHub pull requests **MUST** start with the agent display
 - **Does NOT apply to:** Paperclip issue comments (UI already shows agent identity)
 - **Does NOT apply to:** git commit messages (these use `Co-Authored-By`)
 
+## Destructive PR Approval Gate
+
+PRs that delete files, remove features, or make destructive code changes (>100 lines removed or entire files deleted) require **explicit board approval** before merge.
+
+**Rules:**
+
+1. **Board approval required.** No destructive PR may be merged without a board member explicitly approving it in the PR thread or the linked Paperclip issue.
+2. **No self-merging.** The author of a destructive PR must not merge their own PR. A separate reviewer (board or authorized agent) must approve and merge.
+3. **Individual assessment.** Bulk triage must not bypass individual review — each PR gets its own assessment regardless of batch size. Never batch-approve destructive PRs.
+4. **What counts as destructive:** File deletions, feature removals, >100 lines of code removed, entire modules or components deleted, database migrations that drop tables/columns.
+
+## Visual Evidence for UI Changes
+
+PRs that modify user-facing UI **must** include screenshots or screen recordings in the PR description showing the change in action.
+
+**Rules:**
+
+1. **No UI PR without visual evidence.** Any PR that touches user-visible interface elements (pages, components, layouts, styles, interactions) must include at least one screenshot or screen recording in the PR description.
+2. **Before and after.** When modifying existing UI, include both before and after screenshots to show what changed.
+3. **All affected states.** Show all relevant states (empty, loaded, error, mobile/desktop) when applicable.
+4. **Evidence format.** Screenshots should be embedded directly in the PR description as images, not as external links that may expire.
+
 ## Waiting for User Input
 
 When you need the user to take an action (login, MFA, confirm something), use the `wait-for-board` skill. **Never exit your process** if you can poll and wait instead — this keeps browser state alive.

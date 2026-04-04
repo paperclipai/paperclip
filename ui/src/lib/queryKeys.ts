@@ -142,6 +142,10 @@ export const queryKeys = {
   liveRuns: (companyId: string) => ["live-runs", companyId] as const,
   runIssues: (runId: string) => ["run-issues", runId] as const,
   org: (companyId: string) => ["org", companyId] as const,
+  autoLabelRules: {
+    list: (companyId: string) => ["auto-label-rules", companyId] as const,
+    executions: (ruleId: string) => ["auto-label-rules", "executions", ruleId] as const,
+  },
   skills: {
     available: ["skills", "available"] as const,
   },
