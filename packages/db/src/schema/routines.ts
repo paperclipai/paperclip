@@ -26,6 +26,7 @@ export const routines = pgTable(
     parentIssueId: uuid("parent_issue_id").references(() => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     assigneeAgentId: uuid("assignee_agent_id").notNull().references(() => agents.id),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),

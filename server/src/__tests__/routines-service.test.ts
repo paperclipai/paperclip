@@ -1,6 +1,8 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -71,6 +73,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         contextSnapshot?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
+    runBlogRunStep?: (runId: string) => Promise<unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -144,6 +147,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             .where(eq(issues.id, issueId));
           return { id: queuedRunId };
         },
+        runBlogRunStep: opts?.runBlogRunStep,
       },
     });
     const issueSvc = issueService(db);
@@ -384,6 +388,41 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .where(eq(issues.originId, routine.id));
 
     expect(routineIssues).toHaveLength(0);
+  });
+
+  it("creates and runs a blog run directly when executionMode=blog_run_create", async () => {
+    const stubDir = await fs.mkdtemp("/tmp/paperclip-routine-blog-run-");
+    const stubPath = `${stubDir}/create_article_quality_loop_run.cjs`;
+    writeFileSync(stubPath, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ ok: true, topic: 'Stub Topic', reused: false, run: { id: 'blog-run-1' } }));\n`);
+
+    const runBlogRunStep = vi.fn().mockResolvedValue({ run: { id: "blog-run-1", status: "research_ready" } });
+    const { routine, svc } = await seedFixture({ runBlogRunStep });
+
+    await db.update(routines).set({
+      metadata: {
+        executionMode: "blog_run_create",
+        vertical: "ai-tech",
+        targetSite: "fluxaivory.com",
+      },
+    }).where(eq(routines.id, routine.id));
+
+    const originalEnv = process.env.ARTICLE_LOOP_CREATOR_SCRIPT;
+    const originalDbEnv = process.env.PAPERCLIP_DB_URL;
+    process.env.ARTICLE_LOOP_CREATOR_SCRIPT = stubPath;
+    process.env.PAPERCLIP_DB_URL = tempDb!.connectionString;
+    try {
+      const run = await svc.runRoutine(routine.id, { source: "manual" });
+      expect(run.status).toBe("blog_run_created");
+      expect(run.linkedIssueId).toBeNull();
+      expect((run.triggerPayload as any)?.blogRunId).toBe("blog-run-1");
+      expect(runBlogRunStep).toHaveBeenCalledWith("blog-run-1");
+    } finally {
+      if (originalEnv === undefined) delete process.env.ARTICLE_LOOP_CREATOR_SCRIPT;
+      else process.env.ARTICLE_LOOP_CREATOR_SCRIPT = originalEnv;
+      if (originalDbEnv === undefined) delete process.env.PAPERCLIP_DB_URL;
+      else process.env.PAPERCLIP_DB_URL = originalDbEnv;
+      await fs.rm(stubDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {

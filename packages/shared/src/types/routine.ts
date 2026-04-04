@@ -33,6 +33,7 @@ export interface Routine {
   parentIssueId: string | null;
   title: string;
   description: string | null;
+  metadata: Record<string, unknown> | null;
   assigneeAgentId: string;
   priority: string;
   status: string;

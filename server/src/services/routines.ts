@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { execFile as execFileCb } from "node:child_process";
+import { promisify } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -33,6 +35,8 @@ import { parseCron, validateCron } from "./cron.js";
 import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+
+const execFile = promisify(execFileCb);
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
@@ -138,7 +142,47 @@ function normalizeWebhookTimestampMs(rawTimestamp: string) {
   return parsed > 1e12 ? parsed : parsed * 1000;
 }
 
-export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+type RoutineHeartbeatDeps = IssueAssignmentWakeupDeps & {
+  runBlogRunStep?: (runId: string) => Promise<unknown>;
+};
+
+async function createDirectArticleLoopRun(input: {
+  routine: typeof routines.$inferSelect;
+  payload?: Record<string, unknown> | null;
+}) {
+  const metadata = (input.routine.metadata && typeof input.routine.metadata === "object" && !Array.isArray(input.routine.metadata))
+    ? input.routine.metadata as Record<string, unknown>
+    : {};
+  const vertical = String((input.payload && typeof input.payload.vertical === "string" ? input.payload.vertical : metadata.vertical) || "ai-tech").trim() || "ai-tech";
+  const issueId = input.payload && typeof input.payload.issueId === "string" ? input.payload.issueId : "";
+  const targetSite = String(metadata.targetSite || "fluxaivory.com").trim() || "fluxaivory.com";
+  const scriptPath = process.env.ARTICLE_LOOP_CREATOR_SCRIPT || "/Users/daehan/Documents/persona/paperclip/scripts/create_article_quality_loop_run.cjs";
+  const args = [scriptPath, "--vertical", vertical];
+  if (issueId) args.push("--issue-id", issueId);
+  const { stdout } = await execFile("node", args, {
+    maxBuffer: 1024 * 1024 * 4,
+    env: {
+      ...process.env,
+      PAPERCLIP_COMPANY_ID: input.routine.companyId,
+      ARTICLE_LOOP_PROJECT_ID: input.routine.projectId,
+      ARTICLE_LOOP_TARGET_SITE: targetSite,
+    },
+  });
+  const parsed = JSON.parse(String(stdout || "{}"));
+  const blogRunId = String(parsed?.run?.id ?? "").trim();
+  if (!blogRunId) {
+    throw new Error("routine_blog_run_create_failed");
+  }
+  return {
+    blogRunId,
+    topic: String(parsed?.topic ?? "").trim() || null,
+    reused: parsed?.reused === true,
+    vertical,
+    targetSite,
+  };
+}
+
+export function routineService(db: Db, deps: { heartbeat?: RoutineHeartbeatDeps } = {}) {
   const issueSvc = issueService(db);
   const secretsSvc = secretService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
@@ -563,6 +607,47 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
+        const directMode = (
+          input.routine.metadata &&
+          typeof input.routine.metadata === "object" &&
+          !Array.isArray(input.routine.metadata) &&
+          (input.routine.metadata as Record<string, unknown>).executionMode === "blog_run_create"
+        );
+
+        if (directMode) {
+          const createdBlogRun = await createDirectArticleLoopRun({
+            routine: input.routine,
+            payload: input.payload ?? null,
+          });
+
+          const updated = await finalizeRun(createdRun.id, {
+            status: "blog_run_created",
+            completedAt: triggeredAt,
+            triggerPayload: {
+              ...(input.payload ?? {}),
+              executionMode: "blog_run_create",
+              blogRunId: createdBlogRun.blogRunId,
+              blogRunTopic: createdBlogRun.topic,
+              reusedBlogRun: createdBlogRun.reused,
+              vertical: createdBlogRun.vertical,
+              targetSite: createdBlogRun.targetSite,
+            },
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status: "blog_run_created",
+            nextRunAt,
+          }, txDb);
+
+          if ("runBlogRunStep" in heartbeat && typeof (heartbeat as { runBlogRunStep?: (runId: string) => Promise<unknown> }).runBlogRunStep === "function") {
+            await (heartbeat as { runBlogRunStep: (runId: string) => Promise<unknown> }).runBlogRunStep(createdBlogRun.blogRunId);
+          }
+
+          return updated ?? createdRun;
+        }
+
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";

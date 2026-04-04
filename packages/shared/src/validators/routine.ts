@@ -13,6 +13,7 @@ export const createRoutineSchema = z.object({
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
   description: z.string().optional().nullable(),
+  metadata: z.record(z.unknown()).optional().nullable(),
   assigneeAgentId: z.string().uuid(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
