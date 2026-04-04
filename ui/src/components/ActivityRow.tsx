@@ -9,6 +9,7 @@ const ACTION_VERBS: Record<string, string> = {
   "issue.updated": "updated",
   "issue.checked_out": "checked out",
   "issue.released": "released",
+  "issue.comment.created": "commented on",
   "issue.comment_added": "commented on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",

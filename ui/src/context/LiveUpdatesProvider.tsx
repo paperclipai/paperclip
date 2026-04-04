@@ -254,7 +254,7 @@ function shouldSuppressAgentStatusToastForVisibleIssue(
   return !!agentId && agentId === context.assigneeAgentId;
 }
 
-const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment.created", "issue.comment_added"]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 

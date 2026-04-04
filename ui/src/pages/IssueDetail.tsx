@@ -88,6 +88,7 @@ const ACTION_LABELS: Record<string, string> = {
   "issue.updated": "updated the issue",
   "issue.checked_out": "checked out the issue",
   "issue.released": "released the issue",
+  "issue.comment.created": "added a comment",
   "issue.comment_added": "added a comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
@@ -513,7 +514,7 @@ export function IssueDetail() {
       agentIdByRunId.set(run.runId, run.agentId);
     }
     for (const evt of activity ?? []) {
-      if (evt.action !== "issue.comment_added" || !evt.runId) continue;
+      if ((evt.action !== "issue.comment.created" && evt.action !== "issue.comment_added") || !evt.runId) continue;
       const details = evt.details ?? {};
       const commentId = typeof details["commentId"] === "string" ? details["commentId"] : null;
       if (!commentId || runMetaByCommentId.has(commentId)) continue;
