@@ -1397,10 +1397,10 @@ function AgentConfigurePage({
                         size="sm"
                         variant="outline"
                         className="h-7 px-2.5 text-xs"
-                        onClick={() => rollbackConfig.mutate(revision.id)}
+                        onClick={() => { if (window.confirm("Restore this config revision? Current configuration will be overwritten.")) rollbackConfig.mutate(revision.id); }}
                         disabled={rollbackConfig.isPending}
                       >
-                        Restore
+                        {rollbackConfig.isPending ? "Restoring..." : "Restore"}
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
