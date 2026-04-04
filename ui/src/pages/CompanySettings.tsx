@@ -7,9 +7,10 @@ import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
+import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { Settings, Check, Download, Upload, LogOut } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -199,6 +200,16 @@ export function CompanySettings() {
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
   }, [selectedCompanyId]);
+
+  const signOutMutation = useMutation({
+    mutationFn: () => authApi.signOut(),
+    onSuccess: () => {
+      window.location.href = "/auth";
+    },
+    onError: () => {
+      pushToast({ title: "Sign out failed. Please try again.", tone: "error" });
+    },
+  });
 
   const archiveMutation = useMutation({
     mutationFn: ({
@@ -560,6 +571,27 @@ export function CompanySettings() {
               </a>
             </Button>
           </div>
+        </div>
+      </div>
+
+      {/* Account */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Account
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Sign out of your current session.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={signOutMutation.isPending}
+            onClick={() => signOutMutation.mutate()}
+          >
+            <LogOut className="mr-1.5 h-3.5 w-3.5" />
+            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+          </Button>
         </div>
       </div>
 
