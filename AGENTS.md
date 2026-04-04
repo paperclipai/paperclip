@@ -267,4 +267,5 @@ A change is done when all are true:
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
 5. Code is pushed to a remote branch and a pull request is created (enforced by delivery gate for agent-authored code tasks)
-6. QA approval comment (`QA: PASS`) from a different agent or board user exists on the issue (enforced by QA gate — self-approval is blocked)
+6. **Engineer has verified the fix interactively** — the actual user flow was performed in a headed browser before handoff to QA. Evidence (screenshot, test output) included in handoff comment.
+7. QA approval comment (`QA: PASS`) from a different agent or board user exists on the issue (enforced by QA gate — self-approval is blocked). **QA PASS must be based on interactive outcome testing** — grepping code, checking HTTP status codes, or zero-console-errors-on-load alone is not sufficient.

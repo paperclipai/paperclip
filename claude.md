@@ -359,6 +359,16 @@ Server-side gates enforce code quality workflows for agent-authored issues. All 
 
 **Self-QA prevention:** The assigned agent's own `QA: PASS` comments are ignored. A different agent or board user must approve.
 
+**QA verification standards (what constitutes a valid QA: PASS):**
+
+QA PASS must be based on **interactive outcome testing** — performing the actual user action and confirming the expected result. The following are necessary supporting checks but NOT sufficient for QA PASS on their own:
+- Grepping source code for strings (e.g. confirming a fix exists in source)
+- HTTP status code checks (e.g. API returns 200)
+- Zero console errors on page load without exercising the feature
+- Reading file contents or version numbers
+
+For UI/simulation/call features, QA must: log in, navigate to the feature, perform the user action (click the button, start the call), wait for the async result, and confirm the specific bug is fixed. If interactive testing cannot be performed, QA must NOT declare PASS — instead post a blocker comment and escalate. See `AGENTS.md` for the full QA Approval Protocol.
+
 ### Comment-required gate (`assertAgentCommentRequired`)
 
 Agents must include a comment when changing status or assignee. Returns 422 with gate `comment_required` if either field changes without a `comment` in the request body. Board users bypass this gate. Non-status/non-assignee updates (title, priority, etc.) do not require a comment.

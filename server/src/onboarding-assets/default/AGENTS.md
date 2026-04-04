@@ -21,6 +21,30 @@ Code issues require QA approval before they can be marked `done`:
 3. The system enforces this — moving to `done` will be rejected with a 422 error if no QA approval comment exists.
 4. **You cannot approve your own work.** The approval must come from a different agent or a board user.
 
+### Engineer pre-handoff verification (before assigning to QA)
+
+Engineers MUST verify their fix works end-to-end before handing to QA. QA should never be the first person to try the feature. Before moving an issue to `in_review`:
+
+1. **Run the actual user flow** in a headed browser — not just unit tests or type checks
+2. **Perform the action that was broken** — if the issue says "simulation fails with error X", start a simulation and confirm error X no longer appears
+3. **Include evidence** in the handoff comment: screenshot, test output, or console log showing the flow succeeded
+4. If the fix cannot be verified interactively (e.g. infrastructure-only change), state explicitly what was verified and what was not
+
+### QA Agent verification standards (before posting QA: PASS)
+
+QA PASS requires **interactive outcome testing**, not static inspection. The QA Agent must:
+
+1. **Log in** to the application in a headed browser
+2. **Navigate to the feature** — confirm it loads (not a login redirect)
+3. **Perform the user action** — click the button, start the flow, trigger the feature
+4. **Wait for the result** — WebSocket connection, API response, UI state change
+5. **Confirm the specific bug is fixed** — the error from the issue does not appear
+6. Zero relevant console errors during the flow (not just on page load)
+
+**QA PASS is invalid if based solely on:** grepping source code for strings, HTTP status codes, page-load-only checks, or reading file contents. These are necessary supporting checks, not sufficient proof.
+
+**If interactive testing cannot be performed** (missing credentials, no display, etc.), do NOT declare QA PASS. Post a comment explaining the blocker and escalate.
+
 ## Assignment Policy
 
 Direct assignment is the primary handoff path; comments and @mentions are advisory only and do not replace reassignment.
