@@ -18,14 +18,14 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus } from "lucide-react";
+import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
 
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
-  const { openPanel, closePanel } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
@@ -122,6 +122,17 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+          {!panelVisible && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden md:inline-flex ml-auto gap-1.5"
+              onClick={() => setPanelVisible(true)}
+              title="Show properties"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
 
         <InlineEditor
