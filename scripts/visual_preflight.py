@@ -40,6 +40,7 @@ def has_toc(draft: dict[str, Any]) -> bool:
 
 
 def evaluate_visual(image_payload: dict[str, Any], draft_payload: dict[str, Any], image_path: str, draft_path: str) -> dict[str, Any]:
+    error_text = str(image_payload.get("error") or "").strip()
     duplicate_assets: list[str] = []
     digest_map: dict[str, str] = {}
     for slot in ("featured", "support-1", "support-2"):
@@ -61,10 +62,15 @@ def evaluate_visual(image_payload: dict[str, Any], draft_payload: dict[str, Any]
     elif duplicate_assets:
         support_roles_ok = False
 
+    if error_text.startswith("duplicate_image_detected:"):
+        slot = error_text.split(":", 1)[1].strip()
+        if slot:
+            duplicate_assets.append(slot)
+
     quick_scan_present = has_quick_scan_block(draft_payload)
     toc_present = has_toc(draft_payload)
     dense_article = len((draft_payload.get("markdown") or draft_payload.get("content_markdown") or "").split()) > 600
-    hero_ok = bool((image_payload.get("featured") or {}).get("sha256"))
+    hero_ok = bool((image_payload.get("featured") or {}).get("sha256")) or error_text.startswith("duplicate_image_detected:support-")
 
     reasons: list[str] = []
     if duplicate_assets:
