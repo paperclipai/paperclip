@@ -44,7 +44,6 @@ interface IssuePropertiesProps {
   issue: Issue;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
-  childIssues?: Issue[];
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -118,7 +117,7 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssuePropertiesProps) {
+export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -126,6 +125,8 @@ export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssueP
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [blockedByOpen, setBlockedByOpen] = useState(false);
+  const [blockedBySearch, setBlockedBySearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -162,6 +163,12 @@ export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssueP
     queryKey: queryKeys.issues.labels(companyId!),
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
+  });
+
+  const { data: allIssues } = useQuery({
+    queryKey: queryKeys.issues.list(companyId!),
+    queryFn: () => issuesApi.list(companyId!),
+    enabled: !!companyId && blockedByOpen,
   });
 
   const createLabel = useMutation({
@@ -489,6 +496,88 @@ export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssueP
     </>
   );
 
+  const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const blockedByTrigger = blockedByIds.length > 0 ? (
+    <div className="flex items-center gap-1 flex-wrap min-w-0">
+      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
+        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
+          <span className="truncate">{relation.identifier ?? relation.title}</span>
+        </span>
+      ))}
+      {(issue.blockedBy ?? []).length > 2 && (
+        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
+      )}
+    </div>
+  ) : (
+    <span className="text-sm text-muted-foreground">No blockers</span>
+  );
+
+  const blockingIssues = issue.blocks ?? [];
+  const blockerOptions = (allIssues ?? [])
+    .filter((candidate) => candidate.id !== issue.id)
+    .filter((candidate) => {
+      if (!blockedBySearch.trim()) return true;
+      const query = blockedBySearch.toLowerCase();
+      return (
+        (candidate.identifier ?? "").toLowerCase().includes(query) ||
+        candidate.title.toLowerCase().includes(query)
+      );
+    })
+    .sort((a, b) => {
+      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
+      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
+      return aLabel.localeCompare(bLabel);
+    });
+
+  const toggleBlockedBy = (blockedByIssueId: string) => {
+    const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
+      ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
+      : [...blockedByIds, blockedByIssueId];
+    onUpdate({ blockedByIssueIds: nextBlockedByIds });
+  };
+
+  const blockedByContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search issues..."
+        value={blockedBySearch}
+        onChange={(e) => setBlockedBySearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            blockedByIds.length === 0 && "bg-accent",
+          )}
+          onClick={() => onUpdate({ blockedByIssueIds: [] })}
+        >
+          No blockers
+        </button>
+        {blockerOptions.map((candidate) => {
+          const selected = blockedByIds.includes(candidate.id);
+          return (
+            <button
+              key={candidate.id}
+              className={cn(
+                "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+                selected && "bg-accent",
+              )}
+              onClick={() => toggleBlockedBy(candidate.id)}
+            >
+              <StatusIcon status={candidate.status} />
+              <span className="truncate">
+                {candidate.identifier ? `${candidate.identifier} ` : ""}
+                {candidate.title}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -561,6 +650,49 @@ export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssueP
           {projectContent}
         </PropertyPicker>
 
+        <PropertyPicker
+          inline={inline}
+          label="Blocked by"
+          open={blockedByOpen}
+          onOpenChange={(open) => {
+            setBlockedByOpen(open);
+            if (!open) setBlockedBySearch("");
+          }}
+          triggerContent={blockedByTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+        >
+          {blockedByContent}
+        </PropertyPicker>
+
+        <PropertyRow label="Blocking">
+          {blockingIssues.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {blockingIssues.map((relation) => (
+                <Link
+                  key={relation.id}
+                  to={`/issues/${relation.identifier ?? relation.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {relation.identifier ?? relation.title}
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-muted-foreground">None</span>
+          )}
+        </PropertyRow>
+
+        {issue.parentId && (
+          <PropertyRow label="Parent">
+            <Link
+              to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
+              className="text-sm hover:underline"
+            >
+              {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
+            </Link>
+          </PropertyRow>
+        )}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -605,52 +737,6 @@ export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssueP
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
       </div>
-
-      {(issue.parentId || (childIssues && childIssues.length > 0)) && (
-        <>
-          <Separator />
-          <div className="space-y-3">
-            {issue.parentId && (
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Parent task</p>
-                <div className="flex items-start gap-1.5">
-                  {issue.ancestors?.[0] != null && (
-                    <div className="shrink-0 mt-0.5">
-                      <StatusIcon status={issue.ancestors[0].status} />
-                    </div>
-                  )}
-                  <Link
-                    to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
-                    className="text-sm hover:underline"
-                  >
-                    {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
-                  </Link>
-                </div>
-              </div>
-            )}
-            {childIssues && childIssues.length > 0 && (
-              <div>
-                <p className="text-xs text-muted-foreground mb-1">Sub-tasks</p>
-                <div className="space-y-0.5">
-                  {childIssues.map((child) => (
-                    <div key={child.id} className="flex items-start gap-1.5">
-                      <div className="shrink-0 mt-0.5">
-                        <StatusIcon status={child.status} />
-                      </div>
-                      <Link
-                        to={`/issues/${child.identifier ?? child.id}`}
-                        className="text-sm hover:underline"
-                      >
-                        {child.title}
-                      </Link>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </>
-      )}
     </div>
   );
 }
