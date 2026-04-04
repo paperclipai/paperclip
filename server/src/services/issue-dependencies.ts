@@ -162,5 +162,24 @@ export function issueDependencyService(db: Db) {
 
       return readyIssues.filter((i) => i.assigneeAgentId != null);
     },
+
+    /**
+     * Auto-unblock dependent issues that are currently in `blocked` status.
+     * Transitions them to `todo` so they re-enter the assignment queue.
+     */
+    autoUnblockDependents: async (issueIds: string[]) => {
+      if (issueIds.length === 0) return [];
+      const now = new Date();
+      return db
+        .update(issues)
+        .set({ status: "todo", updatedAt: now })
+        .where(
+          and(
+            inArray(issues.id, issueIds),
+            eq(issues.status, "blocked"),
+          ),
+        )
+        .returning({ id: issues.id, identifier: issues.identifier });
+    },
   };
 }

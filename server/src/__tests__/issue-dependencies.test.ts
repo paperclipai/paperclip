@@ -7,6 +7,7 @@ import {
   issueDependencies,
   issues,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -217,6 +218,38 @@ describeEmbeddedPostgres("issueDependencyService", () => {
     it("returns empty array when no dependents exist", async () => {
       const ready = await svc.findDependentsReadyToWake(randomUUID());
       expect(ready).toHaveLength(0);
+    });
+  });
+
+  describe("autoUnblockDependents", () => {
+    it("transitions blocked dependents to todo", async () => {
+      const blocker = await createIssue({ title: "Blocker", status: "done" });
+      const dependent = await createIssue({ title: "Blocked dep", status: "blocked", assigneeAgentId: agentId });
+
+      await svc.addDependency(dependent.id, blocker.id, { agentId });
+
+      const unblocked = await svc.autoUnblockDependents([dependent.id]);
+      expect(unblocked).toHaveLength(1);
+      expect(unblocked[0].id).toBe(dependent.id);
+
+      // Verify status in DB
+      const [updated] = await db.select().from(issues).where(eq(issues.id, dependent.id));
+      expect(updated.status).toBe("todo");
+    });
+
+    it("does not change non-blocked issues", async () => {
+      const inProgressIssue = await createIssue({ title: "In progress", status: "in_progress", assigneeAgentId: agentId });
+
+      const unblocked = await svc.autoUnblockDependents([inProgressIssue.id]);
+      expect(unblocked).toHaveLength(0);
+
+      const [unchanged] = await db.select().from(issues).where(eq(issues.id, inProgressIssue.id));
+      expect(unchanged.status).toBe("in_progress");
+    });
+
+    it("handles empty input", async () => {
+      const unblocked = await svc.autoUnblockDependents([]);
+      expect(unblocked).toHaveLength(0);
     });
   });
 });
