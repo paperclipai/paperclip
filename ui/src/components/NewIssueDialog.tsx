@@ -300,6 +300,9 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [labelSearch, setLabelSearch] = useState("");
+  const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -316,6 +319,12 @@ export function NewIssueDialog() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(effectiveCompanyId!),
     queryFn: () => projectsApi.list(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+
+  const { data: labels } = useQuery({
+    queryKey: queryKeys.issues.labels(effectiveCompanyId!),
+    queryFn: () => issuesApi.listLabels(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: reusableExecutionWorkspaces } = useQuery({
@@ -673,6 +682,7 @@ export function NewIssueDialog() {
         ? { executionWorkspaceId: selectedExecutionWorkspaceId }
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      ...(selectedLabelIds.length > 0 ? { labelIds: selectedLabelIds } : {}),
     });
   }
 
@@ -1391,11 +1401,51 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button>
+          {/* Labels chip */}
+          <Popover open={labelsOpen} onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground" onClick={() => setLabelsOpen(!labelsOpen)}>
+                <Tag className="h-3 w-3" />
+                {selectedLabelIds.length > 0
+                  ? (labels ?? []).filter((l) => selectedLabelIds.includes(l.id)).map((l) => (
+                      <span key={l.id} className="inline-flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: l.color }} />
+                        {l.name}
+                      </span>
+                    ))
+                  : "Labels"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-1" align="start">
+              <input
+                className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                placeholder="Search labels..."
+                value={labelSearch}
+                onChange={(e) => setLabelSearch(e.target.value)}
+                autoFocus
+              />
+              <div className="max-h-44 overflow-y-auto space-y-0.5">
+                {(labels ?? [])
+                  .filter((l) => !labelSearch.trim() || l.name.toLowerCase().includes(labelSearch.toLowerCase()))
+                  .map((label) => {
+                    const selected = selectedLabelIds.includes(label.id);
+                    return (
+                      <button
+                        key={label.id}
+                        className={cn("flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left", selected && "bg-accent")}
+                        onClick={() => setSelectedLabelIds(selected ? selectedLabelIds.filter((id) => id !== label.id) : [...selectedLabelIds, label.id])}
+                      >
+                        <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: label.color }} />
+                        <span className="truncate">{label.name}</span>
+                      </button>
+                    );
+                  })}
+                {(labels ?? []).length === 0 && (
+                  <p className="px-2 py-2 text-xs text-muted-foreground">No labels defined.</p>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <input
             ref={stageFileInputRef}
