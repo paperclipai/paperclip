@@ -1295,7 +1295,11 @@ export function heartbeatService(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
+      // Prefer the agent's configured CWD over the generic agent_home fallback.
+      const agentConfiguredCwd = readNonEmptyString(
+        (agent.adapterConfig as Record<string, unknown> | null)?.cwd,
+      );
+      const fallbackCwd = agentConfiguredCwd || resolveDefaultAgentWorkspaceDir(agent.id);
       await fs.mkdir(fallbackCwd, { recursive: true });
       const warnings: string[] = [];
       if (preferredWorkspaceWarning) {
@@ -1364,7 +1368,11 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    // Prefer the agent's configured CWD over the generic agent_home fallback.
+    const agentCwd = readNonEmptyString(
+      (agent.adapterConfig as Record<string, unknown> | null)?.cwd,
+    );
+    const cwd = agentCwd || resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd) {
@@ -1375,7 +1383,7 @@ export function heartbeatService(db: Db) {
       warnings.push(
         `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
       );
-    } else {
+    } else if (!agentCwd) {
       warnings.push(
         `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
       );

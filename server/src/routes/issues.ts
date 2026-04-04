@@ -1391,7 +1391,23 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    let updated;
+    try {
+      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    } catch (err: unknown) {
+      // FK violation when run_id doesn't exist in heartbeat_runs — retry without it
+      const isFkOnRunId =
+        err != null &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code: string; constraint?: string }).code === "23503" &&
+        (err as { constraint?: string }).constraint?.includes("run_id");
+      if (isFkOnRunId && checkoutRunId) {
+        updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, null);
+      } else {
+        throw err;
+      }
+    }
     const actor = getActorInfo(req);
 
     await logActivity(db, {

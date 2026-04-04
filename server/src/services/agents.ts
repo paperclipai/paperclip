@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   agentConfigRevisions,
   agentApiKeys,
@@ -473,6 +474,22 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
+        // Nullify FK references in tables that should keep their rows
+        await tx.execute(sql`UPDATE issues SET assignee_agent_id = NULL WHERE assignee_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE issues SET created_by_agent_id = NULL WHERE created_by_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE issues SET checkout_run_id = NULL WHERE checkout_run_id IN (SELECT id FROM heartbeat_runs WHERE agent_id = ${id})`);
+        await tx.execute(sql`UPDATE issues SET execution_run_id = NULL WHERE execution_run_id IN (SELECT id FROM heartbeat_runs WHERE agent_id = ${id})`);
+        await tx.execute(sql`UPDATE projects SET lead_agent_id = NULL WHERE lead_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE goals SET owner_agent_id = NULL WHERE owner_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE issue_comments SET author_agent_id = NULL WHERE author_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE approval_comments SET author_agent_id = NULL WHERE author_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE join_requests SET created_agent_id = NULL WHERE created_agent_id = ${id}`);
+        await tx.execute(sql`UPDATE assets SET created_by_agent_id = NULL WHERE created_by_agent_id = ${id}`);
+        // Delete log/event rows that reference this agent's runs
+        await tx.execute(sql`DELETE FROM ${activityLog} WHERE run_id IN (SELECT id FROM heartbeat_runs WHERE agent_id = ${id})`);
+        await tx.execute(sql`DELETE FROM ${activityLog} WHERE agent_id = ${id}`);
+        await tx.execute(sql`DELETE FROM cost_events WHERE agent_id = ${id}`);
+        // Delete agent-scoped rows
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
