@@ -504,6 +504,80 @@ describe("import selection catalog", () => {
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/TASK.md");
     expect(selectedFiles).not.toContain("projects/alpha/issues/kickoff/details.md");
   });
+
+  it("includes extension file even when all entities are deselected", () => {
+    const preview: CompanyPortabilityPreviewResult = {
+      include: {
+        company: true,
+        agents: true,
+        projects: true,
+        issues: true,
+        skills: true,
+      },
+      targetCompanyId: "company-123",
+      targetCompanyName: "Imported Co",
+      collisionStrategy: "rename",
+      selectedAgentSlugs: [],
+      plan: {
+        companyAction: "create",
+        agentPlans: [],
+        projectPlans: [],
+        issuePlans: [],
+      },
+      manifest: {
+        schemaVersion: 1,
+        generatedAt: "2026-03-23T18:00:00.000Z",
+        source: {
+          companyId: "company-src",
+          companyName: "Source Co",
+        },
+        includes: {
+          company: true,
+          agents: true,
+          projects: true,
+          issues: true,
+          skills: true,
+        },
+        company: {
+          path: "COMPANY.md",
+          name: "Source Co",
+          description: null,
+          brandColor: null,
+          logoPath: null,
+          requireBoardApprovalForNewAgents: false,
+        },
+        sidebar: {
+          agents: [],
+          projects: [],
+        },
+        agents: [],
+        skills: [],
+        projects: [],
+        issues: [],
+        envInputs: [],
+      },
+      files: {
+        ".paperclip.yaml": "schema: paperclip/v1\n",
+      },
+      envInputs: [],
+      warnings: [],
+      errors: [],
+    };
+
+    const catalog = buildImportSelectionCatalog(preview);
+    const state = buildDefaultImportSelectionState(catalog);
+
+    state.company = false;
+    state.projects.clear();
+    state.issues.clear();
+    state.agents.clear();
+    state.skills.clear();
+
+    const selectedFiles = buildSelectedFilesFromImportSelection(catalog, state);
+
+    expect(selectedFiles).toContain(".paperclip.yaml");
+    expect(selectedFiles).toHaveLength(1);
+  });
 });
 
 describe("default adapter overrides", () => {
