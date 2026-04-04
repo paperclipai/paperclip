@@ -76,6 +76,8 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  /** Gracefully shut down the server and embedded PostgreSQL (if started). */
+  shutdown: () => Promise<void>;
 }
 
 export async function startServer(): Promise<StartedServer> {
@@ -730,31 +732,43 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      const telemetryClient = getTelemetryClient();
-      if (telemetryClient) {
-        telemetryClient.stop();
-        await telemetryClient.flush();
+  let shuttingDown = false;
+  const shutdownServer = async (signal?: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      // Force-close all connections after a grace period so shutdown doesn't hang
+      setTimeout(() => {
+        server.closeAllConnections();
+      }, 2000);
+    });
+
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await telemetryClient.flush();
+    }
+
+    if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      logger.info({ signal: signal ?? "shutdown" }, "Stopping embedded PostgreSQL");
+      try {
+        await embeddedPostgres?.stop();
+      } catch (err) {
+        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
       }
+    }
+  };
 
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
-        try {
-          await embeddedPostgres?.stop();
-        } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-        }
-      }
-
-      process.exit(0);
-    };
-
+  // Only register signal handlers when running as a standalone server,
+  // not when imported as a library (e.g. by the Electron desktop app)
+  if (isMainModule(import.meta.url)) {
     process.once("SIGINT", () => {
-      void shutdown("SIGINT");
+      void shutdownServer("SIGINT").then(() => process.exit(0));
     });
     process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
+      void shutdownServer("SIGTERM").then(() => process.exit(0));
     });
   }
 
@@ -764,6 +778,7 @@ export async function startServer(): Promise<StartedServer> {
     listenPort,
     apiUrl: process.env.PAPERCLIP_API_URL ?? `http://${runtimeApiHost}:${listenPort}`,
     databaseUrl: activeDatabaseConnectionString,
+    shutdown: shutdownServer,
   };
 }
 

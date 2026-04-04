@@ -1,0 +1,32 @@
+{
+  "name": "@paperclipai/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paperclip desktop application",
+  "main": "dist/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm build:main && cross-env NODE_OPTIONS='--import tsx/esm' SERVE_UI=true PAPERCLIP_MIGRATION_AUTO_APPLY=true PAPERCLIP_MIGRATION_PROMPT=never electron .",
+    "dev:hmr": "pnpm build:main && cross-env NODE_OPTIONS='--import tsx/esm' PAPERCLIP_UI_DEV_MIDDLEWARE=true PAPERCLIP_MIGRATION_AUTO_APPLY=true PAPERCLIP_MIGRATION_PROMPT=never electron .",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "pnpm build:main",
+    "prepare-release": "bash scripts/prepare-release.sh",
+    "pack": "pnpm build && pnpm prepare-release && electron-builder --dir",
+    "dist": "pnpm build && pnpm prepare-release && electron-builder",
+    "dist:mac": "pnpm build && pnpm prepare-release && electron-builder --mac",
+    "dist:win": "pnpm build && pnpm prepare-release && electron-builder --win",
+    "dist:linux": "pnpm build && pnpm prepare-release && electron-builder --linux",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/server": "workspace:*",
+    "electron-updater": "~6.3.9",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "~35.7.5",
+    "electron-builder": "~25.1.8",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Paperclip, Plus } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Paperclip, Plus } from "lucide-react";
 import { useQueries } from "@tanstack/react-query";
 import {
   DndContext,
@@ -18,6 +18,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
+import { useSidebar } from "../context/SidebarContext";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
@@ -73,12 +74,14 @@ function SortableCompanyItem({
   hasLiveAgents,
   hasUnreadInbox,
   onSelect,
+  dragActiveRef,
 }: {
   company: Company;
   isSelected: boolean;
   hasLiveAgents: boolean;
   hasUnreadInbox: boolean;
   onSelect: () => void;
+  dragActiveRef: { current: boolean };
 }) {
   const {
     attributes,
@@ -100,11 +103,19 @@ function SortableCompanyItem({
     <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="overflow-visible">
       <Tooltip delayDuration={300}>
         <TooltipTrigger asChild>
-          <a
-            href={`/${company.issuePrefix}/dashboard`}
-            onClick={(e) => {
-              e.preventDefault();
-              onSelect();
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              if (!dragActiveRef.current) {
+                onSelect();
+              }
+            }}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === " ") && !dragActiveRef.current) {
+                e.preventDefault();
+                onSelect();
+              }
             }}
             className="relative flex items-center justify-center group overflow-visible"
           >
@@ -143,7 +154,7 @@ function SortableCompanyItem({
                 <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 z-10 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-background" />
               )}
             </div>
-          </a>
+          </div>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
           <p>{company.name}</p>
@@ -156,6 +167,7 @@ function SortableCompanyItem({
 export function CompanyRail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialog();
+  const { sidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const navigate = useNavigate();
   const location = useLocation();
   const isInstanceRoute = location.pathname.startsWith("/instance/");
@@ -250,9 +262,19 @@ export function CompanyRail() {
     })
   );
 
+  // Track drag state so we can suppress clicks after a drag
+  const dragActiveRef = useRef(false);
+
+  const handleDragStart = useCallback(() => {
+    dragActiveRef.current = true;
+  }, []);
+
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
+      // Keep dragActiveRef true until after the click event fires (next tick)
+      setTimeout(() => { dragActiveRef.current = false; }, 0);
+
       if (!over || active.id === over.id) return;
 
       const ids = orderedCompanies.map((c) => c.id);
@@ -279,6 +301,7 @@ export function CompanyRail() {
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
           <SortableContext
@@ -292,6 +315,7 @@ export function CompanyRail() {
                 isSelected={company.id === highlightedCompanyId}
                 hasLiveAgents={hasLiveAgentsByCompanyId.get(company.id) ?? false}
                 hasUnreadInbox={hasUnreadInboxByCompanyId.get(company.id) ?? false}
+                dragActiveRef={dragActiveRef}
                 onSelect={() => {
                   setSelectedCompanyId(company.id);
                   if (isInstanceRoute) {
@@ -324,6 +348,30 @@ export function CompanyRail() {
           </TooltipContent>
         </Tooltip>
       </div>
+
+      {/* Sidebar toggle */}
+      {!isMobile && (
+        <div className="flex items-center justify-center pb-2 shrink-0">
+          <Tooltip delayDuration={300}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={toggleSidebar}
+                className="flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors duration-150"
+                aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+              >
+                {sidebarOpen ? (
+                  <ChevronLeft className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              <p>{sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      )}
     </div>
   );
 }

@@ -29,6 +29,7 @@ Before making changes, read in this order:
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
+- `desktop/`: Electron desktop app (wraps server + UI into native app)
 - `doc/`: operational and product docs
 
 ## 4. Dev Setup (Auto DB)

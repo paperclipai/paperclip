@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "dist/main",
+    "rootDir": "src/main",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "paths": {
+      "@paperclipai/server": ["./src/main/types/server.d.ts"]
+    }
+  },
+  "include": ["src/main/**/*.ts"],
+  "exclude": ["node_modules"]
+}

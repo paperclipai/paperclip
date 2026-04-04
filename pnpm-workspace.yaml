@@ -6,3 +6,4 @@ packages:
   - server
   - ui
   - cli
+  - desktop

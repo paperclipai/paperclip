@@ -1,0 +1,60 @@
+appId: com.paperclipai.desktop
+productName: Paperclip
+copyright: Copyright © 2025 Paperclip AI
+
+directories:
+  app: .app-stage
+  output: release
+
+asar: true
+asarUnpack:
+  - "node_modules/embedded-postgres/**/*"
+  - "node_modules/sharp/**/*"
+  - "node_modules/@img/**/*"
+
+files:
+  - "dist/**/*"
+  - "resources/**/*"
+  - "package.json"
+  - "node_modules/**/*"
+  - "!node_modules/**/test/**"
+  - "!node_modules/**/tests/**"
+  - "!node_modules/**/__tests__/**"
+  - "!node_modules/**/*.md"
+  - "!node_modules/**/CHANGELOG*"
+
+icon: resources/icon.png
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.developer-tools
+  icon: resources/icon.icns
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.inherit.plist
+  hardenedRuntime: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  category: Development
+
+publish:
+  provider: github
+  owner: paperclipai
+  repo: paperclip

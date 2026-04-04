@@ -10,6 +10,7 @@ This is a **pnpm monorepo** (pnpm 9.15.4, Node 20+, TypeScript 5.7, ESM-only).
 server/          → Express 5 backend (port 3100)
 ui/              → React 19 + Vite frontend (port 5173)
 cli/             → CLI tool (Commander + esbuild)
+desktop/         → Electron desktop app (wraps server + UI)
 packages/
   shared/        → Shared types & Zod schemas
   db/            → Drizzle ORM + PostgreSQL (embedded PG for local dev)
@@ -42,6 +43,7 @@ scripts/         → Build, dev, release scripts
 pnpm dev              # Start dev environment (watch mode)
 pnpm dev:server       # Server only
 pnpm dev:ui           # UI only (Vite dev server)
+pnpm dev:desktop      # Electron desktop app (with Vite HMR)
 pnpm build            # Build all packages
 pnpm typecheck        # Type-check all packages
 pnpm test             # Vitest (watch mode)
@@ -55,6 +57,7 @@ pnpm db:migrate       # Run pending migrations
 
 - **Backend:** Express 5, PostgreSQL, Drizzle ORM, Better Auth, Pino logging, WebSockets
 - **Frontend:** React 19, Vite 6, Tailwind CSS 4, Radix UI, TanStack Query, React Router
+- **Desktop:** Electron, electron-builder, electron-updater
 - **CLI:** Commander, esbuild bundling
 - **Testing:** Vitest, Playwright, Supertest
 - **Validation:** Zod schemas throughout
