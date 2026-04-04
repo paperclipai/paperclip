@@ -605,6 +605,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         ref={setEditorRef}
         markdown={value}
         placeholder={placeholder}
+        suppressHtmlProcessing
         onChange={(next) => {
           const echo = echoIgnoreMarkdownRef.current;
           if (echo !== null && next === echo) {
