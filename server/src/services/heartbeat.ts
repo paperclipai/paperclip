@@ -67,9 +67,15 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const PROCESS_LOSS_PENDING_ERROR_CODE = "process_lost_pending";
+const DEFAULT_ORPHAN_STALE_THRESHOLD_MS = 60_000;
+const DEFAULT_PROCESS_LOSS_CONFIRMATION_MS = 30_000;
+const MAX_PROCESS_LOSS_RETRIES = 2;
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const MID_RUN_BUDGET_POLL_INTERVAL_MS =
+  parseInt(process.env.PAPERCLIP_MID_RUN_BUDGET_POLL_MS ?? "", 10) || 30_000;
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -346,6 +352,20 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+// [PRACTICO-PATCH] Detect empty agent results (#1117)
+export function isEmptyResult(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!resultJson) return true;
+  const keys = Object.keys(resultJson);
+  if (keys.length === 0) return true;
+  const hasSubstantiveValue = keys.some((k) => {
+    const v = resultJson[k];
+    return typeof v === "string" ? v.length > 0 : v != null;
+  });
+  return !hasSubstantiveValue;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -378,6 +398,28 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
+}
+
+// Estimate cost from token usage when adapter doesn't report dollar cost (e.g. subscription plans).
+// Prices are per 1M tokens in USD. Cached input tokens priced at ~12.5% of input.
+const TOKEN_PRICING: Record<string, { input: number; cachedInput: number; output: number }> = {
+  "claude-opus-4-6":   { input: 15.0,  cachedInput: 1.875, output: 75.0 },
+  "claude-sonnet-4-6": { input: 3.0,   cachedInput: 0.375, output: 15.0 },
+  "gpt-5.3-codex":     { input: 2.0,   cachedInput: 0.5,   output: 10.0 },
+};
+const DEFAULT_PRICING = { input: 5.0, cachedInput: 0.625, output: 25.0 };
+
+function estimateCostCentsFromTokens(
+  model: string,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number {
+  const p = TOKEN_PRICING[model] ?? DEFAULT_PRICING;
+  const usd =
+    (inputTokens * p.input + cachedInputTokens * p.cachedInput + outputTokens * p.output) /
+    1_000_000;
+  return Math.max(0, Math.round(usd * 100));
 }
 
 async function resolveLedgerScopeForRun(
@@ -783,6 +825,57 @@ function isProcessAlive(pid: number | null | undefined) {
     if (code === "ESRCH") return false;
     return false;
   }
+}
+
+function killRecordedProcess(pid: number | null | undefined, signal: NodeJS.Signals) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function terminateRunProcess(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid">,
+  reason: string,
+  graceSec: number,
+) {
+  const running = runningProcesses.get(run.id);
+  if (running) {
+    running.child.kill("SIGTERM");
+    const graceMs = Math.max(1, running.graceSec) * 1000;
+    setTimeout(() => {
+      if (!running.child.killed) {
+        running.child.kill("SIGKILL");
+      }
+    }, graceMs);
+    return;
+  }
+
+  if (!killRecordedProcess(run.processPid, "SIGTERM")) return;
+
+  const graceMs = Math.max(1, graceSec) * 1000;
+  setTimeout(() => {
+    try {
+      if (isProcessAlive(run.processPid)) {
+        killRecordedProcess(run.processPid, "SIGKILL");
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          runId: run.id,
+          processPid: run.processPid,
+          reason,
+        },
+        "failed to force-kill detached heartbeat child process",
+      );
+    }
+  }, graceMs);
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -1598,7 +1691,7 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function clearDetachedRunWarning(runId: string) {
+  async function clearTransientProcessWarning(runId: string) {
     const updated = await db
       .update(heartbeatRuns)
       .set({
@@ -1606,7 +1699,13 @@ export function heartbeatService(db: Db) {
         errorCode: null,
         updatedAt: new Date(),
       })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, DETACHED_PROCESS_ERROR_CODE)))
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.status, "running"),
+          inArray(heartbeatRuns.errorCode, [DETACHED_PROCESS_ERROR_CODE, PROCESS_LOSS_PENDING_ERROR_CODE]),
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!updated) return null;
@@ -1615,7 +1714,7 @@ export function heartbeatService(db: Db) {
       eventType: "lifecycle",
       stream: "system",
       level: "info",
-      message: "Detached child process reported activity; cleared detached warning",
+      message: "Child process reported activity; cleared transient process warning",
     });
     return updated;
   }
@@ -1732,6 +1831,7 @@ export function heartbeatService(db: Db) {
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      idleAutoPauseAfter: Math.max(0, asNumber(heartbeat.idleAutoPauseAfter, 0)),
     };
   }
 
@@ -1801,6 +1901,7 @@ export function heartbeatService(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { errorCode?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -1812,10 +1913,13 @@ export function heartbeatService(db: Db) {
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
+    // Provider quota exhaustion is a transient, self-recovering condition —
+    // keep the agent idle so the dashboard doesn't show a spurious error.
+    const recoverable = opts?.errorCode === "provider_quota_exhausted";
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
+        : outcome === "succeeded" || outcome === "cancelled" || recoverable
           ? "idle"
           : "error";
 
@@ -1851,8 +1955,9 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
-    const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; processLossConfirmationMs?: number }) {
+    const staleThresholdMs = opts?.staleThresholdMs ?? DEFAULT_ORPHAN_STALE_THRESHOLD_MS;
+    const processLossConfirmationMs = Math.max(0, opts?.processLossConfirmationMs ?? DEFAULT_PROCESS_LOSS_CONFIRMATION_MS);
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -1877,41 +1982,112 @@ export function heartbeatService(db: Db) {
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+
+      // Hard time limit: if a run has been "running" for over 2 hours, kill it
+      // regardless of whether the process is alive. This prevents zombie runs
+      // from blocking the entire team indefinitely.
+      const HARD_LIMIT_MS = 2 * 60 * 60 * 1000; // 2 hours
+      const runAge = now.getTime() - (run.startedAt ? new Date(run.startedAt).getTime() : new Date(run.createdAt).getTime());
+      const exceededHardLimit = runAge > HARD_LIMIT_MS;
+
       if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
+        if (exceededHardLimit && run.processPid) {
+          // Kill the entire process group — it's been running too long
+          const pid = run.processPid;
+          try {
+            process.kill(-pid, "SIGTERM");
+            setTimeout(() => {
+              try { process.kill(-pid, "SIGKILL"); } catch { /* already dead */ }
+            }, 15_000);
+          } catch {
+            // Process group may not exist, try single process
+            try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+          }
+          logger.warn({ runId: run.id, pid: run.processPid, ageMs: runAge }, "killed stale process exceeding 2h hard limit");
+          // Fall through to reap below
+        } else {
+          if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+            const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
+            const detachedRun = await setRunStatus(run.id, "running", {
+              error: detachedMessage,
+              errorCode: DETACHED_PROCESS_ERROR_CODE,
+            });
+            if (detachedRun) {
+              await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: detachedMessage,
+                payload: {
+                  processPid: run.processPid,
+                },
+              });
+            }
+          }
+          continue;
+        }
+      }
+
+      const processLostDiagnosticContext = {
+        runId: run.id,
+        agentId: run.agentId,
+        processPid: run.processPid,
+        processStartedAt: run.processStartedAt ? new Date(run.processStartedAt).toISOString() : null,
+        runStartedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+        runUpdatedAt: run.updatedAt ? new Date(run.updatedAt).toISOString() : null,
+      };
+
+      if (tracksLocalChild && run.processPid && processLossConfirmationMs > 0) {
+        const isPendingConfirmation = run.errorCode === PROCESS_LOSS_PENDING_ERROR_CODE;
+        const pendingSinceMs = run.updatedAt ? now.getTime() - new Date(run.updatedAt).getTime() : Number.POSITIVE_INFINITY;
+        if (!isPendingConfirmation || pendingSinceMs < processLossConfirmationMs) {
+          const waitMs = isPendingConfirmation
+            ? Math.max(0, processLossConfirmationMs - pendingSinceMs)
+            : processLossConfirmationMs;
+          const pendingMessage = `Process watchdog detected missing child pid ${run.processPid}; confirming for ${Math.ceil(waitMs / 1000)}s before failure`;
+          const pendingRun = await setRunStatus(run.id, "running", {
+            error: pendingMessage,
+            errorCode: PROCESS_LOSS_PENDING_ERROR_CODE,
           });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
+          if (pendingRun) {
+            await appendRunEvent(pendingRun, await nextRunEventSeq(pendingRun.id), {
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
-              message: detachedMessage,
+              message: pendingMessage,
               payload: {
-                processPid: run.processPid,
+                ...processLostDiagnosticContext,
+                processLossConfirmationMs,
+                pendingSinceMs: Number.isFinite(pendingSinceMs) ? pendingSinceMs : null,
+                processLossRetryCount: run.processLossRetryCount ?? 0,
               },
             });
           }
+          continue;
         }
-        continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const currentProcessLossRetryCount = run.processLossRetryCount ?? 0;
+      const nextProcessLossRetryCount = currentProcessLossRetryCount + 1;
+      const shouldRetry =
+        tracksLocalChild &&
+        !!run.processPid &&
+        currentProcessLossRetryCount < MAX_PROCESS_LOSS_RETRIES;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
+      const finalizedMessage = shouldRetry
+        ? `${baseMessage}; retrying (${nextProcessLossRetryCount}/${MAX_PROCESS_LOSS_RETRIES})`
+        : `${baseMessage}; no retries remaining`;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalizedMessage,
         errorCode: "process_lost",
         finishedAt: now,
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: finalizedMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -1931,10 +2107,13 @@ export function heartbeatService(db: Db) {
         stream: "system",
         level: "error",
         message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+          ? `${baseMessage}; queued retry (${nextProcessLossRetryCount}/${MAX_PROCESS_LOSS_RETRIES}) ${retriedRun?.id ?? ""}`.trim()
+          : `${baseMessage}; no retries remaining`,
         payload: {
-          ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...processLostDiagnosticContext,
+          processLossConfirmationMs,
+          processLossRetryCount: currentProcessLossRetryCount,
+          maxProcessLossRetries: MAX_PROCESS_LOSS_RETRIES,
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -1976,11 +2155,30 @@ export function heartbeatService(db: Db) {
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    let additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    // Estimate cost from tokens when billed cost is zero (e.g. subscription plans)
+    if (additionalCostCents === 0 && hasTokenUsage) {
+      additionalCostCents = estimateCostCentsFromTokens(
+        result.model ?? "unknown", inputTokens, cachedInputTokens, outputTokens,
+      );
+    }
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
+
+    // Circuit breaker: track consecutive idle timer runs.
+    // A "timer idle" run = timer-triggered, succeeded, low output tokens.
+    const isTimerSource = run.invocationSource === "timer";
+    const isSucceeded = run.status === "succeeded";
+    const isLowOutput = outputTokens < 2000;
+    const isTimerIdle = isTimerSource && isSucceeded && isLowOutput;
+
+    const currentState = await getRuntimeState(agent.id);
+    const currentStateJson = parseObject(currentState?.stateJson);
+    const prevIdleCount = asNumber(currentStateJson.consecutiveTimerIdleRuns, 0);
+    const nextIdleCount = isTimerIdle ? prevIdleCount + 1 : 0;
+    const updatedStateJson = { ...currentStateJson, consecutiveTimerIdleRuns: nextIdleCount };
 
     await db
       .update(agentRuntimeState)
@@ -1990,6 +2188,7 @@ export function heartbeatService(db: Db) {
         lastRunId: run.id,
         lastRunStatus: run.status,
         lastError: result.errorMessage ?? null,
+        stateJson: updatedStateJson,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -2490,6 +2689,7 @@ export function heartbeatService(db: Db) {
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
+    let budgetPollInterval: ReturnType<typeof setInterval> | null = null;
     try {
       const startedAt = run.startedAt ?? new Date();
       const runningWithSession = await db
@@ -2663,6 +2863,40 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Poll budget while the process is running so a hard-stop triggered by a
+      // *previous* cost event (e.g. another run that just finished) also cancels
+      // this in-flight run. HTTP adapters are fire-and-forget and cannot be killed,
+      // so the poll is limited to local process adapters.
+      if (adapter.type !== "http") {
+        budgetPollInterval = setInterval(() => {
+          void budgets
+            .getInvocationBlock(agent.companyId, agent.id, {
+              issueId: issueRef?.id ?? null,
+              projectId: resolvedProjectId,
+            })
+            .then((block) => {
+              if (block) {
+                logger.warn(
+                  { runId: run.id, agentId: agent.id, scopeType: block.scopeType },
+                  "mid-run budget enforcement: cancelling in-flight run",
+                );
+                // Clear the interval immediately so we don't fire again while
+                // cancelRunInternal is in flight.
+                if (budgetPollInterval !== null) {
+                  clearInterval(budgetPollInterval);
+                  budgetPollInterval = null;
+                }
+                void cancelRunInternal(run.id, block.reason).catch((err) =>
+                  logger.warn({ err, runId: run.id }, "mid-run budget cancel failed"),
+                );
+              }
+            })
+            .catch((err) => {
+              logger.warn({ err, runId: run.id }, "mid-run budget poll error");
+            });
+        }, MID_RUN_BUDGET_POLL_INTERVAL_MS);
+      }
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -2676,6 +2910,11 @@ export function heartbeatService(db: Db) {
         },
         authToken: authToken ?? undefined,
       });
+
+      if (budgetPollInterval !== null) {
+        clearInterval(budgetPollInterval);
+        budgetPollInterval = null;
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
@@ -2752,6 +2991,17 @@ export function heartbeatService(db: Db) {
         outcome = "failed";
       }
 
+      // [PRACTICO-PATCH] Override succeeded → failed when result is empty (#1117)
+      let emptyResultOverride = false;
+      if (outcome === "succeeded" && isEmptyResult(adapterResult.resultJson)) {
+        outcome = "failed";
+        emptyResultOverride = true;
+      }
+      // [PRACTICO-PATCH] Effective error message for empty-result override (#1117)
+      const effectiveErrorMessage = emptyResultOverride
+        ? "Agent exited successfully but produced no result"
+        : (adapterResult.errorMessage ?? null);
+
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
@@ -2798,7 +3048,8 @@ export function heartbeatService(db: Db) {
           outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                // [PRACTICO-PATCH] Surface empty-result failures clearly (#1117)
+                effectiveErrorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               ),
         errorCode:
@@ -2807,7 +3058,8 @@ export function heartbeatService(db: Db) {
             : outcome === "cancelled"
               ? "cancelled"
               : outcome === "failed"
-                ? (adapterResult.errorCode ?? "adapter_failed")
+                // [PRACTICO-PATCH] Distinct error code for empty results (#1117)
+                ? (adapterResult.errorCode ?? (emptyResultOverride ? "EMPTY_RESULT" : "adapter_failed"))
                 : null,
         exitCode: adapterResult.exitCode,
         signal: adapterResult.signal,
@@ -2823,7 +3075,8 @@ export function heartbeatService(db: Db) {
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
-        error: adapterResult.errorMessage ?? null,
+        // [PRACTICO-PATCH] Use effective error message for wakeup status (#1117)
+        error: effectiveErrorMessage,
       });
 
       const finalizedRun = await getRun(run.id);
@@ -2865,8 +3118,14 @@ export function heartbeatService(db: Db) {
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        errorCode: adapterResult.errorCode ?? null,
+      });
     } catch (err) {
+      if (budgetPollInterval !== null) {
+        clearInterval(budgetPollInterval);
+        budgetPollInterval = null;
+      }
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
@@ -2880,6 +3139,34 @@ export function heartbeatService(db: Db) {
         } catch (finalizeErr) {
           logger.warn({ err: finalizeErr, runId }, "failed to finalize run log after error");
         }
+      }
+
+      // If mid-run budget enforcement already cancelled this run, do not
+      // overwrite the "cancelled" status with "failed". Still update runtime
+      // state and task session so session-based adapters resume correctly.
+      const currentRun = await getRun(run.id);
+      if (currentRun?.status === "cancelled") {
+        await updateRuntimeState(agent, currentRun, {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorMessage: currentRun.error ?? "Cancelled due to budget",
+        }, {
+          legacySessionId: runtimeForAdapter.sessionId,
+        });
+        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+          await upsertTaskSession({
+            companyId: agent.companyId,
+            agentId: agent.id,
+            adapterType: agent.adapterType,
+            taskKey,
+            sessionParamsJson: previousSessionParams,
+            sessionDisplayId: previousSessionDisplayId,
+            lastRunId: currentRun.id,
+            lastError: currentRun.error ?? null,
+          });
+        }
+        return;
       }
 
       const failedRun = await setRunStatus(run.id, "failed", {
@@ -3720,22 +4007,16 @@ export function heartbeatService(db: Db) {
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
 
-    const running = runningProcesses.get(run.id);
-    if (running) {
-      running.child.kill("SIGTERM");
-      const graceMs = Math.max(1, running.graceSec) * 1000;
-      setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
-        }
-      }, graceMs);
-    }
-
+    // Write "cancelled" to the DB before sending SIGTERM so any concurrent
+    // reader (e.g. the catch block in executeRun) that wakes up after the
+    // process dies already sees the terminal status.
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
       error: reason,
       errorCode: "cancelled",
     });
+
+    terminateRunProcess(run, reason, 5);
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt: new Date(),
@@ -3776,11 +4057,8 @@ export function heartbeatService(db: Db) {
         error: reason,
       });
 
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        running.child.kill("SIGTERM");
-        runningProcesses.delete(run.id);
-      }
+      terminateRunProcess(run, reason, 5);
+      runningProcesses.delete(run.id);
       await releaseIssueExecutionAndPromote(run);
     }
 
@@ -3948,7 +4226,7 @@ export function heartbeatService(db: Db) {
 
     wakeup: enqueueWakeup,
 
-    reportRunActivity: clearDetachedRunWarning,
+    reportRunActivity: clearTransientProcessWarning,
 
     reapOrphanedRuns,
 
@@ -3959,6 +4237,7 @@ export function heartbeatService(db: Db) {
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let idleSkipped = 0;
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
@@ -3969,6 +4248,23 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Circuit breaker: skip timer wakeup if agent has been idle for N consecutive runs.
+        // Non-timer wakeups (assignments, mentions) still go through and reset the counter.
+        if (policy.idleAutoPauseAfter > 0) {
+          const runtimeState = await getRuntimeState(agent.id);
+          const stateJson = parseObject(runtimeState?.stateJson);
+          const consecutiveIdle = asNumber(stateJson.consecutiveTimerIdleRuns, 0);
+          if (consecutiveIdle >= policy.idleAutoPauseAfter) {
+            logger.info(
+              { agentId: agent.id, agentName: agent.name, consecutiveIdle, threshold: policy.idleAutoPauseAfter },
+              "idle circuit breaker: skipping timer wakeup",
+            );
+            idleSkipped += 1;
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -3986,7 +4282,7 @@ export function heartbeatService(db: Db) {
         else skipped += 1;
       }
 
-      return { checked, enqueued, skipped };
+      return { checked, enqueued, skipped, idleSkipped };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),

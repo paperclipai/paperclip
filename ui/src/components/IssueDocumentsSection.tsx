@@ -288,6 +288,20 @@ export function IssueDocumentsSection({
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
+
+  // Auto-collapse plan document when issue has moved past planning
+  const planAutoFoldedRef = useRef(false);
+  useEffect(() => {
+    if (planAutoFoldedRef.current) return;
+    const postPlanStatuses = new Set(["in_progress", "in_review", "blocked", "done", "cancelled"]);
+    if (postPlanStatuses.has(issue.status) && hasRealPlan) {
+      setFoldedDocumentKeys((current) => {
+        if (current.includes("plan")) return current;
+        planAutoFoldedRef.current = true;
+        return [...current, "plan"];
+      });
+    }
+  }, [issue.status, hasRealPlan]);
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
       ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."

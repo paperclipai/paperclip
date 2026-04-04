@@ -1509,9 +1509,9 @@ export function IssueDetail() {
             timelineEvents={timelineEvents}
             companyId={issue.companyId}
             projectId={issue.projectId}
+            currentUserId={currentUserId}
             issueStatus={issue.status}
             agentMap={agentMap}
-            currentUserId={currentUserId}
             draftKey={`paperclip:issue-comment-draft:${issue.id}`}
             enableReassign
             reassignOptions={commentReassignOptions}

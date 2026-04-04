@@ -775,7 +775,7 @@ export function normalizeAgentDefaultsForJoin(input: {
       : typeof defaults.waitTimeoutMs === "string"
       ? Number.parseInt(defaults.waitTimeoutMs.trim(), 10)
       : NaN;
-  if (Number.isFinite(waitTimeoutMs) && waitTimeoutMs > 0) {
+  if (Number.isFinite(waitTimeoutMs) && waitTimeoutMs >= 0) {
     normalized.waitTimeoutMs = waitTimeoutMs;
   }
 
@@ -785,7 +785,7 @@ export function normalizeAgentDefaultsForJoin(input: {
       : typeof defaults.timeoutSec === "string"
       ? Number.parseInt(defaults.timeoutSec.trim(), 10)
       : NaN;
-  if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+  if (Number.isFinite(timeoutSec) && timeoutSec >= 0) {
     normalized.timeoutSec = timeoutSec;
   }
 
@@ -1184,7 +1184,7 @@ export function buildInviteOnboardingTextDocument(
           url: "ws://127.0.0.1:18789",
           paperclipApiUrl: "http://host.docker.internal:3100",
           headers: { "x-openclaw-token": token },
-          waitTimeoutMs: 120000,
+          waitTimeoutMs: 0, // optional: 0 disables Paperclip-side wait timeout
           sessionKeyStrategy: "issue",
           role: "operator",
           scopes: ["operator.admin"]
@@ -1217,7 +1217,7 @@ export function buildInviteOnboardingTextDocument(
         "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
         "headers": { "x-openclaw-token": "replace-me" },
-        "waitTimeoutMs": 120000,
+        "waitTimeoutMs": 0,
         "sessionKeyStrategy": "issue",
         "role": "operator",
         "scopes": ["operator.admin"]

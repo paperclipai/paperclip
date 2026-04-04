@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isClaudeMaxTurnsResult } from "@paperclipai/adapter-claude-local/server";
+import { isClaudeMaxTurnsResult, isClaudeQuotaExhausted } from "@paperclipai/adapter-claude-local/server";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 
@@ -28,6 +28,47 @@ describe("claude_local max-turn detection", () => {
         stop_reason: "end_turn",
       }),
     ).toBe(false);
+  });
+});
+
+describe("claude_local quota exhaustion detection", () => {
+  it("detects 'out of extra usage' message", () => {
+    expect(
+      isClaudeQuotaExhausted({
+        subtype: "success",
+        result: "You're out of extra usage · resets 2am (Europe/Warsaw)",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects 'out of usage' without 'extra'", () => {
+    expect(
+      isClaudeQuotaExhausted({
+        result: "You're out of usage for today.",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects 'exceeded your usage limit'", () => {
+    expect(
+      isClaudeQuotaExhausted({
+        result: "You've exceeded your usage limit",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for normal success", () => {
+    expect(
+      isClaudeQuotaExhausted({
+        subtype: "success",
+        result: "Done. All tests pass.",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for null/undefined", () => {
+    expect(isClaudeQuotaExhausted(null)).toBe(false);
+    expect(isClaudeQuotaExhausted(undefined)).toBe(false);
   });
 });
 

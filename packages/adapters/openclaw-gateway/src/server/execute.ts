@@ -110,6 +110,17 @@ function parseOptionalPositiveInteger(value: unknown): number | null {
   return null;
 }
 
+function parseOptionalNonNegativeInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+  }
+  return null;
+}
+
 function parseBoolean(value: unknown, fallback = false): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -320,6 +331,10 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
     PAPERCLIP_RUN_ID: ctx.runId,
   };
 
+  if (ctx.agent.name) {
+    paperclipEnv.PAPERCLIP_AGENT_NAME = ctx.agent.name;
+  }
+
   if (paperclipApiUrlOverride) {
     paperclipEnv.PAPERCLIP_API_URL = paperclipApiUrlOverride;
   }
@@ -336,7 +351,12 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
 }
 
 function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const agentName = (paperclipEnv.PAPERCLIP_AGENT_NAME ?? "agent")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-");
+  const legacyClaimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+  const perAgentApiKeyPath = `~/.openclaw/workspace/paperclip-agent-keys/${agentName}.json`;
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -367,9 +387,10 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+    `PAPERCLIP_API_KEY=<token from ${perAgentApiKeyPath}>`,
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    `Load PAPERCLIP_API_KEY from ${perAgentApiKeyPath} for this agent.`,
+    `If that file does not exist, fall back to ${legacyClaimedApiKeyPath}.`,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -1026,10 +1047,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
+  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 0)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
-  const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
+  const waitTimeoutMs = parseOptionalNonNegativeInteger(ctx.config.waitTimeoutMs) ?? timeoutMs;
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
@@ -1081,7 +1102,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agentParams.agentId = configuredAgentId;
   }
 
-  if (typeof agentParams.timeout !== "number") {
+  if (typeof agentParams.timeout !== "number" && waitTimeoutMs > 0) {
     agentParams.timeout = waitTimeoutMs;
   }
 
@@ -1279,8 +1300,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (acceptedStatus !== "ok") {
         const waitPayload = await client.request<Record<string, unknown>>(
           "agent.wait",
-          { runId: acceptedRunId, timeoutMs: waitTimeoutMs },
-          { timeoutMs: waitTimeoutMs + connectTimeoutMs },
+          waitTimeoutMs > 0 ? { runId: acceptedRunId, timeoutMs: waitTimeoutMs } : { runId: acceptedRunId },
+          { timeoutMs: waitTimeoutMs > 0 ? waitTimeoutMs + connectTimeoutMs : 0 },
         );
 
         latestResultPayload = waitPayload;

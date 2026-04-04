@@ -8,14 +8,13 @@ import type {
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronUp, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
-import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
@@ -440,6 +439,8 @@ function TimelineEventCard({
   );
 }
 
+const VISIBLE_TAIL_COUNT = 3;
+
 const TimelineList = memo(function TimelineList({
   timeline,
   agentMap,
@@ -473,73 +474,106 @@ const TimelineList = memo(function TimelineList({
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
   }
 
+  const collapsible = timeline.length > VISIBLE_TAIL_COUNT;
+  const hiddenIds = useMemo(
+    () => new Set(collapsible ? timeline.slice(0, -VISIBLE_TAIL_COUNT).map((i) => i.id) : []),
+    [collapsible, timeline],
+  );
+  const [expanded, setExpanded] = useState(
+    () => !!highlightCommentId && hiddenIds.has(highlightCommentId),
+  );
+  const hiddenCount = collapsible && !expanded ? timeline.length - VISIBLE_TAIL_COUNT : 0;
+  const visibleItems = hiddenCount > 0 ? timeline.slice(-VISIBLE_TAIL_COUNT) : timeline;
+
+  function renderItem(item: TimelineItem) {
+    if (item.kind === "event") {
+      return (
+        <TimelineEventCard
+          key={`event:${item.event.id}`}
+          event={item.event}
+          agentMap={agentMap}
+          currentUserId={currentUserId}
+        />
+      );
+    }
+
+    if (item.kind === "run") {
+      const run = item.run;
+      const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
+      return (
+        <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
+          <Avatar size="sm">
+            <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+          </Avatar>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
+              <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
+                {actorName}
+              </Link>
+              <span className="text-muted-foreground">run</span>
+              <Link
+                to={`/agents/${run.agentId}/runs/${run.runId}`}
+                className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+              >
+                {run.runId.slice(0, 8)}
+              </Link>
+              <span className={cn("font-medium", runStatusClass(run.status))}>
+                {formatRunStatusLabel(run.status)}
+              </span>
+              <a
+                href={`#run-${run.runId}`}
+                className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              >
+                {timeAgo(runTimestamp(run))}
+              </a>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const comment = item.comment;
+    return (
+      <CommentCard
+        key={comment.id}
+        comment={comment}
+        agentMap={agentMap}
+        companyId={companyId}
+        projectId={projectId}
+        feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        feedbackTermsUrl={feedbackTermsUrl}
+        onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
+        voting={votingTargetId === comment.id}
+        highlightCommentId={highlightCommentId}
+      />
+    );
+  }
+
   return (
     <div className="space-y-3">
-      {timeline.map((item) => {
-        if (item.kind === "event") {
-          return (
-            <TimelineEventCard
-              key={`event:${item.event.id}`}
-              event={item.event}
-              agentMap={agentMap}
-              currentUserId={currentUserId}
-            />
-          );
-        }
-
-        if (item.kind === "run") {
-          const run = item.run;
-          const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-          return (
-            <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
-              <Avatar size="sm">
-                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-              </Avatar>
-
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
-                  <Link to={`/agents/${run.agentId}`} className="font-medium text-foreground transition-colors hover:underline">
-                    {actorName}
-                  </Link>
-                  <span className="text-muted-foreground">run</span>
-                  <Link
-                    to={`/agents/${run.agentId}/runs/${run.runId}`}
-                    className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-                  >
-                    {run.runId.slice(0, 8)}
-                  </Link>
-                  <span className={cn("font-medium", runStatusClass(run.status))}>
-                    {formatRunStatusLabel(run.status)}
-                  </span>
-                  <a
-                    href={`#run-${run.runId}`}
-                    className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
-                  >
-                    {timeAgo(runTimestamp(run))}
-                  </a>
-                </div>
-              </div>
-            </div>
-          );
-        }
-
-        const comment = item.comment;
-        return (
-          <CommentCard
-            key={comment.id}
-            comment={comment}
-            agentMap={agentMap}
-            companyId={companyId}
-            projectId={projectId}
-            feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
-            feedbackDataSharingPreference={feedbackDataSharingPreference}
-            feedbackTermsUrl={feedbackTermsUrl}
-            onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
-            voting={votingTargetId === comment.id}
-            highlightCommentId={highlightCommentId}
-          />
-        );
-      })}
+      {collapsible && !expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(true)}
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          Show {hiddenCount} earlier {hiddenCount === 1 ? "item" : "items"}
+        </button>
+      )}
+      {visibleItems.map(renderItem)}
+      {collapsible && expanded && (
+        <button
+          type="button"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-accent/20 px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          onClick={() => setExpanded(false)}
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          Show less
+        </button>
+      )}
     </div>
   );
 });

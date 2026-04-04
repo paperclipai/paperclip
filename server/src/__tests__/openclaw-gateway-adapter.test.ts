@@ -41,11 +41,13 @@ function buildContext(
 
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
+  waitDelayMs?: number;
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  let waitPayload: Record<string, unknown> | null = null;
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -136,19 +138,27 @@ async function createMockGatewayServer(options?: {
       }
 
       if (frame.method === "agent.wait") {
-        socket.send(
-          JSON.stringify({
-            type: "res",
-            id: frame.id,
-            ok: true,
-            payload: options?.waitPayload ?? {
-              runId: frame.params?.runId,
-              status: "ok",
-              startedAt: 1,
-              endedAt: 2,
-            },
-          }),
-        );
+        waitPayload = frame.params ?? null;
+        const sendResponse = () => {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: options?.waitPayload ?? {
+                runId: frame.params?.runId,
+                status: "ok",
+                startedAt: 1,
+                endedAt: 2,
+              },
+            }),
+          );
+        };
+        if ((options?.waitDelayMs ?? 0) > 0) {
+          setTimeout(sendResponse, options?.waitDelayMs ?? 0);
+        } else {
+          sendResponse();
+        }
       }
     });
   });
@@ -165,6 +175,7 @@ async function createMockGatewayServer(options?: {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayload: () => agentPayload,
+    getWaitPayload: () => waitPayload,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -517,6 +528,30 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("allows wait timeout to be disabled with 0", async () => {
+    const gateway = await createMockGatewayServer({ waitDelayMs: 50 });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          timeoutSec: 0,
+          waitTimeoutMs: 0,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
+      expect(gateway.getAgentPayload()?.timeout).toBeUndefined();
+      expect(gateway.getWaitPayload()).toEqual({ runId: "run-123" });
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("auto-approves pairing once and retries the run", async () => {
     const gateway = await createMockGatewayServerWithPairing();
     const logs: string[] = [];
@@ -594,6 +629,10 @@ describe("openclaw gateway ui build config", () => {
     expect(config).toEqual(
       expect.objectContaining({
         url: "wss://gateway.example/ws",
+        timeoutSec: 0,
+        sessionKeyStrategy: "issue",
+        role: "operator",
+        scopes: ["operator.admin"],
         payloadTemplate: {
           agentId: "remote-agent-123",
           metadata: { team: "platform" },
@@ -608,6 +647,7 @@ describe("openclaw gateway ui build config", () => {
         },
       }),
     );
+    expect(config.waitTimeoutMs).toBeUndefined();
   });
 });
 

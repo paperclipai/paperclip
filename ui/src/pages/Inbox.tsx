@@ -118,6 +118,9 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function runFailureMessage(run: HeartbeatRun): string {
+  if (run.errorCode === "process_detached") {
+    return "Process is still running after Paperclip lost its live handle. Open the run for live progress or cancel it to stop the child process.";
+  }
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
 }
 
