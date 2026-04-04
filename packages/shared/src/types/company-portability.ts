@@ -1,9 +1,15 @@
+import type {
+  GoalLevel,
+  GoalStatus,
+} from "../constants.js";
+
 export interface CompanyPortabilityInclude {
   company: boolean;
   agents: boolean;
   projects: boolean;
   issues: boolean;
   skills: boolean;
+  goals?: boolean;
 }
 
 export interface CompanyPortabilityEnvInput {
@@ -42,6 +48,23 @@ export interface CompanyPortabilitySidebarOrder {
   projects: string[];
 }
 
+export interface CompanyPortabilitySecretRequirement {
+  key: string;
+  description: string | null;
+  agentSlug: string | null;
+  providerHint: string | null;
+}
+
+export interface CompanyPortabilityGoalManifestEntry {
+  key: string;
+  title: string;
+  description: string | null;
+  level: GoalLevel;
+  status: GoalStatus;
+  parentKey: string | null;
+  ownerAgentSlug: string | null;
+}
+
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
@@ -52,6 +75,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   targetDate: string | null;
   color: string | null;
   status: string | null;
+  goalKeys?: string[];
   executionWorkspacePolicy: Record<string, unknown> | null;
   workspaces: CompanyPortabilityProjectWorkspaceManifestEntry[];
   metadata: Record<string, unknown> | null;
@@ -96,6 +120,8 @@ export interface CompanyPortabilityIssueManifestEntry {
   title: string;
   path: string;
   projectSlug: string | null;
+  goalKey?: string | null;
+  parentKey?: string | null;
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;
   description: string | null;
@@ -104,6 +130,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   legacyRecurrence: Record<string, unknown> | null;
   status: string | null;
   priority: string | null;
+  requestDepth?: number;
   labelIds: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
@@ -158,9 +185,11 @@ export interface CompanyPortabilityManifest {
   company: CompanyPortabilityCompanyManifestEntry | null;
   sidebar: CompanyPortabilitySidebarOrder | null;
   agents: CompanyPortabilityAgentManifestEntry[];
+  goals?: CompanyPortabilityGoalManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
   issues: CompanyPortabilityIssueManifestEntry[];
+  requiredSecrets?: CompanyPortabilitySecretRequirement[];
   envInputs: CompanyPortabilityEnvInput[];
 }
 
@@ -200,6 +229,10 @@ export type CompanyPortabilitySource =
       files: Record<string, CompanyPortabilityFileEntry>;
     }
   | {
+      type: "builtin";
+      templateId: string;
+    }
+  | {
       type: "github";
       url: string;
     };
@@ -236,6 +269,14 @@ export interface CompanyPortabilityPreviewAgentPlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityPreviewGoalPlan {
+  key: string;
+  action: "create" | "update" | "skip";
+  plannedTitle: string;
+  existingGoalId: string | null;
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewProjectPlan {
   slug: string;
   action: "create" | "update" | "skip";
@@ -260,12 +301,14 @@ export interface CompanyPortabilityPreviewResult {
   plan: {
     companyAction: "none" | "create" | "update";
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
+    goalPlans?: CompanyPortabilityPreviewGoalPlan[];
     projectPlans: CompanyPortabilityPreviewProjectPlan[];
     issuePlans: CompanyPortabilityPreviewIssuePlan[];
   };
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
   envInputs: CompanyPortabilityEnvInput[];
+  requiredSecrets?: CompanyPortabilitySecretRequirement[];
   warnings: string[];
   errors: string[];
 }
@@ -292,6 +335,13 @@ export interface CompanyPortabilityImportResult {
     name: string;
     reason: string | null;
   }[];
+  goals?: {
+    key: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    title: string;
+    reason: string | null;
+  }[];
   projects: {
     slug: string;
     id: string | null;
@@ -299,7 +349,15 @@ export interface CompanyPortabilityImportResult {
     name: string;
     reason: string | null;
   }[];
+  issues?: {
+    slug: string;
+    id: string | null;
+    action: "created" | "updated" | "skipped";
+    title: string;
+    reason: string | null;
+  }[];
   envInputs: CompanyPortabilityEnvInput[];
+  requiredSecrets?: CompanyPortabilitySecretRequirement[];
   warnings: string[];
 }
 
@@ -313,4 +371,26 @@ export interface CompanyPortabilityExportRequest {
   selectedFiles?: string[];
   expandReferencedSkills?: boolean;
   sidebarOrder?: Partial<CompanyPortabilitySidebarOrder>;
+}
+
+export interface CompanyTemplateCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: string | null;
+  maturity: string | null;
+  riskProfile: string | null;
+  tags: string[];
+  useCases: string[];
+  recommendedFor: string[];
+  recommended: boolean;
+  icon: string | null;
+  agentCount: number;
+  includes: CompanyPortabilityInclude;
+  companyName: string | null;
+}
+
+export interface CompanyTemplateDetail extends CompanyTemplateCatalogEntry {
+  manifest: CompanyPortabilityManifest;
+  setupMarkdown: string | null;
 }

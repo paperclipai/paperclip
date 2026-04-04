@@ -17,6 +17,8 @@ interface NewGoalDefaults {
 interface OnboardingOptions {
   initialStep?: 1 | 2 | 3 | 4;
   companyId?: string;
+  setupMode?: "blank" | "template";
+  templateId?: string;
 }
 
 interface DialogContextValue {

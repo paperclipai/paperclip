@@ -12,10 +12,12 @@ import type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
+  CompanyPortabilityGoalManifestEntry,
   CompanyPortabilityImport,
   CompanyPortabilityImportResult,
   CompanyPortabilityInclude,
   CompanyPortabilityManifest,
+  CompanyPortabilityPreviewGoalPlan,
   CompanyPortabilityPreview,
   CompanyPortabilityPreviewAgentPlan,
   CompanyPortabilityPreviewResult,
@@ -48,6 +50,7 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
+import { loadBuiltInTemplateBundle } from "../templates/registry.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -57,6 +60,7 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
+import { goalService } from "./goals.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
@@ -112,6 +116,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  goals: false,
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
@@ -461,6 +466,7 @@ type ImportPlanInternal = {
   include: CompanyPortabilityInclude;
   collisionStrategy: CompanyPortabilityCollisionStrategy;
   selectedAgents: CompanyPortabilityAgentManifestEntry[];
+  selectedGoals: NonNullable<CompanyPortabilityManifest["goals"]>;
 };
 
 type ImportMode = "board_full" | "agent_safe";
@@ -493,6 +499,11 @@ const COMPANY_LOGO_CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
 };
 
 const COMPANY_LOGO_FILE_NAME = "company-logo";
+
+type CompanyPortabilityServiceOptions = {
+  storage?: StorageService;
+  templatesRoot?: string;
+};
 
 const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
   { path: ["heartbeat", "cooldownSec"], value: 10 },
@@ -1218,7 +1229,12 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
+    goals: input?.goals ?? DEFAULT_INCLUDE.goals,
   };
+}
+
+function entityKeyForText(value: string, fallback: string) {
+  return normalizeAgentUrlKey(value) ?? fallback;
 }
 
 function normalizePortablePath(input: string) {
@@ -2331,6 +2347,7 @@ function buildManifestFromPackageFiles(
       projects: projectPaths.length > 0,
       issues: taskPaths.length > 0,
       skills: skillPaths.length > 0,
+      goals: false,
     },
     company: {
       path: resolvedCompanyPath,
@@ -2357,9 +2374,11 @@ function buildManifestFromPackageFiles(
     },
     sidebar: paperclipSidebar,
     agents: [],
+    goals: [],
     skills: [],
     projects: [],
     issues: [],
+    requiredSecrets: [],
     envInputs: [],
   };
 
@@ -2531,6 +2550,7 @@ function buildManifestFromPackageFiles(
       targetDate: asString(extension.targetDate),
       color: asString(extension.color),
       status: asString(extension.status),
+      goalKeys: [],
       executionWorkspacePolicy: isPlainRecord(extension.executionWorkspacePolicy)
         ? extension.executionWorkspacePolicy
         : null,
@@ -2571,6 +2591,8 @@ function buildManifestFromPackageFiles(
       title: asString(frontmatter.name) ?? asString(frontmatter.title) ?? slug,
       path: taskPath,
       projectSlug: asString(frontmatter.project),
+      goalKey: null,
+      parentKey: null,
       projectWorkspaceKey: asString(extension.projectWorkspaceKey),
       assigneeAgentSlug: asString(frontmatter.assignee),
       description: taskDoc.body || asString(frontmatter.description),
@@ -2579,6 +2601,7 @@ function buildManifestFromPackageFiles(
       legacyRecurrence,
       status: asString(extension.status) ?? asString(routineExtensionRaw.status),
       priority: asString(extension.priority) ?? asString(routineExtensionRaw.priority),
+      requestDepth: 0,
       labelIds: Array.isArray(extension.labelIds)
         ? extension.labelIds.filter((entry): entry is string => typeof entry === "string")
         : [],
@@ -2661,12 +2684,32 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 }
 
 
-export function companyPortabilityService(db: Db, storage?: StorageService) {
+function resolveServiceOptions(
+  input?: StorageService | CompanyPortabilityServiceOptions,
+): CompanyPortabilityServiceOptions {
+  if (!input) return {};
+  if (
+    typeof input === "object"
+    && input !== null
+    && ("templatesRoot" in input || "storage" in input)
+  ) {
+    return input as CompanyPortabilityServiceOptions;
+  }
+  return { storage: input as StorageService };
+}
+
+export function companyPortabilityService(
+  db: Db,
+  storageOrOptions?: StorageService | CompanyPortabilityServiceOptions,
+) {
+  const serviceOptions = resolveServiceOptions(storageOrOptions);
+  const storage = serviceOptions.storage;
   const companies = companyService(db);
   const agents = agentService(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
   const access = accessService(db);
+  const goals = goalService(db);
   const projects = projectService(db);
   const issues = issueService(db);
   const companySkills = companySkillService(db);
@@ -2676,6 +2719,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       return buildManifestFromPackageFiles(
         normalizeFileMap(source.files, source.rootPath),
       );
+    }
+
+    if (source.type === "builtin") {
+      const bundle = await loadBuiltInTemplateBundle(source.templateId, {
+        templatesRoot: serviceOptions.templatesRoot,
+      });
+      return {
+        manifest: bundle.manifest,
+        files: bundle.files,
+        warnings: bundle.warnings,
+      };
     }
 
     const parsed = parseGitHubSourceUrl(source.url);
@@ -2947,6 +3001,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const selectedRoutineRows = (
       await Promise.all(selectedRoutineSummaries.map((routine) => routinesSvc.getDetail(routine.id)))
     ).filter((routine): routine is RoutineLike => routine !== null);
+    const needsGoalExportData =
+      include.goals
+      || selectedProjectRows.some((project) => (project.goalIds?.length ?? 0) > 0)
+      || selectedIssueRows.some((issue) => Boolean(issue.goalId));
+    const allGoalRows = needsGoalExportData ? await goalService(db).list(companyId) : [];
+    const selectedGoalRows = [...allGoalRows].sort(
+      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+    );
 
     const taskSlugByIssueId = new Map<string, string>();
     const taskSlugByRoutineId = new Map<string, string>();
@@ -2967,6 +3029,23 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const baseSlug = deriveProjectUrlKey(project.name, project.name);
       projectSlugById.set(project.id, uniqueSlug(baseSlug, usedProjectSlugs));
     }
+    const goalKeyById = new Map<string, string>();
+    const usedGoalKeys = new Set<string>();
+    for (const goal of selectedGoalRows) {
+      goalKeyById.set(goal.id, uniqueSlug(toSafeSlug(goal.title, "goal"), usedGoalKeys));
+    }
+    const issueKeyById = new Map<string, string>();
+    const usedIssueKeys = new Set<string>();
+    for (const issue of [...selectedIssueRows].sort(
+      (left, right) => {
+        const leftTime = left.createdAt instanceof Date ? left.createdAt.getTime() : 0;
+        const rightTime = right.createdAt instanceof Date ? right.createdAt.getTime() : 0;
+        if (leftTime !== rightTime) return leftTime - rightTime;
+        return (left.identifier ?? left.title).localeCompare(right.identifier ?? right.title);
+      },
+    )) {
+      issueKeyById.set(issue.id, uniqueSlug(toSafeSlug(issue.title, "issue"), usedIssueKeys));
+    }
     const sidebarOrder = requestedSidebarOrder ?? stripEmptyValues({
       agents: sortAgentsBySidebarOrder(Array.from(selectedAgents.values()))
         .map((agent) => idToSlug.get(agent.id))
@@ -2975,6 +3054,51 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         .map((project) => projectSlugById.get(project.id))
         .filter((slug): slug is string => Boolean(slug)),
     });
+    const applyExportReferenceMetadata = (manifest: CompanyPortabilityManifest) => {
+      manifest.goals = include.goals
+        ? selectedGoalRows.map((goal) => ({
+            key: goalKeyById.get(goal.id) ?? toSafeSlug(goal.title, "goal"),
+            title: goal.title,
+            description: goal.description,
+            level: goal.level as CompanyPortabilityGoalManifestEntry["level"],
+            status: goal.status as CompanyPortabilityGoalManifestEntry["status"],
+            parentKey: goal.parentId ? goalKeyById.get(goal.parentId) ?? null : null,
+            ownerAgentSlug: goal.ownerAgentId ? idToSlug.get(goal.ownerAgentId) ?? null : null,
+          }))
+        : [];
+      manifest.includes = {
+        ...manifest.includes,
+        goals: include.goals && manifest.goals.length > 0,
+      };
+
+      const projectRowBySlug = new Map(
+        selectedProjectRows.map((project) => [projectSlugById.get(project.id) ?? "", project]),
+      );
+      manifest.projects = manifest.projects.map((project) => {
+        const sourceProject = projectRowBySlug.get(project.slug);
+        if (!sourceProject) return project;
+        return {
+          ...project,
+          goalKeys: (sourceProject.goalIds ?? [])
+            .map((goalId) => goalKeyById.get(goalId) ?? null)
+            .filter((goalKey): goalKey is string => Boolean(goalKey)),
+        };
+      });
+
+      const issueRowBySlug = new Map(
+        selectedIssueRows.map((issue) => [taskSlugByIssueId.get(issue.id) ?? "", issue]),
+      );
+      manifest.issues = manifest.issues.map((issue) => {
+        const sourceIssue = issueRowBySlug.get(issue.slug);
+        if (!sourceIssue) return issue;
+        return {
+          ...issue,
+          goalKey: sourceIssue.goalId ? goalKeyById.get(sourceIssue.goalId) ?? null : null,
+          parentKey: sourceIssue.parentId ? issueKeyById.get(sourceIssue.parentId) ?? null : null,
+          requestDepth: sourceIssue.requestDepth ?? 0,
+        };
+      });
+    };
 
     const companyPath = "COMPANY.md";
     files[companyPath] = buildMarkdown(
@@ -3300,8 +3424,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      goals: include.goals && selectedGoalRows.length > 0,
     };
+    resolved.manifest.requiredSecrets = [];
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
+    applyExportReferenceMetadata(resolved.manifest);
     resolved.warnings.unshift(...warnings);
 
     // Generate org chart PNG from manifest agents
@@ -3334,8 +3461,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      goals: include.goals && selectedGoalRows.length > 0,
     };
+    resolved.manifest.requiredSecrets = [];
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
+    applyExportReferenceMetadata(resolved.manifest);
     resolved.warnings.unshift(...warnings);
 
     return {
@@ -3397,6 +3527,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: requestedInclude.projects && manifest.projects.length > 0,
       issues: requestedInclude.issues && manifest.issues.length > 0,
       skills: requestedInclude.skills && manifest.skills.length > 0,
+      goals: requestedInclude.goals && (manifest.goals?.length ?? 0) > 0,
     };
     const collisionStrategy = input.collisionStrategy ?? DEFAULT_COLLISION_STRATEGY;
     if (mode === "agent_safe" && collisionStrategy === "replace") {
@@ -3420,6 +3551,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const selectedAgents = include.agents
       ? manifest.agents.filter((agent) => selectedSlugs.includes(agent.slug))
       : [];
+    const selectedGoals = include.goals ? (manifest.goals ?? []) : [];
     const selectedMissing = selectedSlugs.filter((slug) => !manifest.agents.some((agent) => agent.slug === slug));
     for (const missing of selectedMissing) {
       errors.push(`Selected agent slug not found in manifest: ${missing}`);
@@ -3521,10 +3653,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const agentPlans: CompanyPortabilityPreviewAgentPlan[] = [];
+    const goalPlans: CompanyPortabilityPreviewGoalPlan[] = [];
     const existingSlugToAgent = new Map<string, { id: string; name: string }>();
     const existingSlugs = new Set<string>();
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
+    const existingGoalKeyToGoal = new Map<string, { id: string; title: string }>();
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
     const existingProjectSlugs = new Set<string>();
 
@@ -3541,6 +3675,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
         }
         existingProjectSlugs.add(existing.urlKey);
+      }
+
+      if (include.goals) {
+        const existingGoals = await goals.list(input.target.companyId);
+        for (const existing of existingGoals) {
+          const key = entityKeyForText(existing.title, existing.id);
+          if (!existingGoalKeyToGoal.has(key)) {
+            existingGoalKeyToGoal.set(key, { id: existing.id, title: existing.title });
+          }
+        }
       }
 
       const existingSkills = await companySkills.listFull(input.target.companyId);
@@ -3602,6 +3746,49 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingAgentId: existing.id,
         reason: "Existing slug matched; rename strategy.",
       });
+    }
+
+    if (include.goals) {
+      for (const manifestGoal of selectedGoals) {
+        const existing = existingGoalKeyToGoal.get(manifestGoal.key) ?? null;
+        if (!existing) {
+          goalPlans.push({
+            key: manifestGoal.key,
+            action: "create",
+            plannedTitle: manifestGoal.title,
+            existingGoalId: null,
+            reason: null,
+          });
+          continue;
+        }
+        if (mode === "board_full" && collisionStrategy === "replace") {
+          goalPlans.push({
+            key: manifestGoal.key,
+            action: "update",
+            plannedTitle: existing.title,
+            existingGoalId: existing.id,
+            reason: "Existing goal key matched; replace strategy.",
+          });
+          continue;
+        }
+        if (collisionStrategy === "skip") {
+          goalPlans.push({
+            key: manifestGoal.key,
+            action: "skip",
+            plannedTitle: existing.title,
+            existingGoalId: existing.id,
+            reason: "Existing goal key matched; skip strategy.",
+          });
+          continue;
+        }
+        goalPlans.push({
+          key: manifestGoal.key,
+          action: "create",
+          plannedTitle: manifestGoal.title,
+          existingGoalId: existing.id,
+          reason: "Existing goal key matched; rename strategy.",
+        });
+      }
     }
 
     if (include.projects) {
@@ -3709,12 +3896,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ? "update"
             : "none",
         agentPlans,
+        goalPlans,
         projectPlans,
         issuePlans,
       },
       manifest,
       files: source.files,
       envInputs: manifest.envInputs ?? [],
+      requiredSecrets: manifest.requiredSecrets ?? [],
       warnings,
       errors,
     };
@@ -3725,6 +3914,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       include,
       collisionStrategy,
       selectedAgents,
+      selectedGoals,
     };
   }
 
@@ -3879,12 +4069,28 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
+    const resultGoals: NonNullable<CompanyPortabilityImportResult["goals"]> = [];
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
+    const importedGoalKeyToId = new Map<string, string>();
+    const existingGoalKeyToId = new Map<string, string>();
     const importedSlugToAgentId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
     const existingAgents = await agents.list(targetCompany.id);
     for (const existing of existingAgents) {
       existingSlugToAgentId.set(normalizeAgentUrlKey(existing.name) ?? existing.id, existing.id);
+    }
+    const needsExistingGoalLookup =
+      input.target.mode === "existing_company"
+      && (
+        include.goals
+        || sourceManifest.projects.some((project) => (project.goalKeys?.length ?? 0) > 0)
+        || sourceManifest.issues.some((issue) => Boolean(issue.goalKey))
+      );
+    if (needsExistingGoalLookup) {
+      const existingGoals = await goals.list(targetCompany.id);
+      for (const existing of existingGoals) {
+        existingGoalKeyToId.set(entityKeyForText(existing.title, existing.id), existing.id);
+      }
     }
     const importedSlugToProjectId = new Map<string, string>();
     const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
@@ -4065,6 +4271,84 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    if (include.goals) {
+      for (const planGoal of plan.preview.plan.goalPlans ?? []) {
+        const manifestGoal = plan.selectedGoals.find((goal) => goal.key === planGoal.key);
+        if (!manifestGoal) continue;
+        if (planGoal.action === "skip") {
+          resultGoals.push({
+            key: planGoal.key,
+            id: planGoal.existingGoalId,
+            action: "skipped",
+            title: planGoal.plannedTitle,
+            reason: planGoal.reason,
+          });
+          continue;
+        }
+
+        const patch = {
+          title: planGoal.plannedTitle,
+          description: manifestGoal.description,
+          level: manifestGoal.level,
+          status: manifestGoal.status,
+          parentId: null,
+          ownerAgentId: null,
+        };
+
+        if (planGoal.action === "update" && planGoal.existingGoalId) {
+          const updated = await goals.update(planGoal.existingGoalId, patch);
+          if (!updated) {
+            warnings.push(`Skipped update for missing goal ${planGoal.existingGoalId}.`);
+            resultGoals.push({
+              key: planGoal.key,
+              id: null,
+              action: "skipped",
+              title: planGoal.plannedTitle,
+              reason: "Existing target goal not found.",
+            });
+            continue;
+          }
+          importedGoalKeyToId.set(planGoal.key, updated.id);
+          existingGoalKeyToId.set(entityKeyForText(updated.title, updated.id), updated.id);
+          resultGoals.push({
+            key: planGoal.key,
+            id: updated.id,
+            action: "updated",
+            title: updated.title,
+            reason: planGoal.reason,
+          });
+          continue;
+        }
+
+        const created = await goals.create(targetCompany.id, patch);
+        importedGoalKeyToId.set(planGoal.key, created.id);
+        existingGoalKeyToId.set(entityKeyForText(created.title, created.id), created.id);
+        resultGoals.push({
+          key: planGoal.key,
+          id: created.id,
+          action: "created",
+          title: created.title,
+          reason: planGoal.reason,
+        });
+      }
+
+      for (const manifestGoal of plan.selectedGoals) {
+        const goalId = importedGoalKeyToId.get(manifestGoal.key);
+        if (!goalId) continue;
+        const ownerAgentId = manifestGoal.ownerAgentSlug
+          ? importedSlugToAgentId.get(manifestGoal.ownerAgentSlug)
+            ?? existingSlugToAgentId.get(manifestGoal.ownerAgentSlug)
+            ?? null
+          : null;
+        const parentId = manifestGoal.parentKey
+          ? importedGoalKeyToId.get(manifestGoal.parentKey)
+            ?? existingGoalKeyToId.get(manifestGoal.parentKey)
+            ?? null
+          : null;
+        await goals.update(goalId, { ownerAgentId, parentId });
+      }
+    }
+
     if (include.projects) {
       for (const planProject of plan.preview.plan.projectPlans) {
         const manifestProject = sourceManifest.projects.find((project) => project.slug === planProject.slug);
@@ -4090,6 +4374,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           name: planProject.plannedName,
           description: manifestProject.description,
           leadAgentId: projectLeadAgentId,
+          goalIds: (manifestProject.goalKeys ?? [])
+            .map((goalKey) => importedGoalKeyToId.get(goalKey) ?? existingGoalKeyToId.get(goalKey) ?? null)
+            .filter((goalId): goalId is string => Boolean(goalId)),
           targetDate: manifestProject.targetDate,
           color: manifestProject.color,
           status: manifestProject.status && PROJECT_STATUSES.includes(manifestProject.status as any)
@@ -4280,6 +4567,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         await issues.create(targetCompany.id, {
           projectId,
           projectWorkspaceId,
+          goalId: manifestIssue.goalKey
+            ? importedGoalKeyToId.get(manifestIssue.goalKey)
+              ?? existingGoalKeyToId.get(manifestIssue.goalKey)
+              ?? null
+            : null,
+          parentId: null,
           title: manifestIssue.title,
           description,
           assigneeAgentId,
@@ -4289,6 +4582,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
             ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
             : "medium",
+          requestDepth: manifestIssue.requestDepth ?? 0,
           billingCode: manifestIssue.billingCode,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
@@ -4304,8 +4598,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         action: companyAction,
       },
       agents: resultAgents,
+      goals: resultGoals,
       projects: resultProjects,
       envInputs: sourceManifest.envInputs ?? [],
+      requiredSecrets: sourceManifest.requiredSecrets ?? [],
       warnings,
     };
   }

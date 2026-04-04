@@ -170,6 +170,8 @@ export type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilitySidebarOrder,
+  CompanyPortabilitySecretRequirement,
+  CompanyPortabilityGoalManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
@@ -187,6 +189,7 @@ export type {
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewAgentPlan,
+  CompanyPortabilityPreviewGoalPlan,
   CompanyPortabilityPreviewProjectPlan,
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewResult,
@@ -194,6 +197,8 @@ export type {
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
+  CompanyTemplateCatalogEntry,
+  CompanyTemplateDetail,
 } from "./company-portability.js";
 export type {
   JsonSchema,

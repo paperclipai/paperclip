@@ -9,8 +9,11 @@ import type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityExportResult,
   CompanyPortabilityInclude,
+  CompanyPortabilitySource,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
+  CompanyTemplateCatalogEntry,
+  CompanyTemplateDetail,
 } from "@paperclipai/shared";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
@@ -84,6 +87,7 @@ const DEFAULT_EXPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  goals: false,
 };
 
 const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
@@ -92,6 +96,7 @@ const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: true,
   issues: true,
   skills: true,
+  goals: true,
 };
 
 const IMPORT_INCLUDE_OPTIONS: Array<{
@@ -104,6 +109,7 @@ const IMPORT_INCLUDE_OPTIONS: Array<{
   { value: "issues", label: "Tasks", hint: "tasks and recurring routines" },
   { value: "agents", label: "Agents", hint: "agent records and org structure" },
   { value: "skills", label: "Skills", hint: "company skill packages and references" },
+  { value: "goals", label: "Goals", hint: "goal hierarchy and ownership" },
 ];
 
 const IMPORT_PREVIEW_SAMPLE_LIMIT = 6;
@@ -165,9 +171,10 @@ function parseInclude(
     projects: values.includes("projects"),
     issues: values.includes("issues") || values.includes("tasks"),
     skills: values.includes("skills"),
+    goals: values.includes("goals"),
   };
-  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills) {
-    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,tasks,skills");
+  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills && !include.goals) {
+    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,tasks,skills,goals");
   }
   return include;
 }
@@ -498,7 +505,10 @@ function summarizeInclude(include: CompanyPortabilityInclude): string {
   return labels.length > 0 ? labels.join(", ") : "nothing selected";
 }
 
-function formatSourceLabel(source: { type: "inline"; rootPath?: string | null } | { type: "github"; url: string }): string {
+function formatSourceLabel(source: CompanyPortabilitySource): string {
+  if (source.type === "builtin") {
+    return `Built-in template: ${source.templateId}`;
+  }
   if (source.type === "github") {
     return `GitHub: ${source.url}`;
   }
@@ -797,6 +807,16 @@ export function looksLikeRepoUrl(input: string): boolean {
   }
 }
 
+export function parseBuiltinTemplateRef(input: string): string | null {
+  const normalized = input.trim();
+  if (!/^builtin:/i.test(normalized)) return null;
+  const templateId = normalized.slice("builtin:".length).trim();
+  if (!templateId) {
+    throw new Error("Built-in template source requires a template ID, for example builtin:solo-founder-lite.");
+  }
+  return templateId;
+}
+
 function isGithubSegment(input: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(input);
 }
@@ -952,6 +972,43 @@ export async function resolveInlineSourceFromPath(inputPath: string): Promise<{
   };
 }
 
+export async function resolveCompanyImportSource(
+  from: string,
+  refOverride?: string,
+): Promise<CompanyPortabilitySource> {
+  const builtinTemplateId = parseBuiltinTemplateRef(from);
+  if (builtinTemplateId) {
+    return {
+      type: "builtin",
+      templateId: builtinTemplateId,
+    };
+  }
+
+  const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
+  const isGithubSource = looksLikeRepoUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
+
+  if (isHttpUrl(from) || isGithubSource) {
+    if (!looksLikeRepoUrl(from) && !isGithubShorthand(from)) {
+      throw new Error(
+        "Only GitHub URLs, builtin templates, and local paths are supported for import. " +
+        "Use builtin:<template-id>, a GitHub URL (https://github.com/...), or a local directory path.",
+      );
+    }
+    return { type: "github", url: normalizeGithubImportSource(from, refOverride) };
+  }
+
+  if (refOverride?.trim()) {
+    throw new Error("--ref is only supported for GitHub import sources.");
+  }
+
+  const inline = await resolveInlineSourceFromPath(from);
+  return {
+    type: "inline",
+    rootPath: inline.rootPath,
+    files: inline.files,
+  };
+}
+
 async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
   const root = path.resolve(outDir);
   await mkdir(root, { recursive: true });
@@ -1072,6 +1129,57 @@ function assertDeleteFlags(opts: CompanyDeleteOptions): void {
 
 export function registerCompanyCommands(program: Command): void {
   const company = program.command("company").description("Company operations");
+  const templates = company.command("templates").description("Built-in company templates");
+
+  addCommonClientOptions(
+    templates
+      .command("list")
+      .description("List built-in company templates")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const rows = (await ctx.api.get<CompanyTemplateCatalogEntry[]>("/api/templates")) ?? [];
+          if (ctx.json) {
+            printOutput(rows, { json: true });
+            return;
+          }
+
+          if (rows.length === 0) {
+            printOutput([], { json: false });
+            return;
+          }
+
+          for (const row of rows) {
+            console.log(formatInlineRecord({
+              id: row.id,
+              name: row.name,
+              category: row.category,
+              maturity: row.maturity,
+              agentCount: row.agentCount,
+              recommended: row.recommended,
+            }));
+          }
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    templates
+      .command("get")
+      .description("Get one built-in company template")
+      .argument("<templateId>", "Template ID")
+      .action(async (templateId: string, opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const row = await ctx.api.get<CompanyTemplateDetail>(`/api/templates/${encodeURIComponent(templateId)}`);
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 
   addCommonClientOptions(
     company
@@ -1266,9 +1374,9 @@ export function registerCompanyCommands(program: Command): void {
   addCommonClientOptions(
     company
       .command("import")
-      .description("Import a portable markdown company package from local path, URL, or GitHub")
-      .argument("<fromPathOrUrl>", "Source path or URL")
-      .option("--include <values>", "Comma-separated include set: company,agents,projects,issues,tasks,skills")
+      .description("Import a portable markdown company package from local path, GitHub, or builtin:<template-id>")
+      .argument("<fromPathOrUrl>", "Source path, GitHub URL/shorthand, or builtin:<template-id>")
+      .option("--include <values>", "Comma-separated include set: company,agents,projects,issues,tasks,skills,goals")
       .option("--target <mode>", "Target mode: new | existing")
       .option("-C, --company-id <id>", "Existing target company ID")
       .option("--new-company-name <name>", "Name override for --target new")
@@ -1319,32 +1427,7 @@ export function registerCompanyCommands(program: Command): void {
             throw new Error("Target existing company requires --company-id (or context default companyId).");
           }
 
-          let sourcePayload:
-            | { type: "inline"; rootPath?: string | null; files: Record<string, CompanyPortabilityFileEntry> }
-            | { type: "github"; url: string };
-
-          const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
-          const isGithubSource = looksLikeRepoUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
-
-          if (isHttpUrl(from) || isGithubSource) {
-            if (!looksLikeRepoUrl(from) && !isGithubShorthand(from)) {
-              throw new Error(
-                "Only GitHub URLs and local paths are supported for import. " +
-                "Generic HTTP URLs are not supported. Use a GitHub or GitHub Enterprise URL (https://github.com/... or https://ghe.example.com/...) or a local directory path.",
-              );
-            }
-            sourcePayload = { type: "github", url: normalizeGithubImportSource(from, opts.ref) };
-          } else {
-            if (opts.ref?.trim()) {
-              throw new Error("--ref is only supported for GitHub import sources.");
-            }
-            const inline = await resolveInlineSourceFromPath(from);
-            sourcePayload = {
-              type: "inline",
-              rootPath: inline.rootPath,
-              files: inline.files,
-            };
-          }
+          const sourcePayload = await resolveCompanyImportSource(from, opts.ref);
 
           const sourceLabel = formatSourceLabel(sourcePayload);
           const targetLabel = formatTargetLabel(targetPayload);

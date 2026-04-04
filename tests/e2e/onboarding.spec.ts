@@ -79,7 +79,7 @@ test.describe("Onboarding wizard", () => {
     await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
     await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
 
-    await page.getByRole("button", { name: "Create & Open Issue" }).click();
+    await page.getByRole("button", { name: /(?:Create & )?Open Issue/ }).click();
 
     await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
 
