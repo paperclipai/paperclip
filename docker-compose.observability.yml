@@ -1,0 +1,107 @@
+# Paperclip Observability Stack
+# Self-hosted: Loki (logs) + Prometheus (metrics) + Tempo (traces) + Grafana (visualization)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+#
+# Or standalone (point PAPERCLIP_API_URL at your running server):
+#   docker compose -f docker-compose.observability.yml up
+#
+# Environment variables (optional):
+#   GRAFANA_PORT         - Grafana UI port (default: 3000)
+#   PROMETHEUS_PORT      - Prometheus port (default: 9090)
+#   LOKI_PORT            - Loki push/query port (default: 3100)
+#   TEMPO_PORT           - Tempo OTLP gRPC port (default: 4317)
+#   PAPERCLIP_API_URL    - Paperclip server URL for scraping /metrics (default: http://server:3100)
+
+services:
+  loki:
+    image: grafana/loki:3.4.2
+    command: -config.file=/etc/loki/loki.yml
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./docker/observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: -config.file=/etc/tempo/tempo.yml
+    ports:
+      - "${TEMPO_PORT:-4317}:4317"   # OTLP gRPC
+      - "4318:4318"                   # OTLP HTTP
+    volumes:
+      - ./docker/observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Paperclip server extension — adds observability env vars when this compose file is used alongside docker-compose.yml
+  server:
+    environment:
+      PAPERCLIP_METRICS_ENABLED: "true"
+      PAPERCLIP_LOKI_URL: "http://loki:3100"
+      PAPERCLIP_OTEL_ENDPOINT: "http://tempo:4318"
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-paperclip}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+      GF_INSTALL_PLUGINS: ""
+    volumes:
+      - ./docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  prometheus-data:
+  tempo-data:
+  grafana-data:

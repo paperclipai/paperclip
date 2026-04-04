@@ -33,6 +33,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { initTracing } from "./observability/index.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -72,6 +73,9 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Initialize OTel tracing early (no-op if PAPERCLIP_OTEL_ENDPOINT is unset)
+  initTracing();
+
   let config = loadConfig();
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;

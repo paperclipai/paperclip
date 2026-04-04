@@ -26,10 +26,8 @@ const sharedOpts = {
   singleLine: true,
 };
 
-export const logger = pino({
-  level: "debug",
-}, pino.transport({
-  targets: [
+function buildTransportTargets() {
+  const targets: pino.TransportTargetOptions[] = [
     {
       target: "pino-pretty",
       options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
@@ -40,7 +38,29 @@ export const logger = pino({
       options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
       level: "debug",
     },
-  ],
+  ];
+
+  const lokiUrl = process.env.PAPERCLIP_LOKI_URL?.trim();
+  if (lokiUrl) {
+    targets.push({
+      target: "pino-loki",
+      options: {
+        host: lokiUrl,
+        labels: { service: "paperclip-server" },
+        replaceTimestamp: true,
+        silenceErrors: true,
+      },
+      level: "info",
+    });
+  }
+
+  return targets;
+}
+
+export const logger = pino({
+  level: "debug",
+}, pino.transport({
+  targets: buildTransportTargets(),
 }));
 
 export const httpLogger = pinoHttp({
