@@ -15,6 +15,7 @@ import {
   issueLabels,
   issueComments,
   issueDocuments,
+  issueDependencies,
   issueReadStates,
   issues,
   labels,
@@ -1461,6 +1462,28 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      // Enforce blockedOn validation when transitioning to "blocked"
+      if (
+        issueData.status === "blocked" &&
+        existing.status !== "blocked" &&
+        updateExperimentalSettings.enforceBlockedOnValidation
+      ) {
+        const nextBlockedOn = issueData.blockedOn ?? existing.blockedOn;
+        if (!nextBlockedOn) {
+          const depCount = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(issueDependencies)
+            .where(eq(issueDependencies.issueId, id))
+            .then((rows) => rows[0]?.count ?? 0);
+          if (depCount === 0) {
+            throw unprocessable(
+              "Cannot transition to blocked without specifying blockedOn or having a dependency. " +
+                "Set blockedOn to one of: board, agent, external — or add a dependency edge.",
+            );
+          }
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
