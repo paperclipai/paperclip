@@ -305,4 +305,26 @@ describe("review handoff gate", () => {
     // since the actor is not the current assignee
     expect(res.status).not.toBe(422);
   });
+
+  it("allows in_review when agent sets assigneeUserId (handoff to board user)", async () => {
+    const issue = makeIssue({ assigneeAgentId: ENGINEER_1, status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      assigneeAgentId: null,
+      assigneeUserId: "board-user-1",
+      status: "in_review",
+    });
+
+    const res = await request(createAgentApp(ENGINEER_1))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        assigneeUserId: "board-user-1",
+        assigneeAgentId: null,
+        status: "in_review",
+        comment: "Routing to board for review",
+      });
+
+    expect(res.status).toBe(200);
+  });
 });

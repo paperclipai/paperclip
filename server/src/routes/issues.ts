@@ -1162,11 +1162,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Review handoff gate: agents transitioning to in_review MUST hand off to a different
     // assignee. If auto-infer didn't find a mention and the agent didn't set assigneeAgentId,
     // the issue would stay assigned to the transitioning agent — which stalls the pipeline.
+    // Also allow if assigneeUserId is set (handoff to a board user, e.g. CEO routing to board).
     if (
       req.actor.type === "agent" &&
       req.body.status === "in_review" &&
       existing.status !== "in_review" &&
       req.body.assigneeAgentId === undefined &&
+      req.body.assigneeUserId === undefined &&
       existing.assigneeAgentId === req.actor.agentId
     ) {
       const actor = getActorInfo(req);
