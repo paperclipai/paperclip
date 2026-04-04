@@ -1333,3 +1333,98 @@ describeEmbeddedPostgres("issueService stale executionRunId recovery", () => {
     expect(released!.executionLockedAt).toBeNull();
   });
 });
+
+describeEmbeddedPostgres("issueService.checkout stale queued run lock", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-stale-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedFixture(opts: { runCreatedAt: Date }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleRunId = randomUUID();
+    const newRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "running",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: staleRunId,
+      companyId,
+      agentId,
+      status: "queued",
+      startedAt: null,
+      createdAt: opts.runCreatedAt,
+      updatedAt: opts.runCreatedAt,
+      invocationSource: "assignment",
+    });
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        id: randomUUID(),
+        companyId,
+        title: "Test issue",
+        status: "todo",
+        assigneeAgentId: agentId,
+        executionRunId: staleRunId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      })
+      .returning();
+    return { companyId, agentId, issueId: issue!.id, staleRunId, newRunId };
+  }
+
+  it("allows checkout when executionRunId points to a queued run older than 15 minutes", async () => {
+    const staleCreatedAt = new Date(Date.now() - 20 * 60 * 1000); // 20 minutes ago
+    const { agentId, issueId, newRunId } = await seedFixture({ runCreatedAt: staleCreatedAt });
+
+    const result = await svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], newRunId);
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe("in_progress");
+    expect(result?.executionRunId).toBe(newRunId);
+  });
+
+  it("blocks checkout when executionRunId points to a recently queued run (under 15 minutes)", async () => {
+    const freshCreatedAt = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
+    const { agentId, issueId, newRunId } = await seedFixture({ runCreatedAt: freshCreatedAt });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo", "backlog", "blocked"], newRunId),
+    ).rejects.toThrow();
+  });
+});
