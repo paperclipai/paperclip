@@ -154,8 +154,10 @@ function TriggerEditor({
           {trigger.label ?? trigger.kind}
         </div>
         <span className="text-xs text-muted-foreground">
+          {trigger.lastFiredAt && <span title={new Date(trigger.lastFiredAt).toLocaleString()}>Last: {timeAgo(trigger.lastFiredAt)}</span>}
+          {trigger.lastFiredAt && trigger.kind === "schedule" && trigger.nextRunAt ? " · " : ""}
           {trigger.kind === "schedule" && trigger.nextRunAt
-            ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
+            ? <span title={new Date(trigger.nextRunAt).toLocaleString()}>Next: {timeAgo(trigger.nextRunAt)}</span>
             : trigger.kind === "webhook"
               ? "Webhook"
               : "API"}
