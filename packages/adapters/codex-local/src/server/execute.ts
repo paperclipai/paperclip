@@ -23,6 +23,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { buildCodexExecArgs } from "./cli-args.js";
+import { isInsideGitRepo } from "./git-repo.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -434,21 +436,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const repoAgentsNote =
     "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
+  const skipGitRepoCheck = !(await isInsideGitRepo(cwd));
   const commandNotes = (() => {
+    const notes: string[] = [];
+    if (skipGitRepoCheck) {
+      notes.push(
+        `Added --skip-git-repo-check because cwd "${cwd}" is not inside a Git repository.`,
+      );
+    }
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      notes.push(repoAgentsNote);
+      return notes;
     }
     if (instructionsPrefix.length > 0) {
-      return [
+      notes.push(
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         repoAgentsNote,
-      ];
+      );
+      return notes;
     }
-    return [
+    notes.push(
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       repoAgentsNote,
-    ];
+    );
+    return notes;
   })();
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
@@ -481,15 +493,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["exec", "--json"];
-    if (search) args.unshift("--search");
-    if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
-    if (model) args.push("--model", model);
-    if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
-    if (extraArgs.length > 0) args.push(...extraArgs);
-    if (resumeSessionId) args.push("resume", resumeSessionId, "-");
-    else args.push("-");
-    return args;
+    return buildCodexExecArgs({
+      search,
+      bypass,
+      skipGitRepoCheck,
+      extraArgs,
+      model,
+      modelReasoningEffort,
+      resumeSessionId,
+    });
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
