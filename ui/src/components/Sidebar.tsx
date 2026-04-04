@@ -17,7 +17,7 @@ import {
   FolderKanban,
   CreditCard,
 } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -50,7 +50,7 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
-  const { data: health } = useQuery({
+  const { data: health, error: healthError } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: false,
@@ -62,6 +62,12 @@ export function Sidebar() {
   const lastKnownFleetosRef = useRef(false);
   if (health) lastKnownFleetosRef.current = isFleetosMode;
   const showFleet = lastKnownFleetosRef.current;
+
+  useEffect(() => {
+    if (healthError) {
+      console.warn("[Sidebar] Health check failed, using cached mode:", healthError);
+    }
+  }, [healthError]);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));

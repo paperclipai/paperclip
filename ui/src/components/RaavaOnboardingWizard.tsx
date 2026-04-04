@@ -63,6 +63,7 @@ type WizardStep = 1 | 2 | 3 | 4;
 interface RoleDefinition {
   id: string;
   name: string;
+  agentRole: string;
   description: string;
   icon: LucideIcon;
   tools: string[];
@@ -83,6 +84,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "sales-assistant",
     name: "Sales Assistant",
+    agentRole: "general",
     description:
       "Follows up with leads, drafts proposals, updates CRM records, and manages the sales pipeline",
     icon: Briefcase,
@@ -109,6 +111,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "operations-manager",
     name: "Operations Manager",
+    agentRole: "pm",
     description:
       "Manages workflows, tracks task status, coordinates between team members, and flags blockers",
     icon: Cog,
@@ -129,6 +132,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "customer-support",
     name: "Customer Support",
+    agentRole: "general",
     description:
       "Answers support tickets, drafts responses, categorizes issues, and escalates complex problems to humans",
     icon: Headset,
@@ -155,6 +159,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "data-analyst",
     name: "Data Analyst",
+    agentRole: "researcher",
     description:
       "Pulls data, generates reports, identifies trends, and presents findings in clear summaries",
     icon: BarChart3,
@@ -181,6 +186,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "marketing-coordinator",
     name: "Marketing Coordinator",
+    agentRole: "cmo",
     description:
       "Drafts social media content, schedules posts, tracks campaign performance, and maintains brand voice",
     icon: Megaphone,
@@ -207,6 +213,7 @@ const ROLES: RoleDefinition[] = [
   {
     id: "general-assistant",
     name: "General Assistant",
+    agentRole: "general",
     description:
       "Flexible team member for research, writing, email management, and ad-hoc tasks",
     icon: Star,
@@ -554,15 +561,19 @@ export function RaavaOnboardingWizard() {
     try {
       // Build adapter config for hermes_fleetos
       const adapterConfig: Record<string, unknown> = {
-        fleetosUrl: "",
-        containerId: "",
-        credentials: { ...credentials },
+        fleetosUrl: "", // TODO: populate from FleetOS session or config
+        containerId: "", // TODO: populated after provisioning
+        apiKey: "", // TODO: from FleetOS session, not user input
       };
+      // Store role credentials separately for vault injection
+      if (Object.values(credentials).some((v) => v.trim())) {
+        adapterConfig.roleCredentials = { ...credentials };
+      }
 
       // Create the agent
       const agent = await agentsApi.create(createdCompanyId, {
         name: agentName.trim(),
-        role: selectedRole.name,
+        role: selectedRole.agentRole,
         adapterType: "hermes_fleetos",
         icon: agentIcon,
         adapterConfig,
