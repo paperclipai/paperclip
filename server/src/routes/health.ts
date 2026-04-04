@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
+import { agents, heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { getBackupStatus } from "../services/backup-status.js";
@@ -69,16 +69,23 @@ export function healthRoutes(
       }
     }
 
+    const activeAgentCount = await db
+      .select({ count: count() })
+      .from(agents)
+      .where(isNull(agents.pausedAt))
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    const activeRunCount = await db
+      .select({ count: count() })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, ["queued", "running"]))
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
     if (persistedDevServerStatus) {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
-      const activeRunCount = await db
-        .select({ count: count() })
-        .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.status, ["queued", "running"]))
-        .then((rows) => Number(rows[0]?.count ?? 0));
 
       devServer = toDevServerHealthStatus(persistedDevServerStatus, {
         autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
@@ -99,6 +106,8 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      activeAgentCount,
+      activeRunCount,
       backup: {
         lastResult: backup.lastResult,
         lastTimestamp: backup.lastTimestamp,

@@ -6,6 +6,24 @@ import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
+/** Build a chainable mock that resolves every select().from().where() chain. */
+function mockDbWithProbe(
+  probeResult: unknown = [{ "?column?": 1 }],
+  probeError?: Error,
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chain: any = {};
+  for (const m of ["select", "from", "where"]) chain[m] = (..._a: unknown[]) => chain;
+  chain.then = (fn: (v: unknown) => unknown) => Promise.resolve([{ count: 0 }]).then(fn);
+
+  return {
+    execute: probeError
+      ? vi.fn().mockRejectedValue(probeError)
+      : vi.fn().mockResolvedValue(probeResult),
+    select: () => chain,
+  } as unknown as Db;
+}
+
 describe("GET /health", () => {
   beforeEach(() => {
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
@@ -25,22 +43,23 @@ describe("GET /health", () => {
   });
 
   it("returns 200 when the database probe succeeds", async () => {
-    const db = {
-      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-    } as unknown as Db;
+    const db = mockDbWithProbe();
     const app = express();
     app.use("/health", healthRoutes(db));
 
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({
+      status: "ok",
+      version: serverVersion,
+      activeAgentCount: 0,
+      activeRunCount: 0,
+    });
   });
 
   it("returns 503 when the database probe fails", async () => {
-    const db = {
-      execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
-    } as unknown as Db;
+    const db = mockDbWithProbe(undefined, new Error("connect ECONNREFUSED"));
     const app = express();
     app.use("/health", healthRoutes(db));
 
