@@ -112,12 +112,12 @@ function parseOptionalPositiveInteger(value: unknown): number | null {
 }
 
 function parseOptionalNonNegativeInteger(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.floor(value));
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
   }
   if (typeof value === "string" && value.trim().length > 0) {
     const parsed = Number.parseInt(value.trim(), 10);
-    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
   }
   return null;
 }
@@ -1305,7 +1305,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             exitCode: 1,
             signal: null,
             timedOut: true,
-            errorMessage: `OpenClaw gateway run timed out after ${waitTimeoutMs}ms`,
+            errorMessage: `OpenClaw gateway run timed out after ${gatewayWaitTimeoutMs}ms`,
             errorCode: "openclaw_gateway_wait_timeout",
             resultJson: waitPayload,
           };
