@@ -296,6 +296,88 @@ describeEmbeddedPostgres("blog run service", () => {
     expect(failed?.attempts[0]?.status).toBe("failed");
   });
 
+  it("loops strict publish-ready failures back to draft when high-throughput mode has attempts remaining", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+    const created = await svc.create({
+      companyId,
+      projectId,
+      topic: "Loop topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        highThroughputQualityLoop: true,
+      },
+    });
+
+    await db.update(blogRuns).set({
+      currentStep: "validate",
+      status: "validate_running",
+      contextJson: {
+        ...(created?.contextJson ?? {}),
+        highThroughputQualityLoop: true,
+        articleLoop: {
+          enabled: true,
+          articleAttempt: 1,
+          maxAttempts: 3,
+          specialistGuidanceUsed: {},
+        },
+      },
+    }).where(eq(blogRuns.id, created!.id));
+
+    const claimed = await svc.claimNextStep(created!.id);
+    const failed = await svc.failStep(created!.id, "validate", {
+      attemptId: claimed!.attempt!.id,
+      errorMessage: "blog_run_publish_ready_failed:explainer_quality,reader_experience",
+    });
+
+    expect(failed?.run.status).toBe("queued");
+    expect(failed?.run.currentStep).toBe("draft");
+    expect((failed?.run.contextJson as any)?.articleLoop?.articleAttempt).toBe(2);
+    expect((failed?.run.contextJson as any)?.articleLoop?.lastFailedGates).toEqual(["explainer_quality", "reader_experience"]);
+  });
+
+  it("moves strict publish-ready failures to human_review_backlog after max attempts", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+    const created = await svc.create({
+      companyId,
+      projectId,
+      topic: "Backlog topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        highThroughputQualityLoop: true,
+      },
+    });
+
+    await db.update(blogRuns).set({
+      currentStep: "validate",
+      status: "validate_running",
+      contextJson: {
+        ...(created?.contextJson ?? {}),
+        highThroughputQualityLoop: true,
+        articleLoop: {
+          enabled: true,
+          articleAttempt: 3,
+          maxAttempts: 3,
+          specialistGuidanceUsed: { explainer_quality: true },
+        },
+      },
+    }).where(eq(blogRuns.id, created!.id));
+
+    const claimed = await svc.claimNextStep(created!.id);
+    const failed = await svc.failStep(created!.id, "validate", {
+      attemptId: claimed!.attempt!.id,
+      errorMessage: "blog_run_publish_ready_failed:explainer_quality",
+    });
+
+    expect(failed?.run.status).toBe("human_review_backlog");
+    expect(failed?.run.currentStep).toBeNull();
+    expect((failed?.run.contextJson as any)?.articleLoop?.backlog).toBe(true);
+    expect(failed?.run.failedReason).toBe("blog_run_publish_ready_failed:explainer_quality");
+  });
+
   it("moves an auto-stopped run through review_required to resumable when evidence satisfies the resume gate", async () => {
     const { companyId, projectId } = await seedProject();
     const svc = blogRunService(db);

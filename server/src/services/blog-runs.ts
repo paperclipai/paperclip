@@ -46,6 +46,7 @@ type BlogRunStatus =
   | "public_verified"
   | "review_required"
   | "resumable"
+  | "human_review_backlog"
   | "failed";
 
 type CreateBlogRunInput = {
@@ -178,6 +179,28 @@ function buildInitialContextJson(
     ...base,
     publicVerifyContractMode: resolveInitialPublicVerifyContractMode(lane, publishMode, base),
     publishReadyGateMode: resolveInitialPublishReadyGateMode(lane, publishMode, base),
+    ...(base.highThroughputQualityLoop === true
+      ? {
+          articleLoop: {
+            enabled: true,
+            articleAttempt: Number((base.articleLoop as Record<string, unknown> | undefined)?.articleAttempt ?? 1) || 1,
+            maxAttempts: Number((base.articleLoop as Record<string, unknown> | undefined)?.maxAttempts ?? 3) || 3,
+            specialistGuidanceUsed: (
+              ((base.articleLoop as Record<string, unknown> | undefined)?.specialistGuidanceUsed as Record<string, unknown> | undefined)
+              ?? {}
+            ),
+            lastFailedGates: (
+              ((base.articleLoop as Record<string, unknown> | undefined)?.lastFailedGates as unknown[] | undefined)
+              ?? []
+            ),
+            lastGateReasonSummary: (
+              ((base.articleLoop as Record<string, unknown> | undefined)?.lastGateReasonSummary as Record<string, unknown> | undefined)
+              ?? {}
+            ),
+            backlog: Boolean((base.articleLoop as Record<string, unknown> | undefined)?.backlog ?? false),
+          },
+        }
+      : {}),
   };
 }
 
@@ -186,6 +209,22 @@ function toRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
+}
+
+function parseFailedGateNames(message: string) {
+  const raw = String(message || "");
+  const prefix = "blog_run_publish_ready_failed:";
+  if (!raw.startsWith(prefix)) return [];
+  return raw
+    .slice(prefix.length)
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function shouldUseHighThroughputLoop(run: typeof blogRuns.$inferSelect) {
+  const context = toRecord(run.contextJson);
+  return context.highThroughputQualityLoop === true;
 }
 
 function toRunningStatus(stepKey: string): BlogRunStatus {
@@ -655,13 +694,89 @@ export function blogRunService(
         })
         .where(eq(blogRunStepAttempts.id, attempt.id));
 
+      const errorMessage = input.errorMessage ?? input.errorCode ?? stepKey;
+      const isPublishReadyFailure = errorMessage.startsWith("blog_run_publish_ready_failed:");
+      const canLoop = shouldUseHighThroughputLoop(run) && stepKey === "validate" && isPublishReadyFailure;
+      if (canLoop) {
+        const context = toRecord(run.contextJson);
+        const loop = toRecord(context.articleLoop);
+        const currentAttempt = Number(loop.articleAttempt ?? 1) || 1;
+        const maxAttempts = Number(loop.maxAttempts ?? 3) || 3;
+        const failedGates = parseFailedGateNames(errorMessage);
+        const nextContext = {
+          ...context,
+          articleLoop: {
+            ...loop,
+            enabled: true,
+            articleAttempt: currentAttempt,
+            maxAttempts,
+            lastFailedGates: failedGates,
+            lastGateReasonSummary: loop.lastGateReasonSummary ?? {},
+            lastFailureMessage: errorMessage,
+          },
+        };
+
+        if (currentAttempt < maxAttempts) {
+          nextContext.articleLoop = {
+            ...nextContext.articleLoop,
+            articleAttempt: currentAttempt + 1,
+            backlog: false,
+          };
+          await db
+            .update(blogRuns)
+            .set({
+              status: "queued",
+              currentStep: "draft",
+              failedReason: null,
+              contextJson: nextContext,
+              updatedAt: new Date(),
+            })
+            .where(eq(blogRuns.id, runId));
+
+          await artifactMirror.writeStatus(runId, {
+            phase: "draft",
+            state: "queued",
+            lastCompletedStep: "final_review",
+            nextStep: "draft",
+            error: errorMessage,
+          });
+
+          return this.getDetail(runId);
+        }
+
+        nextContext.articleLoop = {
+          ...nextContext.articleLoop,
+          backlog: true,
+        };
+        await db
+          .update(blogRuns)
+          .set({
+            status: "human_review_backlog",
+            currentStep: null,
+            failedReason: errorMessage,
+            contextJson: nextContext,
+            updatedAt: new Date(),
+          })
+          .where(eq(blogRuns.id, runId));
+
+        await artifactMirror.writeStatus(runId, {
+          phase: "draft",
+          state: "review_required",
+          lastCompletedStep: "final_review",
+          nextStep: null,
+          error: errorMessage,
+        });
+
+        return this.getDetail(runId);
+      }
+
       const stopReason = derivePublishStopReason(run, stepKey, input);
 
       await db
         .update(blogRuns)
         .set({
           status: "failed",
-          failedReason: input.errorMessage ?? input.errorCode ?? stepKey,
+          failedReason: errorMessage,
           updatedAt: new Date(),
         })
         .where(eq(blogRuns.id, runId));
@@ -671,7 +786,7 @@ export function blogRunService(
         state: "failed",
         lastCompletedStep: null,
         nextStep: stepKey,
-        error: input.errorMessage ?? input.errorCode ?? stepKey,
+        error: errorMessage,
         stopReason,
       });
       await artifactMirror.writeStopReason(runId, stopReason);

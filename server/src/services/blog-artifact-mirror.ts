@@ -17,7 +17,7 @@ const STEP_FILE_MAP: Record<string, string> = {
 
 type MirrorStatusInput = {
   phase: string | null;
-  state: "running" | "failed" | "completed" | "review_required" | "resumable";
+  state: "queued" | "running" | "failed" | "completed" | "review_required" | "resumable";
   lastCompletedStep: string | null;
   nextStep: string | null;
   error: string | null;
