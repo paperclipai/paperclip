@@ -39,7 +39,7 @@ Request behavior fields:
 
 Session routing fields:
 - sessionKeyStrategy (string, optional): issue (default), fixed, or run
-- sessionKey (string, optional): fixed session key when strategy=fixed (default paperclip)
+- sessionKey (string, optional): fixed session key when strategy=fixed; bare keys are automatically scoped to \`agent:<agentId>:...\` (default paperclip)
 
 Standard outbound payload additions:
 - paperclip (object): standardized Paperclip context added to every gateway agent request

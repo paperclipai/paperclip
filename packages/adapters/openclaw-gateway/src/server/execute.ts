@@ -126,16 +126,48 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
   return "issue";
 }
 
+function normalizeOpenClawAgentId(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return "main";
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+/g, "")
+    .replace(/-+$/g, "");
+  return normalized || "main";
+}
+
+function scopeOpenClawSessionKey(agentId: string, sessionKey: string): string {
+  const trimmed = sessionKey.trim();
+  if (!trimmed) return `agent:${normalizeOpenClawAgentId(agentId)}:main`;
+  if (trimmed.toLowerCase().startsWith("agent:")) return trimmed;
+  return `agent:${normalizeOpenClawAgentId(agentId)}:${trimmed}`;
+}
+
+function resolveClaimedApiKeyPath(agentId: string | null | undefined): string {
+  const normalizedAgentId = normalizeOpenClawAgentId(agentId);
+  const workspaceDir =
+    normalizedAgentId === "main"
+      ? "~/.openclaw/workspace"
+      : `~/.openclaw/workspace-${normalizedAgentId}`;
+  return `${workspaceDir}/paperclip-claimed-api-key.json`;
+}
+
 function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  agentId: string;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  if (input.strategy === "run") {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:run:${input.runId}`);
+  }
+  if (input.strategy === "issue" && input.issueId) {
+    return scopeOpenClawSessionKey(input.agentId, `paperclip:issue:${input.issueId}`);
+  }
+  return scopeOpenClawSessionKey(input.agentId, fallback);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -335,8 +367,12 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
-  const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
+function buildWakeText(
+  payload: WakePayload,
+  paperclipEnv: Record<string, string>,
+  openClawAgentId: string | null | undefined,
+): string {
+  const claimedApiKeyPath = resolveClaimedApiKeyPath(openClawAgentId);
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_AGENT_ID",
@@ -1033,6 +1069,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
+  const templateAgentId = nonEmpty(payloadTemplate.agentId);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const effectiveGatewayAgentId = templateAgentId ?? configuredAgentId ?? "main";
 
   const headers = toStringRecord(ctx.config.headers);
   const authToken = resolveAuthToken(parseObject(ctx.config), headers);
@@ -1053,7 +1092,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const wakeText = buildWakeText(wakePayload, paperclipEnv, effectiveGatewayAgentId);
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
@@ -1062,6 +1101,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    agentId: effectiveGatewayAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
@@ -1076,7 +1116,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   delete agentParams.text;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }

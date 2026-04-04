@@ -40,6 +40,9 @@ The adapter supports the same session routing model as HTTP OpenClaw mode:
 
 - `sessionKeyStrategy=issue|fixed|run`
 - `sessionKey` is used when strategy is `fixed`
+- OpenClaw agent requests must use agent-scoped session keys in the form `agent:<agentId>:...`
+- when `sessionKeyStrategy=issue` and the wake has no `issueId`, the adapter falls back to `agent:<agentId>:paperclip`
+- bare fixed keys like `paperclip` are automatically scoped to the configured OpenClaw agent before sending the request
 
 Resolved session key is sent as `agent.sessionKey`.
 
@@ -54,6 +57,22 @@ The agent request is built as:
 - optional additions:
   - all `payloadTemplate` fields merged in
   - `agentId` from config if set and not already in template
+
+## Claimed API Key Files
+
+OpenClaw agents running on the same machine must not share a single claimed
+Paperclip API key file.
+
+- `main` uses `~/.openclaw/workspace/paperclip-claimed-api-key.json`
+- any other OpenClaw agent `<agentId>` uses
+  `~/.openclaw/workspace-<agentId>/paperclip-claimed-api-key.json`
+- heartbeat wake text and invite onboarding instructions use the same
+  per-agent path convention
+- do not point multiple OpenClaw agents at the same claimed key file, or they
+  will authenticate to Paperclip as the wrong agent
+
+This matches OpenClaw's per-agent workspace layout and keeps Paperclip API key
+identity scoped to the correct OpenClaw agent.
 
 ## Timeouts
 

@@ -2011,14 +2011,14 @@ export function agentRoutes(db: Db) {
 
   router.get("/agents/:id/keys", async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
+    const id = await normalizeAgentReference(req, req.params.id as string);
     const keys = await svc.listKeys(id);
     res.json(keys);
   });
 
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
     assertBoard(req);
-    const id = req.params.id as string;
+    const id = await normalizeAgentReference(req, req.params.id as string);
     const key = await svc.createApiKey(id, req.body.name);
 
     const agent = await svc.getById(id);
@@ -2039,8 +2039,9 @@ export function agentRoutes(db: Db) {
 
   router.delete("/agents/:id/keys/:keyId", async (req, res) => {
     assertBoard(req);
+    const id = await normalizeAgentReference(req, req.params.id as string);
     const keyId = req.params.keyId as string;
-    const revoked = await svc.revokeKey(keyId);
+    const revoked = await svc.revokeKey(id, keyId);
     if (!revoked) {
       res.status(404).json({ error: "Key not found" });
       return;
