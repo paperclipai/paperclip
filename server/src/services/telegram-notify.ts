@@ -115,6 +115,15 @@ export const telegramNotify = {
     });
   },
 
+  /** Notify that the server has started and is online. */
+  async serverOnline(input: { url?: string; version?: string }) {
+    const ver = input.version ? ` (${input.version})` : "";
+    const link = input.url ? `\n${input.url}` : "";
+    await send({
+      text: `✅ Paperclip is back online${ver}${link}`,
+    });
+  },
+
   /** Generic notification for anything else. */
   async info(text: string) {
     await send({ text });

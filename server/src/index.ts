@@ -36,6 +36,7 @@ import {
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { startTelegramEventBridge } from "./services/telegram-event-bridge.js";
+import { telegramNotify } from "./services/telegram-notify.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -738,8 +739,19 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
+  // Send a recovery / "back online" Telegram notification after a short delay.
+  // The delay debounces rapid restart flapping — if the server crashes within
+  // this window the notification is never sent.
+  const startupNotifyTimer = setTimeout(() => {
+    void telegramNotify.serverOnline({
+      url: process.env.PAPERCLIP_PUBLIC_URL || undefined,
+    });
+  }, 10_000);
+  startupNotifyTimer.unref();
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      clearTimeout(startupNotifyTimer);
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
