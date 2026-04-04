@@ -58,6 +58,21 @@ class VisualPreflightTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
 
+    def test_passes_with_structured_fallback_supports(self):
+        result = self.run_script(
+            {
+                "featured": {"sha256": "a"},
+                "supporting": [
+                    {"kind": "structured_fallback", "role": "comparison", "heading": "핵심 비교 정리"},
+                    {"kind": "structured_fallback", "role": "workflow", "heading": "도입 흐름 한눈에 보기"},
+                ],
+                "error": "quota_exhausted",
+            },
+            {"article_html": "<nav class='reader-toc'></nav><p><strong>핵심 요약:</strong></p>" + ("word " * 700)},
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["structured_fallback_used"])
+
 
 if __name__ == "__main__":
     unittest.main()
