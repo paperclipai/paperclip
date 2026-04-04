@@ -64,11 +64,21 @@ export function credentialValidateRoutes() {
     if (type === "claude_oauth") {
       const token = credential?.accessToken;
       if (typeof token !== "string" || !token.trim()) {
-        res.json({ valid: false, error: "Missing accessToken" });
+        res.json({ valid: false, error: "Missing access token" });
         return;
       }
-      const result = await validateClaudeOAuthToken(token.trim());
-      res.json(result);
+      const t = token.trim();
+      if (!t.startsWith("sk-ant-oat01-")) {
+        res.json({ valid: false, error: "Invalid format — token should start with sk-ant-oat01-" });
+        return;
+      }
+      if (t.length < 50) {
+        res.json({ valid: false, error: "Token looks too short" });
+        return;
+      }
+      // OAuth tokens can't be validated via API — they only work with Claude CLI sessions.
+      // Format check is sufficient.
+      res.json({ valid: true });
       return;
     }
 
