@@ -656,6 +656,15 @@ export function IssuesList({
         </div>
       </div>
 
+      {/* Issue count */}
+      {!isLoading && !error && (
+        <div className="text-xs text-muted-foreground px-1">
+          {activeFilterCount > 0 || normalizedIssueSearch.length > 0
+            ? `${filtered.length} of ${issues.length} issues`
+            : `${issues.length} issues`}
+        </div>
+      )}
+
       {isLoading && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
@@ -694,6 +703,9 @@ export function IssuesList({
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
                   <span className="text-sm font-semibold uppercase tracking-wide">
                     {group.label}
+                  </span>
+                  <span className="text-xs font-normal text-muted-foreground ml-1.5">
+                    {group.items.length}
                   </span>
                 </CollapsibleTrigger>
                 <Button
