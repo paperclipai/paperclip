@@ -93,11 +93,23 @@ export function OnboardingWizard() {
           companyPrefix,
           companies,
         });
+  const [routeOnboardingSnapshot, setRouteOnboardingSnapshot] = useState(
+    routeOnboardingOptions
+  );
+
+  useEffect(() => {
+    if (routeOnboardingOptions !== null) {
+      setRouteOnboardingSnapshot(routeOnboardingOptions);
+    }
+  }, [routeOnboardingOptions]);
+
   const effectiveOnboardingOpen =
-    onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
+    onboardingOpen ||
+    ((routeOnboardingOptions !== null || routeOnboardingSnapshot !== null) &&
+      !routeDismissed);
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
-    : routeOnboardingOptions ?? {};
+    : routeOnboardingOptions ?? routeOnboardingSnapshot ?? {};
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
@@ -161,6 +173,7 @@ export function OnboardingWizard() {
 
   useEffect(() => {
     setRouteDismissed(false);
+    setRouteOnboardingSnapshot(routeOnboardingOptions);
   }, [location.pathname]);
 
   // Sync step and company when onboarding opens with options.
@@ -283,6 +296,7 @@ export function OnboardingWizard() {
   }, [filteredModels, adapterType]);
 
   function reset() {
+    setRouteOnboardingSnapshot(routeOnboardingOptions);
     setStep(1);
     setLoading(false);
     setError(null);
@@ -624,11 +638,12 @@ export function OnboardingWizard() {
       }}
     >
       <DialogPortal>
-        {/* Plain div instead of DialogOverlay — Radix's overlay wraps in
-            RemoveScroll which blocks wheel events on our custom (non-DialogContent)
-            scroll container. A plain div preserves the background without scroll-locking. */}
-        <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
+        <>
+          {/* Plain div instead of DialogOverlay — Radix's overlay wraps in
+              RemoveScroll which blocks wheel events on our custom (non-DialogContent)
+              scroll container. A plain div preserves the background without scroll-locking. */}
+          <div className="fixed inset-0 z-50 bg-background" />
+          <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
           {/* Close button */}
           <button
             onClick={handleClose}
@@ -1342,7 +1357,8 @@ export function OnboardingWizard() {
           >
             <AsciiArtAnimation />
           </div>
-        </div>
+          </div>
+        </>
       </DialogPortal>
     </Dialog>
   );
