@@ -18,7 +18,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:upstream-merge-harness": "vitest run server/src/__tests__/error-handler.test.ts server/src/__tests__/i18n.test.ts server/src/__tests__/locale-middleware.test.ts server/src/__tests__/ui-locale.test.ts server/src/__tests__/worktree-config.test.ts",
+    "test:upstream-merge-harness": "node scripts/upstream-merge-harness.mjs",
     "db:generate": "pnpm --filter @penclipai/db generate",
     "db:migrate": "pnpm --filter @penclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",

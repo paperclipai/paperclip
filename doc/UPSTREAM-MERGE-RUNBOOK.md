@@ -227,13 +227,19 @@ pnpm test:run server/src/__tests__/ui-locale.test.ts server/src/__tests__/i18n.t
 pnpm test:upstream-merge-harness
 ```
 
-这个 harness 的目标不是替代 `pnpm test:run`，而是优先拦住“手工合并最容易引入、但完整门禁里不够显眼”的基础设施回归。当前按三个维度覆盖：
+这个 harness 的目标不是替代 `pnpm test:run`，而是优先拦住“手工合并最容易引入、但完整门禁里不够显眼”的 merge-sensitive invariants。
 
-- 响应生命周期与错误处理基础设施
-- locale / i18n 基础设施
-- Windows worktree / 环境文件兼容层
+设计原则：
 
-如果本次同步暴露了新的 merge 回归类型，优先补一个纯函数、helper、middleware 或 route 级轻量测试，并把它纳入这个 harness；不要只把经验写进 PR 评论，也不要直接上更重的 e2e。
+- 只收跨多次 upstream merge 容易回归、或手工冲突处理时容易破坏的不变量
+- 只收基础设施或契约级行为，不收单个业务功能细节
+- 只收轻量、稳定、无外部依赖的测试，保证它能作为完整门禁前的快速闸门
+
+维护规则：
+
+- 具体测试文件清单属于实现细节，放在 `scripts/upstream-merge-harness.mjs`，不要把长期文档写成事故清单
+- 本次同步暴露新回归时，先判断它是否符合上面三条；符合再纳入 harness，不符合就留在常规测试集
+- 优先补纯函数、helper、middleware、route/service 级测试；不要直接把更重的 e2e 或 CLI 链路塞进 harness
 
 ### 7.7 测试重量
 
