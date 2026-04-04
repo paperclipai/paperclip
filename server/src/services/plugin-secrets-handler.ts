@@ -193,6 +193,14 @@ setInterval(() => {
   }
 }, 60_000).unref?.();
 
+/**
+ * Reset rate limiters (FOR TESTING ONLY)
+ * @internal
+ */
+export function _resetRateLimiters(): void {
+  _limiterState.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------
@@ -472,7 +480,7 @@ export function createPluginSecretsHandler(
       }
 
       // Value validation
-      if (!params.value || params.value.length === 0) {
+      if (!params.value) {
         throw new Error("Secret value must not be empty.");
       }
       if (Buffer.byteLength(params.value, "utf8") > 65_536) {
