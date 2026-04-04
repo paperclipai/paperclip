@@ -4021,7 +4021,10 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       {isLoading && <p className="text-sm text-muted-foreground">Loading keys...</p>}
 
       {!isLoading && activeKeys.length === 0 && !newToken && (
-        <p className="text-sm text-muted-foreground">No active API keys.</p>
+        <div className="rounded-lg border border-dashed border-border p-8 text-center">
+          <p className="text-sm text-muted-foreground">No active API keys</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">Create a key above to allow external services to authenticate as this agent</p>
+        </div>
       )}
 
       {activeKeys.length > 0 && (
