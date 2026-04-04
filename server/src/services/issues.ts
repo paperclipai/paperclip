@@ -394,6 +394,17 @@ export function normalizeAgentMentionToken(raw: string): string {
   return s.trim();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function bodyIncludesAgentNameMention(body: string, agentName: string): boolean {
+  const normalizedName = agentName.trim();
+  if (!normalizedName.includes(" ")) return false;
+  const pattern = new RegExp(`(^|[\\s([\\{])@${escapeRegExp(normalizedName)}(?=$|[\\s,!?;:.\\]\\)\\}])`, "i");
+  return pattern.test(body);
+}
+
 export function deriveIssueUserContext(
   issue: IssueUserContextInput,
   userId: string,
@@ -1922,7 +1933,7 @@ export function issueService(db: Db) {
         .from(agents).where(eq(agents.companyId, companyId));
       const resolved = new Set<string>(explicitAgentMentionIds);
       for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
+        if (tokens.has(agent.name.toLowerCase()) || bodyIncludesAgentNameMention(body, agent.name)) {
           resolved.add(agent.id);
         }
       }
