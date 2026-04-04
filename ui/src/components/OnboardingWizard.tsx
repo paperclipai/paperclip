@@ -36,6 +36,8 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_OLLAMA_MODEL } from "@paperclipai/adapter-ollama-local";
+import { OllamaModelPicker } from "../adapters/ollama-local/model-picker";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -43,6 +45,7 @@ import {
   Building2,
   Bot,
   Code,
+  Cpu,
   Gem,
   ListTodo,
   Rocket,
@@ -67,6 +70,7 @@ type AdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
+  | "ollama_local"
   | "http"
   | "openclaw_gateway";
 
@@ -198,7 +202,8 @@ export function OnboardingWizard() {
     data: adapterModels,
     error: adapterModelsError,
     isLoading: adapterModelsLoading,
-    isFetching: adapterModelsFetching
+    isFetching: adapterModelsFetching,
+    refetch: refetchAdapterModels
   } = useQuery({
     queryKey: createdCompanyId
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
@@ -212,6 +217,7 @@ export function OnboardingWizard() {
     adapterType === "gemini_local" ||
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
+    adapterType === "ollama_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
   const effectiveAdapterCommand =
@@ -855,6 +861,12 @@ export function OnboardingWizard() {
                             desc: "Local multi-provider agent"
                           },
                           {
+                            value: "ollama_local" as const,
+                            label: "Ollama (local)",
+                            icon: Cpu,
+                            desc: "Free local LLM agent"
+                          },
+                          {
                             value: "openclaw_gateway" as const,
                             label: "OpenClaw Gateway",
                             icon: Bot,
@@ -886,6 +898,10 @@ export function OnboardingWizard() {
                                 setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                                 return;
                               }
+                              if (nextType === "ollama_local" && !model) {
+                                setModel(DEFAULT_OLLAMA_MODEL);
+                                return;
+                              }
                               if (nextType === "opencode_local") {
                                 if (!model.includes("/")) {
                                   setModel("");
@@ -909,7 +925,20 @@ export function OnboardingWizard() {
                     )}
                   </div>
 
-                  {/* Conditional adapter fields */}
+                  {/* Ollama model picker — rich agentic model catalog */}
+                  {adapterType === "ollama_local" && (
+                    <div className="space-y-2">
+                      <OllamaModelPicker
+                        installedModels={adapterModels ?? []}
+                        value={model}
+                        onChange={(v) => setModel(v)}
+                        loading={adapterModelsLoading || adapterModelsFetching}
+                        onRefresh={() => void refetchAdapterModels()}
+                      />
+                    </div>
+                  )}
+
+                  {/* Conditional adapter fields (non-Ollama adapters) */}
                   {(adapterType === "claude_local" ||
                     adapterType === "codex_local" ||
                     adapterType === "gemini_local" ||
