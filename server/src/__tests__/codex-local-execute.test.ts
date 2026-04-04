@@ -41,6 +41,113 @@ type LogEntry = {
 };
 
 describe("codex execute", () => {
+  it("retries with a fresh session when resume fails because the rollout no longer exists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-retry-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.jsonl");
+    const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+if (capturePath) {
+  fs.appendFileSync(capturePath, JSON.stringify({ argv }) + "\\n", "utf8");
+}
+
+const resumeIndex = argv.indexOf("resume");
+if (resumeIndex >= 0) {
+  const sessionId = argv[resumeIndex + 1] || "unknown-thread";
+  process.stderr.write(
+    "Error: thread/resume: thread/resume failed: no rollout found for thread id " +
+      sessionId +
+      " (adapter_failed)\\n",
+  );
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "thread.started", thread_id: "fresh-session-1" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh retry succeeded" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 3, cached_input_tokens: 0, output_tokens: 5 } }));
+`;
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, script, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-retry",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "8851506c-ccad-4caf-a7af-458603d2522d",
+          sessionParams: {
+            sessionId: "8851506c-ccad-4caf-a7af-458603d2522d",
+            cwd: workspace,
+          },
+          sessionDisplayId: "8851506c-ccad-4caf-a7af-458603d2522d",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Resume safely.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("fresh-session-1");
+      expect(result.clearSession).toBe(false);
+      expect(result.summary).toBe("fresh retry succeeded");
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("retrying with a fresh session"),
+        }),
+      );
+      expect(logs).not.toContainEqual(
+        expect.objectContaining({
+          stream: "stderr",
+          chunk: expect.stringContaining("no rollout found for thread id"),
+        }),
+      );
+
+      const invocations = (await fs.readFile(capturePath, "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { argv: string[] });
+      expect(invocations).toHaveLength(2);
+      expect(invocations[0]?.argv).toEqual(
+        expect.arrayContaining(["exec", "--json", "resume", "8851506c-ccad-4caf-a7af-458603d2522d", "-"]),
+      );
+      expect(invocations[1]?.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(invocations[1]?.argv).not.toContain("resume");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");
