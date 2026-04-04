@@ -314,6 +314,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isLocal =
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
+    adapterType === "copilot_cli" ||
     adapterType === "gemini_local" ||
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||

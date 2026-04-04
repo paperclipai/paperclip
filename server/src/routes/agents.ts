@@ -69,7 +69,9 @@ export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
+    copilot_cli: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
