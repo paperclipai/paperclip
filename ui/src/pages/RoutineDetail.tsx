@@ -27,6 +27,7 @@ import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { timeAgo } from "../lib/timeAgo";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -710,24 +711,13 @@ export function RoutineDetail() {
             }}
             disabled={runRoutine.isPending}
           />
-          <button
-            type="button"
-            role="switch"
-            data-slot="toggle"
-            aria-checked={automationEnabled}
-            aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+          <ToggleSwitch
+            size="lg"
+            checked={automationEnabled}
+            onCheckedChange={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
             disabled={automationToggleDisabled}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              automationEnabled ? "bg-emerald-500" : "bg-muted"
-            } ${automationToggleDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-            onClick={() => updateRoutineStatus.mutate(automationEnabled ? "paused" : "active")}
-          >
-            <span
-              className={`inline-block h-5 w-5 rounded-full bg-background shadow-sm transition-transform ${
-                automationEnabled ? "translate-x-5" : "translate-x-0.5"
-              }`}
-            />
-          </button>
+            aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
+          />
           <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
             {automationLabel}
           </span>

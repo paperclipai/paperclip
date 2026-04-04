@@ -1,3 +1,4 @@
+export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
   DEPLOYMENT_MODES,
@@ -393,6 +394,11 @@ export {
 } from "./types/feedback.js";
 
 export {
+  getClosedIsolatedExecutionWorkspaceMessage,
+  isClosedIsolatedExecutionWorkspace,
+} from "./execution-workspace-guards.js";
+
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
@@ -659,14 +665,19 @@ export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from 
 export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
+  SKILL_MENTION_SCHEME,
   buildAgentMentionHref,
   buildProjectMentionHref,
+  buildSkillMentionHref,
   extractAgentMentionIds,
+  extractSkillMentionIds,
   parseAgentMentionHref,
   parseProjectMentionHref,
+  parseSkillMentionHref,
   extractProjectMentionIds,
   type ParsedAgentMention,
   type ParsedProjectMention,
+  type ParsedSkillMention,
 } from "./project-mentions.js";
 
 export {

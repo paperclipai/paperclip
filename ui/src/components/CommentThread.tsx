@@ -78,6 +78,7 @@ interface CommentThreadProps {
   mentions?: MentionOption[];
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  composerDisabledReason?: string | null;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -569,6 +570,7 @@ export function CommentThread({
   mentions: providedMentions,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  composerDisabledReason = null,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
@@ -747,90 +749,146 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
-      <div className="space-y-2">
-        <MarkdownEditor
-          ref={editorRef}
-          value={body}
-          onChange={setBody}
-          placeholder="Leave a comment..."
-          mentions={mentions}
-          onSubmit={handleSubmit}
-          imageUploadHandler={imageUploadHandler}
-          contentClassName="min-h-[60px] text-sm"
-        />
-        <div className="flex items-center justify-end gap-3">
-          {(imageUploadHandler || onAttachImage) && (
-            <div className="mr-auto flex items-center gap-3">
-              <input
-                ref={attachInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={handleAttachFile}
-              />
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        currentUserId={currentUserId}
+        companyId={companyId}
+        projectId={projectId}
+        feedbackVoteByTargetId={feedbackVoteByTargetId}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        onVote={onVote ? handleFeedbackVote : undefined}
+        votingTargetId={votingTargetId}
+        highlightCommentId={highlightCommentId}
+        feedbackTermsUrl={feedbackTermsUrl}
+      />
+
+      {liveRunSlot}
+
+      {queuedComments.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+              Queued Comments ({queuedComments.length})
+            </h4>
+            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach image"
+                size="sm"
+                variant="outline"
+                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
-                <Paperclip className="h-4 w-4" />
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
               </Button>
-            </div>
-          )}
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={reopen}
-              onChange={(e) => setReopen(e.target.checked)}
-              className="rounded border-border"
-            />
-            Re-open
-          </label>
-          {enableReassign && reassignOptions.length > 0 && (
-            <InlineEntitySelector
-              value={reassignTarget}
-              options={reassignOptions}
-              placeholder="Assignee"
-              noneLabel="No assignee"
-              searchPlaceholder="Search assignees..."
-              emptyMessage="No assignees found."
-              onChange={setReassignTarget}
-              className="text-xs h-8"
-              renderTriggerValue={(option) => {
-                if (!option) return <span className="text-muted-foreground">Assignee</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-              renderOption={(option) => {
-                if (!option.id) return <span className="truncate">{option.label}</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
-                const agent = agentId ? agentMap?.get(agentId) : null;
-                return (
-                  <>
-                    {agent ? (
-                      <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </>
-                );
-              }}
-            />
-          )}
-          <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
-            {submitting ? "Posting..." : "Comment"}
-          </Button>
+            ) : null}
+          </div>
+          <div className="space-y-3">
+            {queuedComments.map((comment) => (
+              <CommentCard
+                key={comment.id}
+                comment={comment}
+                agentMap={agentMap}
+                companyId={companyId}
+                projectId={projectId}
+                highlightCommentId={highlightCommentId}
+                queued
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+
+      {composerDisabledReason ? (
+        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          {composerDisabledReason}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <MarkdownEditor
+            ref={editorRef}
+            value={body}
+            onChange={setBody}
+            placeholder="Leave a comment..."
+            mentions={mentions}
+            onSubmit={handleSubmit}
+            imageUploadHandler={imageUploadHandler}
+            contentClassName="min-h-[60px] text-sm"
+          />
+          <div className="flex items-center justify-end gap-3">
+            {(imageUploadHandler || onAttachImage) && (
+              <div className="mr-auto flex items-center gap-3">
+                <input
+                  ref={attachInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={handleAttachFile}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => attachInputRef.current?.click()}
+                  disabled={attaching}
+                  title="Attach image"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={reopen}
+                onChange={(e) => setReopen(e.target.checked)}
+                className="rounded border-border"
+              />
+              Re-open
+            </label>
+            {enableReassign && reassignOptions.length > 0 && (
+              <InlineEntitySelector
+                value={reassignTarget}
+                options={reassignOptions}
+                placeholder="Assignee"
+                noneLabel="No assignee"
+                searchPlaceholder="Search assignees..."
+                emptyMessage="No assignees found."
+                onChange={setReassignTarget}
+                className="text-xs h-8"
+                renderTriggerValue={(option) => {
+                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                  const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                  const agent = agentId ? agentMap?.get(agentId) : null;
+                  return (
+                    <>
+                      {agent ? (
+                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+                renderOption={(option) => {
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                  const agent = agentId ? agentMap?.get(agentId) : null;
+                  return (
+                    <>
+                      {agent ? (
+                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+              />
+            )}
+            <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
+              {submitting ? "Posting..." : "Comment"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {liveRunSlot}
 

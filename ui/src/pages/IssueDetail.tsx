@@ -75,8 +75,16 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { ActivityEvent } from "@paperclipai/shared";
-import type { Agent, FeedbackVote, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
+import {
+  getClosedIsolatedExecutionWorkspaceMessage,
+  isClosedIsolatedExecutionWorkspace,
+  type ActivityEvent,
+  type Agent,
+  type FeedbackVote,
+  type Issue,
+  type IssueAttachment,
+  type IssueComment,
+} from "@paperclipai/shared";
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
@@ -313,6 +321,12 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const commentComposerDisabledReason = useMemo(() => {
+    if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
+      return null;
+    }
+    return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
+  }, [issue?.currentExecutionWorkspace]);
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
@@ -1739,6 +1753,7 @@ export function IssueDetail() {
               await interruptQueuedComment.mutateAsync(runId);
             }}
             interruptingQueuedRunId={interruptQueuedComment.isPending ? runningIssueRun?.id ?? null : null}
+            composerDisabledReason={commentComposerDisabledReason}
             onVote={async (commentId, vote, options) => {
               await feedbackVoteMutation.mutateAsync({
                 targetType: "issue_comment",

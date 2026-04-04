@@ -13,6 +13,7 @@ import {
   createDb,
   executionWorkspaces,
   heartbeatRuns,
+  projectWorkspaces,
   projects,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -30,6 +31,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -1416,6 +1418,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -1528,6 +1531,96 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
+  });
+
+  it("marks persisted local services stopped when the registry pid is stale", async () => {
+    const companyId = randomUUID();
+    const runtimeServiceId = randomUUID();
+    const startedAt = new Date("2026-04-04T17:00:00.000Z");
+    const updatedAt = new Date("2026-04-04T17:10:00.000Z");
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime reconcile test",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/tmp/paperclip-primary",
+      isPrimary: true,
+    });
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: null,
+      issueId: null,
+      scopeType: "project_workspace",
+      scopeId: projectWorkspaceId,
+      serviceName: "paperclip-dev",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      provider: "local_process",
+      providerRef: "999999",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: updatedAt,
+      startedAt,
+      stoppedAt: null,
+      stopPolicy: { type: "manual" },
+      healthStatus: "healthy",
+      createdAt: startedAt,
+      updatedAt,
+    });
+    await writeLocalServiceRegistryRecord({
+      version: 1,
+      serviceKey: "workspace-runtime-paperclip-dev-stale",
+      profileKind: "workspace-runtime",
+      serviceName: "paperclip-dev",
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      envFingerprint: "fingerprint",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      pid: 999999,
+      processGroupId: 999999,
+      provider: "local_process",
+      runtimeServiceId,
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      startedAt: startedAt.toISOString(),
+      lastSeenAt: updatedAt.toISOString(),
+      metadata: null,
+    });
+
+    const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+
+    expect(result).toMatchObject({ reconciled: 1, adopted: 0, stopped: 1 });
+    const persisted = await db
+      .select()
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("stopped");
+    expect(persisted?.stoppedAt).not.toBeNull();
   });
 
   it("persists controlled execution workspace stops as stopped", async () => {

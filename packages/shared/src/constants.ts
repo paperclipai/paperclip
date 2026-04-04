@@ -31,9 +31,8 @@ export const AGENT_ADAPTER_TYPES = [
   "pi_local",
   "cursor",
   "openclaw_gateway",
-  "hermes_local",
 ] as const;
-export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
+export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number] | (string & {});
 
 export const AGENT_ROLES = [
   "ceo",
