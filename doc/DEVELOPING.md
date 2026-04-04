@@ -23,6 +23,21 @@ GitHub Actions owns `pnpm-lock.yaml`.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.
 
+## Local Guardrails
+
+Use the repo-local fast guardrail before the heavier verification flow:
+
+```sh
+pnpm run check:paperclip:fast
+pnpm run check:paperclip:full
+```
+
+Install the repo-managed pre-commit hook once per checkout:
+
+```sh
+bash scripts/install-git-hooks.sh
+```
+
 ## Start Dev
 
 From repo root:

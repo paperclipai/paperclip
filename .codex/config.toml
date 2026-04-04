@@ -1,0 +1,20 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+# Project-scoped Codex config (trusted projects only).
+# Keep only repo-local overrides here. Global defaults stay in ~/.codex/config.toml.
+project_doc_fallback_filenames = ["AGENTS.md", "README.md", "SESSION_HANDOFF.md"]
+project_doc_max_bytes = 32768
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+plan_mode_reasoning_effort = "high"
+
+[features]
+multi_agent = true
+
+[agents]
+# Non-trivial, non-risky work should first run a subagent eligibility check.
+# If there is an independent reader/checker lane, prefer `main 1 + subagents 1~3`.
+# Users can opt out with: 이번 작업은 메인 lane 하나로만 진행해줘.
+max_threads = 4
+max_depth = 2
+job_max_runtime_seconds = 1800

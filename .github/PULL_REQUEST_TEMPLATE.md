@@ -46,4 +46,9 @@
 - [ ] If this change affects the UI, I have included before/after screenshots
 - [ ] I have updated relevant documentation to reflect my changes
 - [ ] I have considered and documented any risks above
+- [ ] I have listed the impacted layers (`db/shared/server/ui`) or explicitly said the change is docs/config only
+- [ ] I have checked company boundary impact where the change touches company-scoped behavior
+- [ ] I have checked approval boundary impact where the change touches governed actions
+- [ ] I have checked mutating action logging where the change touches mutating routes/services
+- [ ] I have included a concrete rollback path for non-trivial changes
 - [ ] I will address all Greptile and reviewer comments before requesting merge

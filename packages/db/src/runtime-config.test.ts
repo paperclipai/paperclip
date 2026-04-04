@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 const ORIGINAL_CWD = process.cwd();
@@ -26,6 +26,11 @@ afterEach(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+});
+
+beforeEach(() => {
+  delete process.env.DATABASE_URL;
+  delete process.env.PAPERCLIP_CONFIG;
 });
 
 describe("resolveDatabaseTarget", () => {

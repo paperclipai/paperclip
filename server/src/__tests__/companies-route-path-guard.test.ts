@@ -1,5 +1,5 @@
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { describe, expect, it, vi } from "vitest";
 import { companyRoutes } from "../routes/companies.js";
 

@@ -1,6 +1,6 @@
 import express from "express";
-import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import request from "./helpers/in-memory-request.js";
 import { approvalRoutes } from "../routes/approvals.js";
 import { errorHandler } from "../middleware/index.js";
 

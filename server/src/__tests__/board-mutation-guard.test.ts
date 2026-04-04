@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
 function createApp(

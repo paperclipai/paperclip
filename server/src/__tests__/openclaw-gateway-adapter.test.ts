@@ -39,6 +39,47 @@ function buildContext(
   };
 }
 
+async function listenOnLoopback(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onListening = () => {
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
+}
+
+async function canListenOnLoopback(): Promise<boolean> {
+  const server = createServer();
+  try {
+    await listenOnLoopback(server);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPERM" || code === "EACCES") {
+      return false;
+    }
+    throw error;
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+}
+
+const itLoopback = (await canListenOnLoopback()) ? it : it.skip;
+
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
 }) {
@@ -153,9 +194,7 @@ async function createMockGatewayServer(options?: {
     });
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  await listenOnLoopback(server);
 
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -355,9 +394,7 @@ async function createMockGatewayServerWithPairing() {
     });
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  await listenOnLoopback(server);
 
   const address = server.address();
   if (!address || typeof address === "string") {
@@ -396,7 +433,7 @@ describe("openclaw gateway ui stdout parser", () => {
 });
 
 describe("openclaw gateway adapter execute", () => {
-  it("runs connect -> agent -> agent.wait and forwards wake payload", async () => {
+  itLoopback("runs connect -> agent -> agent.wait and forwards wake payload", async () => {
     const gateway = await createMockGatewayServer();
     const logs: string[] = [];
 
@@ -469,7 +506,7 @@ describe("openclaw gateway adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
-  it("returns adapter-managed runtime services from gateway result meta", async () => {
+  itLoopback("returns adapter-managed runtime services from gateway result meta", async () => {
     const gateway = await createMockGatewayServer({
       waitPayload: {
         runId: "run-123",
@@ -517,7 +554,7 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
-  it("auto-approves pairing once and retries the run", async () => {
+  itLoopback("auto-approves pairing once and retries the run", async () => {
     const gateway = await createMockGatewayServerWithPairing();
     const logs: string[] = [];
 

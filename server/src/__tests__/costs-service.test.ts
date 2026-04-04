@@ -1,5 +1,5 @@
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { costRoutes } from "../routes/costs.js";
 import { errorHandler } from "../middleware/index.js";

@@ -71,6 +71,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Paperclip fast guardrails
+        run: pnpm run check:paperclip:fast
+
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -108,6 +111,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Paperclip fast guardrails
+        run: pnpm run check:paperclip:fast
 
       - name: Build
         run: pnpm build

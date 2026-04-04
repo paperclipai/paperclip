@@ -159,6 +159,12 @@ type SeedWorktreeDatabaseResult = {
   }>;
 };
 
+type PortProbeResult =
+  | { kind: "available" }
+  | { kind: "in_use" }
+  | { kind: "restricted"; error: NodeJS.ErrnoException }
+  | { kind: "unavailable"; error: Error };
+
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -446,23 +452,87 @@ function readRunningPostmasterPid(postmasterPidFile: string): number | null {
   }
 }
 
-async function isPortAvailable(port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
+function toPortProbeError(error: unknown, fallbackMessage: string): Error {
+  if (error instanceof Error) return error;
+  if (typeof error === "string") return new Error(error);
+  return new Error(fallbackMessage);
+}
+
+async function probePortAvailability(port: number): Promise<PortProbeResult> {
+  return await new Promise<PortProbeResult>((resolve) => {
     const server = createServer();
+    let settled = false;
+    const finish = (result: PortProbeResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
     server.unref();
-    server.once("error", () => resolve(false));
-    server.listen(port, "127.0.0.1", () => {
-      server.close(() => resolve(true));
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "EADDRINUSE") {
+        finish({ kind: "in_use" });
+        return;
+      }
+      if (error.code === "EPERM" || error.code === "EACCES") {
+        finish({ kind: "restricted", error });
+        return;
+      }
+      finish({
+        kind: "unavailable",
+        error: toPortProbeError(error, `Unable to probe port ${port}`),
+      });
     });
+
+    try {
+      server.listen(port, "127.0.0.1", () => {
+        server.close(() => finish({ kind: "available" }));
+      });
+    } catch (error) {
+      finish({
+        kind: "unavailable",
+        error: toPortProbeError(error, `Unable to probe port ${port}`),
+      });
+    }
   });
 }
 
-async function findAvailablePort(preferredPort: number, reserved = new Set<number>()): Promise<number> {
-  let port = Math.max(1, Math.trunc(preferredPort));
-  while (reserved.has(port) || !(await isPortAvailable(port))) {
+async function findAvailablePort(
+  preferredPort: number,
+  reserved = new Set<number>(),
+  opts?: { allowProbeFallback?: boolean },
+): Promise<number> {
+  const MIN_PORT = 1;
+  const MAX_PORT = 65_535;
+  let port = Math.max(MIN_PORT, Math.trunc(preferredPort));
+  while (port <= MAX_PORT) {
+    if (reserved.has(port)) {
+      port += 1;
+      continue;
+    }
+
+    const result = await probePortAvailability(port);
+    if (result.kind === "available") {
+      return port;
+    }
+    if (result.kind === "restricted" && opts?.allowProbeFallback) {
+      // Some sandboxed runtimes block loopback probe sockets entirely. In that case,
+      // keep a deterministic non-reserved port instead of running past the valid range.
+      return port;
+    }
+    if (result.kind === "restricted") {
+      throw result.error;
+    }
+    if (result.kind === "unavailable") {
+      throw result.error;
+    }
+
     port += 1;
   }
-  return port;
+
+  throw new Error(
+    `Unable to find an available port from ${Math.max(MIN_PORT, Math.trunc(preferredPort))} to ${MAX_PORT}.`,
+  );
 }
 
 function detectGitBranchName(cwd: string): string | null {
@@ -887,9 +957,10 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
 
   const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
-  const serverPort = await findAvailablePort(preferredServerPort);
+  // `worktree init` only writes config, so keep deterministic ports when bind probes are sandbox-blocked.
+  const serverPort = await findAvailablePort(preferredServerPort, new Set(), { allowProbeFallback: true });
   const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
-  const databasePort = await findAvailablePort(preferredDbPort, new Set([serverPort]));
+  const databasePort = await findAvailablePort(preferredDbPort, new Set([serverPort]), { allowProbeFallback: true });
   const targetConfig = buildWorktreeConfig({
     sourceConfig,
     paths,

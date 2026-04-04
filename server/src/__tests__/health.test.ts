@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { healthRoutes } from "../routes/health.js";
 import { serverVersion } from "../version.js";
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 
 function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHost?: string }) {

@@ -20,6 +20,11 @@ Before making changes, read in this order:
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
 
+For Codex operational work, also read:
+
+1. `SESSION_HANDOFF.md`
+2. `doc/CODEX_OPERATING_GUIDE.md`
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
@@ -115,6 +120,12 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
+Fail fast before the heavier checks when contracts, route guardrails, or repo-operational files move:
+
+```sh
+pnpm run check:paperclip:fast
+```
+
 ## 8. API and Auth Expectations
 
 - Base path: `/api`
@@ -143,3 +154,11 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+
+## 11. Codex Working Rules
+
+- Non-trivial, non-risky work should run a subagent eligibility check first.
+- If independent reading or verification exists, prefer a reader/checker lane in addition to the main lane.
+- Same-file concurrent edits are not allowed.
+- Major steps that change repo-operational state should update `SESSION_HANDOFF.md`.
+- Report verification commands and a concrete rollback path for non-trivial changes.

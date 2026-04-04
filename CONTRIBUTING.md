@@ -39,6 +39,15 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 - Run tests locally first
 - Be kind in discussions 😄
 
+## Local Paperclip Guardrails
+
+- Repo-local Codex workflow guidance: [`doc/CODEX_OPERATING_GUIDE.md`](doc/CODEX_OPERATING_GUIDE.md)
+- Fast fail-first guardrail check: `pnpm run check:paperclip:fast`
+- Full local verification: `pnpm run check:paperclip:full`
+- Install the repo-managed pre-commit hook: `bash scripts/install-git-hooks.sh`
+
+If your change touches contracts or mutating routes, use the fast guardrail check before the heavier test/build pass.
+
 ## Writing a Good PR message
 
 Please include a "thinking path" at the top of your PR message that explains from the top of the project down to what you fixed. E.g.:

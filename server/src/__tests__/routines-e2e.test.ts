@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import express from "express";
-import request from "supertest";
+import request from "./helpers/in-memory-request.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
