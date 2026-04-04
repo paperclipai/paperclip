@@ -37,6 +37,7 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
+import { HttpError } from "../errors.js";
 
 function secretNotFound(secretRef: string): Error {
   const err = new Error(`Secret not found: ${secretRef}`);
@@ -158,7 +159,7 @@ export function extractSecretRefsFromConfig(
 // Rate Limiting (Module Level for durability across worker restarts)
 // ---------------------------------------------------------------------------
 
-/** Global sliding-window state store keyed by pluginId + operation. */
+/** Global sliding-window state store keyed by pluginId + companyId + operation. */
 const _limiterState = new Map<string, number[]>();
 
 function checkRateLimit(key: string, maxAttempts: number, windowMs: number): boolean {
@@ -289,15 +290,6 @@ export function createPluginSecretsHandler(
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
-      // ---------------------------------------------------------------
-      if (!checkRateLimit(`${pluginId}:resolve`, 30, 60_000)) {
-        const err = new Error("Rate limit exceeded for secret resolution");
-        err.name = "RateLimitExceededError";
-        throw err;
-      }
-
-      // ---------------------------------------------------------------
       // 1. Validate the ref format
       // ---------------------------------------------------------------
       if (!secretRef || typeof secretRef !== "string" || secretRef.trim().length === 0) {
@@ -308,26 +300,6 @@ export function createPluginSecretsHandler(
 
       if (!isUuid(trimmedRef)) {
         throw invalidSecretRef(trimmedRef);
-      }
-
-      // ---------------------------------------------------------------
-      // 1b. Scope check — only allow secrets referenced in this plugin's config
-      // ---------------------------------------------------------------
-      const now = Date.now();
-      if (!cachedAllowedRefs || now > cachedAllowedRefsExpiry) {
-        const [configRow, plugin] = await Promise.all([
-          db
-            .select()
-            .from(pluginConfig)
-            .where(eq(pluginConfig.pluginId, pluginId))
-            .then((rows) => rows[0] ?? null),
-          registry.getById(pluginId),
-        ]);
-
-        const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
-          ?.instanceConfigSchema as Record<string, unknown> | undefined;
-        cachedAllowedRefs = extractSecretRefsFromConfig(configRow?.configJson, schema);
-        cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
       }
 
       // ---------------------------------------------------------------
@@ -351,20 +323,56 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
+      // 2b. Rate limiting — prevent brute-force UUID enumeration
+      // ---------------------------------------------------------------
+      if (!checkRateLimit(`${pluginId}:${secret.companyId}:resolve`, 30, 60_000)) {
+        const err = new Error("Rate limit exceeded for secret resolution");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
       // 3. Ownership & Multi-Tenant Scoping
       // ---------------------------------------------------------------
+      const now = Date.now();
+      if (!cachedAllowedRefs || now > cachedAllowedRefsExpiry) {
+        const [configRow, plugin] = await Promise.all([
+          db
+            .select()
+            .from(pluginConfig)
+            .where(eq(pluginConfig.pluginId, pluginId))
+            .then((rows) => rows[0] ?? null),
+          registry.getById(pluginId),
+        ]);
+
+        const schema = (plugin?.manifestJson as unknown as Record<string, unknown> | null)
+          ?.instanceConfigSchema as Record<string, unknown> | undefined;
+        cachedAllowedRefs = extractSecretRefsFromConfig(configRow?.configJson, schema);
+        cachedAllowedRefsExpiry = now + CONFIG_CACHE_TTL_MS;
+      }
+
       if (!cachedAllowedRefs.has(trimmedRef)) {
         // Fallback: Check if the plugin explicitly created this secret.
         // This handles the secure onboarding use-case where a plugin creates
         // a secret via `write` and then immediately needs to `resolve` it.
         //
-        // CRITICAL SECURITY: We must also check that the secret belongs to the
-        // company that installed this plugin.
-        const plugin = await registry.getById(pluginId);
+        // CRITICAL SECURITY: We must also check that the secret belongs to a
+        // company that has this plugin enabled.
+        const settings = await db
+          .select()
+          .from(pluginCompanySettings)
+          .where(
+            and(
+              eq(pluginCompanySettings.pluginId, pluginId),
+              eq(pluginCompanySettings.companyId, secret.companyId),
+              eq(pluginCompanySettings.enabled, true),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
         
         if (
           secret.createdByUserId !== `plugin:${pluginId}` || 
-          secret.companyId !== plugin?.companyId
+          !settings
         ) {
           // Return "not found" to avoid leaking cross-tenant secrets
           throw secretNotFound(trimmedRef);
@@ -402,16 +410,16 @@ export function createPluginSecretsHandler(
     },
 
     async write(params: { companyId: string; name: string; value: string; description?: string }): Promise<string> {
+      const { companyId } = params;
+
       // ---------------------------------------------------------------
       // 0. Rate limiting — prevent resource exhaustion
       // ---------------------------------------------------------------
-      if (!checkRateLimit(`${pluginId}:write`, 10, 60_000)) {
+      if (!checkRateLimit(`${pluginId}:${companyId}:write`, 10, 60_000)) {
         const err = new Error("Rate limit exceeded for secret creation");
         err.name = "RateLimitExceededError";
         throw err;
       }
-
-      const { companyId } = params;
 
       // ---------------------------------------------------------------
       // 1. Validation — ensure plugin is allowed to act for this company
@@ -543,7 +551,7 @@ export function createPluginSecretsHandler(
         // Handle TOCTOU race: if creation fails due to a name conflict that 
         // happened between our check and the insert, perform one final 
         // ownership check to provide the correct error message.
-        if (err.name === "ConflictError") {
+        if (err instanceof HttpError && err.status === 409) {
           const raced = await secretService(db).getByName(companyId, params.name);
           if (raced && raced.createdByUserId !== pluginActorId) {
             throw new Error(`Collision: A secret named "${params.name}" already exists and was not created by this plugin.`);
