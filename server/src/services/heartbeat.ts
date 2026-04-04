@@ -1010,12 +1010,28 @@ export function heartbeatService(db: Db) {
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
+      // Pick queued runs ordered by issue priority (urgent first) then due date (soonest first) then creation time
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
+        .limit(availableSlots * 3); // Fetch extra to allow re-sorting by issue metadata
+
+      // Re-sort by issue priority + due date if we have issue context
+      if (queuedRuns.length > 1) {
+        const PRIORITY_ORDER: Record<string, number> = { critical: 0, high: 1, urgent: 0, medium: 2, low: 3, none: 4 };
+        queuedRuns.sort((a, b) => {
+          const ctxA = (a.contextSnapshot ?? {}) as Record<string, unknown>;
+          const ctxB = (b.contextSnapshot ?? {}) as Record<string, unknown>;
+          const priA = PRIORITY_ORDER[String(ctxA.priority ?? "medium")] ?? 2;
+          const priB = PRIORITY_ORDER[String(ctxB.priority ?? "medium")] ?? 2;
+          if (priA !== priB) return priA - priB;
+          // Then by creation time (FIFO within same priority)
+          return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        });
+        queuedRuns.splice(availableSlots); // Trim back to the limit
+      }
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
