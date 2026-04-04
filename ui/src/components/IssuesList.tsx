@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, ArrowDown, Calendar } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -693,6 +693,27 @@ export function IssuesList({
                       )}
                     </div>
                   )}
+                  {issue.dueDate && (() => {
+                    const due = new Date(issue.dueDate);
+                    const now = new Date();
+                    const diffDays = Math.round((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                    const isDone = issue.status === "done" || issue.status === "cancelled";
+                    const isOverdue = diffDays < 0 && !isDone;
+                    const isSoon = diffDays >= 0 && diffDays <= 3 && !isDone;
+                    const label = diffDays === 0 ? "Today" : diffDays === 1 ? "Tomorrow" : diffDays === -1 ? "1d overdue" : diffDays < -1 ? `${Math.abs(diffDays)}d overdue` : `${diffDays}d`;
+                    return (
+                      <span
+                        className={cn(
+                          "hidden md:inline-flex items-center gap-1 shrink-0 text-[10px] font-medium",
+                          isOverdue ? "text-red-500" : isSoon ? "text-orange-500" : "text-muted-foreground"
+                        )}
+                        title={`Due ${formatDate(issue.dueDate)}`}
+                      >
+                        <Calendar className="h-3 w-3" />
+                        {label}
+                      </span>
+                    );
+                  })()}
                   <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
                     {liveIssueIds?.has(issue.id) && (
                       <span className="inline-flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2 py-0.5 rounded-full bg-blue-500/10">

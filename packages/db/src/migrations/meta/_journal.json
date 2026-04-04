@@ -225,6 +225,13 @@
       "when": 1774396800000,
       "tag": "0031_two_factor_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1774483200000,
+      "tag": "0032_issue_due_date",
+      "breakpoints": true
     }
   ]
 }

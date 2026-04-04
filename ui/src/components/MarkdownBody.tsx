@@ -56,6 +56,15 @@ export function MarkdownBody({ children, className }: MarkdownBodyProps) {
               );
             }
 
+            // Agent mention links (agent://agentId)
+            if (href?.startsWith("agent://")) {
+              return (
+                <span className="inline-flex items-center rounded-sm border border-purple-500/30 bg-purple-500/10 px-1 py-0.5 text-xs font-medium text-purple-500 select-none">
+                  {linkChildren}
+                </span>
+              );
+            }
+
             const parsed = href ? parseProjectMentionHref(href) : null;
             if (parsed) {
               const label = linkChildren;

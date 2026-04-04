@@ -446,8 +446,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    const { dueDate: dueDateRaw, ...createBody } = req.body;
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
+      ...(dueDateRaw !== undefined ? { dueDate: dueDateRaw ? new Date(dueDateRaw) : null } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       assignerPolicyTier,
@@ -513,9 +515,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const { comment: commentBody, hiddenAt: hiddenAtRaw, dueDate: dueDateRaw, ...updateFields } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (dueDateRaw !== undefined) {
+      updateFields.dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     }
 
     // Re-snapshot assigner tier when assignee changes

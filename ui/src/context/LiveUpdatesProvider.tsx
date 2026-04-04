@@ -5,6 +5,7 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import type { AuthSession } from "../api/auth";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -127,6 +128,18 @@ function resolveIssueToastContext(
 const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 const AGENT_TOAST_STATUSES = new Set(["running", "error"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled"]);
+
+function resolveCurrentUserId(queryClient: QueryClient): string | null {
+  const session = queryClient.getQueryData<AuthSession>(queryKeys.auth.session);
+  return session?.user?.id ?? session?.session?.userId ?? null;
+}
+
+function isOwnActivity(payload: Record<string, unknown>, currentUserId: string | null): boolean {
+  if (!currentUserId) return false;
+  const actorType = readString(payload.actorType);
+  const actorId = readString(payload.actorId);
+  return actorType === "user" && actorId === currentUserId;
+}
 
 function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
   if (!details) return null;
@@ -483,6 +496,13 @@ function handleLiveEvent(
 
   if (event.type === "activity.logged") {
     invalidateActivityQueries(queryClient, expectedCompanyId, payload);
+
+    // Suppress activity toasts for the current user's own actions.
+    // The user already sees the result of their action in the UI
+    // (e.g. their comment appears in the thread, the status badge updates).
+    const currentUserId = resolveCurrentUserId(queryClient);
+    if (isOwnActivity(payload, currentUserId)) return;
+
     const action = readString(payload.action);
     const toast =
       buildActivityToast(queryClient, expectedCompanyId, payload) ??

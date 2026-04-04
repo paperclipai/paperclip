@@ -18,7 +18,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Bot } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Bot, Calendar, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 interface IssuePropertiesProps {
@@ -96,6 +96,20 @@ function PropertyPicker({
       {extra}
     </PropertyRow>
   );
+}
+
+function formatDueDate(date: Date | string): string {
+  const now = new Date();
+  const due = new Date(date);
+  const diffMs = due.getTime() - now.getTime();
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays < -1) return `Overdue by ${Math.abs(diffDays)} days`;
+  if (diffDays === -1) return "Overdue by 1 day";
+  if (diffDays === 0) return "Due today";
+  if (diffDays === 1) return "Due tomorrow";
+  if (diffDays <= 7) return `Due in ${diffDays} days`;
+  return formatDate(due);
 }
 
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
@@ -537,6 +551,55 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         >
           {projectContent}
         </PropertyPicker>
+
+        <PropertyRow label="Due date">
+          <div className="flex items-center gap-1.5">
+            {issue.dueDate ? (
+              <>
+                <Calendar className={cn("h-3.5 w-3.5", new Date(issue.dueDate) < new Date() && issue.status !== "done" && issue.status !== "cancelled" ? "text-red-500" : "text-muted-foreground")} />
+                <span className={cn("text-sm", new Date(issue.dueDate) < new Date() && issue.status !== "done" && issue.status !== "cancelled" ? "text-red-500 font-medium" : "")}>
+                  {formatDueDate(issue.dueDate)}
+                </span>
+                <button
+                  className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                  onClick={() => onUpdate({ dueDate: null })}
+                  title="Remove due date"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </>
+            ) : (
+              <label className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">No due date</span>
+                <input
+                  type="date"
+                  className="sr-only"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
+                    }
+                  }}
+                />
+              </label>
+            )}
+            {issue.dueDate && (
+              <label className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground cursor-pointer" title="Change due date">
+                <input
+                  type="date"
+                  className="sr-only"
+                  value={issue.dueDate ? new Date(issue.dueDate).toISOString().split("T")[0] : ""}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
+                    }
+                  }}
+                />
+                <Calendar className="h-3 w-3 pointer-events-none" />
+              </label>
+            )}
+          </div>
+        </PropertyRow>
 
         {issue.parentId && (
           <PropertyRow label="Parent">

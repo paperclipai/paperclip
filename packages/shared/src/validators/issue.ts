@@ -21,6 +21,7 @@ export const createIssueSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  dueDate: z.string().datetime().nullable().optional(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
