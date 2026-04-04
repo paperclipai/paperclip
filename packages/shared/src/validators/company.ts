@@ -19,6 +19,7 @@ export const updateCompanySchema = createCompanySchema
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
+    enforceBlockedOnValidation: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
