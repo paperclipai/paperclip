@@ -1252,6 +1252,15 @@ function EnvVarEditor({
     }
   }
 
+  const duplicateKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const row of rows) {
+      const k = row.key.trim().toUpperCase();
+      if (k) seen.set(k, (seen.get(k) ?? 0) + 1);
+    }
+    return new Set([...seen.entries()].filter(([, c]) => c > 1).map(([k]) => k));
+  }, [rows]);
+
   return (
     <div className="space-y-1.5">
       {rows.map((row, i) => {
@@ -1260,13 +1269,15 @@ function EnvVarEditor({
           !row.key &&
           !row.plainValue &&
           !row.secretId;
+        const isDuplicate = duplicateKeys.has(row.key.trim().toUpperCase());
         return (
           <div key={i} className="flex items-center gap-1.5">
             <input
-              className={cn(inputClass, "flex-[2]")}
+              className={cn(inputClass, "flex-[2]", isDuplicate && "border-amber-500")}
               placeholder="KEY"
               value={row.key}
               onChange={(e) => updateRow(i, { key: e.target.value })}
+              title={isDuplicate ? "Duplicate key - only the last value will be used" : undefined}
             />
             <select
               className={cn(inputClass, "flex-[1] bg-background")}
@@ -1338,6 +1349,7 @@ function EnvVarEditor({
           </div>
         );
       })}
+      {duplicateKeys.size > 0 && <p className="text-[11px] text-amber-600">Duplicate keys detected: {[...duplicateKeys].join(", ")}. Only the last value for each key will be used.</p>}
       {sealError && <p className="text-[11px] text-destructive">{sealError}</p>}
       <p className="text-[11px] text-muted-foreground/60">
         PAPERCLIP_* variables are injected automatically at runtime.
