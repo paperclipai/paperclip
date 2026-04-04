@@ -263,6 +263,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
     expect(result.reaped).toBe(0);
 
+    const resultWithoutThreshold = await heartbeat.reapOrphanedRuns();
+    expect(resultWithoutThreshold.reaped).toBe(0);
+
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).toBeNull();
