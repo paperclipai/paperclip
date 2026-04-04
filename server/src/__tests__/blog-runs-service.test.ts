@@ -184,6 +184,25 @@ describeEmbeddedPostgres("blog run service", () => {
     });
   });
 
+  it("defaults publish-lane dry runs to strict publishReadyGateMode", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const run = await svc.create({
+      companyId,
+      projectId,
+      topic: "Default dry-run canary topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {},
+    });
+
+    expect(run?.contextJson).toMatchObject({
+      publishReadyGateMode: "strict",
+      publicVerifyContractMode: "compat",
+    });
+  });
+
   it("claims and completes the research step, advancing to draft", async () => {
     const { companyId, projectId } = await seedProject();
     const svc = blogRunService(db);

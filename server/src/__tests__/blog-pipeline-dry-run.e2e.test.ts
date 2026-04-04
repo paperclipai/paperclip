@@ -103,6 +103,7 @@ describeEmbeddedPostgres("blog pipeline dry-run e2e", () => {
       contextJson: {
         title: "Dry run title",
         article_html: "<p>Dry run body</p>",
+        publishReadyGateMode: "compat",
       },
     });
 
