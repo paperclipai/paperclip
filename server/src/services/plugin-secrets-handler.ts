@@ -475,7 +475,7 @@ export function createPluginSecretsHandler(
       if (!params.value || params.value.length === 0) {
         throw new Error("Secret value must not be empty.");
       }
-      if (params.value.length > 65_536) {
+      if (Buffer.byteLength(params.value, "utf8") > 65_536) {
         throw new Error("Secret value must not exceed 64 KiB.");
       }
       if (params.value.includes("\0")) {
@@ -483,7 +483,7 @@ export function createPluginSecretsHandler(
       }
 
       // Description validation
-      if (params.description && params.description.length > 1024) {
+      if (params.description !== undefined && params.description !== null && params.description.length > 1024) {
         throw new Error("Secret description must not exceed 1024 characters.");
       }
 
