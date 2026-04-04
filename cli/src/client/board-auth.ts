@@ -169,25 +169,32 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function openUrl(url: string): boolean {
-  const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
+export function openUrl(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const platform = process.platform;
+    let child;
+
+    try {
+      if (platform === "darwin") {
+        child = spawn("open", [url], { detached: true, stdio: "ignore" });
+      } else if (platform === "win32") {
+        child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
+      } else {
+        child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+      }
+
+      child.once("error", () => {
+        child.unref();
+        resolve(false);
+      });
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
     }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  });
 }
 
 export async function loginBoardCli(params: {
@@ -219,9 +226,13 @@ export async function loginBoardCli(params: {
     console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
   }
 
-  const opened = openUrl(approvalUrl);
-  if (params.print !== false && opened) {
-    console.error(pc.dim("Opened the approval page in your browser."));
+  const opened = await openUrl(approvalUrl);
+  if (params.print !== false) {
+    if (opened) {
+      console.error(pc.dim("Opened the approval page in your browser."));
+    } else {
+      console.error(pc.yellow("!"), "Could not open browser automatically. Please open the URL above manually.");
+    }
   }
 
   const expiresAtMs = Date.parse(challenge.expiresAt);
