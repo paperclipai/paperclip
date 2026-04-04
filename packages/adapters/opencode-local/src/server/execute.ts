@@ -23,7 +23,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, detectOpenCodeQuotaExhausted } from "./parse.js";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -101,6 +101,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
+  const fallbackModels = asStringArray(config.fallbackModels).map((m) => m.trim()).filter(Boolean);
   const variant = asString(config.variant, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -298,17 +299,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    const buildArgs = (resumeSessionId: string | null) => {
+    const buildArgs = (resumeSessionId: string | null, overrideModel?: string) => {
+      const effectiveModel = overrideModel ?? model;
       const args = ["run", "--format", "json"];
       if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
+      if (effectiveModel) args.push("--model", effectiveModel);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
     };
 
-    const runAttempt = async (resumeSessionId: string | null) => {
-      const args = buildArgs(resumeSessionId);
+    const runAttempt = async (resumeSessionId: string | null, overrideModel?: string) => {
+      const args = buildArgs(resumeSessionId, overrideModel);
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
@@ -346,6 +348,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
       },
       clearSessionOnMissingSession = false,
+      usedModel?: string,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
         return {
@@ -378,7 +381,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsedError ||
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
-      const modelId = model || null;
+      const modelId = usedModel ?? (model || null);
 
       return {
         exitCode: synthesizedExitCode,
@@ -422,6 +425,52 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const retry = await runAttempt(null);
       return toResult(retry, true);
     }
+
+    // --- Model fallback on quota exhaustion ---
+    if (
+      fallbackModels.length > 0 &&
+      initialFailed
+    ) {
+      const quotaMeta = detectOpenCodeQuotaExhausted({
+        parsed: initial.parsed,
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+      });
+
+      if (quotaMeta.exhausted) {
+        for (const fallbackModel of fallbackModels) {
+          await onLog(
+            "stdout",
+            `[paperclip] Model "${model}" quota exhausted; falling back to "${fallbackModel}"\n`,
+          );
+          const fallbackAttempt = await runAttempt(null, fallbackModel);
+          const fallbackFailed =
+            !fallbackAttempt.proc.timedOut && ((fallbackAttempt.proc.exitCode ?? 0) !== 0 || Boolean(fallbackAttempt.parsed.errorMessage));
+          
+          if (fallbackFailed) {
+            const fbQuota = detectOpenCodeQuotaExhausted({
+              parsed: fallbackAttempt.parsed,
+              stdout: fallbackAttempt.proc.stdout,
+              stderr: fallbackAttempt.proc.stderr,
+            });
+            if (!fbQuota.exhausted) {
+              return toResult(fallbackAttempt, true, fallbackModel);
+            }
+            await onLog(
+              "stdout",
+              `[paperclip] Fallback model "${fallbackModel}" also exhausted; trying next...\n`,
+            );
+          } else {
+            return toResult(fallbackAttempt, true, fallbackModel);
+          }
+        }
+        await onLog(
+          "stdout",
+          `[paperclip] All fallback models exhausted. Returning initial failure.\n`,
+        );
+      }
+    }
+    // --- End model fallback ---
 
     return toResult(initial);
   } finally {

@@ -764,6 +764,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </p>
               )}
 
+              {(adapterType === "gemini_local" || adapterType === "opencode_local") && !isCreate && (
+                <Field label="Fallback models" hint="Ordered list of fallback model IDs to try when the primary model hits quota/rate limits. Comma-separated.">
+                  <DraftInput
+                    value={eff("adapterConfig", "fallbackModels", formatArgList(config.fallbackModels))}
+                    onCommit={(v) =>
+                      mark("adapterConfig", "fallbackModels", v ? parseCommaArgs(v) : undefined)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      adapterType === "gemini_local"
+                        ? "e.g. gemini-2.5-flash, gemini-2.5-flash-lite"
+                        : "e.g. opencode/qwen3.6-plus-free, alibaba-cn/qwen-plus"
+                    }
+                  />
+                </Field>
+              )}
+
               {showThinkingEffort && (
                 <>
                   <ThinkingEffortDropdown
