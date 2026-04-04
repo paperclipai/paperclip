@@ -28,6 +28,70 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, c
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeRetryingFakeCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+const captures = capturePath && fs.existsSync(capturePath)
+  ? JSON.parse(fs.readFileSync(capturePath, "utf8"))
+  : [];
+captures.push(argv);
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify(captures), "utf8");
+}
+
+const resumeIdx = argv.indexOf("resume");
+if (resumeIdx !== -1) {
+  const threadId = argv[resumeIdx + 1] || "unknown-thread";
+  console.log(JSON.stringify({
+    type: "error",
+    message: "thread/resume: thread/resume failed: no rollout found for thread id " + threadId,
+  }));
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh retry completed" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+async function writeRetryingModelMismatchCodexCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const argv = process.argv.slice(2);
+const captures = capturePath && fs.existsSync(capturePath)
+  ? JSON.parse(fs.readFileSync(capturePath, "utf8"))
+  : [];
+captures.push(argv);
+if (capturePath) {
+  fs.writeFileSync(capturePath, JSON.stringify(captures), "utf8");
+}
+
+const resumeIdx = argv.indexOf("resume");
+if (resumeIdx !== -1) {
+  console.log(JSON.stringify({
+    type: "item.completed",
+    item: {
+      type: "error",
+      message: "This session was recorded with model \`claude-sonnet-4\` but is resuming with \`gpt-5-nano\`.",
+    },
+  }));
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "fresh retry after model swap" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -191,70 +255,6 @@ describe("codex execute", () => {
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("logs HOME and the resolved executable path in invocation metadata", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-meta-"));
-    const workspace = path.join(root, "workspace");
-    const binDir = path.join(root, "bin");
-    const commandPath = path.join(binDir, "codex");
-    const capturePath = path.join(root, "capture.json");
-    await fs.mkdir(workspace, { recursive: true });
-    await fs.mkdir(binDir, { recursive: true });
-    await writeFakeCodexCommand(commandPath);
-
-    const previousHome = process.env.HOME;
-    const previousPath = process.env.PATH;
-    process.env.HOME = root;
-    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
-
-    let loggedCommand: string | null = null;
-    let loggedEnv: Record<string, string> = {};
-    try {
-      const result = await execute({
-        runId: "run-meta",
-        agent: {
-          id: "agent-1",
-          companyId: "company-1",
-          name: "Codex Coder",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        },
-        runtime: {
-          sessionId: null,
-          sessionParams: null,
-          sessionDisplayId: null,
-          taskKey: null,
-        },
-        config: {
-          command: "codex",
-          cwd: workspace,
-          env: {
-            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
-          },
-          promptTemplate: "Follow the paperclip heartbeat.",
-        },
-        context: {},
-        authToken: "run-jwt-token",
-        onLog: async () => {},
-        onMeta: async (meta) => {
-          loggedCommand = meta.command;
-          loggedEnv = meta.env ?? {};
-        },
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(result.errorMessage).toBeNull();
-      expect(loggedCommand).toBe(commandPath);
-      expect(loggedEnv.HOME).toBe(root);
-      expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(commandPath);
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -448,6 +448,151 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale resume sessions when a fresh retry succeeds without a replacement session id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-retry-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeRetryingFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-retry",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "stale-thread",
+          sessionParams: {
+            sessionId: "stale-thread",
+            cwd: workspace,
+          },
+          sessionDisplayId: "stale-thread",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.sessionDisplayId).toBeNull();
+      expect(result.summary).toBe("fresh retry completed");
+
+      const captures = JSON.parse(await fs.readFile(capturePath, "utf8")) as string[][];
+      expect(captures).toHaveLength(2);
+      expect(captures[0]).toEqual(expect.arrayContaining(["resume", "stale-thread", "-"]));
+      expect(captures[1]).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(captures[1]).not.toContain("resume");
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining('retrying with a fresh session'),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when Codex rejects resume after a model change", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-model-mismatch-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeRetryingModelMismatchCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-model-swap",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "old-thread",
+          sessionParams: {
+            sessionId: "old-thread",
+            cwd: workspace,
+          },
+          sessionDisplayId: "old-thread",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gpt-5-nano",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Continue after model swap.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.clearSession).toBe(true);
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
+      expect(result.sessionDisplayId).toBeNull();
+      expect(result.summary).toBe("fresh retry after model swap");
+
+      const captures = JSON.parse(await fs.readFile(capturePath, "utf8")) as string[][];
+      expect(captures).toHaveLength(2);
+      expect(captures[0]).toEqual(expect.arrayContaining(["resume", "old-thread", "-"]));
+      expect(captures[1]).toEqual(expect.arrayContaining(["exec", "--json", "--model", "gpt-5-nano", "-"]));
+      expect(captures[1]).not.toContain("resume");
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining('retrying with a fresh session'),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

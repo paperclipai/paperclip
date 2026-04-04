@@ -67,7 +67,7 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
+  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|no rollout found for thread|missing rollout path for thread|state db missing rollout path|this session was recorded with model .* but is resuming with/i.test(
     haystack,
   );
 }
