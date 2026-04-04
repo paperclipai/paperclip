@@ -39,6 +39,7 @@ import {
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
   heartbeatService,
+  initHeartbeatScaling,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -749,6 +750,8 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to apply forced execution policy from environment");
     throw err;
   }
+
+  initHeartbeatScaling(config.heartbeatMaxConcurrentAdapterExecutions, config.heartbeatTimerJitterMs);
 
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });

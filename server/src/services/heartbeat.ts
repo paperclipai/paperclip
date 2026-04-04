@@ -226,6 +226,60 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+
+// ---------------------------------------------------------------------------
+// Global adapter execution semaphore – limits how many adapter.execute() calls
+// (i.e. LLM inference requests) run concurrently across all agents. When the
+// limit is reached, new executions wait in a FIFO queue until a slot frees up.
+// This prevents GPU/API saturation when many agents fire simultaneously.
+// ---------------------------------------------------------------------------
+class AdapterSemaphore {
+  private _max: number;
+  private _running = 0;
+  private _queue: Array<() => void> = [];
+
+  constructor(max: number) {
+    this._max = max;
+  }
+
+  get max() { return this._max; }
+  get running() { return this._running; }
+  get queued() { return this._queue.length; }
+
+  async acquire(): Promise<void> {
+    if (this._max <= 0) return; // unlimited
+    if (this._running < this._max) {
+      this._running++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this._queue.push(() => {
+        this._running++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    if (this._max <= 0) return; // unlimited
+    this._running--;
+    const next = this._queue.shift();
+    if (next) next();
+  }
+}
+
+let adapterSemaphore: AdapterSemaphore | null = null;
+let heartbeatTimerJitterMs = 0;
+
+/**
+ * Initialise global heartbeat scaling controls. Call once at startup.
+ * @param maxConcurrentAdapterExecutions  Max concurrent adapter.execute() calls (0 = unlimited).
+ * @param timerJitterMs  Max random jitter added to each agent's heartbeat interval to spread wakeups (0 = disabled).
+ */
+export function initHeartbeatScaling(maxConcurrentAdapterExecutions: number, timerJitterMs: number) {
+  adapterSemaphore = new AdapterSemaphore(maxConcurrentAdapterExecutions);
+  heartbeatTimerJitterMs = Math.max(0, timerJitterMs);
+}
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -8997,7 +9051,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+
+      let semaphoreAcquired = false;
       try {
+        // Acquire a slot from the global adapter semaphore before invoking the
+        // adapter. This prevents GPU/API saturation when many agents wake up in
+        // the same scheduler tick.
+        if (adapterSemaphore) {
+          await adapterSemaphore.acquire();
+          semaphoreAcquired = true;
+        }
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -9047,6 +9110,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      } finally {
+        if (semaphoreAcquired && adapterSemaphore) adapterSemaphore.release();
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -11495,7 +11560,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // When jitter is enabled, add a stable per-agent offset derived from
+        // the agent ID so that agents with the same interval don't all fire on
+        // the same scheduler tick.  The offset is deterministic (not random) so
+        // that repeated ticks for the same agent produce the same threshold –
+        // this prevents starvation while still spreading the load.
+        let jitterMs = 0;
+        if (heartbeatTimerJitterMs > 0) {
+          let hash = 0;
+          for (let i = 0; i < agent.id.length; i++) {
+            hash = ((hash << 5) - hash + agent.id.charCodeAt(i)) | 0;
+          }
+          jitterMs = Math.abs(hash) % heartbeatTimerJitterMs;
+        }
+
+        if (elapsedMs < policy.intervalSec * 1000 + jitterMs) continue;
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
