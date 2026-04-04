@@ -646,6 +646,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
+              pointerEvents: "auto",
               top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
               left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
             }}
