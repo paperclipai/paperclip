@@ -23,7 +23,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
-import { buildIssueTree } from "../lib/issue-tree";
+import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
@@ -249,6 +249,29 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
+
+  // Prune stale IDs from collapsedParents whenever the issue list changes.
+  // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
+  // the stored array bounded to only current parent IDs.
+  useEffect(() => {
+    const parentIds = new Set(issues.map((i) => i.parentId).filter(Boolean) as string[]);
+    const pruned = viewState.collapsedParents.filter((id) => parentIds.has(id));
+    if (pruned.length !== viewState.collapsedParents.length) {
+      updateView({ collapsedParents: pruned });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issues]);
+
+  const { data: searchedIssues = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
+      searchFilters ?? {},
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
+    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
+    placeholderData: (previousData) => previousData,
+  });
+
   const agentName = useCallback((id: string | null) => {
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
@@ -673,6 +696,7 @@ export function IssuesList({
                 const renderIssueRow = (issue: Issue, depth: number) => {
                   const children = childMap.get(issue.id) ?? [];
                   const hasChildren = children.length > 0;
+                  const totalDescendants = hasChildren ? countDescendants(issue.id, childMap) : 0;
                   const isExpanded = !viewState.collapsedParents.includes(issue.id);
                   const toggleCollapse = (e: { preventDefault: () => void; stopPropagation: () => void }) => {
                     e.preventDefault();
@@ -691,7 +715,7 @@ export function IssuesList({
                         issueLinkState={issueLinkState}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">
-                            ({children.length} sub-task{children.length !== 1 ? "s" : ""})
+                            ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
                           </span>
                         ) : undefined}
                         mobileLeading={

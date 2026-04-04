@@ -25,3 +25,12 @@ export function buildIssueTree(items: Issue[]): IssueTree {
   }
   return { roots, childMap };
 }
+
+/**
+ * Returns the total number of descendants (all depths) of `id` in `childMap`.
+ * Used to accurately label collapsed parent badges like "(3 sub-tasks)".
+ */
+export function countDescendants(id: string, childMap: Map<string, Issue[]>): number {
+  const children = childMap.get(id) ?? [];
+  return children.reduce((sum, c) => sum + 1 + countDescendants(c.id, childMap), 0);
+}

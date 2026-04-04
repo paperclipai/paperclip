@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssueTree } from "./issue-tree";
+import { buildIssueTree, countDescendants } from "./issue-tree";
 
 function makeIssue(id: string, parentId: string | null = null): Issue {
   return {
@@ -94,5 +94,37 @@ describe("buildIssueTree", () => {
     const { roots, childMap } = buildIssueTree([p1, c1, p2, c2]);
     expect(roots.map((r) => r.id)).toEqual(["p1", "p2"]);
     expect(childMap.get("p1")?.map((c) => c.id)).toEqual(["c1", "c2"]);
+  });
+});
+
+describe("countDescendants", () => {
+  it("returns 0 for a leaf node", () => {
+    const { childMap } = buildIssueTree([makeIssue("a")]);
+    expect(countDescendants("a", childMap)).toBe(0);
+  });
+
+  it("returns direct child count for a single-level parent", () => {
+    const { childMap } = buildIssueTree([
+      makeIssue("p"),
+      makeIssue("c1", "p"),
+      makeIssue("c2", "p"),
+    ]);
+    expect(countDescendants("p", childMap)).toBe(2);
+  });
+
+  it("counts all descendants across multiple levels", () => {
+    // P → C → G1, G2  (P has 3 total descendants: C, G1, G2)
+    const { childMap } = buildIssueTree([
+      makeIssue("p"),
+      makeIssue("c", "p"),
+      makeIssue("g1", "c"),
+      makeIssue("g2", "c"),
+    ]);
+    expect(countDescendants("p", childMap)).toBe(3);
+  });
+
+  it("returns 0 for an id not in the childMap", () => {
+    const { childMap } = buildIssueTree([makeIssue("a"), makeIssue("b")]);
+    expect(countDescendants("nonexistent", childMap)).toBe(0);
   });
 });
