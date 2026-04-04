@@ -1,0 +1,28 @@
+{
+  "title": "General",
+  "subtitle": "Configurez les parametres par defaut de l'instance qui affectent l'affichage des journaux visibles par l'operateur.",
+  "loadingGeneral": "Chargement des parametres generaux...",
+  "failedLoadGeneral": "Echec du chargement des parametres generaux.",
+  "failedUpdateGeneral": "Echec de la mise a jour des parametres generaux.",
+  "censorUsername": "Masquer le nom d'utilisateur dans les journaux",
+  "censorUsernameDescription": "Masquer le segment du nom d'utilisateur dans les chemins de repertoire personnel et les sorties de journaux visibles par l'operateur. Les mentions autonomes du nom d'utilisateur hors des chemins ne sont pas encore masquees dans la vue de transcription en direct. Desactive par defaut.",
+  "censorUsernameAriaLabel": "Activer/desactiver le masquage du nom d'utilisateur dans les journaux",
+  "keyboardShortcuts": "Raccourcis clavier",
+  "keyboardShortcutsDescription": "Activer les raccourcis clavier de l'application, y compris la navigation dans la boite de reception et les raccourcis globaux comme la creation de tickets ou le basculement des panneaux. Desactive par defaut.",
+  "keyboardShortcutsAriaLabel": "Activer/desactiver les raccourcis clavier",
+  "aiFeedbackSharing": "Partage de retours IA",
+  "aiFeedbackSharingDescription": "Controler si les votes positifs et negatifs peuvent envoyer la sortie IA votee a Paperclip Labs. Les votes sont toujours enregistres localement.",
+  "readTerms": "Lire nos conditions d'utilisation",
+  "noDefaultSaved": "Aucun choix par defaut n'est encore enregistre. Le prochain vote positif ou negatif demandera une fois et enregistrera la reponse ici.",
+  "alwaysAllow": "Toujours autoriser",
+  "alwaysAllowDescription": "Partager automatiquement les sorties IA votees.",
+  "dontAllow": "Ne pas autoriser",
+  "dontAllowDescription": "Conserver les sorties IA votees uniquement en local.",
+  "devHint": "Pour retester l'invite de premiere utilisation en dev local, supprimez la cle feedbackDataSharingPreference de la ligne JSON instance_settings.general pour cette instance, ou redefinissez-la a \"prompt\". Non defini et \"prompt\" signifient tous les deux qu'aucun choix par defaut n'a encore ete fait.",
+  "language": {
+    "label": "Langue",
+    "description": "Choisissez la langue d'affichage de l'interface",
+    "en": "Anglais",
+    "fr": "Français"
+  }
+}

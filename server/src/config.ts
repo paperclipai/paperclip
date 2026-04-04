@@ -76,6 +76,8 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  dbPoolMax: number;
+  dbPoolIdleTimeout: number;
 }
 
 export function loadConfig(): Config {
@@ -269,5 +271,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    dbPoolMax: Math.max(1, Number(process.env.PAPERCLIP_DB_POOL_MAX) || 20),
+    dbPoolIdleTimeout: Math.max(0, Number(process.env.PAPERCLIP_DB_POOL_IDLE_TIMEOUT) || 30),
   };
 }

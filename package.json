@@ -35,13 +35,22 @@
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
-    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts"
+    "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@vitest/coverage-v8": "^4.1.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
+    "eslint": "^10.1.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "prettier": "^3.8.1",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.58.0",
     "vitest": "^3.0.5"
   },
   "engines": {

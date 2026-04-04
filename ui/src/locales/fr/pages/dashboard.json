@@ -1,0 +1,31 @@
+{
+  "welcome": "Bienvenue sur Paperclip. Configurez votre premi\u00e8re entreprise et votre premier agent pour commencer.",
+  "getStarted": "Commencer",
+  "selectCompany": "Cr\u00e9ez ou s\u00e9lectionnez une entreprise pour afficher le tableau de bord.",
+  "noAgents": "Vous n'avez aucun agent.",
+  "createOneHere": "Cr\u00e9er un agent",
+  "budgetIncidents": "{{count}} incident de budget actif",
+  "budgetIncidents_other": "{{count}} incidents de budget actifs",
+  "budgetIncidentDetail": "{{pausedAgents}} agents en pause \u00b7 {{pausedProjects}} projets en pause \u00b7 {{pendingApprovals}} approbations de budget en attente",
+  "openBudgets": "Voir les budgets",
+  "agentsEnabled": "Agents activ\u00e9s",
+  "agentBreakdown": "{{running}} en cours, {{paused}} en pause, {{errors}} erreurs",
+  "tasksInProgress": "T\u00e2ches en cours",
+  "taskBreakdown": "{{open}} ouvertes, {{blocked}} bloqu\u00e9es",
+  "monthSpend": "D\u00e9penses du mois",
+  "budgetUtilization": "{{percent}}\u00a0% de {{budget}} de budget",
+  "unlimitedBudget": "Budget illimit\u00e9",
+  "pendingApprovals": "Approbations en attente",
+  "budgetOverridesAwaiting": "{{count}} d\u00e9passements de budget en attente de validation",
+  "awaitingBoardReview": "En attente de validation",
+  "charts": {
+    "runActivity": "Activit\u00e9 des ex\u00e9cutions",
+    "issuesByPriority": "T\u00e2ches par priorit\u00e9",
+    "issuesByStatus": "T\u00e2ches par statut",
+    "successRate": "Taux de r\u00e9ussite",
+    "last14Days": "14 derniers jours"
+  },
+  "recentActivity": "Activit\u00e9 r\u00e9cente",
+  "recentTasks": "T\u00e2ches r\u00e9centes",
+  "noTasksYet": "Aucune t\u00e2che pour le moment."
+}

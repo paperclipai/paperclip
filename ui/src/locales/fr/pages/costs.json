@@ -1,0 +1,96 @@
+{
+  "title": "Coûts",
+  "subtitle": "Dépenses d'inférence, frais de plateforme, crédits et fenêtres de quota en temps réel.",
+  "selectCompany": "Sélectionnez une entreprise pour voir les coûts.",
+  "selectDateRange": "Sélectionnez une date de début et de fin pour charger les données.",
+  "dateRangeTo": "au",
+  "metrics": {
+    "inferenceSpend": "Dépenses d'inférence",
+    "inferenceSpendSubtitle": "{{tokens}} jetons sur les événements liés aux requêtes",
+    "budget": "Budget",
+    "budgetUtilization": "{{spent}} sur {{budget}}",
+    "noBudget": "Aucun plafond mensuel configuré",
+    "budgetOpen": "Ouvert",
+    "budgetIncidentSubtitle": "{{agents}} agents suspendus \u00b7 {{projects}} projets suspendus",
+    "financeNet": "Finances net",
+    "financeNetSubtitle": "{{debits}} débits \u00b7 {{credits}} crédits",
+    "financeEvents": "Événements financiers",
+    "financeEventsSubtitle": "{{estimated}} estimés dans la période"
+  },
+  "tabs": {
+    "overview": "Vue d'ensemble",
+    "budgets": "Budgets",
+    "providers": "Fournisseurs",
+    "billers": "Factureurs",
+    "finance": "Finances"
+  },
+  "overview": {
+    "inferenceLedger": "Registre d'inférence",
+    "inferenceLedgerDesc": "Dépenses d'inférence liées aux requêtes pour la période sélectionnée.",
+    "budgetLabel": "Budget {{amount}}",
+    "unlimitedBudget": "Budget illimité",
+    "usage": "utilisation",
+    "budgetConsumed": "{{percent}} % du budget mensuel consommé dans cette période.",
+    "byAgent": "Par agent",
+    "byAgentDesc": "Ce que chaque agent a consommé durant la période sélectionnée.",
+    "noCostEvents": "Aucun événement de coût pour le moment.",
+    "byProject": "Par projet",
+    "byProjectDesc": "Coûts d'exécution attribués via les tâches liées aux projets.",
+    "noProjectCosts": "Aucun coût d'exécution attribué à un projet pour le moment.",
+    "unattributed": "Non attribué"
+  },
+  "finance": {
+    "ledger": "Registre financier",
+    "ledgerDesc": "Charges au niveau du compte qui ne correspondent pas à une seule requête d'inférence.",
+    "debits": "Débits",
+    "debitsSubtitle": "{{count}} événement total dans la période",
+    "debitsSubtitle_other": "{{count}} événements totaux dans la période",
+    "credits": "Crédits",
+    "creditsSubtitle": "Remboursements, compensations et retours de crédit",
+    "net": "Net",
+    "netSubtitle": "Débit moins crédit pour la période sélectionnée",
+    "estimated": "Estimé",
+    "estimatedSubtitle": "Débits estimés qui ne sont pas encore définitifs en facturation",
+    "byBiller": "Par factureur",
+    "byBillerDesc": "Événements financiers au niveau du compte regroupés par émetteur de facturation.",
+    "noFinanceEvents": "Aucun événement financier pour le moment."
+  },
+  "budgets": {
+    "controlPlane": "Plan de contrôle des budgets",
+    "controlPlaneDesc": "Limites de dépenses strictes pour les agents et projets. Le quota d'abonnement fournisseur reste séparé et apparaît sous Fournisseurs.",
+    "activeIncidents": "Incidents actifs",
+    "activeIncidentsSubtitle": "Dépassements de seuils souples ou stricts en cours",
+    "pendingApprovals": "Approbations en attente",
+    "pendingApprovalsSubtitle": "Approbations de dépassement de budget en attente d'action du conseil",
+    "pausedAgents": "Agents suspendus",
+    "pausedAgentsSubtitle": "Battements de cœur des agents bloqués par le budget",
+    "pausedProjects": "Projets suspendus",
+    "pausedProjectsSubtitle": "Exécution des projets bloquée par le budget",
+    "resolveHint": "Résolvez les arrêts ici en augmentant le budget ou en maintenant explicitement la portée suspendue.",
+    "companyBudgets": "budgets entreprise",
+    "agentBudgets": "budgets agent",
+    "projectBudgets": "budgets projet",
+    "companyBudgetsDesc": "Politique mensuelle à l'échelle de l'entreprise.",
+    "agentBudgetsDesc": "Politiques de dépenses mensuelles récurrentes pour les agents individuels.",
+    "projectBudgetsDesc": "Politiques de dépenses à vie pour les projets liés à l'exécution.",
+    "noPolicies": "Aucune politique de budget pour le moment. Définissez les budgets des agents et projets depuis leurs pages de détail, ou utilisez le contrôle budgétaire mensuel existant."
+  },
+  "providers": {
+    "allProviders": "Tous les fournisseurs",
+    "noCostEvents": "Aucun événement de coût dans cette période."
+  },
+  "billers": {
+    "allBillers": "Tous les factureurs",
+    "noBillableEvents": "Aucun événement facturable dans cette période."
+  },
+  "tokenBreakdown": {
+    "in": "ent",
+    "out": "sort",
+    "tok": "jet",
+    "api": "{{count}} api",
+    "subscription": "{{count}} abonnement"
+  },
+  "financeTimeline": {
+    "emptyMessage": "Aucun événement financier pour le moment. Ajoutez les charges au niveau du compte lorsque les factures ou crédits des factureurs arrivent."
+  }
+}

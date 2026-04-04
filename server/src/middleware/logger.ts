@@ -43,6 +43,24 @@ export const logger = pino({
   ],
 }));
 
+const SENSITIVE_KEYS = new Set([
+  "password", "secret", "token", "apikey", "api_key", "authorization", "cookie",
+]);
+
+export function redactSensitiveFields(obj: unknown): unknown {
+  if (obj === null || obj === undefined || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(redactSensitiveFields);
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+      result[key] = "[REDACTED]";
+    } else {
+      result[key] = redactSensitiveFields(value);
+    }
+  }
+  return result;
+}
+
 export const httpLogger = pinoHttp({
   logger,
   customLogLevel(_req, res, err) {
@@ -64,7 +82,7 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: redactSensitiveFields(ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
@@ -72,7 +90,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = redactSensitiveFields(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;

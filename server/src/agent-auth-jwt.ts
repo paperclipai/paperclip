@@ -25,13 +25,22 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+const MIN_TTL_SECONDS = 300;            // 5 minutes
+const MAX_TTL_SECONDS = 30 * 24 * 3600; // 30 days
+
+function clampTtl(value: number): number {
+  if (value < MIN_TTL_SECONDS) return MIN_TTL_SECONDS;
+  if (value > MAX_TTL_SECONDS) return MAX_TTL_SECONDS;
+  return value;
+}
+
 function jwtConfig() {
   const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) return null;
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    ttlSeconds: clampTtl(parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48)),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };

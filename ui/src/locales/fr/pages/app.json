@@ -1,0 +1,26 @@
+{
+  "bootstrapPending": {
+    "title": "Configuration de l'instance requise",
+    "descriptionWithInvite": "Aucun administrateur d'instance n'existe encore. Une invitation de bootstrap est déjà active. Consultez les logs de démarrage de Paperclip pour l'URL d'invitation du premier administrateur, ou exécutez cette commande pour la renouveler :",
+    "descriptionNoInvite": "Aucun administrateur d'instance n'existe encore. Exécutez cette commande dans votre environnement Paperclip pour générer l'URL d'invitation du premier administrateur :"
+  },
+  "cloudAccessGate": {
+    "loading": "Chargement...",
+    "failedToLoad": "Échec du chargement de l'état de l'application"
+  },
+  "onboardingRoute": {
+    "addAgentTitle": "Ajouter un autre agent à {{companyName}}",
+    "createAnotherTitle": "Créer une autre entreprise",
+    "createFirstTitle": "Créez votre première entreprise",
+    "addAgentDescription": "Relancez l'assistant pour ajouter un agent et une tâche de démarrage pour cette entreprise.",
+    "createAnotherDescription": "Relancez l'assistant pour créer une autre entreprise et initialiser son premier agent.",
+    "createFirstDescription": "Commencez par créer une entreprise et votre premier agent.",
+    "addAgent": "Ajouter un agent",
+    "startOnboarding": "Démarrer l'assistant"
+  },
+  "noCompaniesStart": {
+    "title": "Créez votre première entreprise",
+    "description": "Commencez par créer une entreprise.",
+    "newCompany": "Nouvelle entreprise"
+  }
+}

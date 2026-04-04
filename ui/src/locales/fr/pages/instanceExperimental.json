@@ -1,0 +1,13 @@
+{
+  "title": "Experimental",
+  "subtitle": "Activez des fonctionnalites encore en cours d'evaluation avant qu'elles ne deviennent le comportement par defaut.",
+  "loadingExperimental": "Chargement des parametres experimentaux...",
+  "failedLoadExperimental": "Echec du chargement des parametres experimentaux.",
+  "failedUpdateExperimental": "Echec de la mise a jour des parametres experimentaux.",
+  "enableIsolatedWorkspaces": "Activer les espaces de travail isoles",
+  "enableIsolatedWorkspacesDescription": "Afficher les controles d'espace de travail d'execution dans la configuration du projet et permettre le comportement d'espace de travail isole pour les executions de tickets nouvelles et existantes.",
+  "enableIsolatedWorkspacesAriaLabel": "Activer/desactiver le parametre experimental des espaces de travail isoles",
+  "autoRestartDevServer": "Redemarrage automatique du serveur dev en veille",
+  "autoRestartDevServerDescription": "Dans `pnpm dev:once`, attendre que toutes les executions d'agents locaux en file d'attente et en cours soient terminees, puis redemarrer automatiquement le serveur lorsque les modifications du backend ou les migrations rendent le demarrage actuel obsolete.",
+  "autoRestartDevServerAriaLabel": "Activer/desactiver le redemarrage automatique protege du serveur dev"
+}

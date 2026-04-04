@@ -1,0 +1,13 @@
+{
+  "title": "Experimental",
+  "subtitle": "Opt into features that are still being evaluated before they become default behavior.",
+  "loadingExperimental": "Loading experimental settings...",
+  "failedLoadExperimental": "Failed to load experimental settings.",
+  "failedUpdateExperimental": "Failed to update experimental settings.",
+  "enableIsolatedWorkspaces": "Enable Isolated Workspaces",
+  "enableIsolatedWorkspacesDescription": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.",
+  "enableIsolatedWorkspacesAriaLabel": "Toggle isolated workspaces experimental setting",
+  "autoRestartDevServer": "Auto-Restart Dev Server When Idle",
+  "autoRestartDevServerDescription": "In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale.",
+  "autoRestartDevServerAriaLabel": "Toggle guarded dev-server auto-restart"
+}

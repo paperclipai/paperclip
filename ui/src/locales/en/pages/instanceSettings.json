@@ -1,0 +1,28 @@
+{
+  "title": "General",
+  "subtitle": "Configure instance-wide defaults that affect how operator-visible logs are displayed.",
+  "loadingGeneral": "Loading general settings...",
+  "failedLoadGeneral": "Failed to load general settings.",
+  "failedUpdateGeneral": "Failed to update general settings.",
+  "censorUsername": "Censor username in logs",
+  "censorUsernameDescription": "Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view. This is off by default.",
+  "censorUsernameAriaLabel": "Toggle username log censoring",
+  "keyboardShortcuts": "Keyboard shortcuts",
+  "keyboardShortcutsDescription": "Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or toggling panels. This is off by default.",
+  "keyboardShortcutsAriaLabel": "Toggle keyboard shortcuts",
+  "aiFeedbackSharing": "AI feedback sharing",
+  "aiFeedbackSharingDescription": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+  "readTerms": "Read our terms of service",
+  "noDefaultSaved": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
+  "alwaysAllow": "Always allow",
+  "alwaysAllowDescription": "Share voted AI outputs automatically.",
+  "dontAllow": "Don't allow",
+  "dontAllowDescription": "Keep voted AI outputs local only.",
+  "devHint": "To retest the first-use prompt in local dev, remove the feedbackDataSharingPreference key from the instance_settings.general JSON row for this instance, or set it back to \"prompt\". Unset and \"prompt\" both mean no default has been chosen yet.",
+  "language": {
+    "label": "Language",
+    "description": "Choose the display language for the interface",
+    "en": "English",
+    "fr": "French"
+  }
+}

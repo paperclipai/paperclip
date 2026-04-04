@@ -1,0 +1,96 @@
+{
+  "title": "Costs",
+  "subtitle": "Inference spend, platform fees, credits, and live quota windows.",
+  "selectCompany": "Select a company to view costs.",
+  "selectDateRange": "Select a start and end date to load data.",
+  "dateRangeTo": "to",
+  "metrics": {
+    "inferenceSpend": "Inference spend",
+    "inferenceSpendSubtitle": "{{tokens}} tokens across request-scoped events",
+    "budget": "Budget",
+    "budgetUtilization": "{{spent}} of {{budget}}",
+    "noBudget": "No monthly cap configured",
+    "budgetOpen": "Open",
+    "budgetIncidentSubtitle": "{{agents}} agents paused \u00b7 {{projects}} projects paused",
+    "financeNet": "Finance net",
+    "financeNetSubtitle": "{{debits}} debits \u00b7 {{credits}} credits",
+    "financeEvents": "Finance events",
+    "financeEventsSubtitle": "{{estimated}} estimated in range"
+  },
+  "tabs": {
+    "overview": "Overview",
+    "budgets": "Budgets",
+    "providers": "Providers",
+    "billers": "Billers",
+    "finance": "Finance"
+  },
+  "overview": {
+    "inferenceLedger": "Inference ledger",
+    "inferenceLedgerDesc": "Request-scoped inference spend for the selected period.",
+    "budgetLabel": "Budget {{amount}}",
+    "unlimitedBudget": "Unlimited budget",
+    "usage": "usage",
+    "budgetConsumed": "{{percent}}% of monthly budget consumed in this range.",
+    "byAgent": "By agent",
+    "byAgentDesc": "What each agent consumed in the selected period.",
+    "noCostEvents": "No cost events yet.",
+    "byProject": "By project",
+    "byProjectDesc": "Run costs attributed through project-linked issues.",
+    "noProjectCosts": "No project-attributed run costs yet.",
+    "unattributed": "Unattributed"
+  },
+  "finance": {
+    "ledger": "Finance ledger",
+    "ledgerDesc": "Account-level charges that do not map to a single inference request.",
+    "debits": "Debits",
+    "debitsSubtitle": "{{count}} total event in range",
+    "debitsSubtitle_other": "{{count}} total events in range",
+    "credits": "Credits",
+    "creditsSubtitle": "Refunds, offsets, and credit returns",
+    "net": "Net",
+    "netSubtitle": "Debit minus credit for the selected period",
+    "estimated": "Estimated",
+    "estimatedSubtitle": "Estimated debits that are not yet invoice-authoritative",
+    "byBiller": "By biller",
+    "byBillerDesc": "Account-level financial events grouped by who charged or credited them.",
+    "noFinanceEvents": "No finance events yet."
+  },
+  "budgets": {
+    "controlPlane": "Budget control plane",
+    "controlPlaneDesc": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+    "activeIncidents": "Active incidents",
+    "activeIncidentsSubtitle": "Open soft or hard threshold crossings",
+    "pendingApprovals": "Pending approvals",
+    "pendingApprovalsSubtitle": "Budget override approvals awaiting board action",
+    "pausedAgents": "Paused agents",
+    "pausedAgentsSubtitle": "Agent heartbeats blocked by budget",
+    "pausedProjects": "Paused projects",
+    "pausedProjectsSubtitle": "Project execution blocked by budget",
+    "resolveHint": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+    "companyBudgets": "company budgets",
+    "agentBudgets": "agent budgets",
+    "projectBudgets": "project budgets",
+    "companyBudgetsDesc": "Company-wide monthly policy.",
+    "agentBudgetsDesc": "Recurring monthly spend policies for individual agents.",
+    "projectBudgetsDesc": "Lifetime spend policies for execution-bound projects.",
+    "noPolicies": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control."
+  },
+  "providers": {
+    "allProviders": "All providers",
+    "noCostEvents": "No cost events in this period."
+  },
+  "billers": {
+    "allBillers": "All billers",
+    "noBillableEvents": "No billable events in this period."
+  },
+  "tokenBreakdown": {
+    "in": "in",
+    "out": "out",
+    "tok": "tok",
+    "api": "{{count}} api",
+    "subscription": "{{count}} subscription"
+  },
+  "financeTimeline": {
+    "emptyMessage": "No finance events yet. Add account-level charges once biller invoices or credits land."
+  }
+}

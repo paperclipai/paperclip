@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
@@ -12,12 +13,13 @@ import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
 
 export function Goals() {
+  const { t } = useTranslation(["goals", "common"]);
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals" }]);
+    setBreadcrumbs([{ label: t("common:nav.goals") }]);
   }, [setBreadcrumbs]);
 
   const { data: goals, isLoading, error } = useQuery({
@@ -27,7 +29,7 @@ export function Goals() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Target} message="Select a company to view goals." />;
+    return <EmptyState icon={Target} message={t("selectCompany")} />;
   }
 
   if (isLoading) {
@@ -41,8 +43,8 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
-          action="Add Goal"
+          message={t("noGoalsYet")}
+          action={t("addGoal")}
           onAction={() => openNewGoal()}
         />
       )}
@@ -52,7 +54,7 @@ export function Goals() {
           <div className="flex items-center justify-start">
             <Button size="sm" variant="outline" onClick={() => openNewGoal()}>
               <Plus className="h-3.5 w-3.5 mr-1.5" />
-              New Goal
+              {t("newGoal")}
             </Button>
           </div>
           <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />

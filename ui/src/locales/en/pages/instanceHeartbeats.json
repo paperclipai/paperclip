@@ -1,0 +1,22 @@
+{
+  "title": "Scheduler Heartbeats",
+  "subtitle": "Agents with a timer heartbeat enabled across all of your companies.",
+  "loadingHeartbeats": "Loading scheduler heartbeats...",
+  "failedLoadHeartbeats": "Failed to load scheduler heartbeats.",
+  "failedUpdateHeartbeat": "Failed to update heartbeat.",
+  "failedDisableAll": "Failed to disable all heartbeats.",
+  "active": "active",
+  "disabled": "disabled",
+  "company": "company",
+  "company_other": "companies",
+  "disableAllConfirm": "Disable timer heartbeats for all {{count}} enabled {{noun}}?",
+  "disablingAll": "Disabling...",
+  "disableAll": "Disable All",
+  "emptyState": "No scheduler heartbeats match the current criteria.",
+  "on": "On",
+  "off": "Off",
+  "never": "never",
+  "fullAgentConfig": "Full agent config",
+  "disableTimerHeartbeat": "Disable Timer Heartbeat",
+  "enableTimerHeartbeat": "Enable Timer Heartbeat"
+}

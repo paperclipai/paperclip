@@ -1,0 +1,13 @@
+{
+  "selectCompany": "S\u00e9lectionnez une entreprise pour afficher les agents.",
+  "filters": "Filtres",
+  "showTerminated": "Afficher les termin\u00e9s",
+  "newAgent": "Nouvel agent",
+  "agentCount": "{{count}} agent",
+  "agentCount_other": "{{count}} agents",
+  "createFirst": "Cr\u00e9ez votre premier agent pour commencer.",
+  "noMatchingFilter": "Aucun agent ne correspond au filtre s\u00e9lectionn\u00e9.",
+  "noOrgHierarchy": "Aucune hi\u00e9rarchie organisationnelle d\u00e9finie.",
+  "live": "En direct",
+  "liveCount": "En direct ({{count}})"
+}

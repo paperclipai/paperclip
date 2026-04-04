@@ -1,0 +1,22 @@
+{
+  "title": "Battements de coeur du planificateur",
+  "subtitle": "Agents avec un battement de coeur temporise active dans toutes vos entreprises.",
+  "loadingHeartbeats": "Chargement des battements de coeur du planificateur...",
+  "failedLoadHeartbeats": "Echec du chargement des battements de coeur du planificateur.",
+  "failedUpdateHeartbeat": "Echec de la mise a jour du battement de coeur.",
+  "failedDisableAll": "Echec de la desactivation de tous les battements de coeur.",
+  "active": "actif",
+  "disabled": "desactive",
+  "company": "entreprise",
+  "company_other": "entreprises",
+  "disableAllConfirm": "Desactiver les battements de coeur temporises pour les {{count}} {{noun}} actives ?",
+  "disablingAll": "Desactivation...",
+  "disableAll": "Tout desactiver",
+  "emptyState": "Aucun battement de coeur du planificateur ne correspond aux criteres actuels.",
+  "on": "On",
+  "off": "Off",
+  "never": "jamais",
+  "fullAgentConfig": "Configuration complete de l'agent",
+  "disableTimerHeartbeat": "Desactiver le battement de coeur",
+  "enableTimerHeartbeat": "Activer le battement de coeur"
+}

@@ -114,8 +114,14 @@ jobs:
       - name: Typecheck
         run: pnpm -r typecheck
 
-      - name: Run tests
-        run: pnpm test:run
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Run tests with coverage
+        run: pnpm test:run --coverage
 
       - name: Build
         run: pnpm build

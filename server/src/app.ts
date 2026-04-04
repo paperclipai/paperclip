@@ -1,4 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import helmet from "helmet";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { createRateLimiters } from "./middleware/rate-limit.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -87,6 +89,21 @@ export async function createApp(
 ) {
   const app = express();
 
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // Rate limiting (configurable, disable behind reverse proxy)
+  const rateLimitEnabled = process.env.PAPERCLIP_RATE_LIMIT_ENABLED !== "false";
+  const limiters = rateLimitEnabled
+    ? createRateLimiters({
+        authMax: Number(process.env.PAPERCLIP_RATE_LIMIT_AUTH) || 10,
+        writeMax: Number(process.env.PAPERCLIP_RATE_LIMIT_API_WRITE) || 100,
+        readMax: Number(process.env.PAPERCLIP_RATE_LIMIT_API_READ) || 300,
+      })
+    : null;
+
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.
     limit: "10mb",
@@ -95,6 +112,9 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+  if (limiters) {
+    app.use("/api/auth", limiters.authLimiter);
+  }
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
@@ -138,6 +158,10 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  if (limiters) {
+    api.use(limiters.writeLimiter);
+    api.use(limiters.readLimiter);
+  }
   api.use(boardMutationGuard());
   api.use(
     "/health",
@@ -243,6 +267,7 @@ export async function createApp(
   });
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+    allowedHostnames: opts.allowedHostnames,
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

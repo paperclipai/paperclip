@@ -1,5 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
+import { createHash } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
@@ -11,6 +12,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { resolvePaperclipHomeDir } from "../home-paths.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -65,9 +67,27 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
+export function resolveAuthSecret(deploymentMode: string): string {
+  const explicit =
+    process.env.BETTER_AUTH_SECRET?.trim() ||
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  if (explicit) return explicit;
+
+  if (deploymentMode === "local_trusted") {
+    const homePath = resolvePaperclipHomeDir();
+    return createHash("sha256")
+      .update(`paperclip-local-auth:${homePath}`)
+      .digest("hex");
+  }
+
+  throw new Error(
+    "authenticated mode requires BETTER_AUTH_SECRET or PAPERCLIP_AGENT_JWT_SECRET to be set.",
+  );
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
+  const secret = resolveAuthSecret(config.deploymentMode);
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;

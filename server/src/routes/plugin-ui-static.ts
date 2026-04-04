@@ -177,6 +177,73 @@ function computeETag(size: number, mtimeMs: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Hostname validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Set of hostname strings that resolve to the loopback interface.
+ * Covers both IPv4 (127.0.0.1) and the most common textual
+ * representations of IPv6 ::1.
+ */
+const LOOPBACK_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "[::1]",
+  "0:0:0:0:0:0:0:1",
+  "0000:0000:0000:0000:0000:0000:0000:0001",
+]);
+
+/**
+ * Return `true` when `hostname` is either a well-known loopback address
+ * or appears in the caller-supplied `allowedHostnames` list.
+ *
+ * The check is case-insensitive and also handles bracket-wrapped IPv6
+ * literals (e.g. `[::1]`).
+ */
+export function isAllowedDevHost(hostname: string, allowedHostnames: string[]): boolean {
+  const lower = hostname.toLowerCase();
+  if (LOOPBACK_HOSTS.has(lower)) return true;
+  // Strip optional IPv6 brackets and re-check
+  const stripped = lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
+  if (LOOPBACK_HOSTS.has(stripped)) return true;
+  return allowedHostnames.some((h) => h.toLowerCase() === lower);
+}
+
+// ---------------------------------------------------------------------------
+// CORS origin resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine the value for the `Access-Control-Allow-Origin` response
+ * header given the request's `Origin` header and the configured
+ * `allowedHostnames`.
+ *
+ * - When `allowedHostnames` is empty (local_trusted deployment mode)
+ *   the function returns `"*"` to preserve the current permissive
+ *   behaviour.
+ * - When the origin's hostname appears in `allowedHostnames`, the
+ *   full origin (scheme + host + port) is echoed back.
+ * - Otherwise `null` is returned, meaning no CORS header should be set.
+ */
+export function resolvePluginCorsOrigin(
+  origin: string | undefined,
+  allowedHostnames: string[],
+): string | null {
+  if (!origin) return null;
+  if (allowedHostnames.length === 0) return "*";
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    if (allowedHostnames.some((h) => h.toLowerCase() === hostname)) {
+      return origin;
+    }
+  } catch {
+    // malformed origin
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Route factory
 // ---------------------------------------------------------------------------
 
@@ -190,6 +257,12 @@ export interface PluginUiStaticRouteOptions {
    * Defaults to the standard `~/.paperclip/plugins/` location.
    */
   localPluginDir: string;
+  /**
+   * Hostnames that are considered safe targets for the dev-proxy and
+   * CORS origin validation.  Loopback addresses (localhost, 127.0.0.1,
+   * ::1 variants) are always accepted regardless of this list.
+   */
+  allowedHostnames: string[];
 }
 
 /**
@@ -332,12 +405,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
           // Validate the *constructed* targetUrl hostname (not the base) to
           // catch any path-based override that slipped past the checks above.
           const devHost = targetUrl.hostname;
-          const isLoopback =
-            devHost === "localhost" ||
-            devHost === "127.0.0.1" ||
-            devHost === "::1" ||
-            devHost === "[::1]";
-          if (!isLoopback) {
+          if (!isAllowedDevHost(devHost, options.allowedHostnames)) {
             log.warn(
               { pluginId: plugin.id, devUiUrl, host: devHost },
               "plugin-ui-static: devUiUrl must target localhost, rejecting proxy",
@@ -472,7 +540,10 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 9: Set CORS headers (plugin UI may be loaded from different origin in dev)
-    res.set("Access-Control-Allow-Origin", "*");
+    const corsOrigin = resolvePluginCorsOrigin(req.headers.origin, options.allowedHostnames);
+    if (corsOrigin) {
+      res.set("Access-Control-Allow-Origin", corsOrigin);
+    }
 
     // Step 10: Send the file
     // The plugin source can live in Git worktrees (e.g. ".worktrees/...").

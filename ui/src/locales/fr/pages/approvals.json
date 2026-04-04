@@ -1,0 +1,9 @@
+{
+  "selectCompany": "Veuillez d'abord sélectionner une entreprise.",
+  "tabPending": "En attente",
+  "tabAll": "Toutes",
+  "noPendingApprovals": "Aucune approbation en attente.",
+  "noApprovalsYet": "Aucune approbation pour le moment.",
+  "failedToApprove": "Échec de l'approbation",
+  "failedToReject": "Échec du rejet"
+}

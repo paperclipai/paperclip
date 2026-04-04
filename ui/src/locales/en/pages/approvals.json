@@ -1,0 +1,9 @@
+{
+  "selectCompany": "Select a company first.",
+  "tabPending": "Pending",
+  "tabAll": "All",
+  "noPendingApprovals": "No pending approvals.",
+  "noApprovalsYet": "No approvals yet.",
+  "failedToApprove": "Failed to approve",
+  "failedToReject": "Failed to reject"
+}
