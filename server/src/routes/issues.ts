@@ -46,6 +46,11 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  getSpecEnforceMode,
+  hasAllRequiredSections,
+  scaffoldDescription,
+} from "../issue-template-scaffold.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -1013,9 +1018,20 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId);
     }
 
+    const specMode = getSpecEnforceMode();
+    if (specMode === "strict" && !hasAllRequiredSections(req.body.description)) {
+      res.status(400).json({
+        error:
+          "Issue description must include ## Objective, ## Scope, and ## Verification sections (PAPERCLIP_SPEC_ENFORCE=strict)",
+      });
+      return;
+    }
+    const description = specMode === "scaffold" ? scaffoldDescription(req.body.description) : req.body.description;
+
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
       ...req.body,
+      description,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
