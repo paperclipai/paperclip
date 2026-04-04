@@ -1,6 +1,12 @@
 import type { Request } from "express";
 import { forbidden, unauthorized } from "../errors.js";
 
+export function assertAuthenticated(req: Request) {
+  if (req.actor.type === "none") {
+    throw unauthorized();
+  }
+}
+
 export function assertBoard(req: Request) {
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
