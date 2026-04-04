@@ -23,6 +23,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
+import { buildIssueTree } from "../lib/issue-tree";
 import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
@@ -667,16 +668,7 @@ export function IssuesList({
             )}
             <CollapsibleContent>
               {(() => {
-                const itemIds = new Set(group.items.map((i) => i.id));
-                const roots = group.items.filter((i) => !i.parentId || !itemIds.has(i.parentId));
-                const childMap = new Map<string, Issue[]>();
-                for (const item of group.items) {
-                  if (item.parentId && itemIds.has(item.parentId)) {
-                    const arr = childMap.get(item.parentId) ?? [];
-                    arr.push(item);
-                    childMap.set(item.parentId, arr);
-                  }
-                }
+                const { roots, childMap } = buildIssueTree(group.items);
 
                 const renderIssueRow = (issue: Issue, depth: number) => {
                   const children = childMap.get(issue.id) ?? [];

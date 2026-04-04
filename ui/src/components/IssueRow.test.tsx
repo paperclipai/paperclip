@@ -136,4 +136,42 @@ describe("IssueRow", () => {
       root.unmount();
     });
   });
+
+  it("renders titleSuffix inline after the issue title", () => {
+    const root = createRoot(container);
+    const issue = createIssue({ title: "Parent task" });
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={issue}
+          titleSuffix={<span data-testid="suffix">(3 sub-tasks)</span>}
+        />,
+      );
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2, .truncate");
+    expect(titleEl?.textContent).toContain("Parent task");
+    expect(titleEl?.textContent).toContain("(3 sub-tasks)");
+    expect(container.querySelector('[data-testid="suffix"]')).not.toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders without error when titleSuffix is omitted", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    const titleEl = container.querySelector(".line-clamp-2, .truncate");
+    expect(titleEl?.textContent).toContain("Inbox item");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });
