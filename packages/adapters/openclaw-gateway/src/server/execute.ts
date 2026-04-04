@@ -17,6 +17,7 @@ type WakePayload = {
   issueId: string | null;
   wakeReason: string | null;
   wakeCommentId: string | null;
+  wakeCommentBody: string | null;
   approvalId: string | null;
   approvalStatus: string | null;
   issueIds: string[];
@@ -291,6 +292,7 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
     issueId: nonEmpty(context.issueId),
     wakeReason: nonEmpty(context.wakeReason),
     wakeCommentId: nonEmpty(context.wakeCommentId) ?? nonEmpty(context.commentId),
+    wakeCommentBody: nonEmpty(context.wakeCommentBody),
     approvalId: nonEmpty(context.approvalId),
     approvalStatus: nonEmpty(context.approvalStatus),
     issueIds: Array.isArray(context.issueIds)
@@ -376,6 +378,15 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     `issue_id=${payload.issueId ?? ""}`,
     `wake_reason=${payload.wakeReason ?? ""}`,
     `wake_comment_id=${payload.wakeCommentId ?? ""}`,
+    ...(payload.wakeCommentBody
+      ? [
+          "",
+          "=== WAKE COMMENT (the reason this issue was reopened) ===",
+          payload.wakeCommentBody,
+          "=== END WAKE COMMENT ===",
+          "",
+        ]
+      : []),
     `approval_id=${payload.approvalId ?? ""}`,
     `approval_status=${payload.approvalStatus ?? ""}`,
     `linked_issue_ids=${payload.issueIds.join(",")}`,
