@@ -335,35 +335,63 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    const nextAdapterType =
+      typeof normalizedPatch.adapterType === "string" && normalizedPatch.adapterType.length > 0
+        ? normalizedPatch.adapterType
+        : existing.adapterType;
+    const adapterTypeChanged = nextAdapterType !== existing.adapterType;
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
+    const updated = await db.transaction(async (tx) => {
+      const next = await tx
+        .update(agents)
+        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
 
-    if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
-      if (changedKeys.length > 0) {
-        await db.insert(agentConfigRevisions).values({
-          companyId: normalizedUpdated.companyId,
-          agentId: normalizedUpdated.id,
-          createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
-          createdByUserId: options?.recordRevision?.createdByUserId ?? null,
-          source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
-          changedKeys,
-          beforeConfig: beforeConfig as unknown as Record<string, unknown>,
-          afterConfig: afterConfig as unknown as Record<string, unknown>,
-        });
+      if (!next) return null;
+
+      if (adapterTypeChanged) {
+        await tx
+          .delete(agentTaskSessions)
+          .where(eq(agentTaskSessions.agentId, id));
+
+        await tx
+          .update(agentRuntimeState)
+          .set({
+            adapterType: nextAdapterType,
+            sessionId: null,
+            stateJson: {},
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentRuntimeState.agentId, id));
       }
-    }
+
+      if (shouldRecordRevision && beforeConfig) {
+        const afterConfig = buildConfigSnapshot(normalizeAgentRow(next));
+        const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
+        if (changedKeys.length > 0) {
+          await tx.insert(agentConfigRevisions).values({
+            companyId: next.companyId,
+            agentId: next.id,
+            createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
+            createdByUserId: options?.recordRevision?.createdByUserId ?? null,
+            source: options?.recordRevision?.source ?? "patch",
+            rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
+            changedKeys,
+            beforeConfig: beforeConfig as unknown as Record<string, unknown>,
+            afterConfig: afterConfig as unknown as Record<string, unknown>,
+          });
+        }
+      }
+
+      return next;
+    });
+    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
 
     return normalizedUpdated;
   }
