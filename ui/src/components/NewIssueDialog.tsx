@@ -33,6 +33,7 @@ import {
   Maximize2,
   Minimize2,
   MoreHorizontal,
+  Check,
   ChevronRight,
   ChevronDown,
   CircleDot,
@@ -73,6 +74,7 @@ interface IssueDraft {
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
   useIsolatedExecutionWorkspace?: boolean;
+  labelIds?: string[];
 }
 
 type StagedIssueFile = {
@@ -301,6 +303,9 @@ export function NewIssueDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([]);
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [labelSearch, setLabelSearch] = useState("");
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const stageFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -331,6 +336,12 @@ export function NewIssueDialog() {
         reuseEligible: true,
       }),
     enabled: Boolean(effectiveCompanyId) && newIssueOpen && Boolean(projectId),
+  });
+
+  const { data: labels } = useQuery({
+    queryKey: queryKeys.issues.labels(companyId),
+    queryFn: () => issuesApi.listLabels(companyId),
+    enabled: !!companyId,
   });
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -595,6 +606,7 @@ export function NewIssueDialog() {
   function reset() {
     setTitle("");
     setDescription("");
+    setSelectedLabelIds([]);
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
@@ -1392,10 +1404,73 @@ export function NewIssueDialog() {
           </Popover>
 
           {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button>
+          <Popover open={labelsOpen} onOpenChange={setLabelsOpen}>
+            <PopoverTrigger asChild>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground disabled:opacity-50"
+                disabled={createIssue.isPending}
+              >
+                <Tag className="h-3 w-3" />
+                {selectedLabelIds.length > 0
+                  ? `${selectedLabelIds.length} label${selectedLabelIds.length > 1 ? "s" : ""}`
+                  : "Labels"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-52 p-1" align="start">
+              <input
+                className="w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground"
+                placeholder="Search labels…"
+                value={labelSearch}
+                onChange={(e) => setLabelSearch(e.target.value)}
+              />
+              <div className="max-h-48 overflow-y-auto py-1">
+                {(labels ?? [])
+                  .filter((l) =>
+                    l.name.toLowerCase().includes(labelSearch.toLowerCase())
+                  )
+                  .map((label) => {
+                    const isSelected = selectedLabelIds.includes(label.id);
+                    return (
+                      <button
+                        key={label.id}
+                        type="button"
+                        className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50 ${
+                          isSelected ? "bg-accent/30" : ""
+                        }`}
+                        onClick={() =>
+                          setSelectedLabelIds((prev) =>
+                            isSelected
+                              ? prev.filter((id) => id !== label.id)
+                              : [...prev, label.id]
+                          )
+                        }
+                      >
+                        <span
+                          className="h-2.5 w-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: label.color }}
+                        />
+                        <span
+                          className="truncate"
+                          style={{ color: pickTextColorForSolidBg(label.color) }}
+                        >
+                          {label.name}
+                        </span>
+                        {isSelected && (
+                          <Check className="ml-auto h-3 w-3 shrink-0 text-muted-foreground" />
+                        )}
+                      </button>
+                    );
+                  })}
+                {(labels ?? []).filter((l) =>
+                  l.name.toLowerCase().includes(labelSearch.toLowerCase())
+                ).length === 0 && (
+                  <p className="px-2 py-2 text-xs text-muted-foreground">
+                    {labels === undefined ? "Loading…" : "No labels found"}
+                  </p>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <input
             ref={stageFileInputRef}
