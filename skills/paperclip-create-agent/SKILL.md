@@ -10,6 +10,8 @@ description: >
 
 Use this skill when you are asked to hire/create an agent.
 
+If Bash is unavailable but an MCP shell tool is available (for example `mcp__shell__shell_exec`), use that tool for the `curl` examples below.
+
 ## Preconditions
 
 You need either:

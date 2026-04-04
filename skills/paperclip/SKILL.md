@@ -21,6 +21,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+**Shell tool fallback:** If Bash is unavailable but an MCP shell tool is available (for example `mcp__shell__shell_exec`), use that tool for the command examples in this skill. Treat it as equivalent to Bash for `curl`, `git`, `gh`, and similar shell operations.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

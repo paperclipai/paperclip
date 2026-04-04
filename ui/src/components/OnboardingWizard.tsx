@@ -23,20 +23,17 @@ import {
   extractProviderIdWithFallback
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
-import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL
-} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { buildOnboardingAdapterConfig } from "../lib/onboarding-adapter-config";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
@@ -117,7 +114,9 @@ export function OnboardingWizard() {
   const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
-  const [args, setArgs] = useState("");
+  const [extraArgs, setExtraArgs] = useState("");
+  const [dangerouslySkipPermissions, setDangerouslySkipPermissions] =
+    useState(true);
   const [url, setUrl] = useState("");
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
@@ -234,7 +233,7 @@ export function OnboardingWizard() {
     if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+  }, [step, adapterType, model, command, extraArgs, url, dangerouslySkipPermissions]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -292,7 +291,8 @@ export function OnboardingWizard() {
     setAdapterType("claude_local");
     setModel("");
     setCommand("");
-    setArgs("");
+    setExtraArgs("");
+    setDangerouslySkipPermissions(true);
     setUrl("");
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
@@ -315,39 +315,15 @@ export function OnboardingWizard() {
   }
 
   function buildAdapterConfig(): Record<string, unknown> {
-    const adapter = getUIAdapter(adapterType);
-    const config = adapter.buildAdapterConfig({
-      ...defaultCreateValues,
+    return buildOnboardingAdapterConfig({
       adapterType,
-      model:
-        adapterType === "codex_local"
-          ? model || DEFAULT_CODEX_LOCAL_MODEL
-          : adapterType === "gemini_local"
-            ? model || DEFAULT_GEMINI_LOCAL_MODEL
-          : adapterType === "cursor"
-          ? model || DEFAULT_CURSOR_LOCAL_MODEL
-          : model,
+      model,
       command,
-      args,
+      extraArgs,
       url,
-      dangerouslySkipPermissions:
-        adapterType === "claude_local" || adapterType === "opencode_local",
-      dangerouslyBypassSandbox:
-        adapterType === "codex_local"
-          ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
-          : defaultCreateValues.dangerouslyBypassSandbox
+      dangerouslySkipPermissions,
+      forceUnsetAnthropicApiKey,
     });
-    if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
-      const env =
-        typeof config.env === "object" &&
-        config.env !== null &&
-        !Array.isArray(config.env)
-          ? { ...(config.env as Record<string, unknown>) }
-          : {};
-      env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
-      config.env = env;
-    }
-    return config;
   }
 
   async function runAdapterEnvironmentTest(
@@ -792,6 +768,9 @@ export function OnboardingWizard() {
                             if (nextType !== "codex_local") {
                               setModel("");
                             }
+                            setDangerouslySkipPermissions(
+                              nextType === "claude_local" || nextType === "opencode_local"
+                            );
                           }}
                         >
                           {opt.recommended && (
@@ -880,18 +859,24 @@ export function OnboardingWizard() {
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                setDangerouslySkipPermissions(false);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {
                                 setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                                setDangerouslySkipPermissions(false);
                                 return;
                               }
                               if (nextType === "opencode_local") {
                                 if (!model.includes("/")) {
                                   setModel("");
                                 }
+                                setDangerouslySkipPermissions(true);
                                 return;
                               }
+                              setDangerouslySkipPermissions(
+                                nextType === "claude_local"
+                              );
                               setModel("");
                             }}
                           >
@@ -1015,6 +1000,59 @@ export function OnboardingWizard() {
                           </PopoverContent>
                         </Popover>
                       </div>
+
+                      {(adapterType === "claude_local" ||
+                        adapterType === "opencode_local") && (
+                        <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                          <div>
+                            <div className="text-xs font-medium">
+                              Skip permissions
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              Auto-approve CLI permission prompts when the adapter supports it.
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            data-slot="toggle"
+                            className={cn(
+                              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0",
+                              dangerouslySkipPermissions ? "bg-green-600" : "bg-muted"
+                            )}
+                            onClick={() =>
+                              setDangerouslySkipPermissions((value) => !value)
+                            }
+                          >
+                            <span
+                              className={cn(
+                                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                                dangerouslySkipPermissions ? "translate-x-4.5" : "translate-x-0.5"
+                              )}
+                            />
+                          </button>
+                        </label>
+                      )}
+
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Extra args (optional)
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="e.g. --mcp-config, /path/to/shell.json, --allowedTools, mcp__shell__*"
+                          value={extraArgs}
+                          onChange={(e) => setExtraArgs(e.target.value)}
+                        />
+                      </div>
+
+                      {adapterType === "claude_local" &&
+                        !dangerouslySkipPermissions && (
+                          <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] text-muted-foreground">
+                            For locked-down Claude environments, pair this with
+                            <span className="font-mono"> --mcp-config</span> and
+                            <span className="font-mono"> --allowedTools</span> so agents can use shell MCP tools instead of Bash.
+                          </div>
+                        )}
                     </div>
                   )}
 
