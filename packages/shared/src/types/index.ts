@@ -59,6 +59,13 @@ export type {
   AdapterEnvironmentTestResult,
 } from "./agent.js";
 export type { AssetImage } from "./asset.js";
+export type {
+  ArtifactFolderSourceType,
+  ArtifactFolder,
+  ArtifactFolderTreeNode,
+  Artifact,
+  ArtifactWithFolder,
+} from "./artifact.js";
 export type { Project, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectWorkspace } from "./project.js";
 export type {
   ExecutionWorkspace,

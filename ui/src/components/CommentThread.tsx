@@ -1,14 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation } from "@/lib/router";
 import type {
   Agent,
   FeedbackDataSharingPreference,
   FeedbackVote,
   FeedbackVoteValue,
+  IssueAttachment,
   IssueComment,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
+import { ArrowRight, Check, Copy, Download, FolderOpen, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
@@ -57,6 +58,8 @@ interface CommentThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
   projectId?: string | null;
+  issueId?: string | null;
+  attachments?: IssueAttachment[];
   onVote?: (
     commentId: string,
     vote: FeedbackVoteValue,
@@ -225,6 +228,8 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  issueId,
+  commentAttachments,
   feedbackVote = null,
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -237,6 +242,8 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  issueId?: string | null;
+  commentAttachments?: IssueAttachment[];
   feedbackVote?: FeedbackVoteValue | null;
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -311,6 +318,48 @@ function CommentCard({
         </span>
       </div>
       <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+      {commentAttachments && commentAttachments.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {commentAttachments.map((att) => (
+            <div
+              key={att.id}
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs"
+            >
+              <Paperclip className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+              <a
+                href={att.contentPath}
+                target="_blank"
+                rel="noreferrer"
+                className="hover:underline truncate max-w-48"
+                title={att.originalFilename ?? att.id}
+              >
+                {att.originalFilename ?? "file"}
+              </a>
+              <span className="text-muted-foreground">
+                {(att.byteSize / 1024).toFixed(1)} KB
+              </span>
+              <a
+                href={att.contentPath}
+                download={att.originalFilename ?? "file"}
+                className="text-muted-foreground hover:text-foreground"
+                title="Download"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download className="h-3 w-3" />
+              </a>
+              {issueId && (
+                <Link
+                  to={`/artifacts?issueId=${issueId}`}
+                  className="text-muted-foreground hover:text-foreground"
+                  title="View in Artifacts"
+                >
+                  <FolderOpen className="h-3 w-3" />
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {companyId && !isPending ? (
         <div className="mt-2 space-y-2">
           <PluginSlotOutlet
@@ -446,6 +495,8 @@ const TimelineList = memo(function TimelineList({
   currentUserId,
   companyId,
   projectId,
+  issueId,
+  attachments,
   feedbackVoteByTargetId,
   feedbackDataSharingPreference = "prompt",
   feedbackTermsUrl = null,
@@ -458,6 +509,8 @@ const TimelineList = memo(function TimelineList({
   currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
+  issueId?: string | null;
+  attachments?: IssueAttachment[];
   feedbackVoteByTargetId?: Map<string, FeedbackVoteValue>;
   feedbackDataSharingPreference?: FeedbackDataSharingPreference;
   feedbackTermsUrl?: string | null;
@@ -531,6 +584,11 @@ const TimelineList = memo(function TimelineList({
             agentMap={agentMap}
             companyId={companyId}
             projectId={projectId}
+            issueId={issueId}
+            commentAttachments={attachments?.filter((a) =>
+              a.issueCommentId === comment.id ||
+              (a.originalFilename && comment.body.includes(a.originalFilename))
+            )}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={feedbackTermsUrl}
@@ -554,6 +612,8 @@ export function CommentThread({
   timelineEvents = [],
   companyId,
   projectId,
+  issueId,
+  attachments,
   onVote,
   onAdd,
   agentMap,
@@ -752,6 +812,8 @@ export function CommentThread({
         currentUserId={currentUserId}
         companyId={companyId}
         projectId={projectId}
+        issueId={issueId}
+        attachments={attachments}
         feedbackVoteByTargetId={feedbackVoteByTargetId}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         onVote={onVote ? handleFeedbackVote : undefined}
@@ -788,6 +850,11 @@ export function CommentThread({
                 agentMap={agentMap}
                 companyId={companyId}
                 projectId={projectId}
+                issueId={issueId}
+                commentAttachments={attachments?.filter((a) =>
+                  a.issueCommentId === comment.id ||
+                  (a.originalFilename && comment.body.includes(a.originalFilename))
+                )}
                 highlightCommentId={highlightCommentId}
                 queued
               />

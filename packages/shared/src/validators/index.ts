@@ -243,6 +243,20 @@ export {
 } from "./asset.js";
 
 export {
+  artifactFolderSourceTypeSchema,
+  createArtifactFolderSchema,
+  updateArtifactFolderSchema,
+  createArtifactSchema,
+  updateArtifactSchema,
+  listArtifactsQuerySchema,
+  type CreateArtifactFolder,
+  type UpdateArtifactFolder,
+  type CreateArtifact,
+  type UpdateArtifact,
+  type ListArtifactsQuery,
+} from "./artifact.js";
+
+export {
   createCompanyInviteSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,

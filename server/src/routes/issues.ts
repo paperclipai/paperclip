@@ -39,6 +39,7 @@ import {
   projectService,
   routineService,
   workProductService,
+  artifactService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
@@ -1995,6 +1996,31 @@ export function issueRoutes(
         byteSize: attachment.byteSize,
       },
     });
+
+    // Auto-create artifact entry in the file browser
+    try {
+      const artifactSvc = artifactService(db);
+      const projSvc = projectService(db);
+      const project = issue.projectId ? await projSvc.getById(issue.projectId) : null;
+      const folderId = await artifactSvc.ensureAutoFolder(
+        companyId,
+        issue.projectId ?? null,
+        project?.name ?? null,
+        issueId,
+        issue.title,
+      );
+      await artifactSvc.createArtifact(companyId, {
+        folderId,
+        assetId: attachment.assetId,
+        title: attachment.originalFilename ?? "Untitled",
+        mimeType: attachment.contentType,
+        issueId,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    } catch (err) {
+      logger.warn({ err, issueId }, "failed to auto-create artifact for attachment");
+    }
 
     res.status(201).json(withContentPath(attachment));
   });

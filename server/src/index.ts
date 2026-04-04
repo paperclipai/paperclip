@@ -532,6 +532,8 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     storageService,
     feedbackExportService: feedback,
+    storageProvider: config.storageProvider,
+    storageLocalDiskBaseDir: config.storageLocalDiskBaseDir,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,

@@ -344,6 +344,13 @@
       "when": 1775145655557,
       "tag": "0048_flashy_marrow",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1775119343812,
+      "tag": "0049_artifact_folders_and_artifacts",
+      "breakpoints": true
     }
   ]
 }

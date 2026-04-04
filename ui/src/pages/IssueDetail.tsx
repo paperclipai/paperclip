@@ -70,6 +70,7 @@ import {
   Repeat,
   SlidersHorizontal,
   Trash2,
+  FolderOpen,
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, FeedbackVote, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
@@ -1425,15 +1426,24 @@ export function IssueDetail() {
                 >
                   {attachment.originalFilename ?? attachment.id}
                 </a>
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-destructive"
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
-                  disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  <Link
+                    to={`/artifacts?issueId=${issue.id}`}
+                    className="text-muted-foreground hover:text-foreground"
+                    title="View in Artifacts"
+                  >
+                    <FolderOpen className="h-3.5 w-3.5" />
+                  </Link>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                    disabled={deleteAttachment.isPending}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
               <p className="text-[11px] text-muted-foreground">
                 {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
@@ -1509,6 +1519,8 @@ export function IssueDetail() {
             timelineEvents={timelineEvents}
             companyId={issue.companyId}
             projectId={issue.projectId}
+            issueId={issue.id}
+            attachments={attachmentList}
             issueStatus={issue.status}
             agentMap={agentMap}
             currentUserId={currentUserId}
