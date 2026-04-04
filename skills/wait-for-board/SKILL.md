@@ -1,12 +1,12 @@
 ---
-name: wait-for-user
+name: wait-for-board
 description: >
   Poll-and-wait pattern for situations where the agent needs user action
   before continuing (e.g., browser login, MFA code, Telegram reply).
   Keeps the agent process alive so browser state is preserved.
 ---
 
-# Wait For User Skill
+# Wait For Board Skill
 
 Use this skill when you need the user (board) to take an action before you can continue — for example, logging into a website, entering an MFA code, replying to a Telegram message, or confirming something on screen.
 

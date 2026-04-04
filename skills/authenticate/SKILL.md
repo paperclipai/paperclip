@@ -29,7 +29,7 @@ For platforms where the organization has administrative credentials, **retrieve 
 For platforms requiring the user's personal credentials (banking, email, etc.):
 1. Navigate to the page first using Playwright MCP
 2. **If credentials are prefilled** (e.g., saved by browser), just click "Log in" / "Submit" directly — do NOT ask the user first
-3. **If credentials are NOT prefilled**, use the `wait-for-user` skill to wait for the user to log in
+3. **If credentials are NOT prefilled**, use the `wait-for-board` skill to wait for the user to log in
 4. Only then continue with the work
 
 **NEVER ask the user if they need to log in before navigating — always navigate first, then assess.**
@@ -38,7 +38,7 @@ For platforms requiring the user's personal credentials (banking, email, etc.):
 
 When a platform requires a one-time code (OTP, MFA, 2FA) sent to the user's phone or email:
 1. **Inform the user** which platform is requesting the code and where it was sent
-2. **Use the `wait-for-user` skill** to poll for the code entry (5-minute timeout for OTP)
+2. **Use the `wait-for-board` skill** to poll for the code entry (5-minute timeout for OTP)
 3. **Enter the code immediately** — OTP codes expire quickly
 4. **Never store OTP codes** in files, variables, or logs
 

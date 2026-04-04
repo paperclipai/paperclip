@@ -159,4 +159,4 @@ This rule applies to all agents at all times. No exceptions.
 
 ## Waiting for User Input
 
-When you need the user to take an action (login, MFA, confirm something), use the `wait-for-user` skill. **Never exit your process** if you can poll and wait instead — this keeps browser state alive.
+When you need the user to take an action (login, MFA, confirm something), use the `wait-for-board` skill. **Never exit your process** if you can poll and wait instead — this keeps browser state alive.
