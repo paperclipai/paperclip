@@ -214,6 +214,51 @@ describe("blog run worker", () => {
     expect(result).toMatchObject({ run: { status: "failed" } });
   });
 
+  it("fails validate in strict publish-ready mode when merged preflight is not ok", async () => {
+    const runService = {
+      getById: vi.fn().mockResolvedValue(createRun({
+        currentStep: "validate",
+        contextJson: {
+          title: "Test title",
+          article_html: "<p>Body</p>",
+          publishReadyGateMode: "strict",
+        },
+      })),
+      getDetail: vi.fn().mockResolvedValue({ ok: true }),
+      claimNextStep: vi.fn().mockResolvedValue(createClaim({
+        currentStep: "validate",
+        contextJson: {
+          title: "Test title",
+          article_html: "<p>Body</p>",
+          publishReadyGateMode: "strict",
+        },
+      }, { stepKey: "validate" })),
+      completeStep: vi.fn(),
+      failStep: vi.fn().mockResolvedValue({ run: { status: "failed", failedReason: "blog_run_publish_ready_failed:visual_quality" } }),
+    };
+    const worker = blogRunWorkerService({} as any, {
+      runService: runService as any,
+      runValidateStep: vi.fn().mockResolvedValue({ ok: true }),
+      runQualityGateBundle: vi.fn().mockResolvedValue({
+        results: {
+          publish_ready: {
+            ok: false,
+            status: "fail",
+            failed_gates: ["visual_quality"],
+          },
+        },
+      }),
+    });
+
+    const result = await worker.runNext("run-1");
+
+    expect(runService.completeStep).not.toHaveBeenCalled();
+    expect(runService.failStep).toHaveBeenCalledWith("run-1", "validate", expect.objectContaining({
+      errorMessage: "blog_run_publish_ready_failed:visual_quality",
+    }));
+    expect(result).toMatchObject({ run: { status: "failed" } });
+  });
+
   it("blocks report lane from publishing", async () => {
     const runService = {
       getById: vi.fn().mockResolvedValue(createRun({ lane: "report", currentStep: "publish", approvalId: "approval-1", publishIdempotencyKey: "idem-1" })),

@@ -112,6 +112,13 @@ function resolvePublicVerifyContractMode(
   return "compat";
 }
 
+function resolvePublishReadyGateMode(run: Record<string, unknown>) {
+  const context = toRecord(run.contextJson);
+  const configured = firstNonEmptyString(run.publishReadyGateMode, context.publishReadyGateMode).toLowerCase();
+  if (configured === "strict" || configured === "compat") return configured;
+  return "compat";
+}
+
 async function runQualityGateBundleCli(input: {
   runDir: string;
   approvedTopic: string;
@@ -565,8 +572,24 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
               },
             });
           }
+          if (stepKey === "validate" && resolvePublishReadyGateMode(run) === "strict") {
+            const merged = toRecord(bundleResults.publish_ready);
+            if (merged.ok !== true) {
+              const failed = Array.isArray(merged.failed_gates)
+                ? merged.failed_gates.map((value) => String(value ?? "").trim()).filter(Boolean)
+                : [];
+              throw new Error(
+                failed.length > 0
+                  ? `blog_run_publish_ready_failed:${failed.join(",")}`
+                  : "blog_run_publish_ready_failed",
+              );
+            }
+          }
         } catch (bundleError) {
           const message = bundleError instanceof Error ? bundleError.message : String(bundleError);
+          if (stepKey === "validate" && message.startsWith("blog_run_publish_ready_failed")) {
+            throw bundleError;
+          }
           artifacts.push({
             artifactKind: "quality_gate_bundle_error",
             contentType: "application/json",
