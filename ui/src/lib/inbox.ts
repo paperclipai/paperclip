@@ -249,7 +249,12 @@ export function getApprovalsForTab(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
-  if (tab === "mine" || tab === "recent") return sortedApprovals;
+  // "mine" shows only actionable approvals (matching badge count logic).
+  // Resolved (approved/rejected) approvals don't need user attention.
+  if (tab === "mine") {
+    return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
+  }
+  if (tab === "recent") return sortedApprovals;
   if (tab === "unread") {
     return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
   }
