@@ -35,6 +35,34 @@ export const AGENT_ADAPTER_TYPES = [
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
+const AGENT_ADAPTER_TYPE_SET = new Set<string>(AGENT_ADAPTER_TYPES);
+
+const LEGACY_AGENT_ADAPTER_TYPE_ALIASES: Record<string, AgentAdapterType> = {
+  "claude-local": "claude_local",
+  "codex-local": "codex_local",
+  "gemini-local": "gemini_local",
+  "opencode-local": "opencode_local",
+  "pi-local": "pi_local",
+  "hermes-local": "hermes_local",
+  "openclaw-gateway": "openclaw_gateway",
+  "cursor-local": "cursor",
+  cursor_local: "cursor",
+};
+
+export function normalizeAgentAdapterType(type: string): string {
+  const trimmed = type.trim();
+  if (!trimmed) return type;
+  if (AGENT_ADAPTER_TYPE_SET.has(trimmed)) return trimmed;
+
+  const aliased = LEGACY_AGENT_ADAPTER_TYPE_ALIASES[trimmed];
+  if (aliased) return aliased;
+
+  const hyphenNormalized = trimmed.replace(/-/g, "_");
+  if (AGENT_ADAPTER_TYPE_SET.has(hyphenNormalized)) return hyphenNormalized;
+
+  return trimmed;
+}
+
 export const AGENT_ROLES = [
   "ceo",
   "cto",

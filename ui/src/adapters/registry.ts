@@ -1,4 +1,5 @@
 import type { UIAdapterModule } from "./types";
+import { normalizeAgentAdapterType } from "@paperclipai/shared";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorLocalUIAdapter } from "./cursor";
@@ -28,7 +29,7 @@ const adaptersByType = new Map<string, UIAdapterModule>(
 );
 
 export function getUIAdapter(type: string): UIAdapterModule {
-  return adaptersByType.get(type) ?? processUIAdapter;
+  return adaptersByType.get(normalizeAgentAdapterType(type)) ?? processUIAdapter;
 }
 
 export function listUIAdapters(): UIAdapterModule[] {
