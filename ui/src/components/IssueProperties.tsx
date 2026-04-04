@@ -605,14 +605,14 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
         )}
         {issue.completedAt && (
           <PropertyRow label="Completed">
-            <span className="text-sm">{formatDate(issue.completedAt)}</span>
+            <span className="text-sm" title={new Date(issue.completedAt).toLocaleString()}>{formatDate(issue.completedAt)}</span>
           </PropertyRow>
         )}
         <PropertyRow label="Created">
-          <span className="text-sm">{formatDate(issue.createdAt)}</span>
+          <span className="text-sm" title={new Date(issue.createdAt).toLocaleString()}>{timeAgo(issue.createdAt)}</span>
         </PropertyRow>
         <PropertyRow label="Updated">
-          <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
+          <span className="text-sm" title={new Date(issue.updatedAt).toLocaleString()}>{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
       </div>
     </div>
