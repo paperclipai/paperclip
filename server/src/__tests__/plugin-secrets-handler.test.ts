@@ -67,6 +67,14 @@ describe("plugin-secrets-handler", () => {
     } as any);
   });
 
+  describe("createPluginSecretsHandler", () => {
+    it("should initialize and return the service interface", () => {
+      const handler = createPluginSecretsHandler({ db, pluginId });
+      expect(handler.resolve).toBeTypeOf("function");
+      expect(handler.write).toBeTypeOf("function");
+    });
+  });
+
   describe("write", () => {
     let handler: ReturnType<typeof createPluginSecretsHandler>;
 
@@ -159,15 +167,22 @@ describe("plugin-secrets-handler", () => {
     it("should handle TOCTOU race via HttpError(409)", async () => {
       const createMock = vi.fn().mockRejectedValue(new HttpError(409, "Conflict"));
       const rotateMock = vi.fn().mockResolvedValue({ id: "rotated-raced-id" });
-      
+      const getByNameMock = vi.fn()
+        .mockResolvedValueOnce(null) // first call: no existing secret → triggers create()
+        .mockResolvedValueOnce({ id: "raced-id", createdByUserId: `plugin:${pluginId}` }); // second call: catch block recovery
+
       vi.mocked(secretService).mockReturnValue({
-        getByName: vi.fn().mockResolvedValue({ id: "raced-id", createdByUserId: `plugin:${pluginId}` }),
+        getByName: getByNameMock,
         create: createMock,
         rotate: rotateMock,
       } as any);
 
       const result = await handler.write({ companyId, name: "RACED", value: "raced-val" });
+      
       expect(result).toBe("rotated-raced-id");
+      expect(createMock).toHaveBeenCalledOnce();
+      expect(getByNameMock).toHaveBeenCalledTimes(2);
+      expect(rotateMock).toHaveBeenCalledOnce();
     });
   });
 
@@ -192,6 +207,26 @@ describe("plugin-secrets-handler", () => {
 
       const result = await handler.resolve({ secretRef });
       expect(result).toBe("resolved-value");
+    });
+
+    it("should enforce global resolve rate limits", async () => {
+      for (let i = 0; i < 100; i++) {
+        const uniqueRef = `550e8400-e29b-41d4-a716-${i.toString().padStart(12, '0')}`;
+        const uniqueCompanyId = `company-${i}`;
+        // Mock DB for each attempt
+        db._setTableResults(companySecrets, [
+          [{ id: uniqueRef, companyId: uniqueCompanyId, createdByUserId: `plugin:${pluginId}`, latestVersion: 1, provider: "local_encrypted" }]
+        ]);
+        db._setTableResults(pluginConfig, [[]]);
+        db._setTableResults(pluginCompanySettings, [[{ enabled: true }]]);
+        db._setTableResults(companySecretVersions, [[{ material: {} }]]);
+        
+        await handler.resolve({ secretRef: uniqueRef });
+      }
+      
+      await expect(
+        handler.resolve({ secretRef })
+      ).rejects.toThrow("Rate limit exceeded for secret resolution");
     });
 
     it("should deny resolution if the secret belongs to a different company (cross-tenant)", async () => {

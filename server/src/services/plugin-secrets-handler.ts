@@ -300,6 +300,16 @@ export function createPluginSecretsHandler(
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
+      // 0. Early per-plugin resolve guard (before any DB I/O)
+      // ---------------------------------------------------------------
+      // Prevents unbounded DB queries for non-existent UUIDs.
+      if (!checkRateLimit(`${pluginId}:resolve:global`, 100, MAX_RATE_LIMIT_WINDOW_MS)) {
+        const err = new Error("Rate limit exceeded for secret resolution");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
       // 1. Validate the ref format
       // ---------------------------------------------------------------
       if (!secretRef || typeof secretRef !== "string" || secretRef.trim().length === 0) {
