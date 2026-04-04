@@ -579,6 +579,15 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
   return groupToolBlocks(groupCommandBlocks(blocks));
 }
 
+const MESSAGE_TRUNCATE_LENGTH = 1500;
+
+function safeTruncate(text: string, limit: number) {
+  if (text.length <= limit) return text;
+  const cut = text.lastIndexOf("\n", limit);
+  // Only use newline break if it's at least halfway to the limit (avoids huge first paragraph)
+  return cut > limit * 0.5 ? text.slice(0, cut) : text.slice(0, limit);
+}
+
 function TranscriptMessageBlock({
   block,
   density,
@@ -588,6 +597,11 @@ function TranscriptMessageBlock({
 }) {
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
+  const canTruncate = !block.streaming && block.text.length > MESSAGE_TRUNCATE_LENGTH;
+  const [expanded, setExpanded] = useState(false);
+  const displayText = canTruncate && !expanded
+    ? safeTruncate(block.text, MESSAGE_TRUNCATE_LENGTH)
+    : block.text;
 
   return (
     <div>
@@ -597,14 +611,29 @@ function TranscriptMessageBlock({
           <span>User</span>
         </div>
       )}
-      <MarkdownBody
-        className={cn(
-          "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-          compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
+      <div className={cn(canTruncate && !expanded && "relative")}>
+        <MarkdownBody
+          className={cn(
+            "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+            compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
+            canTruncate && !expanded && "overflow-hidden",
+          )}
+        >
+          {displayText}
+        </MarkdownBody>
+        {canTruncate && !expanded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background to-transparent" />
         )}
-      >
-        {block.text}
-      </MarkdownBody>
+      </div>
+      {canTruncate && (
+        <button
+          type="button"
+          className="mt-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? "See less" : "See more"}
+        </button>
+      )}
       {block.streaming && (
         <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium italic text-muted-foreground">
           <span className="relative flex h-1.5 w-1.5">
