@@ -29,7 +29,8 @@ type AdvancedAdapterType =
   | "opencode_local"
   | "pi_local"
   | "cursor"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "ollama_cloud";
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
@@ -81,6 +82,12 @@ const ADVANCED_ADAPTER_OPTIONS: Array<{
     label: "OpenClaw Gateway",
     icon: Bot,
     desc: "Invoke OpenClaw via gateway protocol",
+  },
+  {
+    value: "ollama_cloud",
+    label: "Ollama Cloud",
+    icon: Bot,
+    desc: "Cloud-hosted open models",
   },
 ];
 

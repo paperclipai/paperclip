@@ -31,6 +31,7 @@ export const AGENT_ADAPTER_TYPES = [
   "cursor",
   "openclaw_gateway",
   "hermes_local",
+  "ollama_cloud",
 ] as const;
 export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
@@ -948,6 +949,11 @@ export const MODEL_ROUTING_DEFAULTS: Record<string, Record<"routine" | "standard
     routine: "gpt-4o-mini",
     standard: "gpt-4o",
     complex: "gpt-4o",
+  },
+  ollama: {
+    routine: "qwen3.5:27b-cloud",
+    standard: "kimi-k2.5:cloud",
+    complex: "deepseek-v3.2:cloud",
   },
 } as const;
 

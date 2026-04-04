@@ -36,13 +36,17 @@ export function classifyTaskComplexity(context: {
 
 /**
  * Detect the provider family from a model string.
- * Returns "anthropic" for claude-* models, "openai" for gpt-* models, null if unknown.
+ * Returns "anthropic" for claude-* models, "openai" for gpt-* models,
+ * "ollama" for models with a :cloud suffix, null if unknown.
  */
-function detectProviderFamily(model: string): "anthropic" | "openai" | null {
+function detectProviderFamily(model: string): "anthropic" | "openai" | "ollama" | null {
   const lower = model.toLowerCase();
   if (lower.startsWith("claude")) return "anthropic";
   if (lower.startsWith("gpt") || lower.startsWith("o1") || lower.startsWith("o3") || lower.startsWith("o4")) {
     return "openai";
+  }
+  if (lower.endsWith(":cloud") || lower.includes(":cloud-") || lower.includes(":latest")) {
+    return "ollama";
   }
   return null;
 }
