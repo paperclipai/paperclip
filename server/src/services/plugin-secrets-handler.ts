@@ -165,11 +165,38 @@ function checkRateLimit(key: string, maxAttempts: number, windowMs: number): boo
   const now = Date.now();
   const windowStart = now - windowMs;
   const existing = (_limiterState.get(key) ?? []).filter((ts) => ts > windowStart);
+  
   if (existing.length >= maxAttempts) return false;
+  
   existing.push(now);
-  _limiterState.set(key, existing);
+  
+  if (existing.length === 0) {
+    // Should never happen here because of push(), but good hygiene
+    _limiterState.delete(key);
+  } else {
+    _limiterState.set(key, existing);
+  }
+  
   return true;
 }
+
+/**
+ * Periodically evict fully expired rate limiter entries to prevent memory leaks
+ * over long-running process lifetimes with high plugin churn.
+ */
+setInterval(() => {
+  const now = Date.now();
+  // Assume worst-case window is 60s for eviction purposes
+  const windowStart = now - 60_000;
+  for (const [key, timestamps] of _limiterState.entries()) {
+    const valid = timestamps.filter((ts) => ts > windowStart);
+    if (valid.length === 0) {
+      _limiterState.delete(key);
+    } else if (valid.length !== timestamps.length) {
+      _limiterState.set(key, valid);
+    }
+  }
+}, 60_000).unref?.();
 
 // ---------------------------------------------------------------------------
 // Handler factory
@@ -310,8 +337,20 @@ export function createPluginSecretsHandler(
       }
 
       if (!cachedAllowedRefs.has(trimmedRef)) {
-        // Return "not found" to avoid leaking whether the secret exists
-        throw secretNotFound(trimmedRef);
+        // Fallback: Check if the plugin explicitly created this secret.
+        // This handles the secure onboarding use-case where a plugin creates
+        // a secret via `write` and then immediately needs to `resolve` it,
+        // before the UI has a chance to update the plugin's configuration JSON.
+        const secret = await db
+          .select({ createdByUserId: companySecrets.createdByUserId })
+          .from(companySecrets)
+          .where(eq(companySecrets.id, trimmedRef))
+          .then((rows) => rows[0] ?? null);
+          
+        if (!secret || secret.createdByUserId !== `plugin:${pluginId}`) {
+          // Return "not found" to avoid leaking whether the secret exists
+          throw secretNotFound(trimmedRef);
+        }
       }
 
       // ---------------------------------------------------------------
