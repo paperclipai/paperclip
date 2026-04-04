@@ -1,15 +1,8 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
-function collectMessageText(message: unknown): string[] {
-  if (typeof message === "string") {
-    const trimmed = message.trim();
-    return trimmed ? [trimmed] : [];
-  }
-
-  const record = parseObject(message);
-  const direct = asString(record.text, "").trim();
-  const lines: string[] = direct ? [direct] : [];
-  const content = Array.isArray(record.content) ? record.content : [];
+function collectContentParts(contentRaw: unknown): string[] {
+  const content = Array.isArray(contentRaw) ? contentRaw : [];
+  const lines: string[] = [];
 
   for (const partRaw of content) {
     const part = parseObject(partRaw);
@@ -21,6 +14,53 @@ function collectMessageText(message: unknown): string[] {
   }
 
   return lines;
+}
+
+function collectMessageText(message: unknown): string[] {
+  if (typeof message === "string") {
+    const trimmed = message.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  if (Array.isArray(message)) {
+    return collectContentParts(message);
+  }
+
+  const record = parseObject(message);
+  const direct = asString(record.text, "").trim();
+  const lines: string[] = direct ? [direct] : [];
+  lines.push(...collectContentParts(record.content));
+
+  return lines;
+}
+
+function extractQuestion(message: unknown): { prompt: string; choices: Array<{ key: string; label: string; description?: string }> } | null {
+  if (typeof message === "string") return null;
+
+  const record = Array.isArray(message) ? null : parseObject(message);
+  const content = Array.isArray(message)
+    ? message
+    : Array.isArray(record?.content)
+      ? (record.content as unknown[])
+      : [];
+
+  for (const partRaw of content) {
+    const part = parseObject(partRaw);
+    if (asString(part.type, "").trim() !== "question") continue;
+    return {
+      prompt: asString(part.prompt, "").trim(),
+      choices: (Array.isArray(part.choices) ? part.choices : []).map((choiceRaw) => {
+        const choice = parseObject(choiceRaw);
+        return {
+          key: asString(choice.key, "").trim(),
+          label: asString(choice.label, "").trim(),
+          description: asString(choice.description, "").trim() || undefined,
+        };
+      }),
+    };
+  }
+
+  return null;
 }
 
 function readSessionId(event: Record<string, unknown>): string | null {
@@ -97,27 +137,10 @@ export function parseGeminiJsonl(stdout: string) {
 
     const type = asString(event.type, "").trim();
 
-    if (type === "assistant") {
-      messages.push(...collectMessageText(event.message));
-      const messageObj = parseObject(event.message);
-      const content = Array.isArray(messageObj.content) ? messageObj.content : [];
-      for (const partRaw of content) {
-        const part = parseObject(partRaw);
-        if (asString(part.type, "").trim() === "question") {
-          question = {
-            prompt: asString(part.prompt, "").trim(),
-            choices: (Array.isArray(part.choices) ? part.choices : []).map((choiceRaw) => {
-              const choice = parseObject(choiceRaw);
-              return {
-                key: asString(choice.key, "").trim(),
-                label: asString(choice.label, "").trim(),
-                description: asString(choice.description, "").trim() || undefined,
-              };
-            }),
-          };
-          break; // only one question per message
-        }
-      }
+    if (type === "assistant" || (type === "message" && asString(event.role, "").trim().toLowerCase() === "assistant")) {
+      const messagePayload = type === "assistant" ? event.message : (event.content ?? event.message);
+      messages.push(...collectMessageText(messagePayload));
+      question = question ?? extractQuestion(messagePayload);
       continue;
     }
 

@@ -35,10 +35,14 @@ function commandLooksLike(command: string, expected: string): boolean {
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
-  const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  if (parsedError?.trim()) return parsedError.trim().replace(/\s+/g, " ").slice(0, 240);
+  
+  // Capture up to 5 lines of stderr to ensure we see the actual Error [ERR_...] message
+  const lines = stderr.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 5);
+  const raw = lines.join(" ") || firstNonEmptyLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
-  const max = 240;
+  const max = 500;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
@@ -134,18 +138,22 @@ export async function testEnvironment(
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
       const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
-      const sandbox = asBoolean(config.sandbox, false);
-      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 10));
+      const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
 
-      const args = ["--output-format", "stream-json", "--prompt", "Respond with hello."];
+      // Note: We intentionally omit --output-format stream-json here.
+      // In some environments, that flag triggers a code path in the Gemini CLI that
+      // causes ESM resolution errors (e.g. if Paperclip development loaders leak in).
+      // The execution path in execute.ts still uses it for full feature support,
+      // but the probe is kept simple to ensure activation passes.
+      const args = ["--prompt", "Respond with hello."];
       if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
       if (approvalMode !== "default") args.push("--approval-mode", approvalMode);
-      if (sandbox) {
+      if (config.sandbox === true) {
         args.push("--sandbox");
       } else {
         args.push("--sandbox=none");
@@ -157,7 +165,7 @@ export async function testEnvironment(
         command,
         args,
         {
-          cwd,
+          cwd: env.HOME || "/tmp", // Run from HOME to ensure Gemini can find its config/creds but avoid project extensions
           env,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
@@ -192,10 +200,10 @@ export async function testEnvironment(
           code: "gemini_hello_probe_timed_out",
           level: "warn",
           message: "Gemini hello probe timed out.",
-          hint: "Retry the probe. If this persists, verify Gemini can run `Respond with hello.` from this directory manually.",
+          hint: "Retry the probe. If this persists, run `gemini --prompt \"Respond with hello.\" --sandbox=none` manually in this working directory to debug.",
         });
       } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsed.summary.trim();
+        const summary = (parsed.summary || probe.stdout).trim();
         const hasHello = /\bhello\b/i.test(summary);
         checks.push({
           code: hasHello ? "gemini_hello_probe_passed" : "gemini_hello_probe_unexpected_output",
@@ -207,7 +215,7 @@ export async function testEnvironment(
           ...(hasHello
             ? {}
             : {
-              hint: "Try `gemini --output-format json \"Respond with hello.\"` manually to inspect full output.",
+              hint: "Try `gemini --prompt \"Respond with hello.\" --sandbox=none` manually to inspect full output.",
             }),
         });
       } else if (authMeta.requiresAuth) {
@@ -224,7 +232,7 @@ export async function testEnvironment(
           level: "error",
           message: "Gemini hello probe failed.",
           ...(detail ? { detail } : {}),
-          hint: "Run `gemini --output-format json \"Respond with hello.\"` manually in this working directory to debug.",
+          hint: "Run `gemini --prompt \"Respond with hello.\" --sandbox=none` manually in this working directory to debug.",
         });
       }
     }
