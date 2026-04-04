@@ -30,6 +30,10 @@ A live run can use strict mode only when all of the following are true:
 - `Editor-in-Chief` signs off editorial readiness
 - `Publisher` signs off execution readiness
 
+Detailed candidate checklist:
+
+- `/Users/daehan/Documents/persona/paperclip/docs/plans/2026-04-04-selected-live-strict-candidate-checklist.md`
+
 ## Why This Policy
 
 Dry-run strict canaries are already proven.
