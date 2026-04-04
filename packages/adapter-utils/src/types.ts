@@ -353,4 +353,19 @@ export interface CreateConfigValues {
   maxTurnsPerRun: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
+  // openclaw_gateway adapter fields
+  authToken?: string;
+  agentId?: string;
+  sessionKeyStrategy?: string;
+  sessionKey?: string;
+  timeoutSec?: number;
+  waitTimeoutMs?: number;
+  disableDeviceAuth?: boolean;
+  autoPairOnFirstConnect?: boolean;
+  devicePrivateKeyPem?: string;
+  role?: string;
+  scopes?: string;
+  paperclipApiUrl?: string;
+  headersJson?: string;
+  password?: string;
 }
