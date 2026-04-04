@@ -35,6 +35,47 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+const MAX_RETRIES = 5;
+const INITIAL_RETRY_DELAY_MS = 10;
+
+type TransactionContext = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function withSerializableTransaction<T>(
+  db: Db,
+  callback: (tx: TransactionContext) => Promise<T>,
+): Promise<T> {
+  let attempt = 0;
+  let delay = INITIAL_RETRY_DELAY_MS;
+
+  while (attempt < MAX_RETRIES) {
+    try {
+      return await db.transaction(async (tx) => {
+        return await callback(tx);
+      });
+    } catch (error) {
+      // Check for deadlock (40P01) or unique violation (23505)
+      // Note: With FOR UPDATE locking, we shouldn't get 23505, but keep it as safety net
+      const pgError = error as { code?: string };
+      console.error(`[ISSUE CREATE RETRY] attempt=${attempt}, code=${pgError.code}, error=${(error as Error).message}`);
+      if (pgError.code === "40P01" || pgError.code === "23505") {
+        attempt++;
+        if (attempt >= MAX_RETRIES) {
+          console.error(`[ISSUE CREATE RETRY] Max retries reached, throwing error`);
+          throw error;
+        }
+        // Exponential backoff with jitter
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, 1000) + Math.random() * 10;
+        console.error(`[ISSUE CREATE RETRY] Retrying after ${delay}ms...`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("Transaction failed after max retries");
+}
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
 function assertTransition(from: string, to: string) {
@@ -1099,7 +1140,41 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      console.error(`[ISSUE CREATE] Calling withSerializableTransaction for company=${companyId}`);
+
+      // Pre-allocate issue number OUTSIDE the main transaction using advisory lock
+      // This ensures the counter increment survives even if the main transaction rolls back
+      const issueNumber = await db.transaction(async (tx) => {
+        // Acquire advisory lock to serialize counter increments
+        let lockHash = 0;
+        for (let i = 0; i < companyId.length; i++) {
+          const char = companyId.charCodeAt(i);
+          lockHash = ((lockHash << 5) - lockHash) + char;
+          lockHash = lockHash & lockHash;
+        }
+        const lockId = Math.abs(lockHash) % 2147483647;
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${lockId})`);
+
+        const [company] = await tx
+          .update(companies)
+          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+          .where(eq(companies.id, companyId))
+          .returning({ issueCounter: companies.issueCounter });
+
+        return company.issueCounter;
+      });
+
+      // Now get the issue prefix in a separate query (doesn't need to be in the same transaction)
+      const companyPrefix = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0]?.issuePrefix ?? "ISSUE");
+
+      const identifier = `${companyPrefix}-${issueNumber}`;
+      console.error(`[ISSUE CREATE] Pre-allocated identifier: ${identifier}`);
+
+      return withSerializableTransaction(db, async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;

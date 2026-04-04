@@ -397,6 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     agent,
     run: { id: runId, source: "on_demand" },
     context,
+    currentDate: new Date().toISOString().split('T')[0],
   };
   const renderedPrompt = renderTemplate(promptTemplate, templateData);
   const renderedBootstrapPrompt =
