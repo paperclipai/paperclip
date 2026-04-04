@@ -6,6 +6,8 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { i18nMiddleware } from "./middleware/i18n.js";
+import { initI18n } from "./i18n/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -85,6 +87,8 @@ export async function createApp(
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
   },
 ) {
+  await initI18n();
+
   const app = express();
 
   app.use(express.json({
@@ -95,6 +99,7 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+  app.use(i18nMiddleware());
   const privateHostnameGateEnabled =
     opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
@@ -238,8 +243,11 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
-  app.use("/api", (_req, res) => {
-    res.status(404).json({ error: "API route not found" });
+  app.use("/api", (req, res) => {
+    const message = req.t
+      ? req.t("errors.common.apiRouteNotFound")
+      : "API route not found";
+    res.status(404).json({ error: message });
   });
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,

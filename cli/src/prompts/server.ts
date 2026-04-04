@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { t } from "../i18n/index.js";
 import type { AuthConfig, ServerConfig } from "../config/schema.js";
 import { parseHostnameCsv } from "../config/hostnames.js";
 
@@ -10,24 +11,24 @@ export async function promptServer(opts?: {
   const currentAuth = opts?.currentAuth;
 
   const deploymentModeSelection = await p.select({
-    message: "Deployment mode",
+    message: t("server.deployment_mode_message"),
     options: [
       {
         value: "local_trusted",
-        label: "Local trusted",
-        hint: "Easiest for local setup (no login, localhost-only)",
+        label: t("server.local_trusted_label"),
+        hint: t("server.local_trusted_hint"),
       },
       {
         value: "authenticated",
-        label: "Authenticated",
-        hint: "Login required; use for private network or public hosting",
+        label: t("server.authenticated_label"),
+        hint: t("server.authenticated_hint"),
       },
     ],
     initialValue: currentServer?.deploymentMode ?? "local_trusted",
   });
 
   if (p.isCancel(deploymentModeSelection)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("server.setup_cancelled"));
     process.exit(0);
   }
   const deploymentMode = deploymentModeSelection as ServerConfig["deploymentMode"];
@@ -35,23 +36,23 @@ export async function promptServer(opts?: {
   let exposure: ServerConfig["exposure"] = "private";
   if (deploymentMode === "authenticated") {
     const exposureSelection = await p.select({
-      message: "Exposure profile",
+      message: t("server.exposure_message"),
       options: [
         {
           value: "private",
-          label: "Private network",
-          hint: "Private access (for example Tailscale), lower setup friction",
+          label: t("server.private_label"),
+          hint: t("server.private_hint"),
         },
         {
           value: "public",
-          label: "Public internet",
-          hint: "Internet-facing deployment with stricter requirements",
+          label: t("server.public_label"),
+          hint: t("server.public_hint"),
         },
       ],
       initialValue: currentServer?.exposure ?? "private",
     });
     if (p.isCancel(exposureSelection)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("server.setup_cancelled"));
       process.exit(0);
     }
     exposure = exposureSelection as ServerConfig["exposure"];
@@ -59,54 +60,54 @@ export async function promptServer(opts?: {
 
   const hostDefault = deploymentMode === "local_trusted" ? "127.0.0.1" : "0.0.0.0";
   const hostStr = await p.text({
-    message: "Bind host",
+    message: t("server.host_message"),
     defaultValue: currentServer?.host ?? hostDefault,
     placeholder: hostDefault,
     validate: (val) => {
-      if (!val.trim()) return "Host is required";
+      if (!val.trim()) return t("server.host_required");
     },
   });
 
   if (p.isCancel(hostStr)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("server.setup_cancelled"));
     process.exit(0);
   }
 
   const portStr = await p.text({
-    message: "Server port",
+    message: t("server.port_message"),
     defaultValue: String(currentServer?.port ?? 3100),
     placeholder: "3100",
     validate: (val) => {
       const n = Number(val);
       if (isNaN(n) || n < 1 || n > 65535 || !Number.isInteger(n)) {
-        return "Must be an integer between 1 and 65535";
+        return t("server.port_validation");
       }
     },
   });
 
   if (p.isCancel(portStr)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("server.setup_cancelled"));
     process.exit(0);
   }
 
   let allowedHostnames: string[] = [];
   if (deploymentMode === "authenticated" && exposure === "private") {
     const allowedHostnamesInput = await p.text({
-      message: "Allowed hostnames (comma-separated, optional)",
+      message: t("server.allowed_hostnames_message"),
       defaultValue: (currentServer?.allowedHostnames ?? []).join(", "),
-      placeholder: "dotta-macbook-pro, your-host.tailnet.ts.net",
+      placeholder: t("server.allowed_hostnames_placeholder"),
       validate: (val) => {
         try {
           parseHostnameCsv(val);
           return;
         } catch (err) {
-          return err instanceof Error ? err.message : "Invalid hostname list";
+          return err instanceof Error ? err.message : t("server.allowed_hostnames_invalid");
         }
       },
     });
 
     if (p.isCancel(allowedHostnamesInput)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("server.setup_cancelled"));
       process.exit(0);
     }
     allowedHostnames = parseHostnameCsv(allowedHostnamesInput);
@@ -116,25 +117,25 @@ export async function promptServer(opts?: {
   let auth: AuthConfig = { baseUrlMode: "auto", disableSignUp: false };
   if (deploymentMode === "authenticated" && exposure === "public") {
     const urlInput = await p.text({
-      message: "Public base URL",
+      message: t("server.public_url_message"),
       defaultValue: currentAuth?.publicBaseUrl ?? "",
-      placeholder: "https://paperclip.example.com",
+      placeholder: t("server.public_url_placeholder"),
       validate: (val) => {
         const candidate = val.trim();
-        if (!candidate) return "Public base URL is required for public exposure";
+        if (!candidate) return t("server.public_url_required");
         try {
           const url = new URL(candidate);
           if (url.protocol !== "http:" && url.protocol !== "https:") {
-            return "URL must start with http:// or https://";
+            return t("server.public_url_protocol");
           }
           return;
         } catch {
-          return "Enter a valid URL";
+          return t("server.public_url_invalid");
         }
       },
     });
     if (p.isCancel(urlInput)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("server.setup_cancelled"));
       process.exit(0);
     }
     auth = {

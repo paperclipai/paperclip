@@ -1,4 +1,5 @@
 import { useState, type ComponentType } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -35,64 +36,25 @@ type AdvancedAdapterType =
 
 const ADVANCED_ADAPTER_OPTIONS: Array<{
   value: AdvancedAdapterType;
-  label: string;
-  desc: string;
+  /** i18n key in agents namespace: adapterName.<key> */
+  nameKey: string;
+  /** i18n key in agents namespace: adapterOption.<key> */
+  descKey: string;
   icon: ComponentType<{ className?: string }>;
   recommended?: boolean;
 }> = [
-  {
-    value: "claude_local",
-    label: "Claude Code",
-    icon: Sparkles,
-    desc: "Local Claude agent",
-    recommended: true,
-  },
-  {
-    value: "codex_local",
-    label: "Codex",
-    icon: Code,
-    desc: "Local Codex agent",
-    recommended: true,
-  },
-  {
-    value: "gemini_local",
-    label: "Gemini CLI",
-    icon: Gem,
-    desc: "Local Gemini agent",
-  },
-  {
-    value: "opencode_local",
-    label: "OpenCode",
-    icon: OpenCodeLogoIcon,
-    desc: "Local multi-provider agent",
-  },
-  {
-    value: "hermes_local",
-    label: "Hermes Agent",
-    icon: HermesIcon,
-    desc: "Local multi-provider agent",
-  },
-  {
-    value: "pi_local",
-    label: "Pi",
-    icon: Terminal,
-    desc: "Local Pi agent",
-  },
-  {
-    value: "cursor",
-    label: "Cursor",
-    icon: MousePointer2,
-    desc: "Local Cursor agent",
-  },
-  {
-    value: "openclaw_gateway",
-    label: "OpenClaw Gateway",
-    icon: Bot,
-    desc: "Invoke OpenClaw via gateway protocol",
-  },
+  { value: "claude_local", nameKey: "claude-local", descKey: "claude-local", icon: Sparkles, recommended: true },
+  { value: "codex_local", nameKey: "codex-local", descKey: "codex-local", icon: Code, recommended: true },
+  { value: "gemini_local", nameKey: "gemini-local", descKey: "gemini-local", icon: Gem },
+  { value: "opencode_local", nameKey: "opencode-local", descKey: "opencode-local", icon: OpenCodeLogoIcon },
+  { value: "hermes_local", nameKey: "hermes-local", descKey: "hermes-local", icon: HermesIcon },
+  { value: "pi_local", nameKey: "pi-local", descKey: "pi-local", icon: Terminal },
+  { value: "cursor", nameKey: "cursor-local", descKey: "cursor-local", icon: MousePointer2 },
+  { value: "openclaw_gateway", nameKey: "openclaw-gateway", descKey: "openclaw-gateway", icon: Bot },
 ];
 
 export function NewAgentDialog() {
+  const { t } = useTranslation("agents");
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
@@ -110,8 +72,8 @@ export function NewAgentDialog() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      title: t("newAgent.title"),
+      description: t("newAgent.placeholder"),
     });
   }
 
@@ -141,7 +103,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{t("newAgent.addTitle")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -164,15 +126,13 @@ export function NewAgentDialog() {
                   <Sparkles className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We recommend letting your CEO handle agent setup — they know the
-                  org structure and can configure reporting, permissions, and
-                  adapters.
+                  {t("newAgent.ceoRecommendation")}
                 </p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {t("newAgent.askCeo")}
               </Button>
 
               {/* Advanced link */}
@@ -181,7 +141,7 @@ export function NewAgentDialog() {
                   className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
                   onClick={handleAdvancedConfig}
                 >
-                  I want advanced configuration myself
+                  {t("newAgent.advancedConfig")}
                 </button>
               </div>
             </>
@@ -193,10 +153,10 @@ export function NewAgentDialog() {
                   onClick={() => setShowAdvancedCards(false)}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
+                  {t("common:button.back")}
                 </button>
                 <p className="text-sm text-muted-foreground">
-                  Choose your adapter type for advanced setup.
+                  {t("newAgent.chooseAdapter")}
                 </p>
               </div>
 
@@ -211,13 +171,13 @@ export function NewAgentDialog() {
                   >
                     {opt.recommended && (
                       <span className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                        Recommended
+                        {t("common:label.recommended")}
                       </span>
                     )}
                     <opt.icon className="h-4 w-4" />
-                    <span className="font-medium">{opt.label}</span>
+                    <span className="font-medium">{t(`adapterName.${opt.nameKey}`)}</span>
                     <span className="text-muted-foreground text-[10px]">
-                      {opt.desc}
+                      {t(`adapterOption.${opt.descKey}`)}
                     </span>
                   </button>
                 ))}

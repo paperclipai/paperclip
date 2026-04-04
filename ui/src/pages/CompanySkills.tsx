@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type SVGProps } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -249,6 +250,7 @@ function NewSkillForm({
   isPending: boolean;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
@@ -259,19 +261,19 @@ function NewSkillForm({
         <Input
           value={name}
           onChange={(event) => setName(event.target.value)}
-          placeholder="Skill name"
+          placeholder={t("pages.companySkills.skillName")}
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <Input
           value={slug}
           onChange={(event) => setSlug(event.target.value)}
-          placeholder="optional-shortname"
+          placeholder={t("pages.companySkills.optionalShortname")}
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <Textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Short description"
+          placeholder={t("pages.companySkills.shortDescription")}
           className="min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
         <div className="flex items-center justify-end gap-2">
@@ -283,7 +285,7 @@ function NewSkillForm({
             onClick={() => onCreate({ name, slug: slug || null, description: description || null })}
             disabled={isPending || name.trim().length === 0}
           >
-            {isPending ? "Creating..." : "Create skill"}
+            {isPending ? t("button.creating") : t("pages.companySkills.createSkill")}
           </Button>
         </div>
       </div>
@@ -402,6 +404,7 @@ function SkillList({
   onSelectSkill: (skillId: string) => void;
   onSelectPath: (skillId: string, path: string) => void;
 }) {
+  const { t } = useTranslation();
   const filteredSkills = skills.filter((skill) => {
     const haystack = `${skill.name} ${skill.key} ${skill.slug} ${skill.sourceLabel ?? ""}`.toLowerCase();
     return haystack.includes(skillFilter.toLowerCase());
@@ -410,7 +413,7 @@ function SkillList({
   if (filteredSkills.length === 0) {
     return (
       <div className="px-4 py-6 text-sm text-muted-foreground">
-        No skills match this filter.
+        {t("pages.companySkills.noSkillsMatch")}
       </div>
     );
   }
@@ -526,6 +529,7 @@ function SkillPane({
   savePending: boolean;
 }) {
   const { pushToast } = useToast();
+  const { t } = useTranslation();
 
   if (!detail) {
     if (loading) {
@@ -534,7 +538,7 @@ function SkillPane({
     return (
       <EmptyState
         icon={Boxes}
-        message="Select a skill to inspect its files."
+        message={t("pages.companySkills.selectSkill")}
       />
     );
   }
@@ -565,7 +569,7 @@ function SkillPane({
               onClick={() => setEditMode(!editMode)}
             >
               <Pencil className="h-3.5 w-3.5" />
-              {editMode ? "Stop editing" : "Edit"}
+              {editMode ? t("pages.companySkills.stopEditing") : t("button.edit")}
             </button>
           ) : (
             <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
@@ -575,7 +579,7 @@ function SkillPane({
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("pages.companySkills.source")}</span>
               <span className="flex items-center gap-2">
                 <SourceIcon className="h-3.5 w-3.5 text-muted-foreground" />
                 {detail.sourcePath ? (
@@ -583,7 +587,7 @@ function SkillPane({
                     className="truncate hover:text-foreground text-muted-foreground transition-colors cursor-pointer"
                     onClick={() => {
                       navigator.clipboard.writeText(detail.sourcePath!);
-                      pushToast({ title: "Copied path to workspace" });
+                      pushToast({ title: t("pages.companySkills.copiedPath") });
                     }}
                   >
                     {source.label}
@@ -595,10 +599,10 @@ function SkillPane({
             </div>
             {detail.sourceType === "github" && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Pin</span>
-                <span className="font-mono text-xs">{currentPin ?? "untracked"}</span>
+                <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("pages.companySkills.pin")}</span>
+                <span className="font-mono text-xs">{currentPin ?? t("pages.companySkills.untracked")}</span>
                 {updateStatus?.trackingRef && (
-                  <span className="text-xs text-muted-foreground">tracking {updateStatus.trackingRef}</span>
+                  <span className="text-xs text-muted-foreground">{t("pages.companySkills.tracking", { ref: updateStatus.trackingRef })}</span>
                 )}
                 <Button
                   variant="ghost"
@@ -607,7 +611,7 @@ function SkillPane({
                   disabled={checkUpdatesPending || updateStatusLoading}
                 >
                   <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", (checkUpdatesPending || updateStatusLoading) && "animate-spin")} />
-                  Check for updates
+                  {t("pages.companySkills.checkForUpdates")}
                 </Button>
                 {updateStatus?.supported && updateStatus.hasUpdate && (
                   <Button
@@ -616,11 +620,11 @@ function SkillPane({
                     disabled={installUpdatePending}
                   >
                     <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", installUpdatePending && "animate-spin")} />
-                    Install update{latestPin ? ` ${latestPin}` : ""}
+                    {t("pages.companySkills.installUpdate")}{latestPin ? ` ${latestPin}` : ""}
                   </Button>
                 )}
                 {updateStatus?.supported && !updateStatus.hasUpdate && !updateStatusLoading && (
-                  <span className="text-xs text-muted-foreground">Up to date</span>
+                  <span className="text-xs text-muted-foreground">{t("pages.companySkills.upToDate")}</span>
                 )}
                 {!updateStatus?.supported && updateStatus?.reason && (
                   <span className="text-xs text-muted-foreground">{updateStatus.reason}</span>
@@ -628,18 +632,18 @@ function SkillPane({
               </div>
             )}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Key</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("pages.companySkills.key")}</span>
               <span className="font-mono text-xs">{detail.key}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Mode</span>
-              <span>{detail.editable ? "Editable" : "Read only"}</span>
+              <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("pages.companySkills.mode")}</span>
+              <span>{detail.editable ? t("pages.companySkills.editable") : t("pages.companySkills.readOnly")}</span>
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
+            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("pages.companySkills.usedBy")}</span>
             {usedBy.length === 0 ? (
-              <span className="text-muted-foreground">No agents attached</span>
+              <span className="text-muted-foreground">{t("pages.companySkills.noAgentsAttached")}</span>
             ) : (
               <div className="flex flex-wrap gap-x-3 gap-y-1">
                 {usedBy.map((agent) => (
@@ -671,7 +675,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Eye className="h-3.5 w-3.5" />
-                    View
+                    {t("pages.companySkills.view")}
                   </span>
                 </button>
                 <button
@@ -680,7 +684,7 @@ function SkillPane({
                 >
                   <span className="flex items-center gap-1.5">
                     <Code2 className="h-3.5 w-3.5" />
-                    Code
+                    {t("pages.companySkills.code")}
                   </span>
                 </button>
               </div>
@@ -692,7 +696,7 @@ function SkillPane({
                 </Button>
                 <Button size="sm" onClick={onSave} disabled={savePending}>
                   <Save className="mr-1.5 h-3.5 w-3.5" />
-                  {savePending ? "Saving..." : "Save"}
+                  {savePending ? t("button.saving") : t("button.save")}
                 </Button>
               </>
             )}
@@ -704,7 +708,7 @@ function SkillPane({
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
-          <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
+          <div className="text-sm text-muted-foreground">{t("pages.companySkills.selectFile")}</div>
         ) : editMode && file.editable ? (
           file.markdown ? (
             <MarkdownEditor
@@ -733,6 +737,7 @@ function SkillPane({
 }
 
 export function CompanySkills() {
+  const { t } = useTranslation();
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -757,10 +762,10 @@ export function CompanySkills() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
+      { label: t("pages.companySkills.title"), href: "/skills" },
       ...(routeSkillId ? [{ label: "Detail" }] : []),
     ]);
-  }, [routeSkillId, setBreadcrumbs]);
+  }, [routeSkillId, setBreadcrumbs, t]);
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
@@ -855,19 +860,19 @@ export function CompanySkills() {
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
       pushToast({
         tone: "success",
-        title: "Skills imported",
+        title: t("pages.companySkills.skillsImported"),
         body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
+        pushToast({ tone: "warn", title: t("pages.companySkills.importWarnings"), body: result.warnings[0] });
       }
       setSource("");
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
+        title: t("pages.companySkills.skillImportFailed"),
+        body: error instanceof Error ? error.message : t("pages.companySkills.failedToImport"),
       });
     },
   });
@@ -880,15 +885,15 @@ export function CompanySkills() {
       setCreateOpen(false);
       pushToast({
         tone: "success",
-        title: "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        title: t("pages.companySkills.skillCreated"),
+        body: t("pages.companySkills.skillCreatedBody", { name: skill.name }),
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill creation failed",
-        body: error instanceof Error ? error.message : "Failed to create skill.",
+        title: t("pages.companySkills.skillCreationFailed"),
+        body: error instanceof Error ? error.message : t("pages.companySkills.failedToCreate"),
       });
     },
   });
@@ -896,28 +901,28 @@ export function CompanySkills() {
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
-      setScanStatusMessage("Scanning project workspaces for skills...");
+      setScanStatusMessage(t("pages.companySkills.scanningProjects"));
     },
     onSuccess: async (result) => {
-      setScanStatusMessage("Refreshing skills list...");
+      setScanStatusMessage(t("pages.companySkills.refreshingSkills"));
       await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
       const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
         tone: "success",
-        title: "Project skill scan complete",
+        title: t("pages.companySkills.projectScanComplete"),
         body: summary,
       });
       if (result.conflicts[0]) {
         pushToast({
           tone: "warn",
-          title: "Skill conflicts found",
+          title: t("pages.companySkills.skillConflictsFound"),
           body: result.conflicts[0].reason,
         });
       } else if (result.warnings[0]) {
         pushToast({
           tone: "warn",
-          title: "Scan warnings",
+          title: t("pages.companySkills.scanWarnings"),
           body: result.warnings[0],
         });
       }
@@ -926,8 +931,8 @@ export function CompanySkills() {
       setScanStatusMessage(null);
       pushToast({
         tone: "error",
-        title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+        title: t("pages.companySkills.projectScanFailed"),
+        body: error instanceof Error ? error.message : t("pages.companySkills.failedToScan"),
       });
     },
   });
@@ -949,15 +954,15 @@ export function CompanySkills() {
       setEditMode(false);
       pushToast({
         tone: "success",
-        title: "Skill saved",
+        title: t("pages.companySkills.skillSaved"),
         body: result.path,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        title: t("pages.companySkills.saveFailed"),
+        body: error instanceof Error ? error.message : t("pages.companySkills.failedToSaveFile"),
       });
     },
   });
@@ -974,21 +979,21 @@ export function CompanySkills() {
       navigate(skillRoute(skill.id, selectedPath));
       pushToast({
         tone: "success",
-        title: "Skill updated",
-        body: skill.sourceRef ? `Pinned to ${shortRef(skill.sourceRef)}` : skill.name,
+        title: t("pages.companySkills.skillUpdated"),
+        body: skill.sourceRef ? t("pages.companySkills.pinnedTo", { ref: shortRef(skill.sourceRef) }) : skill.name,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
+        title: t("pages.companySkills.updateFailed"),
+        body: error instanceof Error ? error.message : t("pages.companySkills.failedToInstallUpdate"),
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return <EmptyState icon={Boxes} message={t("pages.companySkills.selectCompany")} />;
   }
 
   function handleAddSkillSource() {
@@ -1005,9 +1010,9 @@ export function CompanySkills() {
       <Dialog open={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add a skill source</DialogTitle>
+            <DialogTitle>{t("pages.companySkills.addSkillSource")}</DialogTitle>
             <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
+              {t("pages.companySkills.addSkillSourceDesc")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1018,9 +1023,9 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">Browse skills.sh</span>
+                <span className="block font-medium">{t("pages.companySkills.browseSkillsSh")}</span>
                 <span className="mt-1 block text-muted-foreground">
-                  Find install commands and paste one here.
+                  {t("pages.companySkills.browseSkillsShDesc")}
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1032,9 +1037,9 @@ export function CompanySkills() {
               className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
             >
               <span>
-                <span className="block font-medium">Search GitHub</span>
+                <span className="block font-medium">{t("pages.companySkills.searchGithub")}</span>
                 <span className="mt-1 block text-muted-foreground">
-                  Look for repositories with `SKILL.md`, then paste the repo URL here.
+                  {t("pages.companySkills.searchGithubDesc")}
                 </span>
               </span>
               <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1049,9 +1054,9 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">Skills</h1>
+                <h1 className="text-base font-semibold">{t("pages.companySkills.title")}</h1>
                 <p className="text-xs text-muted-foreground">
-                  {skillsQuery.data?.length ?? 0} available
+                  {t("pages.companySkills.available", { count: skillsQuery.data?.length ?? 0 })}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -1060,7 +1065,7 @@ export function CompanySkills() {
                   size="icon-sm"
                   onClick={() => scanProjects.mutate()}
                   disabled={scanProjects.isPending}
-                  title="Scan project workspaces for skills"
+                  title={t("pages.companySkills.scanProjectWorkspaces")}
                 >
                   <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
                 </Button>
@@ -1075,7 +1080,7 @@ export function CompanySkills() {
               <input
                 value={skillFilter}
                 onChange={(event) => setSkillFilter(event.target.value)}
-                placeholder="Filter skills"
+                placeholder={t("pages.companySkills.filterSkills")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
@@ -1084,7 +1089,7 @@ export function CompanySkills() {
               <input
                 value={source}
                 onChange={(event) => setSource(event.target.value)}
-                placeholder="Paste path, GitHub URL, or skills.sh command"
+                placeholder={t("pages.companySkills.pasteSource")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               />
               <Button

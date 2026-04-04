@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { t } from "../i18n/index.js";
 
 const PAPERCLIP_ART = [
   "██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ",
@@ -9,14 +10,12 @@ const PAPERCLIP_ART = [
   "╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ",
 ] as const;
 
-const TAGLINE = "Open-source orchestration for zero-human companies";
-
 export function printPaperclipCliBanner(): void {
   const lines = [
     "",
     ...PAPERCLIP_ART.map((line) => pc.cyan(line)),
     pc.blue("  ───────────────────────────────────────────────────────"),
-    pc.bold(pc.white(`  ${TAGLINE}`)),
+    pc.bold(pc.white(`  ${t("banner.tagline")}`)),
     "",
   ];
 

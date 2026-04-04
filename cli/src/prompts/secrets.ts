@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { t } from "../i18n/index.js";
 import type { SecretProvider } from "@paperclipai/shared";
 import type { SecretsConfig } from "../config/schema.js";
 import { resolveDefaultSecretsKeyFilePath, resolvePaperclipInstanceId } from "../config/home.js";
@@ -22,44 +23,44 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   const base = current ?? defaultSecretsConfig();
 
   const provider = await p.select({
-    message: "Secrets provider",
+    message: t("secrets.provider_message"),
     options: [
       {
         value: "local_encrypted" as const,
-        label: "Local encrypted (recommended)",
-        hint: "best for single-developer installs",
+        label: t("secrets.local_encrypted_label"),
+        hint: t("secrets.local_encrypted_hint"),
       },
       {
         value: "aws_secrets_manager" as const,
-        label: "AWS Secrets Manager",
-        hint: "requires external adapter integration",
+        label: t("secrets.aws_label"),
+        hint: t("secrets.aws_hint"),
       },
       {
         value: "gcp_secret_manager" as const,
-        label: "GCP Secret Manager",
-        hint: "requires external adapter integration",
+        label: t("secrets.gcp_label"),
+        hint: t("secrets.gcp_hint"),
       },
       {
         value: "vault" as const,
-        label: "HashiCorp Vault",
-        hint: "requires external adapter integration",
+        label: t("secrets.vault_label"),
+        hint: t("secrets.vault_hint"),
       },
     ],
     initialValue: base.provider,
   });
 
   if (p.isCancel(provider)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("secrets.setup_cancelled"));
     process.exit(0);
   }
 
   const strictMode = await p.confirm({
-    message: "Require secret refs for sensitive env vars?",
+    message: t("secrets.strict_mode_message"),
     initialValue: base.strictMode,
   });
 
   if (p.isCancel(strictMode)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("secrets.setup_cancelled"));
     process.exit(0);
   }
 
@@ -67,16 +68,16 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   let keyFilePath = base.localEncrypted.keyFilePath || fallbackDefault;
   if (provider === "local_encrypted") {
     const keyPath = await p.text({
-      message: "Local encrypted key file path",
+      message: t("secrets.key_file_message"),
       defaultValue: keyFilePath,
       placeholder: fallbackDefault,
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Key file path is required";
+        if (!value || value.trim().length === 0) return t("secrets.key_file_required");
       },
     });
 
     if (p.isCancel(keyPath)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("secrets.setup_cancelled"));
       process.exit(0);
     }
     keyFilePath = keyPath.trim();
@@ -84,8 +85,8 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
 
   if (provider !== "local_encrypted") {
     p.note(
-      `${provider} is not fully wired in this build yet. Keep local_encrypted unless you are actively implementing that adapter.`,
-      "Heads up",
+      t("secrets.provider_not_wired", { provider }),
+      t("secrets.heads_up"),
     );
   }
 

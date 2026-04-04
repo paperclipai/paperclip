@@ -1,4 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -26,6 +27,7 @@ type AgentSnippetInput = {
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function CompanySettings() {
+  const { t } = useTranslation();
   const {
     companies,
     selectedCompany,
@@ -152,7 +154,7 @@ export function CompanySettings() {
     },
     onError: (err) => {
       setInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
+        err instanceof Error ? err.message : t("pages.companySettings.failedToCreateInvite")
       );
     }
   });
@@ -223,15 +225,15 @@ export function CompanySettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings" }
+      { label: selectedCompany?.name ?? t("section.company"), href: "/dashboard" },
+      { label: t("nav.settings") }
     ]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs, selectedCompany?.name, t]);
 
   if (!selectedCompany) {
     return (
       <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
+        {t("pages.companySettings.noCompanySelected")}
       </div>
     );
   }
@@ -248,16 +250,16 @@ export function CompanySettings() {
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Settings</h1>
+        <h1 className="text-lg font-semibold">{t("pages.companySettings.title")}</h1>
       </div>
 
       {/* General */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
+          {t("pages.companySettings.general")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Company name" hint="The display name for your company.">
+          <Field label={t("pages.companySettings.companyName")} hint={t("pages.companySettings.companyNameHint")}>
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
@@ -266,14 +268,14 @@ export function CompanySettings() {
             />
           </Field>
           <Field
-            label="Description"
-            hint="Optional description shown in the company profile."
+            label={t("pages.companySettings.description")}
+            hint={t("pages.companySettings.descriptionHint")}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={description}
-              placeholder="Optional company description"
+              placeholder={t("pages.companySettings.descriptionPlaceholder")}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
@@ -283,7 +285,7 @@ export function CompanySettings() {
       {/* Appearance */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
+          {t("pages.companySettings.appearance")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-start gap-4">
@@ -297,8 +299,8 @@ export function CompanySettings() {
             </div>
             <div className="flex-1 space-y-3">
               <Field
-                label="Logo"
-                hint="Upload a PNG, JPEG, WEBP, GIF, or SVG logo image."
+                label={t("pages.companySettings.logo")}
+                hint={t("pages.companySettings.logoHint")}
               >
                 <div className="space-y-2">
                   <input
@@ -315,7 +317,7 @@ export function CompanySettings() {
                         onClick={handleClearLogo}
                         disabled={clearLogoMutation.isPending}
                       >
-                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                        {clearLogoMutation.isPending ? t("pages.companySettings.removingLogo") : t("pages.companySettings.removeLogo")}
                       </Button>
                     </div>
                   )}
@@ -324,7 +326,7 @@ export function CompanySettings() {
                       {logoUploadError ??
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
-                          : "Logo upload failed")}
+                          : t("pages.companySettings.logoUploadFailed"))}
                     </span>
                   )}
                   {clearLogoMutation.isError && (
@@ -333,13 +335,13 @@ export function CompanySettings() {
                     </span>
                   )}
                   {logoUploadMutation.isPending && (
-                    <span className="text-xs text-muted-foreground">Uploading logo...</span>
+                    <span className="text-xs text-muted-foreground">{t("pages.companySettings.uploadingLogo")}</span>
                   )}
                 </div>
               </Field>
               <Field
-                label="Brand color"
-                hint="Sets the hue for the company icon. Leave empty for auto-generated color."
+                label={t("pages.companySettings.brandColor")}
+                hint={t("pages.companySettings.brandColorHint")}
               >
                 <div className="flex items-center gap-2">
                   <input
@@ -357,7 +359,7 @@ export function CompanySettings() {
                         setBrandColor(v);
                       }
                     }}
-                    placeholder="Auto"
+                    placeholder={t("pages.companySettings.auto")}
                     className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
                   />
                   {brandColor && (
@@ -367,7 +369,7 @@ export function CompanySettings() {
                       onClick={() => setBrandColor("")}
                       className="text-xs text-muted-foreground"
                     >
-                      Clear
+                      {t("pages.companySettings.clear")}
                     </Button>
                   )}
                 </div>
@@ -385,16 +387,16 @@ export function CompanySettings() {
             onClick={handleSaveGeneral}
             disabled={generalMutation.isPending || !companyName.trim()}
           >
-            {generalMutation.isPending ? "Saving..." : "Save changes"}
+            {generalMutation.isPending ? t("button.saving") : t("pages.companySettings.saveChanges")}
           </Button>
           {generalMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
+            <span className="text-xs text-muted-foreground">{t("pages.companySettings.saved")}</span>
           )}
           {generalMutation.isError && (
             <span className="text-xs text-destructive">
               {generalMutation.error instanceof Error
                   ? generalMutation.error.message
-                  : "Failed to save"}
+                  : t("pages.companySettings.failedToSave")}
             </span>
           )}
         </div>
@@ -403,12 +405,12 @@ export function CompanySettings() {
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
+          {t("pages.companySettings.hiring")}
         </div>
         <div className="rounded-md border border-border px-4 py-3">
           <ToggleField
-            label="Require board approval for new hires"
-            hint="New agent hires stay pending until approved by board."
+            label={t("pages.companySettings.requireApproval")}
+            hint={t("pages.companySettings.requireApprovalHint")}
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
@@ -461,14 +463,14 @@ export function CompanySettings() {
       {/* Invites */}
       <div className="space-y-4" data-testid="company-settings-invites-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Invites
+          {t("pages.companySettings.invites")}
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
-              Generate an OpenClaw agent invite snippet.
+              {t("pages.companySettings.generateInviteHint")}
             </span>
-            <HintIcon text="Creates a short-lived OpenClaw agent invite and renders a copy-ready prompt." />
+            <HintIcon text={t("pages.companySettings.generateInviteTooltip")} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -478,8 +480,8 @@ export function CompanySettings() {
               disabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
-                ? "Generating..."
-                : "Generate OpenClaw Invite Prompt"}
+                ? t("pages.companySettings.generating")
+                : t("pages.companySettings.generateInviteBtn")}
             </Button>
           </div>
           {inviteError && (
@@ -492,7 +494,7 @@ export function CompanySettings() {
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-muted-foreground">
-                  OpenClaw Invite Prompt
+                  {t("pages.companySettings.openClawInvitePrompt")}
                 </div>
                 {snippetCopied && (
                   <span
@@ -500,7 +502,7 @@ export function CompanySettings() {
                     className="flex items-center gap-1 text-xs text-green-600 animate-pulse"
                   >
                     <Check className="h-3 w-3" />
-                    Copied
+                    {t("pages.companySettings.copied")}
                   </span>
                 )}
               </div>
@@ -527,7 +529,7 @@ export function CompanySettings() {
                       }
                     }}
                   >
-                    {snippetCopied ? "Copied snippet" : "Copy snippet"}
+                    {snippetCopied ? t("pages.companySettings.copiedSnippet") : t("pages.companySettings.copySnippet")}
                   </Button>
                 </div>
               </div>
@@ -539,12 +541,12 @@ export function CompanySettings() {
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
+          {t("pages.companySettings.companyPackages")}
         </div>
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            {t("pages.companySettings.importExportMoved")}{" "}
+            <a href="/org" className="underline hover:text-foreground">{t("pages.companySettings.orgChart")}</a> {t("pages.companySettings.header")}
           </p>
           <div className="mt-3 flex items-center gap-2">
             <Button size="sm" variant="outline" asChild>
@@ -566,12 +568,11 @@ export function CompanySettings() {
       {/* Danger Zone */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
+          {t("pages.companySettings.dangerZone")}
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            {t("pages.companySettings.archiveDescription")}
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -584,7 +585,7 @@ export function CompanySettings() {
               onClick={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                  t("pages.companySettings.archiveConfirm", { name: selectedCompany.name })
                 );
                 if (!confirmed) return;
                 const nextCompanyId =
@@ -600,16 +601,16 @@ export function CompanySettings() {
               }}
             >
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? t("pages.companySettings.archiving")
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? t("pages.companySettings.alreadyArchived")
+                : t("pages.companySettings.archiveCompany")}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : t("pages.companySettings.failedToArchive")}
               </span>
             )}
           </div>

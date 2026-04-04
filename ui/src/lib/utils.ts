@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import i18n, { getIntlLocale } from "@/i18n";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
 
@@ -8,11 +9,12 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  const locale = getIntlLocale();
+  return new Intl.NumberFormat(locale, { style: "currency", currency: "USD" }).format(cents / 100);
 }
 
 export function formatDate(date: Date | string): string {
-  return new Date(date).toLocaleDateString("en-US", {
+  return new Date(date).toLocaleDateString(getIntlLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -20,7 +22,7 @@ export function formatDate(date: Date | string): string {
 }
 
 export function formatDateTime(date: Date | string): string {
-  return new Date(date).toLocaleString("en-US", {
+  return new Date(date).toLocaleString(getIntlLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -30,16 +32,17 @@ export function formatDateTime(date: Date | string): string {
 }
 
 export function relativeTime(date: Date | string): string {
+  const t = i18n.t.bind(i18n);
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return t("time.justNow");
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return t("time.minutesAgo", { count: diffMin });
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return t("time.hoursAgo", { count: diffHr });
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return t("time.daysAgo", { count: diffDay });
   return formatDate(date);
 }
 
@@ -64,25 +67,15 @@ export function providerDisplayName(provider: string): string {
 }
 
 export function billingTypeDisplayName(billingType: BillingType): string {
-  const map: Record<BillingType, string> = {
-    metered_api: "Metered API",
-    subscription_included: "Subscription",
-    subscription_overage: "Subscription overage",
-    credits: "Credits",
-    fixed: "Fixed",
-    unknown: "Unknown",
-  };
-  return map[billingType];
+  const key = `finance.billingType.${billingType}`;
+  const translated = i18n.t(key);
+  return translated === key ? billingType : translated;
 }
 
 export function quotaSourceDisplayName(source: string): string {
-  const map: Record<string, string> = {
-    "anthropic-oauth": "Anthropic OAuth",
-    "claude-cli": "Claude CLI",
-    "codex-rpc": "Codex app server",
-    "codex-wham": "ChatGPT WHAM",
-  };
-  return map[source] ?? source;
+  const key = `finance.quotaSource.${source}`;
+  const translated = i18n.t(key);
+  return translated === key ? source : translated;
 }
 
 function coerceBillingType(value: unknown): BillingType | null {
@@ -118,27 +111,15 @@ export function visibleRunCostUsd(
 }
 
 export function financeEventKindDisplayName(eventKind: FinanceEventKind): string {
-  const map: Record<FinanceEventKind, string> = {
-    inference_charge: "Inference charge",
-    platform_fee: "Platform fee",
-    credit_purchase: "Credit purchase",
-    credit_refund: "Credit refund",
-    credit_expiry: "Credit expiry",
-    byok_fee: "BYOK fee",
-    gateway_overhead: "Gateway overhead",
-    log_storage_charge: "Log storage",
-    logpush_charge: "Logpush",
-    provisioned_capacity_charge: "Provisioned capacity",
-    training_charge: "Training",
-    custom_model_import_charge: "Custom model import",
-    custom_model_storage_charge: "Custom model storage",
-    manual_adjustment: "Manual adjustment",
-  };
-  return map[eventKind];
+  const key = `finance.eventKind.${eventKind}`;
+  const translated = i18n.t(key);
+  return translated === key ? eventKind : translated;
 }
 
 export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
+  const key = `finance.direction.${direction}`;
+  const translated = i18n.t(key);
+  return translated === key ? direction : translated;
 }
 
 /** Build an issue URL using the human-readable identifier when available. */

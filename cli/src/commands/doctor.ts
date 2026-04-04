@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { t } from "../i18n/index.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import {
@@ -29,7 +30,7 @@ export async function doctor(opts: {
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
+  p.intro(pc.bgCyan(pc.black(t("doctor.intro"))));
 
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);
@@ -51,9 +52,9 @@ export async function doctor(opts: {
     const readResult: CheckResult = {
       name: "Config file",
       status: "fail",
-      message: `Could not read config: ${err instanceof Error ? err.message : String(err)}`,
+      message: t("doctor.config_read_fail", { error: err instanceof Error ? err.message : String(err) }),
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section database` or `paperclipai onboard`",
+      repairHint: t("doctor.config_read_repair"),
     };
     results.push(readResult);
     printResult(readResult);
@@ -142,7 +143,7 @@ async function maybeRepair(
   let shouldRepair = opts.yes;
   if (!shouldRepair) {
     const answer = await p.confirm({
-      message: `Repair "${result.name}"?`,
+      message: t("doctor.repair_confirm", { name: result.name }),
       initialValue: true,
     });
     if (p.isCancel(answer)) return false;
@@ -152,10 +153,10 @@ async function maybeRepair(
   if (shouldRepair) {
     try {
       await result.repair();
-      p.log.success(`Repaired: ${result.name}`);
+      p.log.success(t("doctor.repaired", { name: result.name }));
       return true;
     } catch (err) {
-      p.log.error(`Repair failed: ${err instanceof Error ? err.message : String(err)}`);
+      p.log.error(t("doctor.repair_failed", { error: err instanceof Error ? err.message : String(err) }));
     }
   }
   return false;
@@ -185,18 +186,18 @@ function printSummary(results: CheckResult[]): { passed: number; warned: number;
   const failed = results.filter((r) => r.status === "fail").length;
 
   const parts: string[] = [];
-  parts.push(pc.green(`${passed} passed`));
-  if (warned) parts.push(pc.yellow(`${warned} warnings`));
-  if (failed) parts.push(pc.red(`${failed} failed`));
+  parts.push(pc.green(t("doctor.passed", { count: passed })));
+  if (warned) parts.push(pc.yellow(t("doctor.warnings", { count: warned })));
+  if (failed) parts.push(pc.red(t("doctor.failed", { count: failed })));
 
-  p.note(parts.join(", "), "Summary");
+  p.note(parts.join(", "), t("doctor.summary_title"));
 
   if (failed > 0) {
-    p.outro(pc.red("Some checks failed. Fix the issues above and re-run doctor."));
+    p.outro(pc.red(t("doctor.some_failed")));
   } else if (warned > 0) {
-    p.outro(pc.yellow("All critical checks passed with some warnings."));
+    p.outro(pc.yellow(t("doctor.all_critical_passed")));
   } else {
-    p.outro(pc.green("All checks passed!"));
+    p.outro(pc.green(t("doctor.all_passed")));
   }
 
   return { passed, warned, failed };

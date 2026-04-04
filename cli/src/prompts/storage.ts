@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { t } from "../i18n/index.js";
 import type { StorageConfig } from "../config/schema.js";
 import { resolveDefaultStorageDir, resolvePaperclipInstanceId } from "../config/home.js";
 
@@ -26,39 +27,39 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
   const base = current ?? defaultStorageConfig();
 
   const provider = await p.select({
-    message: "Storage provider",
+    message: t("storage.provider_message"),
     options: [
       {
         value: "local_disk" as const,
-        label: "Local disk (recommended)",
-        hint: "best for single-user local deployments",
+        label: t("storage.local_disk_label"),
+        hint: t("storage.local_disk_hint"),
       },
       {
         value: "s3" as const,
-        label: "S3 compatible",
-        hint: "for cloud/object storage backends",
+        label: t("storage.s3_label"),
+        hint: t("storage.s3_hint"),
       },
     ],
     initialValue: base.provider,
   });
 
   if (p.isCancel(provider)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
   if (provider === "local_disk") {
     const baseDir = await p.text({
-      message: "Local storage base directory",
+      message: t("storage.base_dir_message"),
       defaultValue: base.localDisk.baseDir || defaultStorageBaseDir(),
       placeholder: defaultStorageBaseDir(),
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Storage base directory is required";
+        if (!value || value.trim().length === 0) return t("storage.base_dir_required");
       },
     });
 
     if (p.isCancel(baseDir)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("storage.setup_cancelled"));
       process.exit(0);
     }
 
@@ -72,62 +73,62 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
   }
 
   const bucket = await p.text({
-    message: "S3 bucket",
+    message: t("storage.bucket_message"),
     defaultValue: base.s3.bucket || "paperclip",
     placeholder: "paperclip",
     validate: (value) => {
-      if (!value || value.trim().length === 0) return "Bucket is required";
+      if (!value || value.trim().length === 0) return t("storage.bucket_required");
     },
   });
 
   if (p.isCancel(bucket)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
   const region = await p.text({
-    message: "S3 region",
+    message: t("storage.region_message"),
     defaultValue: base.s3.region || "us-east-1",
     placeholder: "us-east-1",
     validate: (value) => {
-      if (!value || value.trim().length === 0) return "Region is required";
+      if (!value || value.trim().length === 0) return t("storage.region_required");
     },
   });
 
   if (p.isCancel(region)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
   const endpoint = await p.text({
-    message: "S3 endpoint (optional for compatible backends)",
+    message: t("storage.endpoint_message"),
     defaultValue: base.s3.endpoint ?? "",
     placeholder: "https://s3.amazonaws.com",
   });
 
   if (p.isCancel(endpoint)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
   const prefix = await p.text({
-    message: "Object key prefix (optional)",
+    message: t("storage.prefix_message"),
     defaultValue: base.s3.prefix ?? "",
     placeholder: "paperclip/",
   });
 
   if (p.isCancel(prefix)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
   const forcePathStyle = await p.confirm({
-    message: "Use S3 path-style URLs?",
+    message: t("storage.path_style_message"),
     initialValue: base.s3.forcePathStyle ?? false,
   });
 
   if (p.isCancel(forcePathStyle)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("storage.setup_cancelled"));
     process.exit(0);
   }
 
@@ -143,4 +144,3 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
     },
   };
 }
-

@@ -1,4 +1,5 @@
 import * as p from "@clack/prompts";
+import { t } from "../i18n/index.js";
 import type { DatabaseConfig } from "../config/schema.js";
 import {
   resolveDefaultBackupDir,
@@ -23,16 +24,16 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
   };
 
   const mode = await p.select({
-    message: "Database mode",
+    message: t("database.mode_message"),
     options: [
-      { value: "embedded-postgres" as const, label: "Embedded PostgreSQL (managed locally)", hint: "recommended" },
-      { value: "postgres" as const, label: "PostgreSQL (external server)" },
+      { value: "embedded-postgres" as const, label: t("database.embedded_label"), hint: t("database.embedded_hint") },
+      { value: "postgres" as const, label: t("database.postgres_label") },
     ],
     initialValue: base.mode,
   });
 
   if (p.isCancel(mode)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("database.setup_cancelled"));
     process.exit(0);
   }
 
@@ -42,47 +43,47 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
 
   if (mode === "postgres") {
     const value = await p.text({
-      message: "PostgreSQL connection string",
+      message: t("database.connection_string_message"),
       defaultValue: base.connectionString ?? "",
-      placeholder: "postgres://user:pass@localhost:5432/paperclip",
+      placeholder: t("database.connection_string_placeholder"),
       validate: (val) => {
-        if (!val) return "Connection string is required for PostgreSQL mode";
-        if (!val.startsWith("postgres")) return "Must be a postgres:// or postgresql:// URL";
+        if (!val) return t("database.connection_string_required");
+        if (!val.startsWith("postgres")) return t("database.connection_string_protocol");
       },
     });
 
     if (p.isCancel(value)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("database.setup_cancelled"));
       process.exit(0);
     }
 
     connectionString = value;
   } else {
     const dataDir = await p.text({
-      message: "Embedded PostgreSQL data directory",
+      message: t("database.data_dir_message"),
       defaultValue: base.embeddedPostgresDataDir || defaultEmbeddedDir,
       placeholder: defaultEmbeddedDir,
     });
 
     if (p.isCancel(dataDir)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("database.setup_cancelled"));
       process.exit(0);
     }
 
     embeddedPostgresDataDir = dataDir || defaultEmbeddedDir;
 
     const portValue = await p.text({
-      message: "Embedded PostgreSQL port",
+      message: t("database.port_message"),
       defaultValue: String(base.embeddedPostgresPort || 54329),
       placeholder: "54329",
       validate: (val) => {
         const n = Number(val);
-        if (!Number.isInteger(n) || n < 1 || n > 65535) return "Port must be an integer between 1 and 65535";
+        if (!Number.isInteger(n) || n < 1 || n > 65535) return t("database.port_validation");
       },
     });
 
     if (p.isCancel(portValue)) {
-      p.cancel("Setup cancelled.");
+      p.cancel(t("database.setup_cancelled"));
       process.exit(0);
     }
 
@@ -91,54 +92,54 @@ export async function promptDatabase(current?: DatabaseConfig): Promise<Database
   }
 
   const backupEnabled = await p.confirm({
-    message: "Enable automatic database backups?",
+    message: t("database.backup_enabled_message"),
     initialValue: base.backup.enabled,
   });
   if (p.isCancel(backupEnabled)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("database.setup_cancelled"));
     process.exit(0);
   }
 
   const backupDirInput = await p.text({
-    message: "Backup directory",
+    message: t("database.backup_dir_message"),
     defaultValue: base.backup.dir || defaultBackupDir,
     placeholder: defaultBackupDir,
-    validate: (val) => (!val || val.trim().length === 0 ? "Backup directory is required" : undefined),
+    validate: (val) => (!val || val.trim().length === 0 ? t("database.backup_dir_required") : undefined),
   });
   if (p.isCancel(backupDirInput)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("database.setup_cancelled"));
     process.exit(0);
   }
 
   const backupIntervalInput = await p.text({
-    message: "Backup interval (minutes)",
+    message: t("database.backup_interval_message"),
     defaultValue: String(base.backup.intervalMinutes || 60),
     placeholder: "60",
     validate: (val) => {
       const n = Number(val);
-      if (!Number.isInteger(n) || n < 1) return "Interval must be a positive integer";
-      if (n > 10080) return "Interval must be 10080 minutes (7 days) or less";
+      if (!Number.isInteger(n) || n < 1) return t("database.backup_interval_positive");
+      if (n > 10080) return t("database.backup_interval_max");
       return undefined;
     },
   });
   if (p.isCancel(backupIntervalInput)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("database.setup_cancelled"));
     process.exit(0);
   }
 
   const backupRetentionInput = await p.text({
-    message: "Backup retention (days)",
+    message: t("database.backup_retention_message"),
     defaultValue: String(base.backup.retentionDays || 30),
     placeholder: "30",
     validate: (val) => {
       const n = Number(val);
-      if (!Number.isInteger(n) || n < 1) return "Retention must be a positive integer";
-      if (n > 3650) return "Retention must be 3650 days or less";
+      if (!Number.isInteger(n) || n < 1) return t("database.backup_retention_positive");
+      if (n > 3650) return t("database.backup_retention_max");
       return undefined;
     },
   });
   if (p.isCancel(backupRetentionInput)) {
-    p.cancel("Setup cancelled.");
+    p.cancel(t("database.setup_cancelled"));
     process.exit(0);
   }
 
