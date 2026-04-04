@@ -37,6 +37,7 @@ type WorkerDeps = {
   publisher?: ReturnType<typeof blogPublisherService>;
   runService?: ReturnType<typeof blogRunService>;
   artifactRoot?: string;
+  publicVerifyContractMode?: "compat" | "strict";
 };
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -79,6 +80,19 @@ function isPublicVerifyPass(result: unknown) {
     return String(record.verdict ?? "").trim() === "pass";
   }
   return record.ok !== false;
+}
+
+function resolvePublicVerifyContractMode(
+  run: Record<string, unknown>,
+  depsMode: WorkerDeps["publicVerifyContractMode"],
+) {
+  const context = toRecord(run.contextJson);
+  const configured = firstNonEmptyString(
+    depsMode,
+    run.publicVerifyContractMode,
+    context.publicVerifyContractMode,
+  ).toLowerCase();
+  return configured === "strict" ? "strict" : "compat";
 }
 
 async function readJsonArtifact(filePath: string) {
@@ -457,6 +471,8 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
           break;
         }
         case "public_verify":
+          {
+            const publicVerifyContractMode = resolvePublicVerifyContractMode(run, deps.publicVerifyContractMode);
           result = String(run.publishMode ?? "draft") === "dry_run"
             ? {
                 ok: true,
@@ -468,12 +484,16 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
               }
             : await (deps.runPublicVerifyStep ?? runPublicVerifyStep)(input);
           if (String(run.publishMode ?? "draft") !== "dry_run" && !isSharedPublicVerifyPayload(result)) {
+            if (publicVerifyContractMode === "strict") {
+              throw new Error("blog_run_public_verify_contract_missing");
+            }
             result = await normalizeLegacyPublicVerifyResult(run, runDir, toRecord(result));
           }
           if (!isPublicVerifyPass(result)) {
             throw new Error(publicVerifyFailureMessage(result));
           }
           break;
+          }
         default:
           throw new Error(`unsupported_blog_run_step:${stepKey}`);
       }

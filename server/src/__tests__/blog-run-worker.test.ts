@@ -375,6 +375,36 @@ describe("blog run worker", () => {
     await fs.rm(artifactRoot, { recursive: true, force: true });
   });
 
+  it("fails closed in strict mode when public verify does not return the shared contract", async () => {
+    const runService = {
+      getById: vi.fn().mockResolvedValue(createRun({ currentStep: "public_verify", status: "published", publishMode: "publish" })),
+      getDetail: vi.fn().mockResolvedValue({ ok: true }),
+      claimNextStep: vi.fn().mockResolvedValue(createClaim({ currentStep: "public_verify", status: "published", publishMode: "publish" }, { stepKey: "public_verify" })),
+      completeStep: vi.fn(),
+      failStep: vi.fn().mockResolvedValue({ run: { status: "failed", failedReason: "blog_run_public_verify_contract_missing" } }),
+    };
+    const worker = blogRunWorkerService({} as any, {
+      runService: runService as any,
+      publicVerifyContractMode: "strict",
+      runPublicVerifyStep: vi.fn().mockResolvedValue({
+        ok: true,
+        mode: "wordpress",
+        post_id: 123,
+        status: "publish",
+        link: "https://fluxaivory.com/test/",
+        checks: { post_found: true },
+      }),
+    });
+
+    const result = await worker.runNext("run-1");
+
+    expect(runService.completeStep).not.toHaveBeenCalled();
+    expect(runService.failStep).toHaveBeenCalledWith("run-1", "public_verify", expect.objectContaining({
+      errorMessage: "blog_run_public_verify_contract_missing",
+    }));
+    expect(result).toMatchObject({ run: { status: "failed" } });
+  });
+
   it("refuses to run publish while approval is pending", async () => {
     const runService = {
       getById: vi.fn().mockResolvedValue(createRun({ currentStep: "publish", status: "publish_approval_pending" })),
