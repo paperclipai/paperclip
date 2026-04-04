@@ -235,3 +235,9 @@ export type {
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
 } from "./plugin.js";
+export type {
+  AutoLabelTriggerEvent,
+  AutoLabelRuleAction,
+  AutoLabelRule,
+  AutoLabelRuleExecution,
+} from "./auto-label-rule.js";

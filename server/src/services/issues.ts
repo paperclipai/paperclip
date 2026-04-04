@@ -30,6 +30,8 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { fireAutoLabelRules } from "./auto-label-hooks.js";
+import { logger } from "../middleware/logger.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -1244,7 +1246,9 @@ export function issueService(db: Db) {
       data: IssueCreateInput,
     ) => {
       const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const isolatedWorkspacesEnabled = experimentalSettings.enableIsolatedWorkspaces;
+      const autoLabelRulesEngineEnabled = experimentalSettings.autoLabelRulesEngine;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
@@ -1262,7 +1266,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -1384,9 +1388,9 @@ export function issueService(db: Db) {
 
         const [issue] = await tx.insert(issues).values(values).returning();
 
-        // Auto-apply "From Board" label for board-authored issues
+        // Auto-apply "From Board" label for board-authored issues (hardcoded path)
         let finalLabelIds = inputLabelIds ? [...inputLabelIds] : [];
-        if (issueData.createdByUserId) {
+        if (!autoLabelRulesEngineEnabled && issueData.createdByUserId) {
           const fromBoardLabelName = "From Board";
           let fromBoardLabel = await tx
             .select({ id: labels.id })
@@ -1406,13 +1410,31 @@ export function issueService(db: Db) {
         if (finalLabelIds.length > 0) {
           await syncIssueLabels(issue.id, companyId, finalLabelIds, tx);
         }
-        // Auto-manage "Need Board" label on creation
-        if (issue.status === "blocked" && issue.blockedOn === "board") {
+        // Auto-manage "Need Board" label on creation (hardcoded path)
+        if (!autoLabelRulesEngineEnabled && issue.status === "blocked" && issue.blockedOn === "board") {
           await ensureNeedBoardLabel(issue.id, companyId, tx);
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+
+      // Fire auto-label rules engine after transaction (when enabled)
+      if (autoLabelRulesEngineEnabled) {
+        const actorType = issueData.createdByUserId ? "user" as const : "agent" as const;
+        const actorId = issueData.createdByUserId ?? issueData.createdByAgentId ?? "unknown";
+        fireAutoLabelRules(db, {
+          companyId,
+          triggerEvent: "issue.created",
+          issueId: result.id,
+          issue: result as unknown as Record<string, unknown>,
+          actor: { type: actorType, id: actorId },
+        }).catch((err) => {
+          // Non-critical — log and continue
+          logger.warn({ err, issueId: result.id }, "auto-label rules engine error on issue.created");
+        });
+      }
+
+      return result;
     },
 
     update: async (
@@ -1428,7 +1450,9 @@ export function issueService(db: Db) {
       if (!existing) return null;
 
       const { labelIds: nextLabelIds, ...issueData } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      const updateExperimentalSettings = await instanceSettings.getExperimental();
+      const isolatedWorkspacesEnabled = updateExperimentalSettings.enableIsolatedWorkspaces;
+      const updateAutoLabelRulesEngineEnabled = updateExperimentalSettings.autoLabelRulesEngine;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
@@ -1509,7 +1533,7 @@ export function issueService(db: Db) {
         patch.blockedOn = null;
       }
 
-      return db.transaction(async (tx) => {
+      const updateResult = await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -1538,12 +1562,31 @@ export function issueService(db: Db) {
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
-        // Auto-manage "Need Board" label based on blocked_on state
-        const finalBlockedOn = updated.blockedOn;
-        await syncNeedBoardLabel(updated.id, existing.companyId, finalBlockedOn === "board", tx);
+        // Auto-manage "Need Board" label based on blocked_on state (hardcoded path)
+        if (!updateAutoLabelRulesEngineEnabled) {
+          const finalBlockedOn = updated.blockedOn;
+          await syncNeedBoardLabel(updated.id, existing.companyId, finalBlockedOn === "board", tx);
+        }
         const [enriched] = await withIssueLabels(tx, [updated]);
-        return enriched;
+        return { enriched, existing };
       });
+
+      // Fire auto-label rules engine after transaction (when enabled)
+      if (updateAutoLabelRulesEngineEnabled && updateResult) {
+        const actorType = updateResult.existing.assigneeAgentId ? "agent" as const : "user" as const;
+        const actorId = updateResult.existing.assigneeAgentId ?? updateResult.existing.assigneeUserId ?? "unknown";
+        fireAutoLabelRules(db, {
+          companyId: updateResult.existing.companyId,
+          triggerEvent: "issue.updated",
+          issueId: updateResult.enriched.id,
+          issue: updateResult.enriched as unknown as Record<string, unknown>,
+          actor: { type: actorType, id: actorId },
+        }).catch((err) => {
+          logger.warn({ err, issueId: updateResult.enriched.id }, "auto-label rules engine error on issue.updated");
+        });
+      }
+
+      return updateResult?.enriched ?? null;
     },
 
     remove: (id: string) =>
@@ -2127,8 +2170,25 @@ export function issueService(db: Db) {
 
       // Auto-label "Board Comments" when a board/user authors a comment
       const isBoardComment = Boolean(actor.userId) && !actor.agentId;
-      if (isBoardComment) {
+      const commentAutoLabelEnabled = (await instanceSettings.getExperimental()).autoLabelRulesEngine;
+      if (!commentAutoLabelEnabled && isBoardComment) {
         await ensureBoardCommentLabel(issueId, issue.companyId);
+      }
+
+      // Fire auto-label rules engine for comment.created (when enabled)
+      if (commentAutoLabelEnabled) {
+        const actorType = actor.userId ? "user" as const : "agent" as const;
+        const actorId = actor.userId ?? actor.agentId ?? "unknown";
+        fireAutoLabelRules(db, {
+          companyId: issue.companyId,
+          triggerEvent: "comment.created",
+          issueId,
+          issue: { id: issueId, companyId: issue.companyId } as Record<string, unknown>,
+          actor: { type: actorType, id: actorId },
+          comment: { body, authorUserId: actor.userId, authorAgentId: actor.agentId } as Record<string, unknown>,
+        }).catch((err) => {
+          logger.warn({ err, issueId }, "auto-label rules engine error on comment.created");
+        });
       }
 
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);

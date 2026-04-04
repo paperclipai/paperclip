@@ -47,6 +47,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableWorkProducts: parsed.data.enableWorkProducts ?? false,
       enableDependencies: parsed.data.enableDependencies ?? false,
+      autoLabelRulesEngine: parsed.data.autoLabelRulesEngine ?? false,
       crashMonitoring: parsed.data.crashMonitoring ?? DEFAULT_CRASH_MONITORING,
     };
   }
@@ -55,6 +56,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     autoRestartDevServerWhenIdle: false,
     enableWorkProducts: false,
     enableDependencies: false,
+    autoLabelRulesEngine: false,
     crashMonitoring: DEFAULT_CRASH_MONITORING,
   };
 }

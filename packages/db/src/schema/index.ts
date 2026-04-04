@@ -62,3 +62,4 @@ export { pluginLogs } from "./plugin_logs.js";
 export { workflows, workflowRevisions } from "./workflows.js";
 export { workflowAgentAssignments } from "./workflow_agent_assignments.js";
 export { workflowRuns, workflowRunSteps } from "./workflow_runs.js";
+export { autoLabelRules, autoLabelRuleExecutions } from "./auto_label_rules.js";

@@ -46,6 +46,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { parseGitHubPrUrl, reconcilePrState } from "../services/github-pr-reconcile.js";
+import { fireAutoLabelRules } from "../services/auto-label-hooks.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -776,25 +777,28 @@ export function issueRoutes(
     // Apply Merged / Upstream PR / Upstream Merged labels based on the
     // reconciled PR states.  Labels are additive (never removed), following
     // the same pattern as the existing "has-pr" auto-label.
-    try {
-      const hasMerged = prStates.some((s) => s.status === "merged");
-      const hasUpstream = prStates.some((s) => s.isUpstream);
-      const hasUpstreamMerged = prStates.some((s) => s.isUpstream && s.status === "merged");
+    const prAutoLabelRulesEngineEnabled = await instanceSettings.getExperimental().then((e) => e.autoLabelRulesEngine);
+    if (!prAutoLabelRulesEngineEnabled) {
+      try {
+        const hasMerged = prStates.some((s) => s.status === "merged");
+        const hasUpstream = prStates.some((s) => s.isUpstream);
+        const hasUpstreamMerged = prStates.some((s) => s.isUpstream && s.status === "merged");
 
-      if (hasMerged) {
-        const lid = await svc.ensureCompanyLabel(issue.companyId, "Merged", "#10B981");
-        await svc.addLabelToIssue(issue.id, issue.companyId, lid);
+        if (hasMerged) {
+          const lid = await svc.ensureCompanyLabel(issue.companyId, "Merged", "#10B981");
+          await svc.addLabelToIssue(issue.id, issue.companyId, lid);
+        }
+        if (hasUpstream) {
+          const lid = await svc.ensureCompanyLabel(issue.companyId, "Upstream PR", "#F59E0B");
+          await svc.addLabelToIssue(issue.id, issue.companyId, lid);
+        }
+        if (hasUpstreamMerged) {
+          const lid = await svc.ensureCompanyLabel(issue.companyId, "Upstream Merged", "#059669");
+          await svc.addLabelToIssue(issue.id, issue.companyId, lid);
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to apply extension PR labels");
       }
-      if (hasUpstream) {
-        const lid = await svc.ensureCompanyLabel(issue.companyId, "Upstream PR", "#F59E0B");
-        await svc.addLabelToIssue(issue.id, issue.companyId, lid);
-      }
-      if (hasUpstreamMerged) {
-        const lid = await svc.ensureCompanyLabel(issue.companyId, "Upstream Merged", "#059669");
-        await svc.addLabelToIssue(issue.id, issue.companyId, lid);
-      }
-    } catch (err) {
-      logger.warn({ err, issueId: issue.id }, "failed to apply extension PR labels");
     }
 
     res.json({ reconciled, skipped, errors });
@@ -1010,7 +1014,8 @@ export function issueRoutes(
       return;
     }
     // Auto-label issues that have a pull_request work product
-    if (product.type === "pull_request") {
+    const wpAutoLabelRulesEngineEnabled = await instanceSettings.getExperimental().then((e) => e.autoLabelRulesEngine);
+    if (!wpAutoLabelRulesEngineEnabled && product.type === "pull_request") {
       try {
         const labelId = await svc.ensureCompanyLabel(issue.companyId, "has-pr", "#8B5CF6");
         await svc.addLabelToIssue(issue.id, issue.companyId, labelId);
@@ -1020,6 +1025,20 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+
+    // Fire auto-label rules engine for work_product.registered (when enabled)
+    if (wpAutoLabelRulesEngineEnabled) {
+      fireAutoLabelRules(db, {
+        companyId: issue.companyId,
+        triggerEvent: "work_product.registered",
+        issueId: issue.id,
+        issue: issue as unknown as Record<string, unknown>,
+        actor: { type: actor.actorType, id: actor.actorId },
+        workProduct: product as unknown as Record<string, unknown>,
+      }).catch((err) => {
+        logger.warn({ err, issueId: issue.id }, "auto-label rules engine error on work_product.registered");
+      });
+    }
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
