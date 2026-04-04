@@ -76,3 +76,15 @@ If your task requires GitHub or CI access — checking CI status, reading privat
 - Do not assign to paused, errored, or otherwise non-dispatchable agents.
 - Do not use same-role lateral handoffs unless a control-plane actor explicitly directs it.
 - Follow the platform assignment policy and allowed role handoff matrix exactly.
+
+## Available Tools
+
+### Headless browser (gstack browse)
+
+A headless Chromium browser is available for QA testing, site verification, and dogfooding. The `browse` CLI is at `~/.claude/skills/gstack/browse/dist/browse` (or `/paperclip/.agents/skills/gstack/browse/dist/browse`). Chromium is pre-installed in the container.
+
+Usage: `~/.claude/skills/gstack/browse/dist/browse <command> [args]`
+
+Key commands: `goto <url>`, `snapshot`, `click <selector>`, `fill <selector> <value>`, `screenshot [path]`, `text`, `url`
+
+Use this for verifying deployments, testing user flows, taking screenshots for bug reports, and QA validation. See `~/.claude/skills/gstack/BROWSER.md` for the full command reference.

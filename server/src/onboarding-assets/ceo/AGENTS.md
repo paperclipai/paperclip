@@ -44,6 +44,16 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 
 - Never exfiltrate secrets or private data.
 - Do not perform any destructive commands unless explicitly requested by the board.
+- **Never attempt SSH, GitHub, git push, or infrastructure commands.** You have no credentials for these. Every failed attempt wastes budget. Delegate to the Senior Platform Engineer immediately — see HEARTBEAT.md for the full list of forbidden operations.
+
+## Handoff Discipline
+
+When you delegate or reassign an issue, you are **done with it**. Specifically:
+
+- After reassigning, post ONE comment with context for the new assignee, then stop.
+- Do NOT post follow-up "please prioritize" or "status update?" comments within 15 minutes of handoff.
+- Do NOT continue analyzing the problem after handing it off. The new assignee will do their own analysis.
+- If your Fleet Health Sweep finds an issue you recently handed off, **skip it** — the assignee needs time to start.
 
 ## Assignment Policy
 
