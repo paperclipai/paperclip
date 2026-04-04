@@ -603,9 +603,10 @@ export function CommentThread({
       createdAtMs: new Date(runTimestamp(run)).getTime(),
       run,
     }));
+    // Sort newest-first; all tie-breakers are also reversed to be consistent.
     return [...commentItems, ...eventItems, ...runItems].sort((a, b) => {
-      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
-      if (a.kind === b.kind) return a.id.localeCompare(b.id);
+      if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+      if (a.kind === b.kind) return b.id.localeCompare(a.id);
       const kindOrder = {
         event: 0,
         comment: 1,
@@ -746,56 +747,6 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        currentUserId={currentUserId}
-        companyId={companyId}
-        projectId={projectId}
-        feedbackVoteByTargetId={feedbackVoteByTargetId}
-        feedbackDataSharingPreference={feedbackDataSharingPreference}
-        onVote={onVote ? handleFeedbackVote : undefined}
-        votingTargetId={votingTargetId}
-        highlightCommentId={highlightCommentId}
-        feedbackTermsUrl={feedbackTermsUrl}
-      />
-
-      {liveRunSlot}
-
-      {queuedComments.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
-            </h4>
-            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
-                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
-              >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
-              </Button>
-            ) : null}
-          </div>
-          <div className="space-y-3">
-            {queuedComments.map((comment) => (
-              <CommentCard
-                key={comment.id}
-                comment={comment}
-                agentMap={agentMap}
-                companyId={companyId}
-                projectId={projectId}
-                highlightCommentId={highlightCommentId}
-                queued
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="space-y-2">
         <MarkdownEditor
           ref={editorRef}
@@ -880,6 +831,56 @@ export function CommentThread({
           </Button>
         </div>
       </div>
+
+      {liveRunSlot}
+
+      {queuedComments.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+              Queued Comments ({queuedComments.length})
+            </h4>
+            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
+              >
+                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
+              </Button>
+            ) : null}
+          </div>
+          <div className="space-y-3">
+            {queuedComments.map((comment) => (
+              <CommentCard
+                key={comment.id}
+                comment={comment}
+                agentMap={agentMap}
+                companyId={companyId}
+                projectId={projectId}
+                highlightCommentId={highlightCommentId}
+                queued
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        currentUserId={currentUserId}
+        companyId={companyId}
+        projectId={projectId}
+        feedbackVoteByTargetId={feedbackVoteByTargetId}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        onVote={onVote ? handleFeedbackVote : undefined}
+        votingTargetId={votingTargetId}
+        highlightCommentId={highlightCommentId}
+        feedbackTermsUrl={feedbackTermsUrl}
+      />
 
     </div>
   );
