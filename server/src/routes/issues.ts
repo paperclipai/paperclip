@@ -373,6 +373,7 @@ export function issueRoutes(
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
+      identifier: req.query.identifier as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originId: req.query.originId as string | undefined,
       includeRoutineExecutions:
