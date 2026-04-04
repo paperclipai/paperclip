@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:17-alpine
+    container_name: paperclip-db
     environment:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip
@@ -10,30 +11,39 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - paperclip-internal
 
   server:
     build:
       context: ..
       dockerfile: Dockerfile
-    ports:
-      - "3100:3100"
+    container_name: paperclip
     environment:
       DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-https://paperclip.fabfunds.app}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - paperclip-internal
+      - tunnel-proxy
+
+networks:
+  paperclip-internal:
+    name: paperclip-internal
+    driver: bridge
+  tunnel-proxy:
+    external: true
 
 volumes:
   pgdata:
