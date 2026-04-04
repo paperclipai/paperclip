@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
+  isUuidLike,
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
@@ -32,6 +33,12 @@ export function costRoutes(db: Db) {
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
   const agents = agentService(db);
+
+  function asRecord(value: unknown): Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -196,6 +203,13 @@ export function costRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
+    const rawAgentId = Array.isArray(req.query.agentId) ? req.query.agentId[0] : req.query.agentId;
+    const agentId =
+      typeof rawAgentId === "string" && rawAgentId.trim().length > 0 ? rawAgentId.trim() : null;
+    if (agentId && !isUuidLike(agentId)) {
+      res.status(400).json({ error: "invalid 'agentId' value" });
+      return;
+    }
     // validate companyId resolves to a real company so the "__none__" sentinel
     // and any forged ids are rejected before we touch provider credentials
     const company = await companies.getById(companyId);
@@ -203,7 +217,27 @@ export function costRoutes(db: Db) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
+
+    let results: Awaited<ReturnType<typeof fetchAllQuotaWindows>>;
+    if (agentId) {
+      const agent = await agents.getById(agentId);
+      if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      results = await fetchAllQuotaWindows({
+        adapterTypes: [agent.adapterType],
+        contextsByAdapterType: {
+          [agent.adapterType]: {
+            companyId,
+            agentId: agent.id,
+            adapterConfig: asRecord(agent.adapterConfig),
+          },
+        },
+      });
+    } else {
+      results = await fetchAllQuotaWindows();
+    }
     res.json(results);
   });
 

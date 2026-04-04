@@ -223,4 +223,96 @@ describe("cost routes", () => {
     expect(res.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
+
+  it("returns company-scoped quota windows by default", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+    });
+    mockFetchAllQuotaWindows.mockResolvedValue([
+      { provider: "anthropic", ok: true, windows: [] },
+    ]);
+
+    const app = createApp();
+    const res = await request(app).get("/api/companies/company-1/costs/quota-windows");
+
+    expect(res.status).toBe(200);
+    expect(mockFetchAllQuotaWindows).toHaveBeenCalledWith();
+    expect(res.body).toEqual([{ provider: "anthropic", ok: true, windows: [] }]);
+  });
+
+  it("targets an agent adapter config when agentId is provided", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      name: "Claude Agent",
+      adapterType: "claude_local",
+      adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/tmp/claude-agent/.claude" } },
+    });
+    mockFetchAllQuotaWindows.mockResolvedValue([
+      { provider: "anthropic", ok: true, windows: [] },
+    ]);
+
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/quota-windows")
+      .query({ agentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(res.status).toBe(200);
+    expect(mockFetchAllQuotaWindows).toHaveBeenCalledWith({
+      adapterTypes: ["claude_local"],
+      contextsByAdapterType: {
+        claude_local: {
+          companyId: "company-1",
+          agentId: "agent-1",
+          adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/tmp/claude-agent/.claude" } },
+        },
+      },
+    });
+    expect(res.body).toEqual([{ provider: "anthropic", ok: true, windows: [] }]);
+  });
+
+  it("returns 400 when the quota route receives an invalid agentId", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/quota-windows")
+      .query({ agentId: "not-a-uuid" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid 'agentId'/i);
+    expect(mockAgentService.getById).not.toHaveBeenCalled();
+    expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when an agent-scoped quota request targets an agent outside the company", async () => {
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-2",
+      companyId: "company-2",
+      name: "Other Agent",
+      adapterType: "claude_local",
+      adapterConfig: {},
+    });
+
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/quota-windows")
+      .query({ agentId: "22222222-2222-4222-8222-222222222222" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toMatch(/agent not found/i);
+    expect(mockFetchAllQuotaWindows).not.toHaveBeenCalled();
+  });
 });

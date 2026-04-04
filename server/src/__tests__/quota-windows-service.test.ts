@@ -53,4 +53,49 @@ describe("fetchAllQuotaWindows", () => {
       },
     ]);
   });
+
+  it("filters adapters and passes quota context through to the requested provider", async () => {
+    const claudeQuota = vi.fn().mockResolvedValue({
+      provider: "anthropic",
+      source: "anthropic-oauth",
+      ok: true,
+      windows: [],
+    });
+    const codexQuota = vi.fn().mockResolvedValue({
+      provider: "openai",
+      source: "codex-rpc",
+      ok: true,
+      windows: [],
+    });
+    vi.mocked(listServerAdapters).mockReturnValue([
+      { type: "claude_local", getQuotaWindows: claudeQuota },
+      { type: "codex_local", getQuotaWindows: codexQuota },
+    ] as never);
+
+    const results = await fetchAllQuotaWindows({
+      adapterTypes: ["claude_local"],
+      contextsByAdapterType: {
+        claude_local: {
+          companyId: "company-1",
+          agentId: "agent-1",
+          adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/tmp/managed/.claude" } },
+        },
+      },
+    });
+
+    expect(results).toEqual([
+      {
+        provider: "anthropic",
+        source: "anthropic-oauth",
+        ok: true,
+        windows: [],
+      },
+    ]);
+    expect(claudeQuota).toHaveBeenCalledWith({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/tmp/managed/.claude" } },
+    });
+    expect(codexQuota).not.toHaveBeenCalled();
+  });
 });

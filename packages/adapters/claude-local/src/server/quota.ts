@@ -1,32 +1,88 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { AdapterQuotaContext, ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import {
+  resolveManagedClaudeConfigDir,
+  resolveManagedClaudeHomeDir,
+  resolveSharedClaudeConfigDir,
+} from "./claude-home.js";
 
 const execFileAsync = promisify(execFile);
 
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
 
-export function claudeConfigDir(): string {
-  const fromEnv = process.env.CLAUDE_CONFIG_DIR;
-  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
-  return path.join(os.homedir(), ".claude");
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasNonEmptyProcessEnv(key: string): boolean {
-  const value = process.env[key];
+function configuredQuotaEnv(ctx?: AdapterQuotaContext): Record<string, string> {
+  const env: Record<string, string> = {};
+  const configuredEnv = ctx?.adapterConfig && isPlainRecord(ctx.adapterConfig.env)
+    ? ctx.adapterConfig.env
+    : null;
+  if (!configuredEnv) return env;
+  for (const [key, value] of Object.entries(configuredEnv)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      env[key] = String(value);
+    }
+  }
+  return env;
+}
+
+function quotaContextEnv(ctx?: AdapterQuotaContext): NodeJS.ProcessEnv {
+  return { ...process.env, ...configuredQuotaEnv(ctx) };
+}
+
+export function claudeConfigDir(ctx?: AdapterQuotaContext): string {
+  if (!ctx) return resolveSharedClaudeConfigDir(process.env);
+  const env = quotaContextEnv(ctx);
+  const explicitConfigDir = env.CLAUDE_CONFIG_DIR;
+  if (typeof explicitConfigDir === "string" && explicitConfigDir.trim().length > 0) {
+    return path.resolve(explicitConfigDir.trim());
+  }
+  return resolveManagedClaudeConfigDir(env, ctx.companyId, ctx.agentId);
+}
+
+function hasNonEmptyEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
+  const value = env[key];
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function createClaudeQuotaEnv(): Record<string, string> {
+function createClaudeQuotaEnv(ctx?: AdapterQuotaContext): Record<string, string> {
+  const sourceEnv = ctx ? process.env : quotaContextEnv();
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(sourceEnv)) {
     if (typeof value !== "string") continue;
     if (key.startsWith("ANTHROPIC_")) continue;
+    if (ctx && key.startsWith("CLAUDE_")) continue;
     env[key] = value;
+  }
+  if (!ctx) return env;
+
+  const configuredEnv = configuredQuotaEnv(ctx);
+  for (const [key, value] of Object.entries(configuredEnv)) {
+    env[key] = value;
+  }
+
+  const mergedEnv = { ...process.env, ...configuredEnv };
+  const explicitHome = mergedEnv.HOME;
+  const explicitConfigDir = mergedEnv.CLAUDE_CONFIG_DIR;
+  if (typeof explicitHome === "string" && explicitHome.trim().length > 0) {
+    env.HOME = path.resolve(explicitHome.trim());
+  } else if (
+    typeof explicitConfigDir !== "string" ||
+    explicitConfigDir.trim().length === 0
+  ) {
+    env.HOME = resolveManagedClaudeHomeDir(mergedEnv, ctx.companyId, ctx.agentId);
+  }
+
+  if (typeof explicitConfigDir === "string" && explicitConfigDir.trim().length > 0) {
+    env.CLAUDE_CONFIG_DIR = path.resolve(explicitConfigDir.trim());
+  } else if (env.HOME) {
+    env.CLAUDE_CONFIG_DIR = path.join(env.HOME, ".claude");
   }
   return env;
 }
@@ -112,10 +168,10 @@ interface ClaudeAuthStatus {
   subscriptionType: string | null;
 }
 
-export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
+export async function readClaudeAuthStatus(ctx?: AdapterQuotaContext): Promise<ClaudeAuthStatus | null> {
   try {
     const { stdout } = await execFileAsync("claude", ["auth", "status"], {
-      env: process.env,
+      env: createClaudeQuotaEnv(ctx),
       timeout: 5_000,
       maxBuffer: 1024 * 1024,
     });
@@ -137,8 +193,8 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
-export async function readClaudeToken(): Promise<string | null> {
-  const configDir = claudeConfigDir();
+export async function readClaudeToken(ctx?: AdapterQuotaContext): Promise<string | null> {
+  const configDir = claudeConfigDir(ctx);
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
@@ -435,11 +491,14 @@ function buildClaudeCliShellProbeCommand(): string {
   return `${feed} | script -q -e -f -c ${quoteForShell(claudeCommand)} /dev/null`;
 }
 
-export async function captureClaudeCliUsageText(timeoutMs = 12_000): Promise<string> {
+export async function captureClaudeCliUsageText(
+  timeoutMs = 12_000,
+  ctx?: AdapterQuotaContext,
+): Promise<string> {
   const command = buildClaudeCliShellProbeCommand();
   try {
     const { stdout, stderr } = await execFileAsync("sh", ["-c", command], {
-      env: createClaudeQuotaEnv(),
+      env: createClaudeQuotaEnv(ctx),
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -466,8 +525,8 @@ export async function captureClaudeCliUsageText(timeoutMs = 12_000): Promise<str
   }
 }
 
-export async function fetchClaudeCliQuota(): Promise<QuotaWindow[]> {
-  const rawText = await captureClaudeCliUsageText();
+export async function fetchClaudeCliQuota(ctx?: AdapterQuotaContext): Promise<QuotaWindow[]> {
+  const rawText = await captureClaudeCliUsageText(12_000, ctx);
   return parseClaudeCliUsageText(rawText);
 }
 
@@ -476,10 +535,11 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
-  const authStatus = await readClaudeAuthStatus();
+export async function getQuotaWindows(ctx?: AdapterQuotaContext): Promise<ProviderQuotaResult> {
+  const effectiveEnv = quotaContextEnv(ctx);
+  const authStatus = await readClaudeAuthStatus(ctx);
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
-  const token = await readClaudeToken();
+  const token = await readClaudeToken(ctx);
 
   const errors: string[] = [];
 
@@ -493,13 +553,13 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   }
 
   try {
-    const windows = await fetchClaudeCliQuota();
+    const windows = await fetchClaudeCliQuota(ctx);
     return { provider: "anthropic", source: CLAUDE_USAGE_SOURCE_CLI, ok: true, windows };
   } catch (error) {
     errors.push(formatProviderError("Claude CLI /usage", error));
   }
 
-  if (hasNonEmptyProcessEnv("ANTHROPIC_API_KEY") && !authDescription) {
+  if (hasNonEmptyEnvValue(effectiveEnv, "ANTHROPIC_API_KEY") && !authDescription) {
     return {
       provider: "anthropic",
       ok: false,

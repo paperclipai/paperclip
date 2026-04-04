@@ -1,7 +1,12 @@
-import type { ProviderQuotaResult } from "@paperclipai/shared";
+import type { AdapterQuotaContext, ProviderQuotaResult } from "@paperclipai/adapter-utils";
 import { listServerAdapters } from "../adapters/registry.js";
 
 const QUOTA_PROVIDER_TIMEOUT_MS = 20_000;
+
+interface FetchQuotaWindowsOptions {
+  adapterTypes?: string[];
+  contextsByAdapterType?: Record<string, AdapterQuotaContext | undefined>;
+}
 
 function providerSlugForAdapterType(type: string): string {
   switch (type) {
@@ -20,11 +25,21 @@ function providerSlugForAdapterType(type: string): string {
  * Individual adapter failures are caught and returned as error results rather than
  * letting one provider's outage block the entire response.
  */
-export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
-  const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
+export async function fetchAllQuotaWindows(
+  options: FetchQuotaWindowsOptions = {},
+): Promise<ProviderQuotaResult[]> {
+  const requestedTypes = options.adapterTypes ? new Set(options.adapterTypes) : null;
+  const adapters = listServerAdapters().filter(
+    (adapter) => adapter.getQuotaWindows != null && (!requestedTypes || requestedTypes.has(adapter.type)),
+  );
 
   const settled = await Promise.allSettled(
-    adapters.map((adapter) => withQuotaTimeout(adapter.type, adapter.getQuotaWindows!())),
+    adapters.map((adapter) =>
+      withQuotaTimeout(
+        adapter.type,
+        adapter.getQuotaWindows!(options.contextsByAdapterType?.[adapter.type]),
+      ),
+    ),
   );
 
   return settled.map((result, i) => {

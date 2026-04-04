@@ -1,16 +1,48 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { AdapterQuotaContext, ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { resolveManagedCodexHomeDir } from "./codex-home.js";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
 
-export function codexHomeDir(): string {
-  const fromEnv = process.env.CODEX_HOME;
-  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
-  return path.join(os.homedir(), ".codex");
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function quotaContextEnv(ctx?: AdapterQuotaContext): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const configuredEnv = ctx?.adapterConfig && isPlainRecord(ctx.adapterConfig.env)
+    ? ctx.adapterConfig.env
+    : null;
+  if (!configuredEnv) return env;
+  for (const [key, value] of Object.entries(configuredEnv)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      env[key] = String(value);
+    }
+  }
+  return env;
+}
+
+export function codexHomeDir(ctx?: AdapterQuotaContext): string {
+  if (!ctx) {
+    const fromEnv = process.env.CODEX_HOME;
+    if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
+    return path.join(os.homedir(), ".codex");
+  }
+  const env = quotaContextEnv(ctx);
+  const fromEnv = env.CODEX_HOME;
+  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
+  return resolveManagedCodexHomeDir(env, ctx.companyId);
+}
+
+function createCodexQuotaEnv(ctx?: AdapterQuotaContext): NodeJS.ProcessEnv {
+  const env = quotaContextEnv(ctx);
+  if (!ctx) return env;
+  env.CODEX_HOME = codexHomeDir(ctx);
+  return env;
 }
 
 interface CodexLegacyAuthFile {
@@ -107,8 +139,13 @@ function parsePlanAndEmailFromToken(idToken: string | null, accessToken: string 
   return { email: null, planType: null };
 }
 
-export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthInfo | null> {
-  const authPath = path.join(codexHome ?? codexHomeDir(), "auth.json");
+export async function readCodexAuthInfo(
+  codexHomeOrContext?: string | AdapterQuotaContext,
+): Promise<CodexAuthInfo | null> {
+  const authPath = path.join(
+    typeof codexHomeOrContext === "string" ? codexHomeOrContext : codexHomeDir(codexHomeOrContext),
+    "auth.json",
+  );
   let raw: string;
   try {
     raw = await fs.readFile(authPath, "utf8");
@@ -161,8 +198,10 @@ export async function readCodexAuthInfo(codexHome?: string): Promise<CodexAuthIn
   };
 }
 
-export async function readCodexToken(): Promise<{ token: string; accountId: string | null } | null> {
-  const auth = await readCodexAuthInfo();
+export async function readCodexToken(
+  codexHomeOrContext?: string | AdapterQuotaContext,
+): Promise<{ token: string; accountId: string | null } | null> {
+  const auth = await readCodexAuthInfo(codexHomeOrContext);
   if (!auth) return null;
   return { token: auth.accessToken, accountId: auth.accountId };
 }
@@ -407,18 +446,19 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
+  private proc: ChildProcessWithoutNullStreams;
 
   private nextId = 1;
   private buffer = "";
   private pending = new Map<number, PendingRequest>();
   private stderr = "";
 
-  constructor() {
+  constructor(env: NodeJS.ProcessEnv = process.env) {
+    this.proc = spawn(
+      "codex",
+      ["-s", "read-only", "-a", "untrusted", "app-server"],
+      { stdio: ["pipe", "pipe", "pipe"], env },
+    );
     this.proc.stdout.setEncoding("utf8");
     this.proc.stderr.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
@@ -511,8 +551,8 @@ class CodexRpcClient {
   }
 }
 
-export async function fetchCodexRpcQuota(): Promise<CodexRpcQuotaSnapshot> {
-  const client = new CodexRpcClient();
+export async function fetchCodexRpcQuota(ctx?: AdapterQuotaContext): Promise<CodexRpcQuotaSnapshot> {
+  const client = new CodexRpcClient(createCodexQuotaEnv(ctx));
   try {
     await client.initialize();
     const [limits, account] = await Promise.all([
@@ -530,11 +570,11 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
-export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+export async function getQuotaWindows(ctx?: AdapterQuotaContext): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
 
   try {
-    const rpc = await fetchCodexRpcQuota();
+    const rpc = await fetchCodexRpcQuota(ctx);
     if (rpc.windows.length > 0) {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_RPC, ok: true, windows: rpc.windows };
     }
@@ -542,7 +582,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     errors.push(formatProviderError("Codex app-server", error));
   }
 
-  const auth = await readCodexToken();
+  const auth = await readCodexToken(ctx);
   if (auth) {
     try {
       const windows = await fetchCodexQuota(auth.token, auth.accountId);

@@ -21,6 +21,8 @@ import {
   mapCodexRpcQuota,
   codexHomeDir,
 } from "@paperclipai/adapter-codex-local/server";
+import { resolveManagedClaudeConfigDir } from "../../../packages/adapters/claude-local/src/server/claude-home.js";
+import { resolveManagedCodexHomeDir } from "../../../packages/adapters/codex-local/src/server/codex-home.js";
 
 // ---------------------------------------------------------------------------
 // toPercent
@@ -288,6 +290,21 @@ describe("readClaudeToken", () => {
     expect(token).toBe("dotfile-token");
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
   });
+
+  it("resolves the managed Claude config dir for agent-scoped quota reads", () => {
+    const ctx = { companyId: "company-1", agentId: "agent-1", adapterConfig: {} };
+    expect(claudeConfigDir(ctx)).toBe(resolveManagedClaudeConfigDir(process.env, "company-1", "agent-1"));
+  });
+
+  it("prefers explicit CLAUDE_CONFIG_DIR for agent-scoped quota reads", () => {
+    expect(
+      claudeConfigDir({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/tmp/custom-claude/.claude" } },
+      }),
+    ).toBe(path.resolve("/tmp/custom-claude/.claude"));
+  });
 });
 
 describe("parseClaudeCliUsageText", () => {
@@ -481,6 +498,20 @@ describe("readCodexToken", () => {
     const result = await readCodexToken();
     expect(result).toEqual({ token: "nested-token", accountId: "acc-nested" });
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  it("resolves the managed Codex home for company-scoped quota reads", () => {
+    const ctx = { companyId: "company-1", adapterConfig: {} };
+    expect(codexHomeDir(ctx)).toBe(resolveManagedCodexHomeDir(process.env, "company-1"));
+  });
+
+  it("prefers explicit CODEX_HOME for company-scoped quota reads", () => {
+    expect(
+      codexHomeDir({
+        companyId: "company-1",
+        adapterConfig: { env: { CODEX_HOME: "/tmp/custom-codex" } },
+      }),
+    ).toBe(path.resolve("/tmp/custom-codex"));
   });
 });
 

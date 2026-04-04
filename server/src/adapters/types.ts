@@ -22,6 +22,7 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
+  AdapterQuotaContext,
   NativeContextManagement,
   ResolvedSessionCompactionPolicy,
   SessionCompactionPolicy,

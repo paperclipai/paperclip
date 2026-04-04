@@ -261,6 +261,12 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+export interface AdapterQuotaContext {
+  companyId?: string;
+  agentId?: string;
+  adapterConfig?: Record<string, unknown>;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -286,7 +292,7 @@ export interface ServerAdapterModule {
    * Returns a ProviderQuotaResult so the server can aggregate across adapters
    * without knowing provider-specific credential paths or API shapes.
    */
-  getQuotaWindows?: () => Promise<ProviderQuotaResult>;
+  getQuotaWindows?: (ctx?: AdapterQuotaContext) => Promise<ProviderQuotaResult>;
   /**
    * Optional: detect the currently configured model from local config files.
    * Returns the detected model/provider and the config source, or null if
