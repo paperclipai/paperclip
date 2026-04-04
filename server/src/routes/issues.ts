@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -48,9 +47,15 @@ import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const updateIssueRouteSchema = updateIssueSchema.extend({
-  interrupt: z.boolean().optional(),
-});
+const UUID_QUERY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeOptionalUuidQuery(value: unknown): string | null | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed === "null" || trimmed === "undefined") return "__invalid__";
+  return UUID_QUERY_RE.test(trimmed) ? trimmed : "__invalid__";
+}
 
 export function issueRoutes(
   db: Db,
@@ -210,30 +215,6 @@ export function issueRoutes(
     return true;
   }
 
-  async function resolveActiveIssueRun(issue: {
-    id: string;
-    assigneeAgentId: string | null;
-    executionRunId?: string | null;
-  }) {
-    let runToInterrupt = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
-
-    if ((!runToInterrupt || runToInterrupt.status !== "running") && issue.assigneeAgentId) {
-      const activeRun = await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
-      const activeIssueId =
-        activeRun &&
-        activeRun.contextSnapshot &&
-        typeof activeRun.contextSnapshot === "object" &&
-        typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
-          ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
-          : null;
-      if (activeRun && activeRun.status === "running" && activeIssueId === issue.id) {
-        runToInterrupt = activeRun;
-      }
-    }
-
-    return runToInterrupt?.status === "running" ? runToInterrupt : null;
-  }
-
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
@@ -339,16 +320,21 @@ export function issueRoutes(
       return;
     }
 
+    const assigneeAgentId = normalizeOptionalUuidQuery(req.query.assigneeAgentId);
+    if (assigneeAgentId === "__invalid__") {
+      res.status(400).json({ error: "assigneeAgentId must be a valid UUID" });
+      return;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId: assigneeAgentId ?? undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
@@ -839,38 +825,6 @@ export function issueRoutes(
     res.json(readState);
   });
 
-  router.delete("/issues/:id/read", async (req, res) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const removed = await svc.markUnread(issue.companyId, issue.id, req.actor.userId);
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.read_unmarked",
-      entityType: "issue",
-      entityId: issue.id,
-      details: { userId: req.actor.userId },
-    });
-    res.json({ id: issue.id, removed });
-  });
-
   router.post("/issues/:id/inbox-archive", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -1045,7 +999,7 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -1082,20 +1036,41 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (hiddenAtRaw !== undefined) {
+      updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
+    }
+    if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
+      updateFields.status = "todo";
+    }
     let interruptedRunId: string | null = null;
-
     if (interruptRequested) {
-      if (!commentBody) {
-        res.status(400).json({ error: "Interrupt is only supported when posting a comment" });
-        return;
-      }
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
         return;
       }
 
-      const runToInterrupt = await resolveActiveIssueRun(existing);
-      if (runToInterrupt) {
+      let runToInterrupt = existing.executionRunId
+        ? await heartbeat.getRun(existing.executionRunId)
+        : null;
+
+      if (
+        (!runToInterrupt || runToInterrupt.status !== "running") &&
+        existing.assigneeAgentId
+      ) {
+        const activeRun = await heartbeat.getActiveRunForAgent(existing.assigneeAgentId);
+        const activeIssueId =
+          activeRun &&
+          activeRun.contextSnapshot &&
+          typeof activeRun.contextSnapshot === "object" &&
+          typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (activeRun && activeRun.status === "running" && activeIssueId === existing.id) {
+          runToInterrupt = activeRun;
+        }
+      }
+
+      if (runToInterrupt && runToInterrupt.status === "running") {
         const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
         if (cancelled) {
           interruptedRunId = cancelled.id;
@@ -1108,18 +1083,16 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: existing.id,
+            },
           });
         }
       }
     }
 
-    if (hiddenAtRaw !== undefined) {
-      updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
-    }
-    if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
-      updateFields.status = "todo";
-    }
     let issue;
     try {
       issue = await svc.update(id, updateFields);
@@ -1248,18 +1221,10 @@ export function issueRoutes(
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          payload: { issueId: issue.id, mutation: "update" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          contextSnapshot: { issueId: issue.id, source: "issue.update" },
         });
       }
 
@@ -1268,18 +1233,10 @@ export function issueRoutes(
           source: "automation",
           triggerDetail: "system",
           reason: "issue_status_changed",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          payload: { issueId: issue.id, mutation: "update" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.status_change",
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
         });
       }
 
@@ -1652,8 +1609,28 @@ export function issueRoutes(
         return;
       }
 
-      const runToInterrupt = await resolveActiveIssueRun(currentIssue);
-      if (runToInterrupt) {
+      let runToInterrupt = currentIssue.executionRunId
+        ? await heartbeat.getRun(currentIssue.executionRunId)
+        : null;
+
+      if (
+        (!runToInterrupt || runToInterrupt.status !== "running") &&
+        currentIssue.assigneeAgentId
+      ) {
+        const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
+        const activeIssueId =
+          activeRun &&
+            activeRun.contextSnapshot &&
+            typeof activeRun.contextSnapshot === "object" &&
+            typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+            : null;
+        if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
+          runToInterrupt = activeRun;
+        }
+      }
+
+      if (runToInterrupt && runToInterrupt.status === "running") {
         const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
         if (cancelled) {
           interruptedRunId = cancelled.id;
