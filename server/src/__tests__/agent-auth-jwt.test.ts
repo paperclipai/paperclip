@@ -6,12 +6,14 @@ describe("agent local JWT", () => {
   const ttlEnv = "PAPERCLIP_AGENT_JWT_TTL_SECONDS";
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
+  const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
 
   const originalEnv = {
     secret: process.env[secretEnv],
     ttl: process.env[ttlEnv],
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
+    betterAuthSecret: process.env[betterAuthSecretEnv],
   };
 
   beforeEach(() => {
@@ -19,6 +21,7 @@ describe("agent local JWT", () => {
     process.env[ttlEnv] = "3600";
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
+    delete process.env[betterAuthSecretEnv];
     vi.useFakeTimers();
   });
 
@@ -32,6 +35,8 @@ describe("agent local JWT", () => {
     else process.env[issuerEnv] = originalEnv.issuer;
     if (originalEnv.audience === undefined) delete process.env[audienceEnv];
     else process.env[audienceEnv] = originalEnv.audience;
+    if (originalEnv.betterAuthSecret === undefined) delete process.env[betterAuthSecretEnv];
+    else process.env[betterAuthSecretEnv] = originalEnv.betterAuthSecret;
   });
 
   it("creates and verifies a token", () => {
@@ -50,11 +55,23 @@ describe("agent local JWT", () => {
     });
   });
 
-  it("returns null when secret is missing", () => {
+  it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is missing", () => {
     process.env[secretEnv] = "";
+    process.env[betterAuthSecretEnv] = "better-auth-secret";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
-    expect(token).toBeNull();
-    expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
+    expect(typeof token).toBe("string");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({ sub: "agent-1", run_id: "run-1" });
+  });
+
+  it("falls back to dev secret when no secrets are configured", () => {
+    process.env[secretEnv] = "";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(typeof token).toBe("string");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).toMatchObject({ sub: "agent-1", run_id: "run-1" });
   });
 
   it("rejects expired tokens", () => {

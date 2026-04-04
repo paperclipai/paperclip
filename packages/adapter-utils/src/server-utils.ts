@@ -6,6 +6,35 @@ import type {
   AdapterSkillSnapshot,
 } from "./types.js";
 
+/**
+ * Kill a child process and its entire descendant tree.
+ *
+ * On Windows, `child.kill()` only terminates the direct child process.
+ * Grandchildren — such as MCP servers spawned by Claude CLI and the browser
+ * instances those servers launch — are left as orphaned background processes.
+ * These orphans accumulate across runs and cause "browser already in use"
+ * conflicts for agents that rely on browser automation (e.g. Playwright MCP).
+ *
+ * This function solves that by additionally running `taskkill /F /T /PID`
+ * on Windows, which traverses the entire process tree and force-terminates
+ * every descendant before they can be re-parented by the OS.
+ *
+ * `child.kill(signal)` is always called regardless of platform so that
+ * `child.killed` is set to `true` for downstream state-tracking checks.
+ */
+export function killChildProcess(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {
+  if (process.platform === "win32" && typeof child.pid === "number" && child.pid > 0) {
+    // Kill the entire process tree first, while the children are still
+    // traceable via their parent PID, then let child.kill() handle the
+    // direct process and set child.killed for state tracking.
+    spawn("taskkill", ["/F", "/T", "/PID", String(child.pid)], {
+      stdio: "ignore",
+      detached: true,
+    }).unref();
+  }
+  child.kill(signal);
+}
+
 export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
@@ -859,10 +888,10 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
-                child.kill("SIGTERM");
+                killChildProcess(child, "SIGTERM");
                 setTimeout(() => {
                   if (!child.killed) {
-                    child.kill("SIGKILL");
+                    killChildProcess(child, "SIGKILL");
                   }
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)

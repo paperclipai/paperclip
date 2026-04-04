@@ -4,6 +4,7 @@
 import type { ChildProcess } from "node:child_process";
 import { logger } from "../middleware/logger.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 export type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 type BuildInvocationEnvForLogsOptions = {
@@ -33,6 +34,7 @@ export const ensurePathInEnv = serverUtils.ensurePathInEnv;
 export const ensureAbsoluteDirectory = serverUtils.ensureAbsoluteDirectory;
 export const ensureCommandResolvable = serverUtils.ensureCommandResolvable;
 export const resolveCommandForLogs = serverUtils.resolveCommandForLogs;
+export const killChildProcess = serverUtils.killChildProcess;
 
 export function buildInvocationEnvForLogs(
   env: Record<string, string>,
@@ -71,7 +73,6 @@ export function buildInvocationEnvForLogs(
 }
 
 // Re-export runChildProcess with the server's pino logger wired in.
-import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 const _runChildProcess = serverUtils.runChildProcess;
 
 export async function runChildProcess(

@@ -4,6 +4,7 @@ import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { getBackupStatus } from "../services/backup-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -85,6 +86,8 @@ export function healthRoutes(
       });
     }
 
+    const backup = getBackupStatus();
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -95,6 +98,11 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+      },
+      backup: {
+        lastResult: backup.lastResult,
+        lastTimestamp: backup.lastTimestamp,
+        consecutiveFailures: backup.consecutiveFailures,
       },
       ...(devServer ? { devServer } : {}),
     });
