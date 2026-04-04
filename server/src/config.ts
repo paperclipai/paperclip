@@ -86,6 +86,9 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  notificationDiscordWebhookUrl: string | undefined;
+  notificationTelegramBotToken: string | undefined;
+  notificationTelegramChatId: string | undefined;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -331,5 +334,8 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    notificationDiscordWebhookUrl: process.env.PAPERCLIP_NOTIFICATION_DISCORD_WEBHOOK_URL || undefined,
+    notificationTelegramBotToken: process.env.PAPERCLIP_NOTIFICATION_TELEGRAM_BOT_TOKEN || undefined,
+    notificationTelegramChatId: process.env.PAPERCLIP_NOTIFICATION_TELEGRAM_CHAT_ID || undefined,
   };
 }
