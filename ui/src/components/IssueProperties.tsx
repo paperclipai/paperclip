@@ -569,34 +569,57 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
                 </button>
               </>
             ) : (
-              <label className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+              <button
+                className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+                onClick={() => {
+                  const input = document.createElement("input");
+                  input.type = "date";
+                  input.style.position = "fixed";
+                  input.style.opacity = "0";
+                  input.style.pointerEvents = "none";
+                  document.body.appendChild(input);
+                  input.addEventListener("change", () => {
+                    if (input.value) {
+                      onUpdate({ dueDate: new Date(input.value + "T23:59:59.999Z").toISOString() });
+                    }
+                    document.body.removeChild(input);
+                  });
+                  input.addEventListener("blur", () => {
+                    setTimeout(() => { if (document.body.contains(input)) document.body.removeChild(input); }, 200);
+                  });
+                  input.showPicker();
+                }}
+              >
                 <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-sm text-muted-foreground">No due date</span>
-                <input
-                  type="date"
-                  className="sr-only"
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
-                    }
-                  }}
-                />
-              </label>
+              </button>
             )}
             {issue.dueDate && (
-              <label className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground cursor-pointer" title="Change due date">
-                <input
-                  type="date"
-                  className="sr-only"
-                  value={issue.dueDate ? new Date(issue.dueDate).toISOString().split("T")[0] : ""}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      onUpdate({ dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString() });
+              <button
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
+                title="Change due date"
+                onClick={() => {
+                  const input = document.createElement("input");
+                  input.type = "date";
+                  input.value = new Date(issue.dueDate!).toISOString().split("T")[0];
+                  input.style.position = "fixed";
+                  input.style.opacity = "0";
+                  input.style.pointerEvents = "none";
+                  document.body.appendChild(input);
+                  input.addEventListener("change", () => {
+                    if (input.value) {
+                      onUpdate({ dueDate: new Date(input.value + "T23:59:59.999Z").toISOString() });
                     }
-                  }}
-                />
-                <Calendar className="h-3 w-3 pointer-events-none" />
-              </label>
+                    document.body.removeChild(input);
+                  });
+                  input.addEventListener("blur", () => {
+                    setTimeout(() => { if (document.body.contains(input)) document.body.removeChild(input); }, 200);
+                  });
+                  input.showPicker();
+                }}
+              >
+                <Calendar className="h-3 w-3" />
+              </button>
             )}
           </div>
         </PropertyRow>
