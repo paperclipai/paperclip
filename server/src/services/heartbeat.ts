@@ -4216,7 +4216,7 @@ export function heartbeatService(db: Db) {
         .from(heartbeatRuns)
         .innerJoin(
           issues,
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issues.id}`,
+          sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')::uuid = ${issues.id}`,
         )
         .where(
           and(
