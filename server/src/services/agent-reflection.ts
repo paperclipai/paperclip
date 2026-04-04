@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
-import { agentMemoryEntries, heartbeatRuns, issueLabels, issues, labels } from "@ironworksai/db";
+import { agentMemoryEntries, agents, heartbeatRuns, issueLabels, issues, labels } from "@ironworksai/db";
 import { logger } from "../middleware/logger.js";
 
 // ── Agent Reflection Services ──────────────────────────────────────────────
@@ -224,4 +224,100 @@ export async function identifySkillGaps(
   }
 
   return gaps;
+}
+
+// ── Structured Handoff Protocol ───────────────────────────────────────────
+//
+// When one agent completes an issue and the next assignee is different, this
+// creates a structured handoff issue assigned to the receiving agent with full
+// context from the source issue.
+
+/**
+ * Create a structured handoff issue for cross-agent task transitions.
+ *
+ * Generates a new issue assigned to the receiving agent with a formatted body
+ * containing the summary, decisions, artifacts, and next steps from the source.
+ */
+export async function createHandoffIssue(
+  db: Db,
+  opts: {
+    companyId: string;
+    fromAgentId: string;
+    toAgentId: string;
+    sourceIssueId: string;
+    summary: string;
+    keyDecisions: string;
+    artifacts: string;
+    nextSteps?: string;
+  },
+): Promise<void> {
+  // Resolve agent names
+  const [fromAgent] = await db
+    .select({ name: agents.name })
+    .from(agents)
+    .where(eq(agents.id, opts.fromAgentId))
+    .limit(1);
+
+  const [toAgent] = await db
+    .select({ name: agents.name })
+    .from(agents)
+    .where(eq(agents.id, opts.toAgentId))
+    .limit(1);
+
+  // Resolve source issue
+  const [sourceIssue] = await db
+    .select({
+      title: issues.title,
+      identifier: issues.identifier,
+      projectId: issues.projectId,
+      goalId: issues.goalId,
+    })
+    .from(issues)
+    .where(eq(issues.id, opts.sourceIssueId))
+    .limit(1);
+
+  const fromName = fromAgent?.name ?? opts.fromAgentId;
+  const sourceRef = sourceIssue?.identifier ?? opts.sourceIssueId.slice(0, 8);
+  const sourceTitle = sourceIssue?.title ?? "Unknown issue";
+
+  const body = [
+    `## Handoff from ${fromName}`,
+    `**Source:** ${sourceRef} - ${sourceTitle}`,
+    "",
+    "### Summary",
+    opts.summary,
+    "",
+    "### Key Decisions",
+    opts.keyDecisions,
+    "",
+    "### Artifacts",
+    opts.artifacts,
+    "",
+    "### Next Steps",
+    opts.nextSteps ?? "Continue from where the previous agent left off. Review the source issue for full context.",
+  ].join("\n");
+
+  await db.insert(issues).values({
+    companyId: opts.companyId,
+    projectId: sourceIssue?.projectId ?? null,
+    goalId: sourceIssue?.goalId ?? null,
+    title: `Handoff: ${sourceTitle}`,
+    description: body,
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: opts.toAgentId,
+    createdByAgentId: opts.fromAgentId,
+    originKind: "handoff",
+    originId: opts.sourceIssueId,
+  });
+
+  logger.info(
+    {
+      companyId: opts.companyId,
+      fromAgentId: opts.fromAgentId,
+      toAgentId: opts.toAgentId,
+      sourceIssueId: opts.sourceIssueId,
+    },
+    "created structured handoff issue",
+  );
 }

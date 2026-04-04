@@ -32,6 +32,7 @@ import {
   Shield,
   Clock,
   Wrench,
+  Activity,
 } from "lucide-react";
 import type { Agent } from "@ironworksai/shared";
 
@@ -121,6 +122,13 @@ export function BoardBriefing() {
   const { data: riskData } = useQuery({
     queryKey: ["executive", "risk-register", selectedCompanyId!],
     queryFn: () => executiveApi.riskRegister(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+
+  const { data: healthScore } = useQuery({
+    queryKey: ["executive", "health-score", selectedCompanyId!],
+    queryFn: () => executiveApi.healthScore(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     staleTime: 60_000,
   });
@@ -231,6 +239,36 @@ export function BoardBriefing() {
           Generated for <span className="font-medium text-foreground">{selectedCompany?.name ?? "Company"}</span>
         </p>
       </div>
+
+      {/* 0. Company Health Score */}
+      {healthScore && (
+        <div className="rounded-xl border border-border p-5 space-y-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
+            <Activity className="h-3.5 w-3.5" />
+            Company Health Score
+          </h3>
+          <div className="flex items-center gap-6">
+            <div className="flex flex-col items-center">
+              <span className={cn(
+                "text-5xl font-bold tabular-nums",
+                healthScore.score >= 80 ? "text-emerald-400" :
+                healthScore.score >= 60 ? "text-blue-400" :
+                healthScore.score >= 40 ? "text-amber-400" : "text-red-400",
+              )}>
+                {healthScore.score}
+              </span>
+              <span className="text-xs text-muted-foreground mt-1">out of 100</span>
+            </div>
+            <div className="flex-1 grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <HealthBreakdownItem label="Agents" value={healthScore.breakdown.agentPerformance} />
+              <HealthBreakdownItem label="Goals" value={healthScore.breakdown.goalCompletion} />
+              <HealthBreakdownItem label="Budget" value={healthScore.breakdown.budgetHealth} />
+              <HealthBreakdownItem label="SLA" value={healthScore.breakdown.slaCompliance} />
+              <HealthBreakdownItem label="Risk" value={healthScore.breakdown.riskLevel} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 1. Headcount + 2. Cost Summary */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -596,6 +634,22 @@ const RATING_COLORS: Record<string, string> = {
   D: "text-orange-400 bg-orange-500/10",
   F: "text-red-400 bg-red-500/10",
 };
+
+function HealthBreakdownItem({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="text-center">
+      <div className={cn(
+        "text-lg font-bold tabular-nums",
+        value >= 80 ? "text-emerald-400" :
+        value >= 60 ? "text-blue-400" :
+        value >= 40 ? "text-amber-400" : "text-red-400",
+      )}>
+        {value}
+      </div>
+      <div className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</div>
+    </div>
+  );
+}
 
 function AgentPerfSummaryRow({ row }: { row: { agentId: string; name: string; rating: string; ratingScore: number; tasksDone: number; completionRate: number } }) {
   return (

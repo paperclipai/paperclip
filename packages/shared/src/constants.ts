@@ -900,3 +900,21 @@ export type WellKnownLabel = (typeof WELL_KNOWN_LABELS)[number];
 
 export const COST_CIRCUIT_BREAKER_WINDOW = 5;
 export const COST_CIRCUIT_BREAKER_MULTIPLIER = 3;
+
+// ── Output Token Budget Caps ─────────────────────────────────────────────────
+// Configurable max_tokens limits by task category to control BYOK LLM spend.
+
+export const DEFAULT_OUTPUT_TOKEN_LIMITS = {
+  heartbeat_status: 1024,
+  simple_response: 2048,
+  code_generation: 4096,
+  analysis_report: 8192,
+  uncapped: 16384,
+} as const;
+
+export type OutputTokenCategory = keyof typeof DEFAULT_OUTPUT_TOKEN_LIMITS;
+
+// ── Skill Allowlists ──────���──────────────────────────────────────────────────
+// Default skill set loaded for agents when no explicit allowlist is configured.
+
+export const DEFAULT_SKILL_ALLOWLIST = ["ironworks"] as const;

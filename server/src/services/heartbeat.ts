@@ -16,7 +16,8 @@ import {
   projects,
   projectWorkspaces,
 } from "@ironworksai/db";
-import { DEFAULT_ITERATION_LIMITS } from "@ironworksai/shared";
+import { DEFAULT_ITERATION_LIMITS, DEFAULT_OUTPUT_TOKEN_LIMITS, DEFAULT_SKILL_ALLOWLIST } from "@ironworksai/shared";
+import type { OutputTokenCategory } from "@ironworksai/shared";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
@@ -765,6 +766,57 @@ function resolveNextSessionState(input: {
     displayId,
     legacySessionId,
   };
+}
+
+/**
+ * Classify the output token category for a heartbeat run based on context.
+ * Returns the appropriate max_tokens limit from DEFAULT_OUTPUT_TOKEN_LIMITS.
+ */
+function classifyOutputTokenCategory(
+  context: Record<string, unknown>,
+  source: string | null,
+): OutputTokenCategory {
+  const issueId = readNonEmptyString(context.issueId);
+  const commentId = readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+
+  // Routine heartbeat with no new work - keep it brief
+  if (source === "timer" && !issueId && !commentId) {
+    return "heartbeat_status";
+  }
+
+  // Responding to a comment - moderate output
+  if (commentId || wakeReason === "issue_comment_mentioned") {
+    return "simple_response";
+  }
+
+  // Working on an issue (code generation / analysis)
+  if (issueId) {
+    return "code_generation";
+  }
+
+  // Default for other wake types (on_demand, assignment, automation)
+  return "code_generation";
+}
+
+/**
+ * Resolve the max_tokens value for an agent run.
+ * Checks agent runtimeConfig for an explicit override, then falls back to
+ * the category-based default from DEFAULT_OUTPUT_TOKEN_LIMITS.
+ */
+function resolveMaxOutputTokens(
+  config: Record<string, unknown>,
+  context: Record<string, unknown>,
+  source: string | null,
+): number {
+  // Allow per-agent override via adapterConfig.maxOutputTokens
+  const explicit = typeof config.maxOutputTokens === "number" && config.maxOutputTokens > 0
+    ? config.maxOutputTokens
+    : null;
+  if (explicit) return explicit;
+
+  const category = classifyOutputTokenCategory(context, source);
+  return DEFAULT_OUTPUT_TOKEN_LIMITS[category];
 }
 
 export function heartbeatService(db: Db) {
@@ -2280,9 +2332,23 @@ export function heartbeatService(db: Db) {
       mergedConfig,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+
+    // Task 1: Output Token Budget Caps - inject max_tokens based on task type
+    const maxOutputTokens = resolveMaxOutputTokens(resolvedConfig, context, run.invocationSource);
+
+    // Task 2: Skill Allowlists - filter skills if agent has a skillAllowlist
+    const skillAllowlist = Array.isArray(resolvedConfig.skillAllowlist)
+      ? resolvedConfig.skillAllowlist.filter((s: unknown): s is string => typeof s === "string" && s.length > 0)
+      : null;
+    const filteredSkillEntries = skillAllowlist
+      ? runtimeSkillEntries.filter((entry: { key: string; required?: boolean }) =>
+          entry.required || skillAllowlist.some((allowed: string) => entry.key === allowed || entry.key.includes(allowed)))
+      : runtimeSkillEntries;
+
     const runtimeConfig = {
       ...resolvedConfig,
-      ironworksRuntimeSkills: runtimeSkillEntries,
+      ironworksRuntimeSkills: filteredSkillEntries,
+      maxOutputTokens,
     };
     const issueRef = issueContext
       ? {

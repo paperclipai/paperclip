@@ -197,6 +197,12 @@ export function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run:
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
+              {hasMetrics && (
+                <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                  {formatTokens(metrics.totalTokens)} tokens
+                  {metrics.cost > 0 && <span className="ml-1 text-foreground">${metrics.cost.toFixed(4)}</span>}
+                </span>
+              )}
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"

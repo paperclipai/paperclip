@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@ironworksai/db";
 import { agentMemoryEntries, agents as agentsTable } from "@ironworksai/db";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import { MEMORY_TYPES, type MemoryType } from "@ironworksai/shared";
 import { badRequest, notFound } from "../errors.js";
 import { assertCanWrite, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -270,6 +270,101 @@ export function agentMemoryRoutes(db: Db) {
     });
 
     res.status(201).json({ id: pageId, title, slug });
+  });
+
+  // ── POST /companies/:companyId/agents/:agentId/memory/:entryId/share ──────
+  // Share a memory entry with other agents (same department or company-wide).
+  router.post("/companies/:companyId/agents/:agentId/memory/:entryId/share", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    const entryId = req.params.entryId as string;
+    await assertCanWrite(req, companyId, db);
+    await resolveAgent(companyId, agentId);
+
+    // 1. Fetch the memory entry
+    const existing = await db
+      .select()
+      .from(agentMemoryEntries)
+      .where(
+        and(
+          eq(agentMemoryEntries.id, entryId),
+          eq(agentMemoryEntries.agentId, agentId),
+          eq(agentMemoryEntries.companyId, companyId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (!existing) {
+      throw notFound("Memory entry not found");
+    }
+
+    if (existing.archivedAt) {
+      throw badRequest("Cannot share an archived memory entry");
+    }
+
+    const { companyWide } = req.body as { companyWide?: boolean };
+
+    // 2. Determine target agents
+    // If companyWide, share with all non-terminated agents in the company.
+    // Otherwise, share with agents in the same department as the source agent.
+    const sourceAgent = await db
+      .select({ department: agentsTable.department })
+      .from(agentsTable)
+      .where(eq(agentsTable.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    const targetConditions = [
+      eq(agentsTable.companyId, companyId),
+      ne(agentsTable.id, agentId),
+      ne(agentsTable.status, "terminated"),
+    ];
+
+    if (!companyWide && sourceAgent?.department) {
+      targetConditions.push(eq(agentsTable.department, sourceAgent.department));
+    }
+
+    const targetAgents = await db
+      .select({ id: agentsTable.id })
+      .from(agentsTable)
+      .where(and(...targetConditions));
+
+    // 3. Create copies for each target agent
+    const now = new Date();
+    let sharedCount = 0;
+
+    for (const target of targetAgents) {
+      await db.insert(agentMemoryEntries).values({
+        agentId: target.id,
+        companyId,
+        memoryType: existing.memoryType,
+        category: existing.category,
+        content: `[Shared from agent ${agentId}] ${existing.content}`,
+        sourceIssueId: existing.sourceIssueId,
+        sourceProjectId: existing.sourceProjectId,
+        confidence: Math.min(existing.confidence, 75), // Slightly lower confidence for shared entries
+        lastAccessedAt: now,
+      });
+      sharedCount++;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent_memory.shared",
+      entityType: "agent_memory_entry",
+      entityId: entryId,
+      details: {
+        sourceAgentId: agentId,
+        sharedCount,
+        companyWide: !!companyWide,
+      },
+    });
+
+    res.json({ ok: true, sharedCount, companyWide: !!companyWide });
   });
 
   return router;

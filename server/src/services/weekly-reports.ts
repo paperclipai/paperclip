@@ -1,6 +1,6 @@
 import { and, eq, gte, ne, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
-import { agents, issues, costEvents, agentMemoryEntries, companies } from "@ironworksai/db";
+import { agents, issues, costEvents, agentMemoryEntries, companies, goals, goalKeyResults, approvals } from "@ironworksai/db";
 import { computePerformanceScore } from "./performance-score.js";
 import { createAgentDocument } from "./agent-workspace.js";
 import { logger } from "../middleware/logger.js";
@@ -1055,6 +1055,344 @@ export async function generateCFOWeeklyReport(
   return markdown;
 }
 
+// ── Board Meeting Packet ─────────────────────────────────────────────────
+
+/**
+ * Generate a comprehensive board meeting packet compiling company-wide data.
+ * Saves to CEO workspace with document_type "board-packet" and returns the markdown.
+ */
+export async function generateBoardMeetingPacket(
+  db: Db,
+  companyId: string,
+): Promise<string> {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const periodEnd = formatDateCT(now);
+
+  // ---- 1. Executive Summary ----
+
+  // All non-terminated agents
+  const companyAgents = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      role: agents.role,
+      department: agents.department,
+      performanceScore: agents.performanceScore,
+    })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+      ),
+    );
+
+  const scores = companyAgents
+    .map((a) => a.performanceScore)
+    .filter((s): s is number => s != null);
+  const avgScore = scores.length > 0
+    ? Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length)
+    : 0;
+
+  // Active projects
+  const activeProjects = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        sql`${issues.status} not in ('done', 'cancelled')`,
+      ),
+    );
+  const openIssueCount = Number(activeProjects[0]?.count ?? 0);
+
+  // ---- 2. Goal Status ----
+
+  const allGoals = await db
+    .select({
+      id: goals.id,
+      title: goals.title,
+      status: goals.status,
+      level: goals.level,
+      targetDate: goals.targetDate,
+    })
+    .from(goals)
+    .where(eq(goals.companyId, companyId));
+
+  const goalSections: string[] = [];
+  for (const goal of allGoals) {
+    // Count issues per goal
+    const goalIssueStats = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        done: sql<number>`count(*) filter (where ${issues.status} = 'done')::int`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.goalId, goal.id),
+        ),
+      );
+    const total = Number(goalIssueStats[0]?.total ?? 0);
+    const done = Number(goalIssueStats[0]?.done ?? 0);
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+    // Key results
+    const krs = await db
+      .select({
+        description: goalKeyResults.description,
+        currentValue: goalKeyResults.currentValue,
+        targetValue: goalKeyResults.targetValue,
+        unit: goalKeyResults.unit,
+      })
+      .from(goalKeyResults)
+      .where(eq(goalKeyResults.goalId, goal.id));
+
+    const krLines = krs.length > 0
+      ? krs.map((kr) => `  - ${kr.description}: ${kr.currentValue}/${kr.targetValue} ${kr.unit}`).join("\n")
+      : "  - No key results defined";
+
+    const targetStr = goal.targetDate
+      ? ` (target: ${formatDateCT(new Date(goal.targetDate))})`
+      : "";
+
+    goalSections.push(`- **${goal.title}** [${goal.status}]${targetStr} - ${pct}% complete (${done}/${total} issues)\n${krLines}`);
+  }
+
+  // ---- 3. Financial Summary ----
+
+  const totalCostResult = await db
+    .select({ total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+    .from(costEvents)
+    .where(
+      and(
+        eq(costEvents.companyId, companyId),
+        gte(costEvents.occurredAt, sevenDaysAgo),
+      ),
+    );
+  const weekCostCents = Number(totalCostResult[0]?.total ?? 0);
+
+  const [company] = await db
+    .select({
+      budgetMonthlyCents: companies.budgetMonthlyCents,
+      spentMonthlyCents: companies.spentMonthlyCents,
+    })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .limit(1);
+
+  const budgetCents = company?.budgetMonthlyCents ?? 0;
+  const spentCents = company?.spentMonthlyCents ?? 0;
+
+  // Issues done this week for unit economics
+  const weekDoneResult = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.status, "done"),
+        gte(issues.completedAt, sevenDaysAgo),
+      ),
+    );
+  const weekDone = Number(weekDoneResult[0]?.count ?? 0);
+  const costPerIssue = weekDone > 0 ? Math.round(weekCostCents / weekDone) : 0;
+
+  // ---- 4. Agent Performance Rankings ----
+
+  const ranked = [...companyAgents]
+    .filter((a) => a.performanceScore != null)
+    .sort((a, b) => (b.performanceScore ?? 0) - (a.performanceScore ?? 0));
+
+  const topAgents = ranked.slice(0, 5);
+  const bottomAgents = ranked.length > 5
+    ? ranked.slice(-3)
+    : [];
+
+  // ---- 5. Key Decisions Made (approvals resolved in last 7 days) ----
+
+  const recentApprovals = await db
+    .select({
+      type: approvals.type,
+      status: approvals.status,
+      decisionNote: approvals.decisionNote,
+      decidedAt: approvals.decidedAt,
+    })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.companyId, companyId),
+        gte(approvals.decidedAt, sevenDaysAgo),
+        sql`${approvals.status} in ('approved', 'rejected')`,
+      ),
+    );
+
+  const decisionLines = recentApprovals.length > 0
+    ? recentApprovals.map(
+        (a) => `- [${a.status?.toUpperCase()}] ${a.type}${a.decisionNote ? ` - ${a.decisionNote}` : ""}`,
+      )
+    : ["- No decisions recorded this week"];
+
+  // ---- 6. Open Risks ----
+
+  // Overdue issues (critical/high priority, open)
+  const overdueIssues = await db
+    .select({
+      id: issues.id,
+      title: issues.title,
+      priority: issues.priority,
+      createdAt: issues.createdAt,
+    })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        sql`${issues.priority} in ('critical', 'high')`,
+        sql`${issues.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
+      ),
+    )
+    .limit(10);
+
+  // Stale items
+  const staleItems = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        sql`${issues.status} in ('backlog', 'todo')`,
+        sql`${issues.createdAt} < ${sevenDaysAgo}`,
+      ),
+    );
+  const staleCount = Number(staleItems[0]?.count ?? 0);
+
+  // Low performers
+  const lowPerfAgents = companyAgents.filter(
+    (a) => a.performanceScore != null && a.performanceScore < 40,
+  );
+
+  const riskLines: string[] = [];
+  for (const issue of overdueIssues) {
+    riskLines.push(`- [${issue.priority?.toUpperCase()}] ${issue.title}`);
+  }
+  if (staleCount > 0) {
+    riskLines.push(`- ${staleCount} stale issue(s) with no progress for 7+ days`);
+  }
+  for (const a of lowPerfAgents) {
+    riskLines.push(`- Low performer: ${a.name} (score: ${a.performanceScore})`);
+  }
+  if (riskLines.length === 0) {
+    riskLines.push("- No open risks identified");
+  }
+
+  // ---- 7. Recommended Actions ----
+
+  const recommendations: string[] = [];
+  if (lowPerfAgents.length > 0) {
+    recommendations.push(`- Review ${lowPerfAgents.length} underperforming agent(s). Consider PIPs or role reassignment.`);
+  }
+  if (staleCount > 5) {
+    recommendations.push("- Triage stale backlog. Reassign or close issues that have not moved in 7+ days.");
+  }
+  if (budgetCents > 0 && spentCents > budgetCents * 0.8) {
+    recommendations.push("- Monthly spend is above 80% of budget. Review cost controls before month end.");
+  }
+  if (overdueIssues.length > 3) {
+    recommendations.push("- Multiple critical/high priority issues open. Consider reallocating agents to clear the backlog.");
+  }
+  const goalsAtRisk = allGoals.filter((g) => g.status === "at_risk" || g.status === "blocked");
+  if (goalsAtRisk.length > 0) {
+    recommendations.push(`- ${goalsAtRisk.length} goal(s) at risk or blocked. Review blockers and reassign resources.`);
+  }
+  if (recommendations.length === 0) {
+    recommendations.push("- Company health is good. Continue current operating cadence.");
+  }
+
+  // ---- Build Markdown ----
+
+  const markdown = [
+    "# Board Meeting Packet",
+    `**Company:** ${company ? "Active" : "Unknown"}`,
+    `**Date:** ${periodEnd}`,
+    `**Generated:** ${now.toLocaleString("en-US", { timeZone: "America/Chicago" })}`,
+    "",
+    "## 1. Executive Summary",
+    `- Average Agent Performance: ${avgScore}/100`,
+    `- Total Active Agents: ${companyAgents.length}`,
+    `- Open Issues: ${openIssueCount}`,
+    `- Issues Completed This Week: ${weekDone}`,
+    "",
+    "## 2. Goal Status",
+    ...(goalSections.length > 0 ? goalSections : ["- No goals defined"]),
+    "",
+    "## 3. Financial Summary",
+    `- Weekly Spend: $${centsToDollars(weekCostCents)}`,
+    `- Month-to-Date Spend: $${centsToDollars(spentCents)}`,
+    `- Monthly Budget: ${budgetCents > 0 ? `$${centsToDollars(budgetCents)}` : "Unlimited"}`,
+    `- Budget Utilization: ${budgetCents > 0 ? `${Math.round((spentCents / budgetCents) * 100)}%` : "N/A"}`,
+    `- Cost per Issue: ${costPerIssue > 0 ? `$${centsToDollars(costPerIssue)}` : "N/A"}`,
+    "",
+    "## 4. Agent Performance Rankings",
+    "### Top Performers",
+    ...(topAgents.length > 0
+      ? topAgents.map((a, i) => `${i + 1}. ${a.name} (${a.role}) - ${a.performanceScore}/100`)
+      : ["No performance data available"]),
+    ...(bottomAgents.length > 0
+      ? [
+          "",
+          "### Needs Attention",
+          ...bottomAgents.map((a) => `- ${a.name} (${a.role}) - ${a.performanceScore}/100`),
+        ]
+      : []),
+    "",
+    "## 5. Key Decisions Made (Last 7 Days)",
+    ...decisionLines,
+    "",
+    "## 6. Open Risks",
+    ...riskLines,
+    "",
+    "## 7. Recommended Actions",
+    ...recommendations,
+  ].join("\n");
+
+  // Save to CEO workspace
+  const [ceoAgent] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.companyId, companyId),
+        sql`lower(${agents.role}) like '%ceo%'`,
+        ne(agents.status, "terminated"),
+      ),
+    )
+    .limit(1);
+
+  if (ceoAgent) {
+    const slug = `board-packet-${slugDate(now)}`;
+    await createAgentDocument(db, {
+      agentId: ceoAgent.id,
+      companyId,
+      title: `Board Meeting Packet: ${periodEnd}`,
+      content: markdown,
+      documentType: "board-packet",
+      slug,
+      visibility: "private",
+      autoGenerated: true,
+      createdByUserId: "system",
+    });
+  }
+
+  logger.info(
+    { companyId, date: periodEnd },
+    "generated board meeting packet",
+  );
+
+  return markdown;
+}
+
 // ── Run All Weekly Reports ─────────────────────────────────────────────────
 
 /**
@@ -1098,6 +1436,12 @@ export async function runWeeklyReports(
     await generateCFOWeeklyReport(db, companyId);
   } catch (err) {
     logger.error({ err, companyId }, "failed to generate CFO weekly report");
+  }
+
+  try {
+    await generateBoardMeetingPacket(db, companyId);
+  } catch (err) {
+    logger.error({ err, companyId }, "failed to generate board meeting packet");
   }
 }
 

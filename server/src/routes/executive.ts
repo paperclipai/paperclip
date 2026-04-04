@@ -5,12 +5,14 @@ import { and, eq, ne, inArray } from "drizzle-orm";
 import { executiveAnalyticsService } from "../services/executive-analytics.js";
 import { logActivity } from "../services/activity-log.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { tokenAnalyticsService } from "../services/token-analytics.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function executiveRoutes(db: Db) {
   const router = Router();
   const analytics = executiveAnalyticsService(db);
   const heartbeat = heartbeatService(db);
+  const tokenAnalytics = tokenAnalyticsService(db);
 
   // -- CFO: Unit Economics --
   router.get("/companies/:companyId/executive/unit-economics", async (req, res) => {
@@ -57,6 +59,14 @@ export function executiveRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const data = await analytics.riskRegister(companyId);
+    res.json(data);
+  });
+
+  // -- Company Health Score --
+  router.get("/companies/:companyId/executive/health-score", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const data = await analytics.companyHealthScore(companyId);
     res.json(data);
   });
 
@@ -127,6 +137,28 @@ export function executiveRoutes(db: Db) {
       paused: activeAgents.length,
       message: `Emergency pause: ${activeAgents.length} agent(s) paused immediately.`,
     });
+  });
+
+  // -- Token Analytics: Company-wide --
+  router.get("/companies/:companyId/token-analytics", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const periodDays = req.query.periodDays ? Number(req.query.periodDays) : 30;
+    const data = await tokenAnalytics.getCompanyTokenSummary(companyId, periodDays);
+    res.json(data);
+  });
+
+  // -- Token Analytics: Per-agent summary + waste analysis --
+  router.get("/companies/:companyId/token-analytics/:agentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const agentId = req.params.agentId as string;
+    assertCompanyAccess(req, companyId);
+    const periodDays = req.query.periodDays ? Number(req.query.periodDays) : 30;
+    const [summary, waste] = await Promise.all([
+      tokenAnalytics.getAgentTokenSummary(agentId, periodDays),
+      tokenAnalytics.analyzeTokenWaste(agentId, companyId, periodDays),
+    ]);
+    res.json({ summary, waste });
   });
 
   return router;

@@ -172,7 +172,7 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance" | "projects">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance" | "projects" | "tokens">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
   const [showNewFinanceEvent, setShowNewFinanceEvent] = useState(false);
@@ -406,6 +406,12 @@ export function Costs() {
     refetchInterval: 30_000,
     staleTime: 10_000,
     refetchOnMount: "always",
+  });
+
+  const { data: tokenAnalyticsData, isLoading: tokenAnalyticsLoading } = useQuery({
+    queryKey: ["token-analytics", companyId],
+    queryFn: () => executiveApi.tokenAnalytics(companyId),
+    enabled: !!selectedCompanyId && mainTab === "tokens",
   });
 
   const byProvider = useMemo(() => {
@@ -725,6 +731,7 @@ export function Costs() {
           <TabsTrigger value="providers">AI Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
           <TabsTrigger value="finance">Finance</TabsTrigger>
+          <TabsTrigger value="tokens">Token Usage</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
@@ -1535,6 +1542,92 @@ export function Costs() {
                 </Card>
               ))}
             </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="tokens" className="mt-4 space-y-4">
+          {tokenAnalyticsLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : !tokenAnalyticsData ? (
+            <EmptyState icon={Coins} message="No token data yet. Token usage will appear once agents start running." />
+          ) : (
+            <>
+              {/* Company aggregate */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <MetricTile
+                  label="Total Input"
+                  value={formatTokens(tokenAnalyticsData.totalInputTokens)}
+                  subtitle={`${tokenAnalyticsData.totalRuns} runs`}
+                  icon={ArrowDownLeft}
+                />
+                <MetricTile
+                  label="Total Output"
+                  value={formatTokens(tokenAnalyticsData.totalOutputTokens)}
+                  subtitle={`Avg ${formatTokens(tokenAnalyticsData.avgTokensPerRun)}/run`}
+                  icon={ArrowUpRight}
+                />
+                <MetricTile
+                  label="Cache Tokens"
+                  value={formatTokens(tokenAnalyticsData.totalCacheTokens)}
+                  subtitle={
+                    tokenAnalyticsData.totalInputTokens + tokenAnalyticsData.totalCacheTokens > 0
+                      ? `${Math.round((tokenAnalyticsData.totalCacheTokens / (tokenAnalyticsData.totalInputTokens + tokenAnalyticsData.totalCacheTokens)) * 100)}% hit rate`
+                      : "No data"
+                  }
+                  icon={TrendingDown}
+                />
+                <MetricTile
+                  label="Total Cost"
+                  value={`$${tokenAnalyticsData.totalCost.toFixed(2)}`}
+                  subtitle={`${tokenAnalyticsData.agents.length} active agents`}
+                  icon={DollarSign}
+                />
+              </div>
+
+              {/* Per-agent table */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Per-Agent Token Breakdown</CardTitle>
+                  <CardDescription>Token usage and cost by agent over the last 30 days</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {tokenAnalyticsData.agents.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No agents with token usage in this period.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border text-left text-muted-foreground">
+                            <th className="pb-2 pr-4 font-medium">Agent</th>
+                            <th className="pb-2 pr-4 font-medium text-right">Input Tokens</th>
+                            <th className="pb-2 pr-4 font-medium text-right">Output Tokens</th>
+                            <th className="pb-2 pr-4 font-medium text-right">Cache Hits</th>
+                            <th className="pb-2 pr-4 font-medium text-right">Runs</th>
+                            <th className="pb-2 pr-4 font-medium text-right">Avg/Run</th>
+                            <th className="pb-2 font-medium text-right">Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tokenAnalyticsData.agents.map((agent) => (
+                            <tr key={agent.agentId} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                              <td className="py-2 pr-4">
+                                <span className="font-medium">{agent.agentName ?? agent.agentId}</span>
+                              </td>
+                              <td className="py-2 pr-4 text-right font-mono text-xs">{formatTokens(agent.totalInputTokens)}</td>
+                              <td className="py-2 pr-4 text-right font-mono text-xs">{formatTokens(agent.totalOutputTokens)}</td>
+                              <td className="py-2 pr-4 text-right font-mono text-xs">{formatTokens(agent.totalCacheTokens)}</td>
+                              <td className="py-2 pr-4 text-right font-mono text-xs">{agent.runsCount}</td>
+                              <td className="py-2 pr-4 text-right font-mono text-xs">{formatTokens(agent.avgTokensPerRun)}</td>
+                              <td className="py-2 text-right font-mono text-xs">{agent.totalCost > 0 ? `$${agent.totalCost.toFixed(4)}` : "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
           )}
         </TabsContent>
       </Tabs>

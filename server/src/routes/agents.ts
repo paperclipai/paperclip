@@ -2723,6 +2723,70 @@ Your team is ready to work. Assign tasks by creating issues and setting an assig
     res.json(result);
   });
 
+  // ── POST /companies/:companyId/agents/:agentId/messages ────────────────────
+  // Agent-to-agent internal messaging via the activity log.
+  router.post("/companies/:companyId/agents/:agentId/messages", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const fromAgentId = req.params.agentId as string;
+    await assertCanWrite(req, companyId, db);
+
+    // Validate sender exists
+    const fromAgent = await svc.getById(fromAgentId);
+    if (!fromAgent || fromAgent.companyId !== companyId) {
+      res.status(404).json({ error: "Sender agent not found" });
+      return;
+    }
+
+    const { toAgentId, subject, content } = req.body as {
+      toAgentId?: string;
+      subject?: string;
+      content?: string;
+    };
+
+    if (!toAgentId || typeof toAgentId !== "string") {
+      res.status(400).json({ error: "toAgentId is required" });
+      return;
+    }
+    if (!content || typeof content !== "string") {
+      res.status(400).json({ error: "content is required" });
+      return;
+    }
+
+    // Validate receiver exists
+    const toAgent = await svc.getById(toAgentId);
+    if (!toAgent || toAgent.companyId !== companyId) {
+      res.status(404).json({ error: "Recipient agent not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const entry = await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: fromAgentId,
+      agentId: fromAgentId,
+      runId: actor.runId,
+      action: "agent.message",
+      entityType: "agent",
+      entityId: toAgentId,
+      details: {
+        fromAgentId,
+        fromAgentName: fromAgent.name,
+        toAgentId,
+        toAgentName: toAgent.name,
+        subject: typeof subject === "string" ? subject : null,
+        content,
+      },
+    });
+
+    res.status(201).json({
+      ok: true,
+      from: { id: fromAgent.id, name: fromAgent.name },
+      to: { id: toAgent.id, name: toAgent.name },
+      subject: subject ?? null,
+    });
+  });
+
   // ── GET /companies/:companyId/agents/headcount ──────────────────────────────
   router.get("/companies/:companyId/agents/headcount", async (req, res) => {
     const companyId = req.params.companyId as string;

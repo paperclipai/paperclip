@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
-import { agents, companies, costEvents, heartbeatRuns, issues, projects } from "@ironworksai/db";
+import { agents, companies, costEvents, goals, heartbeatRuns, issues, projects } from "@ironworksai/db";
 import { SLA_TARGETS } from "@ironworksai/shared";
 import type { IssuePriority, RiskLevel } from "@ironworksai/shared";
 
@@ -510,6 +510,175 @@ export function executiveAnalyticsService(db: Db) {
         reason: allExceed ? "all_recent_runs_exceed_3x_baseline" : "within_normal_range",
         recentAvgTokens: Math.round(recent5Tokens.reduce((s, t) => s + t, 0) / recent5Tokens.length),
         baselineAvgTokens: Math.round(avgOlder),
+      };
+    },
+
+    /**
+     * Composite company health score (0-100) with breakdown by category.
+     */
+    companyHealthScore: async (companyId: string): Promise<{
+      score: number;
+      breakdown: {
+        agentPerformance: number;
+        goalCompletion: number;
+        budgetHealth: number;
+        slaCompliance: number;
+        riskLevel: number;
+      };
+    }> => {
+      // 1. Agent performance: average performance_score (0-100)
+      const perfResult = await db
+        .select({
+          avg: sql<number>`coalesce(avg(${agents.performanceScore}), 0)::int`,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            ne(agents.status, "terminated"),
+            isNotNull(agents.performanceScore),
+          ),
+        );
+      const agentPerformance = Math.min(100, Math.max(0, Number(perfResult[0]?.avg ?? 0)));
+
+      // 2. Goal completion: % of goals that are active/completed vs total
+      const goalCounts = await db
+        .select({
+          total: sql<number>`count(*)::int`,
+          onTrack: sql<number>`count(*) filter (where ${goals.status} in ('active', 'completed'))::int`,
+        })
+        .from(goals)
+        .where(eq(goals.companyId, companyId));
+      const totalGoals = Number(goalCounts[0]?.total ?? 0);
+      const onTrackGoals = Number(goalCounts[0]?.onTrack ?? 0);
+      const goalCompletion = totalGoals > 0
+        ? Math.round((onTrackGoals / totalGoals) * 100)
+        : 100; // No goals = full score (not penalized)
+
+      // 3. Budget health: under budget = 100, over budget scales down
+      const [companyRow] = await db
+        .select({
+          budgetMonthlyCents: companies.budgetMonthlyCents,
+          spentMonthlyCents: companies.spentMonthlyCents,
+        })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+
+      let budgetHealth = 100;
+      if (companyRow && companyRow.budgetMonthlyCents > 0) {
+        const ratio = companyRow.spentMonthlyCents / companyRow.budgetMonthlyCents;
+        if (ratio <= 1) {
+          budgetHealth = 100;
+        } else {
+          // Scale down: at 150% of budget = 50, at 200% = 0
+          budgetHealth = Math.max(0, Math.round(100 - (ratio - 1) * 100));
+        }
+      }
+
+      // 4. SLA compliance (reuse existing method)
+      const slaResult = await db
+        .select({
+          id: issues.id,
+          priority: issues.priority,
+          createdAt: issues.createdAt,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.status, "done"),
+            isNotNull(issues.completedAt),
+          ),
+        );
+
+      let slaTotal = 0;
+      let slaWithin = 0;
+      for (const issue of slaResult) {
+        if (!issue.completedAt) continue;
+        const priority = issue.priority as IssuePriority;
+        const target = SLA_TARGETS[priority as keyof typeof SLA_TARGETS];
+        if (target == null) continue;
+        const resolutionMinutes =
+          (new Date(issue.completedAt).getTime() - new Date(issue.createdAt).getTime()) / (1000 * 60);
+        slaTotal += 1;
+        if (resolutionMinutes <= target) slaWithin += 1;
+      }
+      const slaCompliance = slaTotal > 0 ? Math.round((slaWithin / slaTotal) * 100) : 100;
+
+      // 5. Risk level: inverse of open risk count
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      const [critHighCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.priority, ["critical", "high"]),
+            inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+          ),
+        );
+
+      const [staleCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.status, ["backlog", "todo"]),
+            lt(issues.createdAt, sevenDaysAgo),
+          ),
+        );
+
+      const [lowPerfCount] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            ne(agents.status, "terminated"),
+            isNotNull(agents.performanceScore),
+            lt(agents.performanceScore, 40),
+          ),
+        );
+
+      const totalRisks =
+        Number(critHighCount?.count ?? 0) +
+        Math.ceil(Number(staleCount?.count ?? 0) / 2) + // Stale items count less
+        Number(lowPerfCount?.count ?? 0) * 2; // Low perf agents count double
+
+      // Map risk count to a 0-100 score: 0 risks = 100, 10+ risks = 0
+      const riskLevel = Math.max(0, Math.min(100, 100 - totalRisks * 10));
+
+      // Composite score: weighted average
+      const weights = {
+        agentPerformance: 0.25,
+        goalCompletion: 0.20,
+        budgetHealth: 0.20,
+        slaCompliance: 0.20,
+        riskLevel: 0.15,
+      };
+
+      const score = Math.round(
+        agentPerformance * weights.agentPerformance +
+        goalCompletion * weights.goalCompletion +
+        budgetHealth * weights.budgetHealth +
+        slaCompliance * weights.slaCompliance +
+        riskLevel * weights.riskLevel,
+      );
+
+      return {
+        score: Math.min(100, Math.max(0, score)),
+        breakdown: {
+          agentPerformance,
+          goalCompletion,
+          budgetHealth,
+          slaCompliance,
+          riskLevel,
+        },
       };
     },
   };

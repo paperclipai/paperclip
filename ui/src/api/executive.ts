@@ -74,6 +74,52 @@ export interface RiskRegister {
   risks: RiskItem[];
 }
 
+export interface CompanyHealthScore {
+  score: number;
+  breakdown: {
+    agentPerformance: number;
+    goalCompletion: number;
+    budgetHealth: number;
+    slaCompliance: number;
+    riskLevel: number;
+  };
+}
+
+export interface AgentTokenSummary {
+  agentId: string;
+  agentName: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheTokens: number;
+  totalCost: number;
+  runsCount: number;
+  avgTokensPerRun: number;
+}
+
+export interface CompanyTokenSummary {
+  companyId: string;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheTokens: number;
+  totalCost: number;
+  totalRuns: number;
+  avgTokensPerRun: number;
+  agents: AgentTokenSummary[];
+}
+
+export interface TokenWasteAnalysis {
+  avgInputTokens: number;
+  avgOutputTokens: number;
+  cacheHitRate: number;
+  estimatedWastePct: number;
+  recommendations: string[];
+}
+
+export interface AgentTokenAnalytics {
+  summary: AgentTokenSummary;
+  waste: TokenWasteAnalysis;
+}
+
 export const executiveApi = {
   unitEconomics: (companyId: string) =>
     api.get<UnitEconomics>(`/companies/${companyId}/executive/unit-economics`),
@@ -93,9 +139,22 @@ export const executiveApi = {
   riskRegister: (companyId: string) =>
     api.get<RiskRegister>(`/companies/${companyId}/executive/risk-register`),
 
+  healthScore: (companyId: string) =>
+    api.get<CompanyHealthScore>(`/companies/${companyId}/executive/health-score`),
+
   emergencyPauseAll: (companyId: string) =>
     api.post<{ paused: number; message: string }>(
       `/companies/${companyId}/agents/emergency-pause-all`,
       {},
+    ),
+
+  tokenAnalytics: (companyId: string, periodDays = 30) =>
+    api.get<CompanyTokenSummary>(
+      `/companies/${companyId}/token-analytics?periodDays=${periodDays}`,
+    ),
+
+  agentTokenAnalytics: (companyId: string, agentId: string, periodDays = 30) =>
+    api.get<AgentTokenAnalytics>(
+      `/companies/${companyId}/token-analytics/${agentId}?periodDays=${periodDays}`,
     ),
 };
