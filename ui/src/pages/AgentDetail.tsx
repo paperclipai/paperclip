@@ -25,8 +25,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
-import { MarkdownEditor } from "../components/MarkdownEditor";
-import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
@@ -64,6 +62,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  Pencil,
   Copy,
   ChevronRight,
   ChevronDown,
@@ -142,10 +141,6 @@ function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boole
   } catch {
     return redactPathText(String(value), censorUsernameInLogs);
   }
-}
-
-function isMarkdown(pathValue: string) {
-  return pathValue.toLowerCase().endsWith(".md");
 }
 
 function formatEnvForDisplay(envValue: unknown, censorUsernameInLogs: boolean): string {
@@ -1626,6 +1621,7 @@ function PromptsTab({
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(260);
+  const [viewMode, setViewMode] = useState<"view" | "edit">("view");
   const containerRef = useRef<HTMLDivElement>(null);
   const [awaitingRefresh, setAwaitingRefresh] = useState(false);
   const lastFileVersionRef = useRef<string | null>(null);
@@ -1644,6 +1640,7 @@ function PromptsTab({
     setShowNewFileInput(false);
     setPendingFiles([]);
     setExpandedDirs(new Set());
+    setViewMode("view");
     setAwaitingRefresh(false);
     lastFileVersionRef.current = null;
     externalBundleRef.current = null;
@@ -1697,7 +1694,7 @@ function PromptsTab({
   const { data: selectedFileDetail, isLoading: fileLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsFile(agent.id, selectedOrEntryFile),
     queryFn: () => agentsApi.instructionsFile(agent.id, selectedOrEntryFile, companyId),
-    enabled: Boolean(companyId && isLocal && selectedFileExists),
+    enabled: Boolean(companyId && isLocal && selectedOrEntryFile && !pendingFiles.includes(selectedOrEntryFile)),
   });
 
   const updateBundle = useMutation({
@@ -1740,13 +1737,6 @@ function PromptsTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
     },
     onError: () => setAwaitingRefresh(false),
-  });
-
-  const uploadMarkdownImage = useMutation({
-    mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
-      return assetsApi.uploadImage(selectedCompanyId, file, namespace);
-    },
   });
 
   useEffect(() => {
@@ -1816,7 +1806,7 @@ function PromptsTab({
     };
   }, [bundle, currentEntryFile, currentMode, currentRootPath, selectedOrEntryFile]);
 
-  const currentContent = selectedFileExists ? (selectedFileDetail?.content ?? "") : "";
+  const currentContent = selectedFileDetail?.content ?? "";
   const displayValue = draft ?? currentContent;
   const bundleDirty = Boolean(
     bundleDraft &&
@@ -2240,50 +2230,76 @@ function PromptsTab({
                 </p>
               </div>
             </div>
-            {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  if (confirm(`Delete ${selectedOrEntryFile}?`)) {
-                    deleteFile.mutate(selectedOrEntryFile, {
-                      onSuccess: () => {
-                        setSelectedFile(currentEntryFile);
-                        setDraft(null);
-                      },
-                    });
-                  }
-                }}
-                disabled={deleteFile.isPending}
-              >
-                Delete
-              </Button>
-            )}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-md border border-border">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={viewMode === "view" ? "default" : "ghost"}
+                  className="h-7 rounded-r-none border-0 gap-1 px-2.5"
+                  onClick={() => setViewMode("view")}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  View
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={viewMode === "edit" ? "default" : "ghost"}
+                  className="h-7 rounded-l-none border-0 gap-1 px-2.5"
+                  onClick={() => setViewMode("edit")}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  Edit
+                </Button>
+              </div>
+              {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (confirm(`Delete ${selectedOrEntryFile}?`)) {
+                      deleteFile.mutate(selectedOrEntryFile, {
+                        onSuccess: () => {
+                          setSelectedFile(currentEntryFile);
+                          setDraft(null);
+                        },
+                      });
+                    }
+                  }}
+                  disabled={deleteFile.isPending}
+                >
+                  Delete
+                </Button>
+              )}
+            </div>
           </div>
 
-          {selectedFileExists && fileLoading && !selectedFileDetail ? (
+          {fileLoading && !selectedFileDetail ? (
             <PromptEditorSkeleton />
-          ) : isMarkdown(selectedOrEntryFile) ? (
-            <MarkdownEditor
-              key={selectedOrEntryFile}
-              value={displayValue}
-              onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
-              contentClassName="min-h-[420px] text-sm font-mono"
-              imageUploadHandler={async (file) => {
-                const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                return asset.contentPath;
-              }}
-            />
-          ) : (
+          ) : viewMode === "edit" ? (
             <textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
               className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
               placeholder="File contents"
             />
+          ) : (
+            <div
+              className="min-h-[420px] w-full rounded-md border border-border bg-transparent px-3 py-2 overflow-auto cursor-text hover:bg-accent/5 transition-colors"
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest("a") === null) {
+                  setViewMode("edit");
+                }
+              }}
+            >
+              {displayValue ? (
+                <MarkdownBody>{displayValue}</MarkdownBody>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">No content — click to edit</p>
+              )}
+            </div>
           )}
         </div>
       </div>
