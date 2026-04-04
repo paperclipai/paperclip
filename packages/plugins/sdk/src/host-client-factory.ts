@@ -135,6 +135,11 @@ export interface HostServices {
     write(params: WorkerToHostMethods["metrics.write"][0]): Promise<void>;
   };
 
+  /** Provides `telemetry.track`. */
+  telemetry: {
+    track(params: WorkerToHostMethods["telemetry.track"][0]): Promise<void>;
+  };
+
   /** Provides `log`. */
   logger: {
     log(params: WorkerToHostMethods["log"][0]): Promise<void>;
@@ -283,6 +288,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Metrics
   "metrics.write": "metrics.write",
+
+  // Telemetry
+  "telemetry.track": "telemetry.track",
 
   // Logger — always allowed
   "log": null,
@@ -445,6 +453,11 @@ export function createHostClientHandlers(
     // Metrics
     "metrics.write": gated("metrics.write", async (params) => {
       return services.metrics.write(params);
+    }),
+
+    // Telemetry
+    "telemetry.track": gated("telemetry.track", async (params) => {
+      return services.telemetry.track(params);
     }),
 
     // Logger

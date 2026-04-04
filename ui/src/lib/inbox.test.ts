@@ -1,18 +1,32 @@
 // @vitest-environment node
 
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type {
+  Approval,
+  DashboardSummary,
+  ExecutionWorkspace,
+  HeartbeatRun,
+  Issue,
+  JoinRequest,
+  ProjectWorkspace,
+} from "@paperclipai/shared";
 import {
+  DEFAULT_INBOX_ISSUE_COLUMNS,
   computeInboxBadgeData,
+  getAvailableInboxIssueColumns,
   getApprovalsForTab,
   getInboxWorkItems,
   getInboxKeyboardSelectionIndex,
   getRecentTouchedIssues,
   getUnreadTouchedIssues,
   isMineInboxTab,
+  loadInboxIssueColumns,
   loadLastInboxTab,
+  normalizeInboxIssueColumns,
   RECENT_ISSUES_LIMIT,
+  resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
+  saveInboxIssueColumns,
   saveLastInboxTab,
   shouldShowInboxSection,
 } from "./inbox";
@@ -166,7 +180,65 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     labelIds: [],
     myLastTouchAt: new Date("2026-03-11T00:00:00.000Z"),
     lastExternalCommentAt: new Date("2026-03-11T01:00:00.000Z"),
+    lastActivityAt: new Date("2026-03-11T01:00:00.000Z"),
     isUnreadForMe,
+  };
+}
+
+function makeProjectWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWorkspace {
+  return {
+    id: "project-workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    name: "Primary workspace",
+    sourceType: "local_path",
+    cwd: "/tmp/project",
+    repoUrl: null,
+    repoRef: null,
+    defaultRef: null,
+    visibility: "default",
+    setupCommand: null,
+    cleanupCommand: null,
+    remoteProvider: null,
+    remoteWorkspaceRef: null,
+    sharedWorkspaceKey: null,
+    metadata: null,
+    runtimeConfig: null,
+    isPrimary: true,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorkspace {
+  return {
+    id: "execution-workspace-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: "project-workspace-1",
+    sourceIssueId: "issue-1",
+    mode: "isolated_workspace",
+    strategyType: "git_worktree",
+    name: "PAP-1 branch",
+    status: "active",
+    cwd: "/tmp/project/worktree",
+    repoUrl: null,
+    baseRef: null,
+    branchName: "pap-1",
+    providerType: "git_worktree",
+    providerRef: null,
+    derivedFromExecutionWorkspaceId: null,
+    lastUsedAt: new Date("2026-03-11T00:00:00.000Z"),
+    openedAt: new Date("2026-03-11T00:00:00.000Z"),
+    closedAt: null,
+    cleanupEligibleAt: null,
+    cleanupReason: null,
+    config: null,
+    metadata: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    ...overrides,
   };
 }
 
@@ -286,10 +358,10 @@ describe("inbox helpers", () => {
 
   it("mixes approvals into the inbox feed by most recent activity", () => {
     const newerIssue = makeIssue("1", true);
-    newerIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    newerIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
 
     const olderIssue = makeIssue("2", false);
-    olderIssue.lastExternalCommentAt = new Date("2026-03-11T02:00:00.000Z");
+    olderIssue.lastActivityAt = new Date("2026-03-11T02:00:00.000Z");
 
     const approval = makeApprovalWithTimestamps(
       "approval-between",
@@ -314,9 +386,21 @@ describe("inbox helpers", () => {
     ]);
   });
 
+  it("prefers canonical lastActivityAt over comment-only timestamps", () => {
+    const activityIssue = makeIssue("1", true);
+    activityIssue.lastExternalCommentAt = new Date("2026-03-11T01:00:00.000Z");
+    activityIssue.lastActivityAt = new Date("2026-03-11T05:00:00.000Z");
+
+    const commentIssue = makeIssue("2", true);
+    commentIssue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    commentIssue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
+
+    expect(getRecentTouchedIssues([commentIssue, activityIssue]).map((issue) => issue.id)).toEqual(["1", "2"]);
+  });
+
   it("mixes join requests into the inbox feed by most recent activity", () => {
     const issue = makeIssue("1", true);
-    issue.lastExternalCommentAt = new Date("2026-03-11T04:00:00.000Z");
+    issue.lastActivityAt = new Date("2026-03-11T04:00:00.000Z");
 
     const joinRequest = makeJoinRequest("join-1");
     joinRequest.createdAt = new Date("2026-03-11T03:00:00.000Z");
@@ -401,7 +485,7 @@ describe("inbox helpers", () => {
   it("limits recent touched issues before unread badge counting", () => {
     const issues = Array.from({ length: RECENT_ISSUES_LIMIT + 5 }, (_, index) => {
       const issue = makeIssue(String(index + 1), index < 3);
-      issue.lastExternalCommentAt = new Date(Date.UTC(2026, 2, 31, 0, 0, 0, 0) - index * 60_000);
+      issue.lastActivityAt = new Date(Date.UTC(2026, 2, 31, 0, 0, 0, 0) - index * 60_000);
       return issue;
     });
 
@@ -417,6 +501,116 @@ describe("inbox helpers", () => {
 
     saveLastInboxTab("all");
     expect(loadLastInboxTab()).toBe("all");
+  });
+
+  it("defaults issue columns to the current inbox layout", () => {
+    expect(loadInboxIssueColumns()).toEqual(DEFAULT_INBOX_ISSUE_COLUMNS);
+  });
+
+  it("normalizes saved issue columns to valid values in canonical order", () => {
+    saveInboxIssueColumns(["labels", "updated", "status", "workspace", "labels", "assignee"]);
+
+    expect(loadInboxIssueColumns()).toEqual(["status", "assignee", "workspace", "labels", "updated"]);
+    expect(normalizeInboxIssueColumns(["project", "workspace", "wat", "id"])).toEqual(["id", "project", "workspace"]);
+  });
+
+  it("hides the workspace column option unless isolated workspaces are enabled", () => {
+    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(true)).toEqual([
+      "status",
+      "id",
+      "assignee",
+      "project",
+      "workspace",
+      "labels",
+      "updated",
+    ]);
+  });
+
+  it("allows hiding every optional issue column down to the title-only view", () => {
+    saveInboxIssueColumns([]);
+    expect(loadInboxIssueColumns()).toEqual([]);
+  });
+
+  it("shows explicit workspace names but leaves the default workspace blank", () => {
+    const issue = makeIssue("1", true);
+    issue.projectId = "project-1";
+    issue.projectWorkspaceId = "project-workspace-1";
+    issue.executionWorkspaceId = "execution-workspace-1";
+
+    const executionWorkspace = makeExecutionWorkspace();
+    const defaultWorkspace = makeProjectWorkspace();
+    const secondaryWorkspace = makeProjectWorkspace({
+      id: "project-workspace-2",
+      name: "Secondary workspace",
+      isPrimary: false,
+    });
+
+    expect(
+      resolveIssueWorkspaceName(issue, {
+        executionWorkspaceById: new Map([[executionWorkspace.id, executionWorkspace]]),
+        projectWorkspaceById: new Map([
+          [defaultWorkspace.id, defaultWorkspace],
+          [secondaryWorkspace.id, secondaryWorkspace],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+      }),
+    ).toBe("PAP-1 branch");
+
+    issue.executionWorkspaceId = null;
+    expect(
+      resolveIssueWorkspaceName(issue, {
+        projectWorkspaceById: new Map([
+          [defaultWorkspace.id, defaultWorkspace],
+          [secondaryWorkspace.id, secondaryWorkspace],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+      }),
+    ).toBeNull();
+
+    issue.projectWorkspaceId = secondaryWorkspace.id;
+    expect(
+      resolveIssueWorkspaceName(issue, {
+        projectWorkspaceById: new Map([
+          [defaultWorkspace.id, defaultWorkspace],
+          [secondaryWorkspace.id, secondaryWorkspace],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+      }),
+    ).toBe("Secondary workspace");
+
+    issue.projectWorkspaceId = null;
+    expect(
+      resolveIssueWorkspaceName(issue, {
+        projectWorkspaceById: new Map([
+          [defaultWorkspace.id, defaultWorkspace],
+          [secondaryWorkspace.id, secondaryWorkspace],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+      }),
+    ).toBeNull();
+
+    issue.executionWorkspaceId = "execution-workspace-shared-default";
+    issue.projectWorkspaceId = defaultWorkspace.id;
+    expect(
+      resolveIssueWorkspaceName(issue, {
+        executionWorkspaceById: new Map([[
+          issue.executionWorkspaceId,
+          makeExecutionWorkspace({
+            id: issue.executionWorkspaceId,
+            mode: "shared_workspace",
+            strategyType: "project_primary",
+            projectWorkspaceId: defaultWorkspace.id,
+            name: "PAP-1067",
+          }),
+        ]]),
+        projectWorkspaceById: new Map([
+          [defaultWorkspace.id, defaultWorkspace],
+          [secondaryWorkspace.id, secondaryWorkspace],
+        ]),
+        defaultProjectWorkspaceIdByProjectId: new Map([[issue.projectId!, defaultWorkspace.id]]),
+      }),
+    ).toBeNull();
   });
 
   it("maps legacy new-tab storage to mine", () => {
