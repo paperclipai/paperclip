@@ -913,11 +913,11 @@ export function NewIssueDialog() {
             Labels
           </button>
 
-          {/* Attach image chip */}
+          {/* Attach file chip */}
           <input
             ref={attachInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
+            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx"
             className="hidden"
             onChange={handleAttachImage}
           />

@@ -6,13 +6,22 @@ import type { StorageService } from "../storage/types.js";
 import { accessService, assetService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo, requirePermission } from "./authz.js";
 
-const MAX_ASSET_IMAGE_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
+const MAX_ASSET_BYTES = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 20 * 1024 * 1024;
+const ALLOWED_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
   "image/webp",
   "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
 ]);
 
 export function assetRoutes(db: Db, storage: StorageService) {
@@ -21,7 +30,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   const access = accessService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ASSET_IMAGE_BYTES, files: 1 },
+    limits: { fileSize: MAX_ASSET_BYTES, files: 1 },
   });
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -42,7 +51,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Image exceeds ${MAX_ASSET_IMAGE_BYTES} bytes` });
+          res.status(422).json({ error: `File exceeds ${Math.round(MAX_ASSET_BYTES / 1024 / 1024)}MB limit` });
           return;
         }
         res.status(400).json({ error: err.message });
@@ -58,12 +67,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const contentType = (file.mimetype || "").toLowerCase();
-    if (!ALLOWED_IMAGE_CONTENT_TYPES.has(contentType)) {
-      res.status(422).json({ error: `Unsupported image type: ${contentType || "unknown"}` });
+    if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+      res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}. Allowed: images, PDF, text, CSV, Word, Excel.` });
       return;
     }
     if (file.buffer.length <= 0) {
-      res.status(422).json({ error: "Image is empty" });
+      res.status(422).json({ error: "File is empty" });
+      return;
+    }
+    if (file.buffer.length > MAX_ASSET_BYTES) {
+      res.status(422).json({ error: `File too large (max ${Math.round(MAX_ASSET_BYTES / 1024 / 1024)}MB)` });
       return;
     }
 

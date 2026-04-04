@@ -717,7 +717,7 @@ export function IssueDetail() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf,.txt,.md,.csv,.json,.doc,.docx,.xls,.xlsx"
               className="hidden"
               onChange={handleFilePicked}
             />
@@ -728,7 +728,7 @@ export function IssueDetail() {
               disabled={uploadAttachment.isPending}
             >
               <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-              {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
+              {uploadAttachment.isPending ? "Uploading..." : "Upload file"}
             </Button>
           </div>
         </div>
