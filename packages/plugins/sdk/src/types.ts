@@ -468,7 +468,6 @@ export interface PluginSecretsClient {
    * @returns The newly created secret reference UUID (`secretRef`)
    */
   write(input: {
-    companyId: string;
     name: string;
     value: string;
     description?: string;

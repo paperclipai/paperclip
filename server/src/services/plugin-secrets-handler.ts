@@ -30,7 +30,7 @@ import {
   companySecretVersions,
   pluginConfig,
 } from "@paperclipai/db";
-import type { SecretProvider } from "@paperclipai/shared";
+import { SECRET_PROVIDERS, type SecretProvider } from "@paperclipai/shared";
 
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -194,10 +194,10 @@ export interface PluginSecretsService {
   /**
    * Create a new secret in the Paperclip vault.
    *
-   * @param params - Contains companyId, name, value, and description
+   * @param params - Contains name, value, and description
    * @returns The generated secret reference UUID
    */
-  write(params: { companyId: string; name: string; value: string; description?: string }): Promise<string>;
+  write(params: { name: string; value: string; description?: string }): Promise<string>;
 }
 
 /**
@@ -246,8 +246,19 @@ export function createPluginSecretsHandler(
   const { db, pluginId } = options;
   const registry = pluginRegistryService(db);
 
-  // Rate limit: max 30 resolution attempts per plugin per minute
-  const rateLimiter = createRateLimiter(30, 60_000);
+  // Resolve default provider from environment
+  const configuredDefaultProvider = process.env.PAPERCLIP_SECRETS_PROVIDER;
+  const defaultProvider = (
+    configuredDefaultProvider && SECRET_PROVIDERS.includes(configuredDefaultProvider as SecretProvider)
+      ? configuredDefaultProvider
+      : "local_encrypted"
+  ) as SecretProvider;
+
+  // Rate limiters:
+  // - resolve: max 30 resolution attempts per plugin per minute
+  // - write: max 10 creation attempts per plugin per minute (conservative to prevent abuse)
+  const resolveRateLimiter = createRateLimiter(30, 60_000);
+  const writeRateLimiter = createRateLimiter(10, 60_000);
 
   let cachedAllowedRefs: Set<string> | null = null;
   let cachedAllowedRefsExpiry = 0;
@@ -260,7 +271,7 @@ export function createPluginSecretsHandler(
       // ---------------------------------------------------------------
       // 0. Rate limiting — prevent brute-force UUID enumeration
       // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
+      if (!resolveRateLimiter.check(pluginId)) {
         const err = new Error("Rate limit exceeded for secret resolution");
         err.name = "RateLimitExceededError";
         throw err;
@@ -347,25 +358,48 @@ export function createPluginSecretsHandler(
       return resolved;
     },
 
-    async write(params: { companyId: string; name: string; value: string; description?: string }): Promise<string> {
-      // Security: Prevent plugins from overwriting or spoofing critical system-level
-      // environment variables by blocking reserved prefixes.
+    async write(params: { name: string; value: string; description?: string }): Promise<string> {
+      // ---------------------------------------------------------------
+      // 0. Rate limiting — prevent resource exhaustion
+      // ---------------------------------------------------------------
+      if (!writeRateLimiter.check(pluginId)) {
+        const err = new Error("Rate limit exceeded for secret creation");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      // ---------------------------------------------------------------
+      // 1. Resolve owning company (Critical Security: Anti-Injection)
+      // ---------------------------------------------------------------
+      const plugin = await registry.getById(pluginId);
+      if (!plugin) {
+        throw new Error("Plugin not found");
+      }
+      const companyId = plugin.companyId;
+
+      // ---------------------------------------------------------------
+      // 2. Safety check — reserved prefixes
+      // ---------------------------------------------------------------
       const upperName = params.name.toUpperCase();
       if (upperName.startsWith("PAPERCLIP_") || upperName.startsWith("BETTER_AUTH_")) {
         throw new Error(`Secret name "${params.name}" is reserved for system use.`);
       }
 
+      // ---------------------------------------------------------------
+      // 3. Secure Creation
+      // ---------------------------------------------------------------
       // Crucial Security Requirement: Delegate to secretService to ensure
       // proper provider-level encryption (e.g. AES-256-GCM) is applied before
       // the secret is ever persisted to the database.
       const secret = await secretService(db).create(
-        params.companyId,
+        companyId,
         {
           name: params.name,
-          provider: "database" as SecretProvider,
+          provider: defaultProvider,
           value: params.value,
           description: params.description,
-        }
+        },
+        { agentId: null, userId: null } // Attributed to system/plugin via companyId context
       );
 
       return secret.id;

@@ -501,7 +501,7 @@ export interface WorkerToHostMethods {
     result: string,
   ];
   "secrets.write": [
-    params: { companyId: string; name: string; value: string; description?: string },
+    params: { name: string; value: string; description?: string },
     result: string,
   ];
 
