@@ -271,7 +271,7 @@ export interface ServerAdapterModule {
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  listModels?: (opts?: { localBaseUrl?: string }) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -332,6 +332,9 @@ export interface CreateConfigValues {
   instructionsFilePath?: string;
   promptTemplate: string;
   model: string;
+  codingModel?: string;
+  allowLocalTools?: boolean;
+  localToolMode?: "off" | "read_only" | "full";
   thinkingEffort: string;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
@@ -351,6 +354,7 @@ export interface CreateConfigValues {
   worktreeParentDir?: string;
   runtimeServicesJson?: string;
   maxTurnsPerRun: number;
+  maxTotalTokens: number;
   heartbeatEnabled: boolean;
   intervalSec: number;
 }

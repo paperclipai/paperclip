@@ -73,6 +73,7 @@ export function agentRoutes(db: Db) {
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
+    hybrid_local: "instructionsFilePath",
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
@@ -744,7 +745,11 @@ export function agentRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = req.params.type as string;
-    const models = await listAdapterModels(type);
+    const localBaseUrlRaw = (req.query as Record<string, unknown> | undefined)?.localBaseUrl;
+    const localBaseUrl = typeof localBaseUrlRaw === "string" && localBaseUrlRaw.trim().length > 0
+      ? localBaseUrlRaw.trim()
+      : undefined;
+    const models = await listAdapterModels(type, { localBaseUrl });
     res.json(models);
   });
 

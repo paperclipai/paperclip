@@ -318,11 +318,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "hybrid_local";
   const isHermesLocal = adapterType === "hermes_local";
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const hybridLocalBaseUrl =
+    adapterType === "hybrid_local"
+      ? eff(
+          "adapterConfig",
+          "localBaseUrl",
+          String(config.localBaseUrl ?? "http://127.0.0.1:11434/v1"),
+        )
+      : undefined;
 
   // Fetch adapter models for the effective adapter type
   const {
@@ -330,9 +339,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     error: fetchedModelsError,
   } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
+      ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, hybridLocalBaseUrl)
       : ["agents", "none", "adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, hybridLocalBaseUrl),
     enabled: Boolean(selectedCompanyId),
   });
   const models = fetchedModels ?? externalModels ?? [];
@@ -751,7 +760,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "hermes_local"}
                 required={adapterType === "opencode_local" || adapterType === "hermes_local"}
                 groupByProvider={adapterType === "opencode_local"}
-                creatable={adapterType === "hermes_local"}
+                creatable={adapterType === "hermes_local" || adapterType === "hybrid_local"}
                 detectedModel={adapterType === "hermes_local" ? detectedModel : null}
                 onDetectModel={adapterType === "hermes_local"
                   ? async () => {
@@ -817,7 +826,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </div>
                 </>
               )}
-              {adapterType === "claude_local" && (
+              {(adapterType === "claude_local" || adapterType === "hybrid_local") && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
 
@@ -1024,7 +1033,7 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
+const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local", "hybrid_local"]);
 
 /** Display list includes all real adapter types plus UI-only coming-soon entries. */
 const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [

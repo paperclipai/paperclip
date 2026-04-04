@@ -68,7 +68,8 @@ type AdapterType =
   | "pi_local"
   | "cursor"
   | "http"
-  | "openclaw_gateway";
+  | "openclaw_gateway"
+  | "hybrid_local";
 
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
@@ -213,7 +214,8 @@ export function OnboardingWizard() {
     adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "hybrid_local";
   const effectiveAdapterCommand =
     command.trim() ||
     (adapterType === "codex_local"
@@ -228,6 +230,8 @@ export function OnboardingWizard() {
       ? "agent"
       : adapterType === "opencode_local"
       ? "opencode"
+      : adapterType === "hybrid_local"
+      ? "claude"
       : "claude");
 
   useEffect(() => {
@@ -853,6 +857,12 @@ export function OnboardingWizard() {
                             label: "Hermes Agent",
                             icon: HermesIcon,
                             desc: "Local multi-provider agent"
+                          },
+                          {
+                            value: "hybrid_local" as const,
+                            label: "Hybrid (local)",
+                            icon: Sparkles,
+                            desc: "Claude CLI + local OpenAI-compatible models"
                           },
                           {
                             value: "openclaw_gateway" as const,

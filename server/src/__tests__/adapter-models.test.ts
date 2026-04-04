@@ -104,4 +104,22 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "composer-1")).toBe(true);
   });
 
+  it("uses provided localBaseUrl for hybrid_local model discovery", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "qwen3-coder:latest" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("hybrid_local", {
+      localBaseUrl: "http://127.0.0.1:1234/v1",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:1234/v1/models",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(models.some((m) => m.id === "qwen3-coder:latest")).toBe(true);
+  });
 });

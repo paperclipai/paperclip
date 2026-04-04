@@ -79,6 +79,20 @@ import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
   models as hermesModels,
 } from "hermes-paperclip-adapter";
+import {
+  execute as hybridExecute,
+  listSkills as hybridListSkills,
+  syncSkills as hybridSyncSkills,
+  testEnvironment as hybridTestEnvironment,
+  sessionCodec as hybridSessionCodec,
+  getQuotaWindows as hybridGetQuotaWindows,
+  resolveBaseUrl as resolveHybridBaseUrl,
+  listOpenAICompatModels,
+} from "@paperclipai/adapter-hybrid-local/server";
+import {
+  agentConfigurationDoc as hybridAgentConfigurationDoc,
+  models as hybridModels,
+} from "@paperclipai/adapter-hybrid-local";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 
@@ -188,6 +202,26 @@ const hermesLocalAdapter: ServerAdapterModule = {
   detectModel: () => detectModelFromHermes(),
 };
 
+const hybridLocalAdapter: ServerAdapterModule = {
+  type: "hybrid_local",
+  execute: hybridExecute,
+  testEnvironment: hybridTestEnvironment,
+  listSkills: hybridListSkills,
+  syncSkills: hybridSyncSkills,
+  sessionCodec: hybridSessionCodec,
+  sessionManagement: getAdapterSessionManagement("hybrid_local") ?? undefined,
+  models: hybridModels,
+  listModels: async (opts) => {
+    // Dynamic discovery defaults to Ollama (11434), but can use an explicit
+    // localBaseUrl from the UI when provided.
+    const localModels = await listOpenAICompatModels(resolveHybridBaseUrl(opts?.localBaseUrl)).catch(() => []);
+    return [...hybridModels, ...localModels.filter((m) => !hybridModels.some((s) => s.id === m.id))];
+  },
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: hybridAgentConfigurationDoc,
+  getQuotaWindows: hybridGetQuotaWindows,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>(
   [
     claudeLocalAdapter,
@@ -198,6 +232,7 @@ const adaptersByType = new Map<string, ServerAdapterModule>(
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    hybridLocalAdapter,
     processAdapter,
     httpAdapter,
   ].map((a) => [a.type, a]),
@@ -212,11 +247,14 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return adapter;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(
+  type: string,
+  opts?: { localBaseUrl?: string },
+): Promise<{ id: string; label: string }[]> {
   const adapter = adaptersByType.get(type);
   if (!adapter) return [];
   if (adapter.listModels) {
-    const discovered = await adapter.listModels();
+    const discovered = await adapter.listModels(opts);
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];

@@ -1655,6 +1655,7 @@ function PromptsTab({
     agent.adapterType === "opencode_local" ||
     agent.adapterType === "pi_local" ||
     agent.adapterType === "hermes_local" ||
+    agent.adapterType === "hybrid_local" ||
     agent.adapterType === "cursor";
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
