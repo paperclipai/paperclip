@@ -528,6 +528,7 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { pushToast } = useToast();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
@@ -868,8 +869,13 @@ export function AgentDetail() {
             <PopoverContent className="w-44 p-1" align="end">
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                onClick={() => {
-                  navigator.clipboard.writeText(agent.id);
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(agent.id);
+                    pushToast({ title: "Agent ID copied", body: agent.id, tone: "success" });
+                  } catch {
+                    pushToast({ title: "Copy failed", body: "Could not copy agent ID to clipboard.", tone: "error" });
+                  }
                   setMoreOpen(false);
                 }}
               >
