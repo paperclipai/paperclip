@@ -168,8 +168,105 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
     if (runId) return runId;
+    logger.warn(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        actorType: req.actor.type,
+        actorAgentId: req.actor.agentId ?? null,
+        actorUserId: null,
+        source: req.actor.source,
+        issueId: typeof req.params.id === "string" ? req.params.id : null,
+      },
+      "agent request missing run id",
+    );
     res.status(401).json({ error: "Agent run id required" });
     return null;
+  }
+
+  function rejectImplicitBoardForAgentIssueMutation(
+    req: Request,
+    res: Response,
+    issue: { id: string; assigneeAgentId: string | null; executionRunId: string | null; companyId: string; status?: string },
+    reason: string,
+    options?: { allowHiddenAtOnly?: boolean },
+  ) {
+    if (req.actor.type !== "board" || req.actor.source !== "local_implicit") return false;
+    if (options?.allowHiddenAtOnly) return false;
+    if (!issue.assigneeAgentId && !issue.executionRunId) return false;
+
+    const body = req.body as Record<string, unknown> | undefined;
+    const requestKeys = body ? Object.keys(body) : [];
+    const allowedLocalImplicitPatchKeys = new Set([
+      "status",
+      "priority",
+      "assigneeAgentId",
+      "assigneeUserId",
+      "comment",
+      "blockedReason",
+      "hiddenAt",
+    ]);
+    const onlyWorkflowSafeKeys =
+      requestKeys.length > 0 && requestKeys.every((key) => allowedLocalImplicitPatchKeys.has(key));
+    const localImplicitWorkflowMutationAllowed =
+      req.method === "PATCH" && reason === "issue_patch" && onlyWorkflowSafeKeys;
+    if (localImplicitWorkflowMutationAllowed) {
+      logger.info(
+        {
+          method: req.method,
+          url: req.originalUrl,
+          issueId: issue.id,
+          companyId: issue.companyId,
+          issueStatus: issue.status ?? null,
+          assigneeAgentId: issue.assigneeAgentId,
+          executionRunId: issue.executionRunId,
+          actorType: req.actor.type,
+          actorUserId: req.actor.userId ?? null,
+          source: req.actor.source,
+          requestKeys,
+          reason,
+        },
+        "allowing local implicit board workflow mutation on agent-owned issue",
+      );
+      return false;
+    }
+    logger.info(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        issueId: issue.id,
+        companyId: issue.companyId,
+        issueStatus: issue.status ?? null,
+        assigneeAgentId: issue.assigneeAgentId,
+        executionRunId: issue.executionRunId,
+        actorType: req.actor.type,
+        actorUserId: req.actor.userId ?? null,
+        actorAgentId: null,
+        actorRunId: req.actor.runId ?? null,
+        source: req.actor.source,
+        hasAuthorization: Boolean(req.header("authorization")),
+        hasRunIdHeader: Boolean(req.header("x-paperclip-run-id")),
+        reason,
+      },
+      "evaluating implicit board mutation guard for issue route",
+    );
+    logger.warn(
+      {
+        method: req.method,
+        url: req.originalUrl,
+        issueId: issue.id,
+        companyId: issue.companyId,
+        assigneeAgentId: issue.assigneeAgentId,
+        executionRunId: issue.executionRunId,
+        actorType: req.actor.type,
+        actorUserId: req.actor.userId ?? null,
+        source: req.actor.source,
+        reason,
+      },
+      "rejected local implicit board mutation on agent-owned issue path",
+    );
+    res.status(401).json({ error: "Agent authentication required for issue mutation on agent-owned issue" });
+    return true;
   }
 
   async function assertAgentRunCheckoutOwnership(
@@ -1053,6 +1150,20 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    const requestKeys = Object.keys(req.body as Record<string, unknown>);
+    const hiddenAtOnlyMutation =
+      requestKeys.length > 0 &&
+      requestKeys.every((key) => key === "hiddenAt") &&
+      Object.prototype.hasOwnProperty.call(req.body, "hiddenAt");
+
+    if (
+      rejectImplicitBoardForAgentIssueMutation(req, res, existing, "issue_patch", {
+        allowHiddenAtOnly: hiddenAtOnlyMutation,
+      })
+    ) {
+      return;
+    }
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
@@ -1370,6 +1481,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, issue, "issue_checkout")) return;
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -1438,6 +1550,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, existing, "issue_release")) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -1606,6 +1719,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (rejectImplicitBoardForAgentIssueMutation(req, res, issue, "issue_comment")) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);
@@ -1672,6 +1786,26 @@ export function issueRoutes(
       }
     }
 
+    logger.info(
+      {
+        issueId: id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        actorSource: req.actor.source,
+        actorUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        actorIsLocalImplicitBoard: req.actor.type === "board" ? req.actor.source === "local_implicit" : false,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+        executionRunId: currentIssue.executionRunId,
+        issueStatus: currentIssue.status,
+        reopenRequested,
+        interruptRequested,
+        bodyPreview: req.body.body.slice(0, 120),
+      },
+      "issue comment request accepted",
+    );
+
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -1682,6 +1816,25 @@ export function issueRoutes(
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
     }
+
+    logger.info(
+      {
+        issueId: id,
+        commentId: comment.id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        actorSource: req.actor.source,
+        actorUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+        actorIsLocalImplicitBoard: req.actor.type === "board" ? req.actor.source === "local_implicit" : false,
+        assigneeAgentId: currentIssue.assigneeAgentId,
+        executionRunId: currentIssue.executionRunId,
+        commentAuthorAgentId: comment.authorAgentId,
+        commentAuthorUserId: comment.authorUserId,
+      },
+      "issue comment persisted",
+    );
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
