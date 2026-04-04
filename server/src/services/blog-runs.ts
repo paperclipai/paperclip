@@ -154,6 +154,14 @@ function resolveInitialPublicVerifyContractMode(
   return lane === "publish" && publishMode === "publish" ? "strict" : "compat";
 }
 
+function resolveInitialPublishReadyGateMode(
+  contextJson: Record<string, unknown> | null | undefined,
+) {
+  const explicit = String(contextJson?.publishReadyGateMode ?? "").trim().toLowerCase();
+  if (explicit === "strict" || explicit === "compat") return explicit;
+  return "compat";
+}
+
 function buildInitialContextJson(
   lane: string,
   publishMode: string,
@@ -165,6 +173,7 @@ function buildInitialContextJson(
   return {
     ...base,
     publicVerifyContractMode: resolveInitialPublicVerifyContractMode(lane, publishMode, base),
+    publishReadyGateMode: resolveInitialPublishReadyGateMode(base),
   };
 }
 

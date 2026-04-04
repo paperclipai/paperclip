@@ -122,7 +122,43 @@ describeEmbeddedPostgres("blog run service", () => {
 
     expect(created?.contextJson).toMatchObject({
       publicVerifyContractMode: "compat",
+      publishReadyGateMode: "compat",
       custom: "keep-me",
+    });
+  });
+
+  it("persists publishReadyGateMode defaults and preserves explicit override", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const defaultRun = await svc.create({
+      companyId,
+      projectId,
+      topic: "Default gate topic",
+      lane: "publish",
+      publishMode: "publish",
+      contextJson: {},
+    });
+
+    expect(defaultRun?.contextJson).toMatchObject({
+      publishReadyGateMode: "compat",
+      publicVerifyContractMode: "strict",
+    });
+
+    const explicitRun = await svc.create({
+      companyId,
+      projectId,
+      topic: "Explicit gate topic",
+      lane: "publish",
+      publishMode: "publish",
+      contextJson: {
+        publishReadyGateMode: "strict",
+      },
+    });
+
+    expect(explicitRun?.contextJson).toMatchObject({
+      publishReadyGateMode: "strict",
+      publicVerifyContractMode: "strict",
     });
   });
 
