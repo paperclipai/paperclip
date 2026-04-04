@@ -718,6 +718,8 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown table {
   width: 100%;
+  display: block;
+  overflow-x: auto;
 }
 
 .paperclip-markdown th {
