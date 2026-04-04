@@ -1,6 +1,6 @@
 FROM node:22-trixie-slim AS base
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl git \
   && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
