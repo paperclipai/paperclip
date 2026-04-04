@@ -197,6 +197,7 @@ export function setupLiveEventsWebSocketServer(
       socket.ping();
     }
   }, 30000);
+  if (pingInterval.unref) pingInterval.unref();
 
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).paperclipUpgradeContext;
