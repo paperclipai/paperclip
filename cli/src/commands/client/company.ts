@@ -1477,7 +1477,7 @@ export function registerCompanyCommands(program: Command): void {
                 initialValue: true,
               });
               if (!p.isCancel(openImportedCompany) && openImportedCompany) {
-                if (openUrl(companyUrl)) {
+                if (await openUrl(companyUrl)) {
                   p.log.info(`Opened ${companyUrl}`);
                 } else {
                   p.log.warn(`Could not open your browser automatically. Open this URL manually:\n${companyUrl}`);
