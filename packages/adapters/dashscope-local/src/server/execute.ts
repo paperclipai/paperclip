@@ -39,7 +39,7 @@ async function callDashScopeAPI(
   },
 ): Promise<{ response: DashScopeResponse; latencyMs: number }> {
   // 百炼通用 API 端点
-  const url = new URL("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+  const url = new URL("https://coding.dashscope.aliyuncs.com/v1/chat/completions");
   
   const requestBody = {
     model,
