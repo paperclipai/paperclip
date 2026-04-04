@@ -379,6 +379,13 @@
       "when": 1775494162000,
       "tag": "0053_auto_label_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775577600000,
+      "tag": "0054_enforce_blocked_on_company",
+      "breakpoints": true
     }
   ]
 }
