@@ -590,6 +590,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             goalId: input.goalId,
             parentId: input.parentId,
+            inheritExecutionWorkspaceFromIssueId: input.inheritExecutionWorkspaceFromIssueId,
             title: input.title,
             description: input.description,
             priority: input.priority,
@@ -789,6 +790,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       metrics: {
         async write(name: string, value: number, tags?: Record<string, string>): Promise<void> {
           await callHost("metrics.write", { name, value, tags });
+        },
+      },
+
+      telemetry: {
+        async track(
+          eventName: string,
+          dimensions?: Record<string, string | number | boolean>,
+        ): Promise<void> {
+          await callHost("telemetry.track", { eventName, dimensions });
         },
       },
 

@@ -10,11 +10,12 @@ import {
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
-  redactEnvForLogs,
+  buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  resolveCommandForLogs,
   renderTemplate,
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
@@ -186,6 +187,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     await ensureCommandResolvable(command, cwd, runtimeEnv);
+    const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
+    const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+      runtimeEnv,
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand,
+    });
 
     await ensureOpenCodeModelConfiguredAndAvailable({
       model,
@@ -298,11 +305,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
-          command,
+          command: resolvedCommand,
           cwd,
           commandNotes,
           commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
-          env: redactEnvForLogs(preparedRuntimeConfig.env),
+          env: loggedEnv,
           prompt,
           promptMetrics,
           context,
