@@ -1547,9 +1547,7 @@ export function IssueDetail() {
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
-      {experimentalSettings?.enableWorkProducts === true && (
-        <IssueWorkProductsSection issueId={issue.id} />
-      )}
+      <IssueWorkProductsSection issueId={issue.id} />
 
       {/* Dependencies (blockers) — gated behind enableDependencies experimental flag */}
       {experimentalSettings?.enableDependencies === true && (

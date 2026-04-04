@@ -41,7 +41,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
-      enableWorkProducts: false,
+
       enableDependencies: false,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
@@ -57,7 +57,7 @@ describe("instance settings routes", () => {
       experimental: {
         enableIsolatedWorkspaces: true,
         autoRestartDevServerWhenIdle: false,
-        enableWorkProducts: false,
+  
         enableDependencies: false,
       },
     });
@@ -77,7 +77,7 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
-      enableWorkProducts: false,
+
       enableDependencies: false,
     });
 

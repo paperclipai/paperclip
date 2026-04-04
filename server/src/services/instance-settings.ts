@@ -45,7 +45,6 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     return {
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-      enableWorkProducts: parsed.data.enableWorkProducts ?? false,
       enableDependencies: parsed.data.enableDependencies ?? false,
       enforceBlockedOnValidation: parsed.data.enforceBlockedOnValidation ?? false,
       autoLabelRulesEngine: parsed.data.autoLabelRulesEngine ?? false,
@@ -55,7 +54,6 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   return {
     enableIsolatedWorkspaces: false,
     autoRestartDevServerWhenIdle: false,
-    enableWorkProducts: false,
     enableDependencies: false,
     enforceBlockedOnValidation: false,
     autoLabelRulesEngine: false,

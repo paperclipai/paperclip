@@ -25,7 +25,6 @@ export type CrashMonitoringSettings = z.infer<typeof crashMonitoringSettingsSche
 export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
-  enableWorkProducts: z.boolean().default(false),
   enableDependencies: z.boolean().default(false),
   enforceBlockedOnValidation: z.boolean().default(false),
   autoLabelRulesEngine: z.boolean().default(false),

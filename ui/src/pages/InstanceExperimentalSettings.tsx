@@ -24,7 +24,7 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean; enableWorkProducts?: boolean; enableDependencies?: boolean }) =>
+    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean; enableDependencies?: boolean }) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -54,7 +54,6 @@ export function InstanceExperimentalSettings() {
 
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
-  const enableWorkProducts = experimentalQuery.data?.enableWorkProducts === true;
   const enableDependencies = experimentalQuery.data?.enableDependencies === true;
 
   return (
@@ -131,37 +130,6 @@ export function InstanceExperimentalSettings() {
               className={cn(
                 "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
                 autoRestartDevServerWhenIdle ? "translate-x-4.5" : "translate-x-0.5",
-              )}
-            />
-          </button>
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Work Products</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Show the work products section on issue detail pages and enable the work-product API endpoints
-              (create, update, delete, reconcile). When off, work-product data is hidden and mutation endpoints
-              return 403.
-            </p>
-          </div>
-          <button
-            type="button"
-            data-slot="toggle"
-            aria-label="Toggle work products experimental setting"
-            disabled={toggleMutation.isPending}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              enableWorkProducts ? "bg-green-600" : "bg-muted",
-            )}
-            onClick={() => toggleMutation.mutate({ enableWorkProducts: !enableWorkProducts })}
-          >
-            <span
-              className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                enableWorkProducts ? "translate-x-4.5" : "translate-x-0.5",
               )}
             />
           </button>

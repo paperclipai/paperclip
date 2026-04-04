@@ -107,7 +107,7 @@ describe("dependency routes — enableDependencies flag gating", () => {
       mockGetExperimental.mockResolvedValue({
         enableIsolatedWorkspaces: false,
         autoRestartDevServerWhenIdle: false,
-        enableWorkProducts: false,
+
         enableDependencies: false,
       });
     });
@@ -144,7 +144,7 @@ describe("dependency routes — enableDependencies flag gating", () => {
       mockGetExperimental.mockResolvedValue({
         enableIsolatedWorkspaces: false,
         autoRestartDevServerWhenIdle: false,
-        enableWorkProducts: false,
+
         enableDependencies: true,
       });
     });
