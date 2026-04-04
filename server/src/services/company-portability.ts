@@ -3911,6 +3911,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.agents) {
+      // Auto-assign CEO role: if the target company has no CEO and no imported
+      // agent explicitly declares role "ceo", promote the first root agent
+      // (reportsTo is null) — mirroring the UI's first-agent-is-CEO logic.
+      const existingHasCeo = existingAgents.some((a) => a.role === "ceo");
+      const manifestHasCeo = plan.selectedAgents.some((a) => a.role === "ceo");
+      let autoCeoSlug: string | null = null;
+      if (!existingHasCeo && !manifestHasCeo) {
+        const rootAgent = plan.selectedAgents.find((a) => !a.reportsToSlug)
+          ?? plan.selectedAgents[0];
+        if (rootAgent) {
+          autoCeoSlug = rootAgent.slug;
+        }
+      }
+
       for (const planAgent of plan.preview.plan.agentPlans) {
         const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
         if (!manifestAgent) continue;
@@ -3972,7 +3986,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         delete adapterConfigWithSkills.instructionsEntryFile;
         const patch = {
           name: planAgent.plannedName,
-          role: manifestAgent.role,
+          role: autoCeoSlug === manifestAgent.slug ? "ceo" : manifestAgent.role,
           title: manifestAgent.title,
           icon: manifestAgent.icon,
           capabilities: manifestAgent.capabilities,
