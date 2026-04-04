@@ -26,6 +26,7 @@ export function sidebarBadgeService(db: Db) {
       const latestRunByAgent = await db
         .selectDistinctOn([heartbeatRuns.agentId], {
           runStatus: heartbeatRuns.status,
+          agentStatus: agents.status,
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -38,8 +39,10 @@ export function sidebarBadgeService(db: Db) {
         )
         .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
 
+      // Only count failed runs for agents still in error state
+      // (clearing the error on the agent dismisses the badge)
       const failedRuns = latestRunByAgent.filter((row) =>
-        FAILED_HEARTBEAT_STATUSES.includes(row.runStatus),
+        FAILED_HEARTBEAT_STATUSES.includes(row.runStatus) && row.agentStatus === "error",
       ).length;
 
       const joinRequests = extra?.joinRequests ?? 0;
