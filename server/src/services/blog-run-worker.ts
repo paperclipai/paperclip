@@ -19,6 +19,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { resolveDefaultBlogRunsDir } from "../home-paths.js";
+import { issueService } from "./issues.js";
 import { blogPublisherService } from "./blog-publisher.js";
 import { blogRunService } from "./blog-runs.js";
 
@@ -40,6 +41,7 @@ type WorkerDeps = {
   runPublicVerifyStep?: (input: BlogPipelineStepInput) => Promise<Record<string, unknown> | null>;
   publisher?: ReturnType<typeof blogPublisherService>;
   runService?: ReturnType<typeof blogRunService>;
+  issueService?: ReturnType<typeof issueService>;
   artifactRoot?: string;
   publicVerifyContractMode?: "compat" | "strict";
   runQualityGateBundle?: (input: {
@@ -168,6 +170,14 @@ async function readJsonArtifact(filePath: string) {
     return toRecord(parsed);
   } catch {
     return {};
+  }
+}
+
+async function readTextArtifact(filePath: string) {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return null;
   }
 }
 
@@ -462,6 +472,7 @@ async function normalizeLegacyPublicVerifyResult(
 export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
   const runs = deps.runService ?? blogRunService(db);
   const publisher = deps.publisher ?? blogPublisherService(db);
+  const issues = deps.issueService ?? issueService(db);
 
   async function executeClaimedStep(claim: StepClaim) {
     const run = toRecord(claim.run);
@@ -708,11 +719,26 @@ export function blogRunWorkerService(db: Db, deps: WorkerDeps = {}) {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return runs.failStep(runId, stepKey, {
+      const failed = await runs.failStep(runId, stepKey, {
         attemptId,
         errorCode: message.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "BLOG_RUN_STEP_FAILED",
         errorMessage: message,
       });
+      if (message.startsWith("blog_run_publish_ready_failed") && String(run.issueId ?? "").trim()) {
+        const summaryPath = path.join(runDir, "preflight.publish_ready.md");
+        const summary = await readTextArtifact(summaryPath);
+        if (summary && summary.trim()) {
+          await issues.addComment(String(run.issueId), [
+            "## Publish-Ready Gate Failure",
+            "",
+            summary.trim(),
+            "",
+            `- Run id: \`${runId}\``,
+            `- Step: \`${stepKey}\``,
+          ].join("\n"), { userId: "local-board" }).catch(() => null);
+        }
+      }
+      return failed;
     }
   }
 

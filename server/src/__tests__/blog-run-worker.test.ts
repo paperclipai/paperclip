@@ -338,6 +338,7 @@ describe("blog run worker", () => {
     };
     const worker = blogRunWorkerService({} as any, {
       runService: runService as any,
+      issueService: { addComment: vi.fn().mockResolvedValue({ id: "comment-1" }) } as any,
       runValidateStep: vi.fn().mockResolvedValue({ ok: true }),
       runQualityGateBundle: vi.fn().mockResolvedValue({
         results: {
@@ -357,6 +358,63 @@ describe("blog run worker", () => {
       errorMessage: "blog_run_publish_ready_failed:visual_quality",
     }));
     expect(result).toMatchObject({ run: { status: "failed" } });
+  });
+
+  it("posts publish-ready markdown to the linked issue when strict validate fails", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worker-comment-"));
+    const runDir = path.join(tmp, "run-1");
+    await fs.mkdir(runDir, { recursive: true });
+    await fs.writeFile(path.join(runDir, "preflight.publish_ready.md"), "## Publish-Ready Operator Summary\n\n- Status: `fail`\n- Summary: failed gates: visual_quality (duplicate_assets)\n");
+
+    const runService = {
+      getById: vi.fn().mockResolvedValue(createRun({
+        id: "run-1",
+        issueId: "issue-1",
+        currentStep: "validate",
+        contextJson: {
+          title: "Test title",
+          article_html: "<p>Body</p>",
+          publishReadyGateMode: "strict",
+        },
+      })),
+      getDetail: vi.fn().mockResolvedValue({ ok: true }),
+      claimNextStep: vi.fn().mockResolvedValue(createClaim({
+        id: "run-1",
+        issueId: "issue-1",
+        currentStep: "validate",
+        contextJson: {
+          title: "Test title",
+          article_html: "<p>Body</p>",
+          publishReadyGateMode: "strict",
+        },
+      }, { stepKey: "validate" })),
+      completeStep: vi.fn(),
+      failStep: vi.fn().mockResolvedValue({ run: { status: "failed", failedReason: "blog_run_publish_ready_failed:visual_quality" } }),
+    };
+    const issueSvc = { addComment: vi.fn().mockResolvedValue({ id: "comment-1" }) };
+    const worker = blogRunWorkerService({} as any, {
+      runService: runService as any,
+      issueService: issueSvc as any,
+      artifactRoot: tmp,
+      runValidateStep: vi.fn().mockResolvedValue({ ok: true }),
+      runQualityGateBundle: vi.fn().mockResolvedValue({
+        results: {
+          publish_ready: {
+            ok: false,
+            status: "fail",
+            failed_gates: ["visual_quality"],
+          },
+        },
+      }),
+    });
+
+    await worker.runNext("run-1");
+
+    expect(issueSvc.addComment).toHaveBeenCalledWith(
+      "issue-1",
+      expect.stringContaining("## Publish-Ready Gate Failure"),
+      { userId: "local-board" },
+    );
   });
 
   it("blocks report lane from publishing", async () => {
