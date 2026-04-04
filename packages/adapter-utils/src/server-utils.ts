@@ -320,6 +320,31 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    // When the executable path contains spaces (e.g. C:\Users\Admin Backup\...),
+    // cmd.exe /d /s /c breaks because Node.js adds extra quotes around the
+    // command-line argument in CreateProcess, which interact badly with /s
+    // quote-stripping behaviour. Work around this by reading the .cmd wrapper
+    // to extract the underlying .js entrypoint and spawning node directly.
+    if (/\s/.test(executable)) {
+      try {
+        const cmdContent = await fs.readFile(executable, "utf8");
+        // npm-generated .cmd wrappers contain: "%dp0%\path\to\entry.js"
+        const jsMatch = cmdContent.match(/%(?:~)?dp0%?\\([^\s"]+\.js)/i);
+        if (jsMatch) {
+          const jsFile = path.join(path.dirname(executable), jsMatch[1]!);
+          if (await pathExists(jsFile)) {
+            const nodeExe = path.join(path.dirname(process.execPath), "node.exe");
+            return {
+              command: (await pathExists(nodeExe)) ? nodeExe : "node",
+              args: [jsFile, ...args],
+            };
+          }
+        }
+      } catch {
+        // Fall through to the cmd.exe approach below.
+      }
+    }
+
     const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
