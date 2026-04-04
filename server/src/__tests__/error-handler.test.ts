@@ -33,6 +33,8 @@ describe("errorHandler", () => {
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
+    expect(res.status).toHaveBeenCalledTimes(1);
+    expect(res.json).toHaveBeenCalledTimes(1);
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("boom");
   });
@@ -47,7 +49,26 @@ describe("errorHandler", () => {
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
+    expect(res.status).toHaveBeenCalledTimes(1);
+    expect(res.json).toHaveBeenCalledTimes(1);
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("delegates when headers were already sent", () => {
+    const req = makeReq();
+    const res = {
+      headersSent: true,
+      status: vi.fn(),
+      json: vi.fn(),
+    } as unknown as Response;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new Error("already sent");
+
+    errorHandler(err, req, res, next);
+
+    expect(next).toHaveBeenCalledWith(err);
+    expect((res.status as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    expect((res.json as unknown as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 });

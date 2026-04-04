@@ -37,8 +37,16 @@ export function errorHandler(
   err: unknown,
   req: Request,
   res: Response,
-  _next: NextFunction,
+  next: NextFunction,
 ) {
+  // Express can still route an error here after another layer already committed
+  // a response (for example a 304). In that case we must delegate instead of
+  // trying to write a second response.
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+
   const translate = typeof req.t === "function"
     ? req.t
     : ((key: string, params?: Record<string, string | number | boolean | null | undefined>) =>
@@ -81,6 +89,4 @@ export function errorHandler(
   res.status(500).json({ error: translate("errors.internalServer") });
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
-
-  res.status(500).json({ error: translate("errors.internalServer") });
 }
