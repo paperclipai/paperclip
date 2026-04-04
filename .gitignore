@@ -51,3 +51,9 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Private company skills (kept on local disk, not in repo)
+skills/authenticate/
+skills/check-communications/
+skills/dspot-company-rules/
+skills/gmail-api/
