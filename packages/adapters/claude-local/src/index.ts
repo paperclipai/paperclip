@@ -31,6 +31,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- isolateSession (boolean, optional): when true, discard any stored session before each run and do not persist the resulting session; each task run starts from a clean context
 
 Notes:
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.

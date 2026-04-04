@@ -378,7 +378,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  const isolateSession = asBoolean(config.isolateSession, false);
   const canResumeSession =
+    !isolateSession &&
     runtimeSessionId.length > 0 &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
@@ -574,7 +576,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession: clearSessionForMaxTurns || isolateSession || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
