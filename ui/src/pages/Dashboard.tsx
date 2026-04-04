@@ -337,11 +337,16 @@ function AgentWorkSection({
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <Link to="/agent-work" className="text-sm font-semibold text-muted-foreground uppercase tracking-wide no-underline hover:text-foreground transition-colors">
-          Today&apos;s Agent Work →
-        </Link>
-        <span className="text-xs text-muted-foreground">
-          {groups.reduce((sum, g) => sum + g.runs.length, 0)} runs across {groups.length} agent{groups.length === 1 ? "" : "s"}
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Today&apos;s Agent Work
+        </h3>
+        <span className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>
+            {groups.reduce((sum, g) => sum + g.runs.length, 0)} runs across {groups.length} agent{groups.length === 1 ? "" : "s"}
+          </span>
+          <Link to="/agent-work" className="text-muted-foreground hover:text-foreground transition-colors no-underline">
+            See All &rarr;
+          </Link>
         </span>
       </div>
       <div className="space-y-3">
