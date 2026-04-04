@@ -39,6 +39,10 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+function classifyPiDiscoveryError(message: string): "runtime_availability" | "config_or_infra" {
+  return /timed out|timeout/i.test(message) ? "runtime_availability" : "config_or_infra";
+}
+
 function parseModelProvider(model: string | null): string | null {
   if (!model) return null;
   const trimmed = model.trim();
@@ -212,13 +216,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     resolvedCommand,
   });
 
-  // Validate model is available before execution
-  await ensurePiModelConfiguredAndAvailable({
-    model,
-    command,
-    cwd,
-    env: runtimeEnv,
-  });
+  // Validate model is available before execution.
+  // Keep failure classification explicit for monitor/RCA pipelines.
+  try {
+    await ensurePiModelConfiguredAndAvailable({
+      model,
+      command,
+      cwd,
+      env: runtimeEnv,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Pi model discovery failed.";
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: classifyPiDiscoveryError(message),
+      errorMessage: message,
+      resultJson: {
+        preflightStep: "ensurePiModelConfiguredAndAvailable",
+      },
+    };
+  }
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 20);
