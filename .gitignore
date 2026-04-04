@@ -51,3 +51,11 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+
+# Python (blackbox/)
+__pycache__/
+*.pyc
+*.pyo
+blackbox/.venv/
+blackbox/uv.lock
+blackbox/.env
