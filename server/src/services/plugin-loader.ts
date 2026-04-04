@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -75,6 +75,37 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   ".paperclip",
   "plugins",
 );
+
+export function getNpmCommand(
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" ? "npm.cmd" : "npm";
+}
+
+export function getManifestImportTarget(
+  manifestPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32" || !path.win32.isAbsolute(manifestPath)) {
+    return manifestPath;
+  }
+
+  if (process.platform === "win32") {
+    return pathToFileURL(manifestPath).href;
+  }
+
+  const normalizedPath = manifestPath.replace(/\\/g, "/");
+
+  if (normalizedPath.startsWith("//")) {
+    const uncMatch = /^\/\/([^/]+)(\/.*)$/.exec(normalizedPath);
+    if (uncMatch) {
+      const [, host, pathname] = uncMatch;
+      return `file://${host}${pathToFileURL(pathname).pathname}`;
+    }
+  }
+
+  return pathToFileURL(`/${normalizedPath}`).href;
+}
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -833,7 +864,7 @@ export function pluginLoader(
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
         await execFileAsync(
-          "npm",
+          getNpmCommand(),
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
@@ -927,7 +958,7 @@ export function pluginLoader(
 
     try {
       // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      const mod = await import(getManifestImportTarget(manifestPath)) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -1399,7 +1430,7 @@ export function pluginLoader(
       if (existsSync(packageJsonPath)) {
         try {
           await execFileAsync(
-            "npm",
+            getNpmCommand(),
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
             { timeout: 120_000 },
           );
