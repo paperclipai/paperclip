@@ -160,7 +160,7 @@ function KanbanCard({
           )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {
             const name = agentName(issue.assigneeAgentId);
