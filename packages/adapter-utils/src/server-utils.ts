@@ -222,49 +222,172 @@ export function joinPromptSections(
     .join(separator);
 }
 
-/**
- * Build a prompt section that alerts the agent to a mention-triggered wake.
- *
- * When a heartbeat is triggered by an @-mention in a comment, the run context
- * carries `wakeCommentId` and `wakeReason`. Agents are expected to fetch and
- * act on that comment before doing other work, but this relies on the agent
- * following multi-step skill instructions.  Injecting a clear directive into
- * the prompt makes the requirement impossible to miss regardless of model or
- * adapter type.
- *
- * Returns an empty string when no wake comment is present.
- */
-export function buildWakeContextNotice(context: Record<string, unknown>): string {
-  const wakeCommentId =
-    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim()) ||
-    null;
-  const wakeReason =
-    (typeof context.wakeReason === "string" && context.wakeReason.trim()) ||
-    null;
-  if (!wakeCommentId) return "";
+type PaperclipWakeIssue = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+};
 
-  const taskId =
-    (typeof context.taskId === "string" && context.taskId.trim()) ||
-    (typeof context.issueId === "string" && context.issueId.trim()) ||
-    null;
+type PaperclipWakeComment = {
+  id: string | null;
+  issueId: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  createdAt: string | null;
+  authorType: string | null;
+  authorId: string | null;
+};
 
-  const lines = [
-    "IMPORTANT: This heartbeat was triggered by a comment mention" +
-      (wakeReason ? ` (${wakeReason})` : "") +
-      ".",
-  ];
-  if (taskId) {
-    lines.push(
-      `Wake comment: GET /api/issues/${taskId}/comments/${wakeCommentId}`,
-    );
-  } else {
-    lines.push(`Wake comment ID: ${wakeCommentId}`);
+type PaperclipWakePayload = {
+  reason: string | null;
+  issue: PaperclipWakeIssue | null;
+  commentIds: string[];
+  latestCommentId: string | null;
+  comments: PaperclipWakeComment[];
+  requestedCount: number;
+  includedCount: number;
+  missingCount: number;
+  truncated: boolean;
+  fallbackFetchNeeded: boolean;
+};
+
+function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
+  const issue = parseObject(value);
+  const id = asString(issue.id, "").trim() || null;
+  const identifier = asString(issue.identifier, "").trim() || null;
+  const title = asString(issue.title, "").trim() || null;
+  const status = asString(issue.status, "").trim() || null;
+  const priority = asString(issue.priority, "").trim() || null;
+  if (!id && !identifier && !title) return null;
+  return {
+    id,
+    identifier,
+    title,
+    status,
+    priority,
+  };
+}
+
+function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
+  const comment = parseObject(value);
+  const author = parseObject(comment.author);
+  const body = asString(comment.body, "");
+  if (!body.trim()) return null;
+  return {
+    id: asString(comment.id, "").trim() || null,
+    issueId: asString(comment.issueId, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(comment.bodyTruncated, false),
+    createdAt: asString(comment.createdAt, "").trim() || null,
+    authorType: asString(author.type, "").trim() || null,
+    authorId: asString(author.id, "").trim() || null,
+  };
+}
+
+export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
+  const payload = parseObject(value);
+  const comments = Array.isArray(payload.comments)
+    ? payload.comments
+        .map((entry) => normalizePaperclipWakeComment(entry))
+        .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
+    : [];
+  const commentWindow = parseObject(payload.commentWindow);
+  const commentIds = Array.isArray(payload.commentIds)
+    ? payload.commentIds
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+
+  if (comments.length === 0 && commentIds.length === 0) return null;
+
+  return {
+    reason: asString(payload.reason, "").trim() || null,
+    issue: normalizePaperclipWakeIssue(payload.issue),
+    commentIds,
+    latestCommentId: asString(payload.latestCommentId, "").trim() || null,
+    comments,
+    requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
+    includedCount: asNumber(commentWindow.includedCount, comments.length),
+    missingCount: asNumber(commentWindow.missingCount, 0),
+    truncated: asBoolean(payload.truncated, false),
+    fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+  };
+}
+
+export function stringifyPaperclipWakePayload(value: unknown): string | null {
+  const normalized = normalizePaperclipWakePayload(value);
+  if (!normalized) return null;
+  return JSON.stringify(normalized);
+}
+
+export function renderPaperclipWakePrompt(
+  value: unknown,
+  options: { resumedSession?: boolean } = {},
+): string {
+  const normalized = normalizePaperclipWakePayload(value);
+  if (!normalized) return "";
+  const resumedSession = options.resumedSession === true;
+
+  const lines = resumedSession
+      ? [
+        "## Paperclip Resume Delta",
+        "",
+        "You are resuming an existing Paperclip session.",
+        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
+        "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+      ]
+    : [
+        "## Paperclip Wake Payload",
+        "",
+        "Treat this wake payload as the highest-priority change for the current heartbeat.",
+        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
+        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+        "Use this inline wake data first before refetching the issue thread.",
+        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+      ];
+
+  if (normalized.issue?.status) {
+    lines.push(`- issue status: ${normalized.issue.status}`);
   }
-  lines.push(
-    "You MUST fetch and respond to this comment BEFORE doing any other work in this heartbeat.",
-  );
+  if (normalized.issue?.priority) {
+    lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.missingCount > 0) {
+    lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
 
-  return lines.join("\n");
+  lines.push("", "New comments in order:");
+
+  for (const [index, comment] of normalized.comments.entries()) {
+    const authorLabel = comment.authorId
+      ? `${comment.authorType ?? "unknown"} ${comment.authorId}`
+      : comment.authorType ?? "unknown";
+    lines.push(
+      `${index + 1}. comment ${comment.id ?? "unknown"} at ${comment.createdAt ?? "unknown"} by ${authorLabel}`,
+      comment.body,
+    );
+    if (comment.bodyTruncated) {
+      lines.push("[comment body truncated]");
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
 }
 
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
