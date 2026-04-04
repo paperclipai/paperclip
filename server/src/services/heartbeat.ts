@@ -82,6 +82,25 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const LOW_MEMORY_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB — defer spawn if free memory is below this
 const startLocksByAgent = new Map<string, Promise<void>>();
+
+/**
+ * Returns available memory in bytes.
+ * On Linux, reads MemAvailable from /proc/meminfo (includes reclaimable page cache).
+ * Falls back to os.freemem() on other platforms.
+ */
+async function getAvailableMemBytes(): Promise<number> {
+  if (process.platform === "linux") {
+    try {
+      const meminfo = await fs.readFile("/proc/meminfo", "utf8");
+      const match = meminfo.match(/^MemAvailable:\s+(\d+) kB/m);
+      if (match) return parseInt(match[1], 10) * 1024;
+    } catch {
+      // fall through to os.freemem()
+    }
+  }
+  return os.freemem();
+}
+
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const execFile = promisify(execFileCallback);
@@ -2740,13 +2759,15 @@ export function heartbeatService(db: Db) {
           `Fix: ensure PAPERCLIP_AGENT_JWT_SECRET is set in server config.`,
         );
       }
-      // Memory pre-flight: defer if OS free memory is below threshold to avoid OOM kills
-      const freeMemBytes = os.freemem();
-      if (freeMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
-        const freeMemMB = Math.round(freeMemBytes / (1024 * 1024));
+      // Memory pre-flight: defer if available memory is below threshold to avoid OOM kills.
+      // Uses MemAvailable from /proc/meminfo on Linux (includes reclaimable page cache)
+      // instead of os.freemem() (MemFree), which is always near zero on Linux due to caching.
+      const availMemBytes = await getAvailableMemBytes();
+      if (availMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
+        const availMemMB = Math.round(availMemBytes / (1024 * 1024));
         const totalMemMB = Math.round(os.totalmem() / (1024 * 1024));
         logger.warn(
-          { runId: run.id, agentId: agent.id, freeMemMB, totalMemMB },
+          { runId: run.id, agentId: agent.id, availMemMB, totalMemMB },
           "low memory: deferring run back to queued",
         );
         await db
@@ -2757,8 +2778,8 @@ export function heartbeatService(db: Db) {
           eventType: "lifecycle",
           stream: "system",
           level: "warn",
-          message: `Deferred: insufficient free memory (${freeMemMB} MB free of ${totalMemMB} MB total); will retry on next scheduler tick`,
-          payload: { freeMemBytes, totalMemBytes: os.totalmem() },
+          message: `Deferred: insufficient available memory (${availMemMB} MB available of ${totalMemMB} MB total); will retry on next scheduler tick`,
+          payload: { availMemBytes, totalMemBytes: os.totalmem() },
         });
         activeRunExecutions.delete(run.id);
         return;
