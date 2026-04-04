@@ -51,12 +51,22 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockTrackAgentCreated = vi.hoisted(() => vi.fn());
+const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 const mockAdapter = vi.hoisted(() => ({
   listSkills: vi.fn(),
   syncSkills: vi.fn(),
 }));
 const mockDetectAdapterModel = vi.hoisted(() => vi.fn());
+
+vi.mock("@penclipai/shared/telemetry", () => ({
+  trackAgentCreated: mockTrackAgentCreated,
+}));
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: mockGetTelemetryClient,
+}));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -136,7 +146,8 @@ function makeAgent(adapterType: string) {
 
 describe("agent skill routes", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockDetectAdapterModel.mockResolvedValue({
       model: "openai/gpt-5.4",
       provider: "openai",
@@ -340,6 +351,9 @@ describe("agent skill routes", () => {
         }),
       }),
     );
+    expect(mockTrackAgentCreated).toHaveBeenCalledWith(expect.anything(), {
+      agentRole: "engineer",
+    });
   });
 
   it("materializes a managed AGENTS.md for directly created local agents", async () => {

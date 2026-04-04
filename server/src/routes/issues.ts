@@ -53,7 +53,20 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
-export function issueRoutes(db: Db, storage: StorageService) {
+export function issueRoutes(
+  db: Db,
+  storage: StorageService,
+  opts?: {
+    feedbackExportService?: {
+      flushPendingFeedbackTraces(input?: {
+        companyId?: string;
+        traceId?: string;
+        limit?: number;
+        now?: Date;
+      }): Promise<unknown>;
+    };
+  },
+) {
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
@@ -68,6 +81,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
+  const feedbackExportService = opts?.feedbackExportService;
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -91,6 +105,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       throw new HttpError(400, `Invalid ${field} query value`);
     }
     return parsed;
+  }
+
+  function translateMessage(req: Request, key: string) {
+    return typeof req.t === "function" ? req.t(key) : key;
   }
 
   async function runSingleFileUpload(req: Request, res: Response) {
@@ -1542,7 +1560,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, issue.companyId);
     if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Only board users can view feedback traces" });
+      res.status(403).json({ error: translateMessage(req, "Only board users can view feedback traces") });
       return;
     }
 
@@ -1570,13 +1588,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/feedback-traces/:traceId", async (req, res) => {
     const traceId = req.params.traceId as string;
     if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Only board users can view feedback traces" });
+      res.status(403).json({ error: translateMessage(req, "Only board users can view feedback traces") });
       return;
     }
     const includePayload = parseBooleanQuery(req.query.includePayload) || req.query.includePayload === undefined;
     const trace = await feedback.getFeedbackTraceById(traceId, includePayload);
     if (!trace || !actorCanAccessCompany(req, trace.companyId)) {
-      res.status(404).json({ error: "Feedback trace not found" });
+      res.status(404).json({ error: translateMessage(req, "Feedback trace not found") });
       return;
     }
     res.json(trace);
@@ -1585,12 +1603,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.get("/feedback-traces/:traceId/bundle", async (req, res) => {
     const traceId = req.params.traceId as string;
     if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Only board users can view feedback trace bundles" });
+      res.status(403).json({ error: translateMessage(req, "Only board users can view feedback trace bundles") });
       return;
     }
     const bundle = await feedback.getFeedbackTraceBundle(traceId);
     if (!bundle || !actorCanAccessCompany(req, bundle.companyId)) {
-      res.status(404).json({ error: "Feedback trace not found" });
+      res.status(404).json({ error: translateMessage(req, "Feedback trace not found") });
       return;
     }
     res.json(bundle);
@@ -1881,6 +1899,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           }),
         ),
       );
+    }
+
+    if (result.sharingEnabled && result.traceId && feedbackExportService) {
+      try {
+        await feedbackExportService.flushPendingFeedbackTraces({
+          companyId: issue.companyId,
+          traceId: result.traceId,
+          limit: 1,
+        });
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id, traceId: result.traceId }, "failed to flush shared feedback trace immediately");
+      }
     }
 
     res.status(201).json(result.vote);

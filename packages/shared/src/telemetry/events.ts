@@ -23,6 +23,48 @@ export function trackCompanyImported(
   });
 }
 
+export function trackProjectCreated(client: TelemetryClient): void {
+  client.track("project.created");
+}
+
+export function trackRoutineCreated(client: TelemetryClient): void {
+  client.track("routine.created");
+}
+
+export function trackRoutineRun(
+  client: TelemetryClient,
+  dims: { source: string; status: string },
+): void {
+  client.track("routine.run", {
+    source: dims.source,
+    status: dims.status,
+  });
+}
+
+export function trackGoalCreated(
+  client: TelemetryClient,
+  dims?: { goalLevel?: string | null },
+): void {
+  client.track("goal.created", dims?.goalLevel ? { goal_level: dims.goalLevel } : undefined);
+}
+
+export function trackAgentCreated(
+  client: TelemetryClient,
+  dims: { agentRole: string },
+): void {
+  client.track("agent.created", { agent_role: dims.agentRole });
+}
+
+export function trackSkillImported(
+  client: TelemetryClient,
+  dims: { sourceType: string; skillRef?: string | null },
+): void {
+  client.track("skill.imported", {
+    source_type: dims.sourceType,
+    ...(dims.skillRef ? { skill_ref: dims.skillRef } : {}),
+  });
+}
+
 export function trackAgentFirstHeartbeat(
   client: TelemetryClient,
   dims: { agentRole: string },

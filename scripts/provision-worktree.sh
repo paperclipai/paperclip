@@ -394,18 +394,23 @@ async function main() {
     }
   }
 
+  const formatEnvValue = (value) => `"${String(value)
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/"/g, '\\"')}"`;
+
   const envLines = [
-    "PAPERCLIP_HOME=" + JSON.stringify(worktreeHome),
-    "PAPERCLIP_INSTANCE_ID=" + JSON.stringify(instanceId),
-    "PAPERCLIP_CONFIG=" + JSON.stringify(configPath),
-    "PAPERCLIP_CONTEXT=" + JSON.stringify(path.resolve(worktreeHome, "context.json")),
+    "PAPERCLIP_HOME=" + formatEnvValue(worktreeHome),
+    "PAPERCLIP_INSTANCE_ID=" + formatEnvValue(instanceId),
+    "PAPERCLIP_CONFIG=" + formatEnvValue(configPath),
+    "PAPERCLIP_CONTEXT=" + formatEnvValue(path.resolve(worktreeHome, "context.json")),
     "PAPERCLIP_IN_WORKTREE=true",
-    "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
+    "PAPERCLIP_WORKTREE_NAME=" + formatEnvValue(worktreeName),
   ];
 
   const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
   if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + formatEnvValue(agentJwtSecret));
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });

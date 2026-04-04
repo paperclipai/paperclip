@@ -2115,7 +2115,13 @@
   "Root path": "Root path",
   "The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip CN automatically.": "The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip CN automatically.",
   "The main file the agent reads first when loading instructions. Defaults to AGENTS.md.": "The main file the agent reads first when loading instructions. Defaults to AGENTS.md.",
+  "Only board users can view feedback trace bundles": "Only board users can view feedback trace bundles",
+  "Only board users can view feedback traces": "Only board users can view feedback traces",
+  "Feedback trace not found": "Feedback trace not found",
   "entry": "entry",
+  "markdownEditor.dropImageToUpload": "Drop image to upload",
+  "markdownEditor.imageUploadFailed": "Image upload failed",
+  "markdownEditor.noImageUploadHandler": "No image upload handler",
   "virtual file": "virtual file",
   "{{language}} file": "{{language}} file"
 }

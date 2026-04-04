@@ -1,4 +1,5 @@
 import {
+  type ClipboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
   type DragEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 import {
   CodeMirrorEditor,
   MDXEditor,
@@ -32,6 +34,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
+import { looksLikeMarkdownPaste, normalizePastedMarkdown } from "../lib/markdownPaste";
 import { cn } from "../lib/utils";
 
 /* ---- Mention types ---- */
@@ -167,6 +170,24 @@ function detectMention(container: HTMLElement): MentionState | null {
   };
 }
 
+function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
+  if (!node || !container.contains(node)) return false;
+  const el = node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : node.parentElement;
+  return Boolean(el?.closest("pre, code"));
+}
+
+function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
+  if (!container) return false;
+  const selection = window.getSelection();
+  if (!selection) return false;
+  for (const node of [selection.anchorNode, selection.focusNode]) {
+    if (nodeInsideCodeLike(container, node)) return true;
+  }
+  return false;
+}
+
 function mentionMarkdown(option: MentionOption): string {
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
@@ -198,15 +219,34 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   onSubmit,
 }: MarkdownEditorProps, forwardedRef) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
-  const editorRef = useRef<MDXEditorMethods | null>(null);
+  const ref = useRef<MDXEditorMethods>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const latestValueRef = useRef(value);
-  const latestPropValueRef = useRef(value);
-  const pendingExternalValueRef = useRef<string | null>(null);
-  const isFocusedRef = useRef(false);
+  const initialChildOnChangeRef = useRef(true);
+  /**
+   * After imperative `setMarkdown` (prop sync, mentions, image upload), MDXEditor may emit `onChange`
+   * with the same markdown. Skip notifying the parent for that echo so controlled parents that
+   * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
+   */
+  const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
+  const uploadMessageRef = useRef({
+    noHandler: "",
+    failed: "",
+  });
+  uploadMessageRef.current = {
+    noHandler: t("markdownEditor.noImageUploadHandler", {
+      defaultValue: "No image upload handler",
+    }),
+    failed: t("markdownEditor.imageUploadFailed", {
+      defaultValue: "Image upload failed",
+    }),
+  };
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -237,9 +277,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
   }, [mentionState?.query, mentions]);
 
+  const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
+    ref.current = instance;
+    if (instance) {
+      const v = valueRef.current;
+      echoIgnoreMarkdownRef.current = v;
+      instance.setMarkdown(v);
+      latestValueRef.current = v;
+    }
+  }, []);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
-      editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
   }), []);
 
@@ -251,7 +301,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const imageHandler = hasImageUpload
       ? async (file: File) => {
           const handler = imageUploadHandlerRef.current;
-          if (!handler) throw new Error("No image upload handler");
+          if (!handler) throw new Error(uploadMessageRef.current.noHandler);
           try {
             const src = await handler(file);
             setUploadError(null);
@@ -266,16 +316,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               );
               if (updated !== current) {
                 latestValueRef.current = updated;
-                editorRef.current?.setMarkdown(updated);
+                echoIgnoreMarkdownRef.current = updated;
+                ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
-                  editorRef.current?.focus(undefined, { defaultSelection: "rootEnd" });
+                  ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
               }
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : uploadMessageRef.current.failed;
             setUploadError(message);
             throw err;
           }
@@ -303,29 +354,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
-  const handleEditorRef = useCallback((instance: MDXEditorMethods | null) => {
-    editorRef.current = instance;
-    if (!instance) return;
-
-    const pendingValue = pendingExternalValueRef.current;
-    if (pendingValue !== null && pendingValue !== latestValueRef.current) {
-      instance.setMarkdown(pendingValue);
-      latestValueRef.current = pendingValue;
-    }
-    pendingExternalValueRef.current = null;
-  }, []);
-
-  latestPropValueRef.current = value;
-
   useEffect(() => {
     if (value !== latestValueRef.current) {
-      if (!editorRef.current) {
-        pendingExternalValueRef.current = value;
-        return;
+      if (ref.current) {
+        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
+        echoIgnoreMarkdownRef.current = value;
+        ref.current.setMarkdown(value);
+        latestValueRef.current = value;
       }
-      editorRef.current.setMarkdown(value);
-      latestValueRef.current = value;
-      pendingExternalValueRef.current = null;
     }
   }, [value]);
 
@@ -416,7 +452,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const next = applyMention(current, state.query, option);
       if (next !== current) {
         latestValueRef.current = next;
-        editorRef.current?.setMarkdown(next);
+        echoIgnoreMarkdownRef.current = next;
+        ref.current?.setMarkdown(next);
         onChange(next);
       }
 
@@ -486,6 +523,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard || !ref.current) return;
+    const types = new Set(Array.from(clipboard.types));
+    if (types.has("Files") || types.has("text/html")) return;
+    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+
+    const rawText = clipboard.getData("text/plain");
+    if (!looksLikeMarkdownPaste(rawText)) return;
+
+    event.preventDefault();
+    ref.current.insertMarkdown(normalizePastedMarkdown(rawText));
+  }, []);
 
   return (
     <div
@@ -563,35 +613,31 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         dragDepthRef.current = 0;
         setIsDragOver(false);
       }}
-      onFocusCapture={() => {
-        isFocusedRef.current = true;
-      }}
-      onBlurCapture={() => {
-        isFocusedRef.current = false;
-      }}
+      onPasteCapture={handlePasteCapture}
     >
       <MDXEditor
-        ref={handleEditorRef}
+        ref={setEditorRef}
         markdown={value}
         placeholder={placeholder}
         onChange={(next) => {
-          const externalValue = latestPropValueRef.current;
-          if (!isFocusedRef.current) {
-            if (next === externalValue) {
-              latestValueRef.current = externalValue;
-              return;
-            }
-
-            latestValueRef.current = externalValue;
-            if (editorRef.current) {
-              editorRef.current.setMarkdown(externalValue);
-              pendingExternalValueRef.current = null;
-            } else {
-              pendingExternalValueRef.current = externalValue;
-            }
+          const echo = echoIgnoreMarkdownRef.current;
+          if (echo !== null && next === echo) {
+            echoIgnoreMarkdownRef.current = null;
+            latestValueRef.current = next;
             return;
           }
+          if (echo !== null) {
+            echoIgnoreMarkdownRef.current = null;
+          }
 
+          if (initialChildOnChangeRef.current) {
+            initialChildOnChangeRef.current = false;
+            if (next === "" && value !== "") {
+              echoIgnoreMarkdownRef.current = value;
+              ref.current?.setMarkdown(value);
+              return;
+            }
+          }
           latestValueRef.current = next;
           onChange(next);
         }}
@@ -642,7 +688,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 <span>{option.name}</span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Project
+                    {t("Project", { defaultValue: "Project" })}
                   </span>
                 )}
               </button>
@@ -658,7 +704,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop image to upload
+          {t("markdownEditor.dropImageToUpload", {
+            defaultValue: "Drop image to upload",
+          })}
         </div>
       )}
       {uploadError && (

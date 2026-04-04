@@ -26,7 +26,11 @@ function formatEnvValue(value: string): string {
   if (/^[A-Za-z0-9_./:@-]+$/.test(value)) {
     return value;
   }
-  return JSON.stringify(value);
+  const escaped = value
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/"/g, '\\"');
+  return `"${escaped}"`;
 }
 
 function renderEnvFile(entries: Record<string, string>) {

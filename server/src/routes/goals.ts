@@ -1,9 +1,11 @@
 import { Router } from "express";
 import type { Db } from "@penclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@penclipai/shared";
+import { trackGoalCreated } from "@penclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -42,6 +44,10 @@ export function goalRoutes(db: Db) {
       entityId: goal.id,
       details: { title: goal.title },
     });
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      trackGoalCreated(telemetryClient, { goalLevel: goal.level });
+    }
     res.status(201).json(goal);
   });
 

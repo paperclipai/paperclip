@@ -2289,7 +2289,13 @@
   "Root path": "根路径",
   "The absolute directory on disk where the instructions bundle lives. In managed mode this is set by Paperclip CN automatically.": "说明文件包在磁盘上的绝对目录。托管模式下会由 Paperclip CN 自动设置。",
   "The main file the agent reads first when loading instructions. Defaults to AGENTS.md.": "智能体加载说明时首先读取的主文件。默认为 AGENTS.md。",
+  "Only board users can view feedback trace bundles": "只有看板用户可以查看反馈追踪包",
+  "Only board users can view feedback traces": "只有看板用户可以查看反馈追踪记录",
+  "Feedback trace not found": "未找到反馈追踪记录",
   "entry": "入口",
+  "markdownEditor.dropImageToUpload": "拖放图片以上传",
+  "markdownEditor.imageUploadFailed": "图片上传失败",
+  "markdownEditor.noImageUploadHandler": "未配置图片上传处理器",
   "virtual file": "虚拟文件",
   "{{language}} file": "{{language}} 文件"
 }

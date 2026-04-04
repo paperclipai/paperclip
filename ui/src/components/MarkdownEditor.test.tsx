@@ -81,6 +81,16 @@ vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
 }));
 
+vi.mock("react-i18next", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-i18next")>();
+  return {
+    ...actual,
+    useTranslation: () => ({
+      t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
+    }),
+  };
+});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
