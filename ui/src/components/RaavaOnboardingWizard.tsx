@@ -390,6 +390,7 @@ function CredentialInput({
         <button
           type="button"
           onClick={() => setVisible(!visible)}
+          aria-label={visible ? "Hide password" : "Show password"}
           className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
         >
           {visible ? (
@@ -514,6 +515,9 @@ export function RaavaOnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
+      // TODO: userName and userRole are collected in the onboarding UX but are
+      // not persisted yet — the companies.create endpoint only accepts `name`.
+      // Once the backend supports user profile fields, pass them here.
       const company = await companiesApi.create({
         name: companyName.trim(),
       });
@@ -728,6 +732,7 @@ export function RaavaOnboardingWizard() {
               type="button"
               onClick={handleClose}
               disabled={loading}
+              aria-label="Close"
               className="absolute top-4 right-4 z-10 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:pointer-events-none"
             >
               <X className="w-4 h-4" />
@@ -997,6 +1002,7 @@ export function RaavaOnboardingWizard() {
                           type="button"
                           className="flex items-center justify-center w-[38px] h-[38px] rounded-md border border-border bg-muted hover:bg-accent transition-colors shrink-0"
                           title="Pick an icon"
+                          aria-label="Pick an icon"
                         >
                           <AgentIcon icon={agentIcon} className="w-5 h-5" />
                         </button>
