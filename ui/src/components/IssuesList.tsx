@@ -677,7 +677,7 @@ export function IssuesList({
                   }
                 }
 
-                const renderIssueRow = (issue: Issue, isChild: boolean) => {
+                const renderIssueRow = (issue: Issue, depth: number) => {
                   const children = childMap.get(issue.id) ?? [];
                   const hasChildren = children.length > 0;
                   const isExpanded = !collapsedParents.has(issue.id);
@@ -692,11 +692,10 @@ export function IssuesList({
                   };
 
                   return (
-                    <div key={issue.id}>
+                    <div key={issue.id} style={depth > 0 ? { paddingLeft: `${depth * 16}px` } : undefined}>
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
-                        className={isChild ? "pl-6 sm:pl-7" : undefined}
                         titleSuffix={hasChildren && !isExpanded ? (
                           <span className="ml-1.5 text-xs text-muted-foreground">
                             ({children.length} sub-task{children.length !== 1 ? "s" : ""})
@@ -875,12 +874,12 @@ export function IssuesList({
                         )}
                         trailingMeta={formatDate(issue.createdAt)}
                       />
-                      {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, true))}
+                      {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>
                   );
                 };
 
-                return roots.map((issue) => renderIssueRow(issue, false));
+                return roots.map((issue) => renderIssueRow(issue, 0));
               })()}
             </CollapsibleContent>
           </Collapsible>
