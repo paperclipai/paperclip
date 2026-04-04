@@ -80,6 +80,48 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+## Demo / automation conventions
+
+Use these rules when preparing Paperclip for screenshots, videos, or later
+Codex automations.
+
+### 1. Choose the right deployment mode
+
+- `local_trusted`: fastest local demo path, no login ceremony
+- `authenticated`: use when you explicitly need the real browser auth and invite
+  flow
+
+### 2. Bootstrap authenticated mode correctly
+
+Authenticated mode does not rely on a committed fixed admin account. The
+canonical flow is:
+
+1. start the app in authenticated mode
+2. sign up a real local human user
+3. run `pnpm paperclipai auth bootstrap-ceo`
+4. accept the generated invite URL in the browser
+
+That keeps the bootstrap path aligned with the product instead of bypassing it
+with hidden fixture users.
+
+### 3. Keep demo state local and isolated
+
+- do not commit reusable demo companies, tasks, or secrets into the repo
+- prefer per-instance or per-worktree demo state
+- for parallel agent work, create a worktree-local instance instead of sharing a
+  mutable default instance
+
+Useful commands:
+
+```sh
+pnpm paperclipai worktree init
+pnpm paperclipai worktree:make my-demo-lane
+```
+
+By default, worktree instances can seed from an existing local Paperclip
+instance in `minimal` or `full` mode, which makes them suitable for safe demo
+or regression capture lanes without cross-contaminating the main local state.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:

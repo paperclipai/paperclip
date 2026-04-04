@@ -192,6 +192,37 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+## Demo / Agent Setup
+
+Paperclip has two materially different local demo paths:
+
+- `local_trusted`: fastest path, no browser login required
+- `authenticated`: browser-auth flow plus bootstrap CEO invite for the first
+  human admin
+
+Recommended local operator path:
+
+```bash
+pnpm paperclipai run
+```
+
+For authenticated-mode demos, use a real local signup and then mint the first
+admin invite with:
+
+```bash
+pnpm paperclipai auth bootstrap-ceo
+```
+
+Current conventions for later agents:
+
+- do not commit a fixed demo company or canned user into the repo
+- create demo companies and agents inside the local instance or an isolated
+  worktree instance
+- for parallel capture or automation work, prefer worktree-local Paperclip
+  instances over sharing one mutable local instance
+
+The detailed operator workflow lives in [doc/DEVELOPING.md](doc/DEVELOPING.md).
+
 <br/>
 
 ## FAQ
