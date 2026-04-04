@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { symlinkOrHardLink } from "@paperclipai/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -46,22 +47,34 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
-  if (!existing.isSymbolicLink()) {
+  if (existing.isSymbolicLink()) {
+    // Symlink repair: check if it points to the right source
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) return;
+    const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
+    if (resolvedLinkedPath === source) return;
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
-
-  await fs.unlink(target);
-  await fs.symlink(source, target);
+  // Hard link repair (Windows only): hard links have nlink > 1 because
+  // multiple directory entries share the same inode.  If the target is a
+  // hard link whose inode differs from source, the source path changed
+  // (e.g. CODEX_HOME move) and the link is stale — replace it.
+  // On non-Windows, a non-symlink file at target was not created by us —
+  // leave it untouched to preserve the original guard behavior.
+  if (process.platform !== "win32") return;
+  if (existing.nlink <= 1) return; // regular file, not a hard link we created
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (sourceStat && existing.ino !== sourceStat.ino) {
+    await fs.unlink(target);
+    await symlinkOrHardLink(source, target);
+  }
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
