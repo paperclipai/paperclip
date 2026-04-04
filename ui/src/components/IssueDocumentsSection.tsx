@@ -865,7 +865,7 @@ export function IssueDocumentsSection({
                                         </span>
                                       ) : null}
                                     </div>
-                                    <span className="text-xs text-muted-foreground">
+                                    <span className="text-xs text-muted-foreground" title={new Date(revision.createdAt).toLocaleString()}>
                                       {relativeTime(revision.createdAt)} • {getRevisionActorLabel(revision)}
                                     </span>
                                   </div>
@@ -983,10 +983,7 @@ export function IssueDocumentsSection({
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => restoreDocumentRevision.mutate({
-                              key: doc.key,
-                              revisionId: selectedHistoricalRevision.id,
-                            })}
+                            onClick={() => { if (window.confirm("Restore this revision? Current document content will be overwritten.")) restoreDocumentRevision.mutate({ key: doc.key, revisionId: selectedHistoricalRevision.id }); }}
                             disabled={restoreDocumentRevision.isPending}
                           >
                             {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
