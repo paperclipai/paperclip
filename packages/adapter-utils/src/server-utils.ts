@@ -927,6 +927,7 @@ export async function runChildProcess(
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     stdin?: string;
+    keepStdinOpen?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -962,7 +963,9 @@ export async function runChildProcess(
 
         if (opts.stdin != null && child.stdin) {
           child.stdin.write(opts.stdin);
-          child.stdin.end();
+          if (!opts.keepStdinOpen) {
+            child.stdin.end();
+          }
         }
 
         if (typeof child.pid === "number" && child.pid > 0 && opts.onSpawn) {
@@ -1022,6 +1025,9 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
+          if (opts.keepStdinOpen && child.stdin && !child.stdin.destroyed) {
+            child.stdin.end();
+          }
           void logChain.finally(() => {
             resolve({
               exitCode: code,
