@@ -13,6 +13,7 @@ import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { RaavaStarMark } from "../components/RaavaStarMark";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
@@ -64,6 +65,356 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// ---------------------------------------------------------------------------
+// Raava tab mapping (Figma uses Working/Paused/Needs Attention)
+// ---------------------------------------------------------------------------
+
+type RaavaFilterTab = "all" | "working" | "paused" | "attention";
+
+function matchesRaavaFilter(agent: Agent, tab: RaavaFilterTab): boolean {
+  if (agent.status === "terminated") return false;
+  if (tab === "all") return true;
+  if (tab === "working")
+    return agent.status === "active" || agent.status === "running" || agent.status === "idle";
+  if (tab === "paused") return agent.status === "paused";
+  if (tab === "attention") return agent.status === "error";
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Raava avatar colors (per Figma: each team member has a unique hue)
+// ---------------------------------------------------------------------------
+
+const AVATAR_COLORS = [
+  { bg: "rgba(34,74,232,0.15)", text: "#224ae8" },
+  { bg: "rgba(113,110,255,0.15)", text: "#716eff" },
+  { bg: "rgba(73,92,244,0.15)", text: "#495cf4" },
+  { bg: "rgba(140,51,217,0.15)", text: "#8c33d9" },
+  { bg: "rgba(229,140,26,0.15)", text: "#e58c1a" },
+  { bg: "rgba(26,166,153,0.15)", text: "#1aa699" },
+];
+
+function getAvatarColor(index: number) {
+  return AVATAR_COLORS[index % AVATAR_COLORS.length];
+}
+
+// ---------------------------------------------------------------------------
+// Mock team members (used when real agent data is unavailable/empty)
+// ---------------------------------------------------------------------------
+
+interface MockTeamMember {
+  id: string;
+  name: string;
+  role: string;
+  status: "working" | "idle" | "attention" | "paused";
+  activity: string;
+  cost: string;
+}
+
+const MOCK_TEAM: MockTeamMember[] = [
+  { id: "mock-1", name: "Alex", role: "Sales Assistant", status: "working", activity: "Following up on leads...", cost: "$34.20/wk" },
+  { id: "mock-2", name: "Jordan", role: "Ops Manager", status: "idle", activity: "Last active 2h ago", cost: "$28.10/wk" },
+  { id: "mock-3", name: "Sam", role: "Data Analyst", status: "attention", activity: "Error: DB conn failed", cost: "$12.00/wk" },
+  { id: "mock-4", name: "Taylor", role: "Customer Support", status: "working", activity: "Drafting ticket responses", cost: "$22.50/wk" },
+  { id: "mock-5", name: "Riley", role: "Marketing Coordinator", status: "paused", activity: "Paused by user", cost: "$0.00/wk" },
+  { id: "mock-6", name: "Casey", role: "General Assistant", status: "working", activity: "Organizing inbox", cost: "$18.90/wk" },
+];
+
+function mapAgentStatusToRaava(status: string): "working" | "idle" | "attention" | "paused" {
+  if (status === "error") return "attention";
+  if (status === "paused") return "paused";
+  if (status === "active" || status === "running" || status === "idle") return "working";
+  return "idle";
+}
+
+const RAAVA_STATUS_CONFIG: Record<string, { label: string; dotClass: string; textClass: string }> = {
+  working: { label: "Working", dotClass: "bg-emerald-500", textClass: "text-emerald-500" },
+  idle: { label: "Idle", dotClass: "bg-gray-400", textClass: "text-muted-foreground" },
+  attention: { label: "Needs Attention", dotClass: "bg-red-500", textClass: "text-red-500" },
+  paused: { label: "Paused", dotClass: "bg-amber-500", textClass: "text-amber-600" },
+};
+
+// ---------------------------------------------------------------------------
+// Raava My Team Page
+// ---------------------------------------------------------------------------
+
+function RaavaMyTeamPage({
+  agents,
+  isLoading: loading,
+  error,
+  openNewAgent,
+}: {
+  agents: Agent[] | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  openNewAgent: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<RaavaFilterTab>("all");
+
+  // Derive card data from agents or fallback to mock
+  const teamMembers = useMemo(() => {
+    if (!agents || agents.length === 0) return [];
+    return agents
+      .filter((a) => a.status !== "terminated")
+      .map((a, i) => ({
+        id: a.id,
+        name: a.name,
+        role: roleLabels[a.role] ?? a.role,
+        raavaStatus: mapAgentStatusToRaava(a.status),
+        activity: a.title ?? `${roleLabels[a.role] ?? a.role}`,
+        cost: `$${(a.spentMonthlyCents / 100).toFixed(2)}/wk`,
+        colorIndex: i,
+        agent: a,
+      }));
+  }, [agents]);
+
+  const useMock = teamMembers.length === 0 && !loading;
+
+  // Count by status for tab badges
+  const counts = useMemo(() => {
+    const items = useMock ? MOCK_TEAM : teamMembers;
+    const all = items.length;
+    const working = items.filter((m) =>
+      useMock
+        ? (m as MockTeamMember).status === "working"
+        : (m as (typeof teamMembers)[number]).raavaStatus === "working",
+    ).length;
+    const paused = items.filter((m) =>
+      useMock
+        ? (m as MockTeamMember).status === "paused"
+        : (m as (typeof teamMembers)[number]).raavaStatus === "paused",
+    ).length;
+    const attention = items.filter((m) =>
+      useMock
+        ? (m as MockTeamMember).status === "attention"
+        : (m as (typeof teamMembers)[number]).raavaStatus === "attention",
+    ).length;
+    return { all, working, paused, attention };
+  }, [useMock, teamMembers]);
+
+  // Filter items by tab
+  const filteredItems = useMemo(() => {
+    if (useMock) {
+      if (activeTab === "all") return MOCK_TEAM;
+      return MOCK_TEAM.filter((m) => m.status === activeTab);
+    }
+    if (activeTab === "all") return teamMembers;
+    return teamMembers.filter((m) => m.raavaStatus === activeTab);
+  }, [useMock, teamMembers, activeTab]);
+
+  if (loading) {
+    return <PageSkeleton variant="list" />;
+  }
+
+  if (error) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-sm text-destructive">{error.message}</p>
+      </div>
+    );
+  }
+
+  // Empty state (Screen 24)
+  if (agents && agents.length === 0 && !useMock) {
+    return <RaavaEmptyState openNewAgent={openNewAgent} />;
+  }
+
+  const tabs: { value: RaavaFilterTab; label: string; count: number }[] = [
+    { value: "all", label: "All", count: counts.all },
+    { value: "working", label: "Working", count: counts.working },
+    { value: "paused", label: "Paused", count: counts.paused },
+    { value: "attention", label: "Needs Attention", count: counts.attention },
+  ];
+
+  return (
+    <div className="space-y-7">
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-[26px] text-foreground">My Team</h1>
+        <Button variant="gradient" size="sm" onClick={openNewAgent}>
+          <Plus className="h-4 w-4" />
+          Hire
+        </Button>
+      </div>
+
+      {/* Filter tabs (pill style matching Figma) */}
+      <div className="flex items-center gap-1">
+        {tabs.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setActiveTab(t.value)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-medium transition-colors",
+              activeTab === t.value
+                ? "bg-foreground text-background"
+                : "bg-secondary text-muted-foreground hover:bg-accent/50",
+            )}
+          >
+            {t.label}
+            <span
+              className={cn(
+                "text-[11px] font-semibold",
+                activeTab === t.value
+                  ? "text-background"
+                  : "text-muted-foreground",
+              )}
+            >
+              {t.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Card grid - 2x3 */}
+      {filteredItems.length === 0 ? (
+        <p className="text-sm text-muted-foreground text-center py-8">
+          No team members match the selected filter.
+        </p>
+      ) : (
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+          {filteredItems.map((member, idx) => {
+            const isMock = useMock;
+            const m = isMock ? (member as MockTeamMember) : (member as (typeof teamMembers)[number]);
+            const name = m.name;
+            const initial = name[0].toUpperCase();
+            const color = getAvatarColor(isMock ? idx : (m as (typeof teamMembers)[number]).colorIndex);
+            const statusKey = isMock
+              ? (m as MockTeamMember).status
+              : (m as (typeof teamMembers)[number]).raavaStatus;
+            const statusConfig = RAAVA_STATUS_CONFIG[statusKey];
+            const role = isMock ? (m as MockTeamMember).role : (m as (typeof teamMembers)[number]).role;
+            const activity = isMock ? (m as MockTeamMember).activity : (m as (typeof teamMembers)[number]).activity;
+            const cost = isMock ? (m as MockTeamMember).cost : (m as (typeof teamMembers)[number]).cost;
+            const href = isMock ? "#" : agentUrl((m as (typeof teamMembers)[number]).agent);
+
+            return (
+              <Link
+                key={m.id}
+                to={href}
+                className="raava-card bg-white px-6 pt-6 pb-5 flex flex-col gap-3.5 no-underline text-inherit hover:shadow-md transition-shadow dark:bg-card"
+              >
+                {/* Header: avatar + name/role */}
+                <div className="flex items-center gap-3">
+                  <div
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+                    style={{ backgroundColor: color.bg }}
+                  >
+                    <span
+                      className="font-display text-lg"
+                      style={{ color: color.text }}
+                    >
+                      {initial}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="font-display text-base text-foreground">
+                      {name}
+                    </span>
+                    <span className="inline-flex w-fit rounded-xl bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      {role}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Divider */}
+                <div className="h-px w-full bg-border" />
+
+                {/* Status dot + label */}
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      "h-2 w-2 rounded-full shrink-0",
+                      statusConfig.dotClass,
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "text-xs font-medium",
+                      statusConfig.textClass,
+                    )}
+                  >
+                    {statusConfig.label}
+                  </span>
+                </div>
+
+                {/* Activity */}
+                <p
+                  className={cn(
+                    "text-[13px] truncate",
+                    statusKey === "attention"
+                      ? "text-red-500"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {activity}
+                </p>
+
+                {/* Cost */}
+                <p className="text-sm font-semibold text-foreground font-mono">
+                  {cost}
+                </p>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Raava Empty State (Screen 24)
+// ---------------------------------------------------------------------------
+
+function RaavaEmptyState({ openNewAgent }: { openNewAgent: () => void }) {
+  return (
+    <div className="space-y-7">
+      {/* Header row (same as populated page) */}
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-[26px] text-foreground">My Team</h1>
+        <Button variant="gradient" size="sm" onClick={openNewAgent}>
+          <Plus className="h-4 w-4" />
+          Hire
+        </Button>
+      </div>
+
+      {/* Centered empty state */}
+      <div className="flex flex-col items-center justify-center py-24 gap-6">
+        <RaavaStarMark size={80} className="drop-shadow-lg" />
+
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h2 className="font-display text-xl text-foreground">
+            Your team is empty
+          </h2>
+          <p className="text-sm text-muted-foreground max-w-[400px] leading-relaxed">
+            Hire your first AI team member to get started. Pick a role, name
+            them, and they&apos;ll be working in under 2 minutes.
+          </p>
+        </div>
+
+        <Button
+          variant="gradient"
+          size="lg"
+          className="rounded-xl px-8 py-3.5 text-base shadow-[0_4px_16px_rgba(34,74,232,0.2)]"
+          onClick={openNewAgent}
+        >
+          <span className="font-display font-semibold">
+            Hire Your First Team Member
+          </span>
+        </Button>
+
+        <button className="text-sm font-medium text-primary hover:underline">
+          Learn how it works &rarr;
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Agents component (unchanged for non-Raava, delegates for Raava)
+// ---------------------------------------------------------------------------
+
 export function Agents() {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
@@ -89,7 +440,7 @@ export function Agents() {
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
     queryFn: () => agentsApi.org(selectedCompanyId!),
-    enabled: !!selectedCompanyId && effectiveView === "org",
+    enabled: !!selectedCompanyId && effectiveView === "org" && !isRaava,
   });
 
   const { data: runs } = useQuery({
@@ -124,8 +475,26 @@ export function Agents() {
     setBreadcrumbs([{ label: isRaava ? "My Team" : "Agents" }]);
   }, [setBreadcrumbs, isRaava]);
 
+  // -----------------------------------------------------------------------
+  // Raava mode: render the card-grid My Team page
+  // -----------------------------------------------------------------------
+  if (isRaava) {
+    return (
+      <RaavaMyTeamPage
+        agents={agents}
+        isLoading={isLoading}
+        error={error as Error | null}
+        openNewAgent={openNewAgent}
+      />
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Standard (non-Raava) Agents page
+  // -----------------------------------------------------------------------
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message={isRaava ? "Select a company to view your team." : "Select a company to view agents."} />;
+    return <EmptyState icon={Bot} message="Select a company to view agents." />;
   }
 
   if (isLoading) {
@@ -206,26 +575,24 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            {isRaava ? "Hire a Team Member" : "New Agent"}
+            New Agent
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {filtered.length} {isRaava
-            ? `team member${filtered.length !== 1 ? "s" : ""}`
-            : `agent${filtered.length !== 1 ? "s" : ""}`}
+          {filtered.length} agent{filtered.length !== 1 ? "s" : ""}
         </p>
       )}
 
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message={isRaava ? "Hire your first team member to get started." : "Create your first agent to get started."}
-          action={isRaava ? "Hire a Team Member" : "New Agent"}
+          message="Create your first agent to get started."
+          action="New Agent"
           onAction={openNewAgent}
         />
       )}
@@ -272,7 +639,7 @@ export function Agents() {
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
-                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "\u2014"}
                       </span>
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
@@ -288,7 +655,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          {isRaava ? "No team members match the selected filter." : "No agents match the selected filter."}
+          No agents match the selected filter.
         </p>
       )}
 
@@ -303,7 +670,7 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          {isRaava ? "No team members match the selected filter." : "No agents match the selected filter."}
+          No agents match the selected filter.
         </p>
       )}
 
@@ -373,7 +740,7 @@ function OrgTreeNode({
                   {adapterLabels[agent.adapterType] ?? agent.adapterType}
                 </span>
                 <span className="text-xs text-muted-foreground w-16 text-right">
-                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                  {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "\u2014"}
                 </span>
               </>
             )}
