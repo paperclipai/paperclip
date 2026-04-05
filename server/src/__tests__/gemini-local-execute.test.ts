@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-gemini-local/server";
 
-async function writeFakeGeminiCommand(commandPath: string): Promise<void> {
+async function writeFakeGeminiCommand(commandPath: string): Promise<string> {
   const scriptPath = commandPath + ".js";
   const cmdPath = commandPath + ".cmd";
   const script = `
@@ -45,6 +45,11 @@ process.stdin.on("end", () => {
   await fs.writeFile(scriptPath, script, "utf8");
   const cmd = `@"${process.execPath.replace(/\\/g, "\\\\")}" "%~dp0gemini.js" %*\r\n`;
   await fs.writeFile(cmdPath, cmd, "utf8");
+  if (process.platform !== "win32") {
+    await fs.chmod(scriptPath, 0o755);
+    return scriptPath;
+  }
+  return cmdPath;
 }
 
 type CapturePayload = {
@@ -57,10 +62,10 @@ describe("gemini execute", () => {
   it("passes prompt via --prompt and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    let commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
-    await writeFakeGeminiCommand(commandPath);
+    commandPath = await writeFakeGeminiCommand(commandPath);
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
@@ -83,7 +88,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
-          command: commandPath + ".cmd",
+          command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
           env: {
@@ -137,10 +142,10 @@ describe("gemini execute", () => {
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    let commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
-    await writeFakeGeminiCommand(commandPath);
+    commandPath = await writeFakeGeminiCommand(commandPath);
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
@@ -151,7 +156,7 @@ describe("gemini execute", () => {
         agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
-          command: commandPath + ".cmd",
+          command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
         },
@@ -179,10 +184,10 @@ describe("gemini execute", () => {
   it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-resume-wake-"));
     const workspace = path.join(root, "workspace");
-    const commandPath = path.join(root, "gemini");
+    let commandPath = path.join(root, "gemini");
     const capturePath = path.join(root, "capture.json");
     await fs.mkdir(workspace, { recursive: true });
-    await writeFakeGeminiCommand(commandPath);
+    commandPath = await writeFakeGeminiCommand(commandPath);
 
     const previousHome = process.env.HOME;
     process.env.HOME = root;
@@ -204,7 +209,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
-          command: commandPath + ".cmd",
+          command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
           env: {

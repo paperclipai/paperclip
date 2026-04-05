@@ -26,6 +26,10 @@ console.log(JSON.stringify({
   await fs.writeFile(scriptPath, script, "utf8");
   const cmd = `@"${process.execPath.replace(/\\/g, "\\\\")}" "%~dp0gemini.js" %*\r\n`;
   await fs.writeFile(cmdPath, cmd, "utf8");
+  if (process.platform !== "win32") {
+    await fs.chmod(scriptPath, 0o755);
+    return scriptPath;
+  }
   return cmdPath;
 }
 
@@ -42,6 +46,10 @@ process.exit(1);
   await fs.writeFile(scriptPath, script, "utf8");
   const cmd = `@"${process.execPath.replace(/\\/g, "\\\\")}" "%~dp0gemini.js" %*\r\n`;
   await fs.writeFile(cmdPath, cmd, "utf8");
+  if (process.platform !== "win32") {
+    await fs.chmod(scriptPath, 0o755);
+    return scriptPath;
+  }
   return cmdPath;
 }
 
