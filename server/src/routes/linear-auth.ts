@@ -1339,6 +1339,27 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
     console.log(`[linear-webhook] received: type=${type} action=${action} id=${data.id}`);
 
+    // Forward to the Linear plugin's webhook handler for Project/Comment events
+    // The server-side handler below only covers Issue updates; the plugin handler
+    // covers Project create/update/delete, Issue create, and Comment bridging.
+    try {
+      const [linearPlugin] = await db
+        .select()
+        .from(plugins)
+        .where(eq(plugins.pluginKey, "paperclip-plugin-linear"))
+        .limit(1);
+      if (linearPlugin) {
+        const host = req.headers.host || "127.0.0.1:3100";
+        void fetch(`http://${host}/api/plugins/${linearPlugin.id}/webhooks/linear-events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch((err) => {
+          console.warn("[linear-webhook] failed to forward to plugin:", err);
+        });
+      }
+    } catch { /* non-critical */ }
+
     try {
       const { issues: issuesTable, pluginState: pluginStateTable } = await import("@paperclipai/db");
 

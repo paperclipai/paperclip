@@ -134,7 +134,7 @@ async function registerLinearWebhook(
             query: `mutation($id: String!, $input: WebhookUpdateInput!) {
               webhookUpdate(id: $id, input: $input) { webhook { id url } }
             }`,
-            variables: { id: existing.id, input: { url: webhookUrl, enabled: true } },
+            variables: { id: existing.id, input: { url: webhookUrl, enabled: true, resourceTypes: ["Issue", "Comment", "IssueLabel", "Project"] } },
           }),
         });
         if (updateRes.ok) {
@@ -161,7 +161,7 @@ async function registerLinearWebhook(
             url: webhookUrl,
             label,
             teamId,
-            resourceTypes: ["Issue", "Comment", "IssueLabel"],
+            resourceTypes: ["Issue", "Comment", "IssueLabel", "Project"],
             enabled: true,
           },
         },
