@@ -144,7 +144,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-  const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -346,9 +345,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: args,
         env: loggedEnv,
         prompt,
         promptMetrics,
@@ -369,10 +366,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Gemini CLI v0.35.3+ may print before the actual JSON output.
     const jsonStart = proc.stdout.indexOf('{');
     const cleanStdout = jsonStart !== -1 ? proc.stdout.slice(jsonStart) : proc.stdout;
-    return {
-      proc,
-      parsed: parseGeminiJsonl(cleanStdout),
-    };
+    let parsed = parseGeminiJsonl(cleanStdout);
+    if (!parsed.summary.trim()) {
+      try {
+        const raw = JSON.parse(cleanStdout);
+        if (raw.response) {
+          parsed = { ...parsed, summary: String(raw.response).trim() };
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return { proc, parsed };
   };
 
   const toResult = (
