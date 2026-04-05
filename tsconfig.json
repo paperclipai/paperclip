@@ -13,6 +13,7 @@
     { "path": "./packages/adapters/openclaw-gateway" },
     { "path": "./packages/adapters/opencode-local" },
     { "path": "./packages/adapters/pi-local" },
+    { "path": "./packages/adapters/kiro-local" },
     { "path": "./server" },
     { "path": "./ui" },
     { "path": "./cli" }
