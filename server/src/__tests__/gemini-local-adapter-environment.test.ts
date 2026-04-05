@@ -5,8 +5,9 @@ import path from "node:path";
 import { testEnvironment } from "@paperclipai/adapter-gemini-local/server";
 
 async function writeFakeGeminiCommand(binDir: string, argsCapturePath: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
-  const script = `#!/usr/bin/env node
+  const scriptPath = path.join(binDir, "gemini.js");
+  const cmdPath = path.join(binDir, "gemini.cmd");
+  const script = `
 const fs = require("node:fs");
 const outPath = process.env.PAPERCLIP_TEST_ARGS_PATH;
 if (outPath) {
@@ -22,23 +23,34 @@ console.log(JSON.stringify({
   result: "hello",
 }));
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
-  return commandPath;
+  await fs.writeFile(scriptPath, script, "utf8");
+  const cmd = `@"${process.execPath.replace(/\\/g, "\\\\")}" "%~dp0gemini.js" %*\r\n`;
+  await fs.writeFile(cmdPath, cmd, "utf8");
+  if (process.platform !== "win32") {
+    await fs.chmod(scriptPath, 0o755);
+    return scriptPath;
+  }
+  return cmdPath;
 }
 
 async function writeQuotaGeminiCommand(binDir: string): Promise<string> {
-  const commandPath = path.join(binDir, "gemini");
-  const script = `#!/usr/bin/env node
+  const scriptPath = path.join(binDir, "gemini.js");
+  const cmdPath = path.join(binDir, "gemini.cmd");
+  const script = `
 if (process.argv.includes("--help")) {
   process.exit(0);
 }
 console.error("429 RESOURCE_EXHAUSTED: You exceeded your current quota and billing details.");
 process.exit(1);
 `;
-  await fs.writeFile(commandPath, script, "utf8");
-  await fs.chmod(commandPath, 0o755);
-  return commandPath;
+  await fs.writeFile(scriptPath, script, "utf8");
+  const cmd = `@"${process.execPath.replace(/\\/g, "\\\\")}" "%~dp0gemini.js" %*\r\n`;
+  await fs.writeFile(cmdPath, cmd, "utf8");
+  if (process.platform !== "win32") {
+    await fs.chmod(scriptPath, 0o755);
+    return scriptPath;
+  }
+  return cmdPath;
 }
 
 describe("gemini_local environment diagnostics", () => {
@@ -100,7 +112,6 @@ describe("gemini_local environment diagnostics", () => {
     expect(args).toContain("gemini-2.5-pro");
     expect(args).toContain("--approval-mode");
     expect(args).toContain("yolo");
-    expect(args).toContain("--prompt");
     await fs.rm(root, { recursive: true, force: true });
   });
 

@@ -144,7 +144,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-  const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -273,7 +272,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+    const notes: string[] = ["Prompt is passed to Gemini via stdin for non-interactive execution."];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
@@ -329,17 +328,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
-    const args = ["--output-format", "stream-json"];
+    const args = ["--output-format", "json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
     args.push("--approval-mode", "yolo");
-    if (sandbox) {
-      args.push("--sandbox");
-    } else {
-      args.push("--sandbox=none");
-    }
+
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
     return args;
   };
 
@@ -351,9 +345,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: args,
         env: loggedEnv,
         prompt,
         promptMetrics,
@@ -368,11 +360,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog,
+      stdin: prompt,
     });
-    return {
-      proc,
-      parsed: parseGeminiJsonl(proc.stdout),
-    };
+    // Strip non-JSON noise lines (e.g. "Loaded cached credentials.") that
+    // Gemini CLI v0.35.3+ may print before the actual JSON output.
+    const jsonStart = proc.stdout.indexOf('{');
+    const cleanStdout = jsonStart !== -1 ? proc.stdout.slice(jsonStart) : proc.stdout;
+    let parsed = parseGeminiJsonl(cleanStdout);
+    if (!parsed.summary.trim()) {
+      try {
+        const raw = JSON.parse(cleanStdout);
+        if (raw.response) {
+          parsed = { ...parsed, summary: String(raw.response).trim() };
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return { proc, parsed };
   };
 
   const toResult = (
