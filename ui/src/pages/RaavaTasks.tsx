@@ -153,14 +153,15 @@ export function RaavaTasks() {
   }, [agents]);
 
   // Search filtering
-  const { data: searchedIssues = [] } = useQuery({
+  const { data: searchedIssues, isLoading: isSearchLoading, error: searchError } = useQuery({
     queryKey: queryKeys.issues.search(selectedCompanyId!, searchValue.trim()),
     queryFn: () => issuesApi.list(selectedCompanyId!, { q: searchValue.trim() }),
     enabled: !!selectedCompanyId && searchValue.trim().length > 0,
     placeholderData: (prev) => prev,
   });
 
-  const baseIssues = searchValue.trim().length > 0 ? searchedIssues : (issues ?? []);
+  const isSearchActive = searchValue.trim().length > 0;
+  const baseIssues = isSearchActive ? (searchedIssues ?? []) : (issues ?? []);
 
   const filteredIssues = useMemo(() => {
     const statuses = FILTER_STATUS_MAP[activeFilter];
@@ -259,7 +260,15 @@ export function RaavaTasks() {
         </div>
 
         {/* Rows */}
-        {sortedIssues.length === 0 ? (
+        {isSearchActive && searchError ? (
+          <div className="px-4 py-8 text-center text-sm text-destructive">
+            {searchError instanceof Error ? searchError.message : "Search failed."}
+          </div>
+        ) : isSearchActive && isSearchLoading ? (
+          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+            Searching...
+          </div>
+        ) : sortedIssues.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             No tasks found.
           </div>

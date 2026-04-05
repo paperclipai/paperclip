@@ -6,6 +6,7 @@ import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDate, formatCents, agentRouteRef } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -143,11 +144,13 @@ function ProfileHeader({
   onAssignTask,
   onPause,
   onRemove,
+  isActionPending,
 }: {
   agent: AgentDetailRecord;
   onAssignTask: () => void;
   onPause: () => void;
   onRemove: () => void;
+  isActionPending?: boolean;
 }) {
   const color = getAvatarColor(agent.name);
   const status = mapStatusLabel(agent.status);
@@ -189,12 +192,13 @@ function ProfileHeader({
         <Button variant="gradient" size="sm" onClick={onAssignTask}>
           Assign Task
         </Button>
-        <Button variant="outline" size="sm" onClick={onPause}>
+        <Button variant="outline" size="sm" onClick={onPause} disabled={isActionPending}>
           {agent.status === "paused" ? "Resume" : "Pause"}
         </Button>
         <button
-          className="px-3 py-1.5 text-[13px] font-medium text-red-500 hover:text-red-600 transition-colors"
+          className="px-3 py-1.5 text-[13px] font-medium text-red-500 hover:text-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           onClick={onRemove}
+          disabled={isActionPending}
         >
           Remove
         </button>
@@ -250,14 +254,14 @@ function OverviewTab({
   });
   const successRate = issues.length > 0
     ? Math.round((completedIssues.length / issues.length) * 100)
-    : 94; // TODO: fallback to mock when no data
+    : null;
   const currentTask = issues.find((i) => i.status === "in_progress");
 
   // TODO: Replace with real average task time from analytics API
-  const avgTaskTime = 23;
+  const avgTaskTime: number | null = null;
 
   // TODO: Replace with real monthly cost from billing API
-  const monthlyCost = formatCents(agent.spentMonthlyCents || 14230);
+  const monthlyCost = formatCents(agent.spentMonthlyCents ?? 0);
 
   return (
     <div className="space-y-6">
@@ -289,10 +293,10 @@ function OverviewTab({
       {/* Performance Stats — 4 cards */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {[
-          { label: "Tasks Completed", value: completedIssues.length || 47 },
-          { label: "This Month", value: completedThisMonth.length || 12 },
-          { label: "Success Rate", value: `${successRate}%` },
-          { label: "Avg Task Time", value: `${avgTaskTime} min` },
+          { label: "Tasks Completed", value: issues.length > 0 ? completedIssues.length : "\u2014" },
+          { label: "This Month", value: issues.length > 0 ? completedThisMonth.length : "\u2014" },
+          { label: "Success Rate", value: successRate != null ? `${successRate}%` : "\u2014" },
+          { label: "Avg Task Time", value: avgTaskTime != null ? `${avgTaskTime} min` : "\u2014" },
         ].map((stat) => (
           <div key={stat.label} className="raava-card bg-white px-5 py-4 dark:bg-card">
             <p className="font-display text-[28px] text-foreground">
@@ -497,72 +501,56 @@ function WorkHistoryTab() {
 // ---------------------------------------------------------------------------
 
 function PersonalityTab() {
-  // TODO: Load personality from agent instructions API when available
-  const [content, setContent] = useState(MOCK_PERSONALITY);
-  const [isDirty, setIsDirty] = useState(false);
-
-  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    setContent(e.target.value);
-    setIsDirty(true);
-  }
-
-  function handleSave() {
-    // TODO: Save via agent instructions API
-    setIsDirty(false);
-  }
-
-  function handleReset() {
-    setContent(MOCK_PERSONALITY);
-    setIsDirty(false);
-  }
-
+  // Personality editing is read-only until the instructions API is available
   return (
     <div className="space-y-4">
       <p className="text-[13px] text-muted-foreground">
         This guides how your team member thinks, communicates, and approaches tasks.
       </p>
 
-      {/* Toolbar */}
+      {/* Toolbar (disabled — read-only) */}
       <div className="raava-card bg-white dark:bg-card overflow-hidden">
         <div className="flex items-center gap-1 border-b border-border px-3 py-2">
-          <button className="p-1.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+          <button disabled className="p-1.5 rounded text-muted-foreground/40 cursor-not-allowed">
             <Bold className="h-4 w-4" />
           </button>
-          <button className="p-1.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+          <button disabled className="p-1.5 rounded text-muted-foreground/40 cursor-not-allowed">
             <Italic className="h-4 w-4" />
           </button>
           <div className="w-px h-5 bg-border mx-1" />
-          <button className="p-1.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+          <button disabled className="p-1.5 rounded text-muted-foreground/40 cursor-not-allowed">
             <List className="h-4 w-4" />
           </button>
-          <button className="p-1.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+          <button disabled className="p-1.5 rounded text-muted-foreground/40 cursor-not-allowed">
             <ListOrdered className="h-4 w-4" />
           </button>
           <div className="w-px h-5 bg-border mx-1" />
-          <button className="p-1.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+          <button disabled className="p-1.5 rounded text-muted-foreground/40 cursor-not-allowed">
             <Heading className="h-4 w-4" />
           </button>
         </div>
 
         <textarea
-          value={content}
-          onChange={handleChange}
-          className="w-full min-h-[320px] px-5 py-4 text-[13px] text-foreground bg-transparent resize-y focus:outline-none leading-relaxed"
+          readOnly
+          value={MOCK_PERSONALITY}
+          className="w-full min-h-[320px] px-5 py-4 text-[13px] text-foreground bg-transparent resize-y focus:outline-none leading-relaxed cursor-default"
           placeholder="Describe this team member's personality, communication style, and approach to work..."
         />
       </div>
 
-      {/* Action row */}
+      {/* Action row — disabled with "Coming soon" tooltip */}
       <div className="flex items-center gap-3">
-        <Button variant="gradient" size="sm" onClick={handleSave} disabled={!isDirty}>
+        <Button variant="gradient" size="sm" disabled title="Coming soon">
           Save Changes
         </Button>
         <button
-          onClick={handleReset}
-          className="text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+          disabled
+          title="Coming soon"
+          className="text-[13px] text-muted-foreground/50 cursor-not-allowed"
         >
           Reset to Default
         </button>
+        <span className="text-[11px] text-muted-foreground italic">Coming soon</span>
       </div>
     </div>
   );
@@ -573,21 +561,6 @@ function PersonalityTab() {
 // ---------------------------------------------------------------------------
 
 function ChatTab({ agentName }: { agentName: string }) {
-  const [input, setInput] = useState("");
-
-  function handleSend() {
-    if (!input.trim()) return;
-    // TODO: Send message via chat API when available
-    setInput("");
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  }
-
   return (
     <div className="raava-card bg-white dark:bg-card flex flex-col" style={{ height: "500px" }}>
       {/* Messages area */}
@@ -630,21 +603,19 @@ function ChatTab({ agentName }: { agentName: string }) {
         })}
       </div>
 
-      {/* Input area */}
+      {/* Input area — disabled until chat API is available */}
       <div className="border-t border-border px-4 py-3 flex items-center gap-3">
         <input
           type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={`Message ${agentName}...`}
-          className="flex-1 bg-secondary rounded-lg px-4 py-2.5 text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#224ae8]/30"
+          readOnly
+          placeholder={`Message ${agentName}... (Coming soon)`}
+          className="flex-1 bg-secondary rounded-lg px-4 py-2.5 text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none cursor-not-allowed opacity-60"
         />
         <Button
           variant="gradient"
           size="sm"
-          onClick={handleSend}
-          disabled={!input.trim()}
+          disabled
+          title="Coming soon"
         >
           <Send className="h-4 w-4" />
         </Button>
@@ -660,17 +631,16 @@ function ChatTab({ agentName }: { agentName: string }) {
 function SettingsTab({ agent }: { agent: AgentDetailRecord }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [showApiKey, setShowApiKey] = useState(false);
-  // TODO: Replace with real permission state from agent access API
-  const [permissions, setPermissions] = useState({
+  // Read-only permission state — persistence not yet wired
+  const permissions = {
     canCreateAgents: agent.permissions.canCreateAgents,
     canAssignTasks: agent.access.canAssignTasks,
     canAccessInternet: true,
     canSendEmails: true,
-  });
-  // TODO: Replace with real budget limit from budget API
-  const [monthlyLimit, setMonthlyLimit] = useState(
-    agent.budgetMonthlyCents > 0 ? (agent.budgetMonthlyCents / 100).toString() : "500",
-  );
+  };
+  // Read-only budget limit display
+  const monthlyLimit =
+    agent.budgetMonthlyCents > 0 ? (agent.budgetMonthlyCents / 100).toString() : "500";
 
   function toggleSection(section: string) {
     setExpandedSections((prev) => {
@@ -682,10 +652,6 @@ function SettingsTab({ agent }: { agent: AgentDetailRecord }) {
       }
       return next;
     });
-  }
-
-  function togglePermission(key: keyof typeof permissions) {
-    setPermissions((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   const sections = [
@@ -742,8 +708,9 @@ function SettingsTab({ agent }: { agent: AgentDetailRecord }) {
               <input
                 type="text"
                 value={monthlyLimit}
-                onChange={(e) => setMonthlyLimit(e.target.value)}
-                className="w-20 bg-secondary rounded px-2 py-1 text-[12px] text-foreground focus:outline-none focus:ring-1 focus:ring-[#224ae8]/30"
+                readOnly
+                title="Coming soon"
+                className="w-20 bg-secondary rounded px-2 py-1 text-[12px] text-foreground focus:outline-none cursor-default"
               />
             </div>
           </div>
@@ -769,16 +736,13 @@ function SettingsTab({ agent }: { agent: AgentDetailRecord }) {
           ).map(({ key, label }) => (
             <div key={key} className="flex items-center justify-between">
               <span className="text-muted-foreground">{label}</span>
-              <button
-                onClick={() => togglePermission(key)}
-                className="text-foreground"
-              >
+              <span className="cursor-not-allowed opacity-60" title="Coming soon">
                 {permissions[key] ? (
                   <ToggleRight className="h-6 w-6 text-[#224ae8]" />
                 ) : (
                   <ToggleLeft className="h-6 w-6 text-muted-foreground" />
                 )}
-              </button>
+              </span>
             </div>
           ))}
         </div>
@@ -836,10 +800,13 @@ export function RaavaTeamMemberDetail() {
   const { companies, selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
-  // Resolve the active tab
-  const [activeTab, setActiveTab] = useState<TabId>("overview");
+  // Resolve the active tab — honour URL param when present
+  const validTabs: TabId[] = ["overview", "tasks", "work-history", "personality", "chat", "settings"];
+  const initialTab: TabId = urlTab && validTabs.includes(urlTab as TabId) ? (urlTab as TabId) : "overview";
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
 
   const routeAgentRef = agentId ?? "";
 
@@ -849,7 +816,9 @@ export function RaavaTeamMemberDetail() {
     return companies.find((c) => c.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
   }, [companies, companyPrefix]);
 
-  const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
+  // If a company prefix was provided in the route, only use the resolved company
+  // — do NOT fall back to selectedCompanyId to avoid cross-tenant fetches.
+  const lookupCompanyId = companyPrefix ? routeCompanyId ?? undefined : selectedCompanyId ?? undefined;
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
 
   // ---- Data Queries ----
@@ -898,6 +867,16 @@ export function RaavaTeamMemberDetail() {
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Action failed",
+        body: err instanceof Error ? err.message : "Could not complete agent action.",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
     },
   });
 
@@ -953,6 +932,7 @@ export function RaavaTeamMemberDetail() {
           agentAction.mutate(agent.status === "paused" ? "resume" : "pause")
         }
         onRemove={() => agentAction.mutate("terminate")}
+        isActionPending={agentAction.isPending}
       />
 
       {/* Tab Bar */}

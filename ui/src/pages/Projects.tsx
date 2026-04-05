@@ -183,13 +183,13 @@ export function Projects() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: agents } = useQuery({
+  const { data: agents, isLoading: isAgentsLoading, error: agentsError } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && isRaava,
   });
 
-  const { data: issues } = useQuery({
+  const { data: issues, isLoading: isIssuesLoading, error: issuesError } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && isRaava,
@@ -236,7 +236,10 @@ export function Projects() {
     return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
   }
 
-  if (isLoading) {
+  const combinedLoading = isLoading || (isRaava && (isAgentsLoading || isIssuesLoading));
+  const combinedError = error ?? (isRaava ? (agentsError ?? issuesError) : null);
+
+  if (combinedLoading) {
     return <PageSkeleton variant="list" />;
   }
 
@@ -245,8 +248,8 @@ export function Projects() {
     return (
       <RaavaProjectsView
         projects={raavaCards}
-        isLoading={isLoading}
-        error={error as Error | null}
+        isLoading={false}
+        error={combinedError as Error | null}
         openNewProject={openNewProject}
       />
     );

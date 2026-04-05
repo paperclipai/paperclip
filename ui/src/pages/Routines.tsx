@@ -129,12 +129,12 @@ export function Routines() {
     queryFn: () => routinesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: agents } = useQuery({
+  const { data: agents, isLoading: isAgentsLoading } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: projects } = useQuery({
+  const { data: projects, isLoading: isProjectsLoading } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -255,7 +255,7 @@ export function Routines() {
     return <EmptyState icon={Repeat} message="Select a company to view routines." />;
   }
 
-  if (isLoading) {
+  if (isLoading || isAgentsLoading || isProjectsLoading) {
     return <PageSkeleton variant="issues-list" />;
   }
 

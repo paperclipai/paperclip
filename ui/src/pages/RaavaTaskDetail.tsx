@@ -194,6 +194,13 @@ export function RaavaTaskDetail() {
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: () => invalidateIssue(),
+    onError: (err) => {
+      pushToast({
+        title: "Update failed",
+        body: err instanceof Error ? err.message : "Could not update this task.",
+        tone: "error",
+      });
+    },
   });
 
   const addComment = useMutation({
@@ -233,8 +240,9 @@ export function RaavaTaskDetail() {
   const handleSendComment = () => {
     const body = commentDraft.trim();
     if (!body) return;
-    setCommentDraft("");
-    addComment.mutate({ body });
+    addComment.mutate({ body }, {
+      onSuccess: () => setCommentDraft(""),
+    });
   };
 
   if (isLoading) {
@@ -307,7 +315,8 @@ export function RaavaTaskDetail() {
                   const authorAgent = comment.authorAgentId
                     ? agentMap.get(comment.authorAgentId)
                     : null;
-                  const authorName = authorAgent?.name ?? (comment.authorUserId ? "You" : "System");
+                  const isCurrentUser = !!(currentUserId && comment.authorUserId === currentUserId);
+                  const authorName = authorAgent?.name ?? (isCurrentUser ? "You" : comment.authorUserId ? "User" : "System");
                   return (
                     <div key={comment.id} className="raava-card bg-white dark:bg-card px-4 py-3">
                       <div className="flex items-center gap-2 mb-1.5">
@@ -446,9 +455,13 @@ export function RaavaTaskDetail() {
               <button
                 type="button"
                 className="block w-full text-left text-sm text-destructive/70 hover:text-destructive transition-colors"
-                onClick={() => {
-                  updateIssue.mutate({ hiddenAt: new Date().toISOString() });
-                  navigate("/issues");
+                onClick={async () => {
+                  try {
+                    await updateIssue.mutateAsync({ hiddenAt: new Date().toISOString() });
+                    navigate("/issues");
+                  } catch {
+                    // Error already surfaced via onError handler
+                  }
                 }}
               >
                 Archive

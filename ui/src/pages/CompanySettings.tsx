@@ -227,10 +227,10 @@ export function CompanySettings() {
   // Raava Settings view (Figma Screen 21)
   // ---------------------------------------------------------------------------
   if (isRaava) {
-    // TODO: Connected services mock data - no real integrations API yet
+    // Mock connected services — no real integrations API yet
     const connectedServices = [
-      { name: "Gmail", status: "connected" as const },
-      { name: "HubSpot", status: "connected" as const },
+      { name: "Gmail", status: "not_connected" as const },
+      { name: "HubSpot", status: "not_connected" as const },
       { name: "Google Sheets", status: "not_connected" as const },
     ];
 
@@ -277,6 +277,18 @@ export function CompanySettings() {
                       Click to upload
                     </label>
                   </div>
+                  {logoUrl && (
+                    <div className="mt-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={handleClearLogo}
+                        disabled={clearLogoMutation.isPending}
+                      >
+                        {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
+                      </Button>
+                    </div>
+                  )}
                   {logoUploadMutation.isPending && (
                     <span className="text-xs text-muted-foreground">Uploading...</span>
                   )}
@@ -286,6 +298,13 @@ export function CompanySettings() {
                         (logoUploadMutation.error instanceof Error
                           ? logoUploadMutation.error.message
                           : "Upload failed")}
+                    </span>
+                  )}
+                  {clearLogoMutation.isError && (
+                    <span className="text-xs text-destructive">
+                      {clearLogoMutation.error instanceof Error
+                        ? clearLogoMutation.error.message
+                        : "Failed to remove logo"}
                     </span>
                   )}
                 </div>
@@ -330,29 +349,20 @@ export function CompanySettings() {
                 <div className="flex items-center gap-3">
                   <span className="text-sm font-medium text-foreground">{service.name}</span>
                 </div>
-                {service.status === "connected" ? (
-                  <div className="flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                      Connected
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-                    <span className="text-xs text-muted-foreground mr-2">Not connected</span>
-                    <Button variant="gradient" size="xs">
-                      Connect
-                    </Button>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                  <span className="text-xs text-muted-foreground mr-2">Not connected</span>
+                  <Button variant="gradient" size="xs" disabled title="Coming soon">
+                    Connect
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
 
-          <button className="text-sm font-medium raava-gradient-text hover:opacity-80">
-            + Add Integration
-          </button>
+          <span className="text-sm font-medium text-muted-foreground/50 cursor-not-allowed" title="Coming soon">
+            + Add Integration (Coming soon)
+          </span>
         </div>
 
         {/* Team Defaults card */}

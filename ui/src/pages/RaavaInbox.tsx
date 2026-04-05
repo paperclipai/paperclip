@@ -19,6 +19,7 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState, createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { getLatestFailedRunsByAgent, getRecentTouchedIssues } from "../lib/inbox";
@@ -219,6 +220,7 @@ function EscalationItem({
 export function RaavaInbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -241,7 +243,7 @@ export function RaavaInbox() {
 
   // --- Data queries ---
 
-  const { data: agents } = useQuery({
+  const { data: agents, error: agentsError } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -256,6 +258,7 @@ export function RaavaInbox() {
   const {
     data: approvals,
     isLoading: isApprovalsLoading,
+    error: approvalsError,
   } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
@@ -265,6 +268,7 @@ export function RaavaInbox() {
   const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
+    error: touchedIssuesError,
   } = useQuery({
     queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId!),
     queryFn: () =>
@@ -275,7 +279,7 @@ export function RaavaInbox() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
+  const { data: heartbeatRuns, isLoading: isRunsLoading, error: runsError } = useQuery({
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -300,12 +304,18 @@ export function RaavaInbox() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
+    onError: (err) => {
+      pushToast({ title: "Approval failed", body: err instanceof Error ? err.message : "Could not approve request.", tone: "error" });
+    },
   });
 
   const rejectMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.reject(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+    },
+    onError: (err) => {
+      pushToast({ title: "Rejection failed", body: err instanceof Error ? err.message : "Could not reject request.", tone: "error" });
     },
   });
 
@@ -316,6 +326,9 @@ export function RaavaInbox() {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
         queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
       }
+    },
+    onError: (err) => {
+      pushToast({ title: "Mark read failed", body: err instanceof Error ? err.message : "Could not mark as read.", tone: "error" });
     },
   });
 
@@ -343,6 +356,9 @@ export function RaavaInbox() {
     onSuccess: ({ newRun, originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       navigate(`/agents/${originalRun.agentId}/runs/${newRun.id}`);
+    },
+    onError: (err) => {
+      pushToast({ title: "Retry failed", body: err instanceof Error ? err.message : "Could not retry the run.", tone: "error" });
     },
     onSettled: (_data, _err, run) => {
       if (!run) return;
@@ -422,7 +438,11 @@ export function RaavaInbox() {
           {/* Review Requests */}
           {activeTab === "reviews" && (
             <div className="space-y-3">
-              {actionableApprovals.length === 0 ? (
+              {approvalsError ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-destructive">{approvalsError instanceof Error ? approvalsError.message : "Failed to load review requests."}</p>
+                </div>
+              ) : actionableApprovals.length === 0 ? (
                 <EmptyState icon={CheckCircle2} message="No pending review requests." />
               ) : (
                 actionableApprovals.map((approval) => {
@@ -447,7 +467,11 @@ export function RaavaInbox() {
           {/* Notifications */}
           {activeTab === "notifications" && (
             <div className="raava-card overflow-hidden bg-white dark:bg-card">
-              {touchedIssues.length === 0 ? (
+              {touchedIssuesError ? (
+                <div className="px-4 py-8 text-center">
+                  <p className="text-sm text-destructive">{touchedIssuesError instanceof Error ? touchedIssuesError.message : "Failed to load notifications."}</p>
+                </div>
+              ) : touchedIssues.length === 0 ? (
                 <div className="px-4 py-8">
                   <EmptyState icon={Bell} message="No notifications." />
                 </div>
@@ -468,7 +492,11 @@ export function RaavaInbox() {
           {/* Escalations */}
           {activeTab === "escalations" && (
             <div className="space-y-3">
-              {failedRuns.length === 0 ? (
+              {runsError ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-destructive">{runsError instanceof Error ? runsError.message : "Failed to load escalations."}</p>
+                </div>
+              ) : failedRuns.length === 0 ? (
                 <EmptyState icon={AlertTriangle} message="No escalations." />
               ) : (
                 failedRuns.map((run) => {
