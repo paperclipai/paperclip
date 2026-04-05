@@ -3,7 +3,12 @@
 ## Quick Start
 
 ```bash
-cd /Users/cvvl/conductor/workspaces/paperclip/cape-town-v1
+cd /Users/cvvl/conductor/workspaces/paperclip-v1/havana
+
+pnpm install
+pnpm update
+pnpm --filter @paperclipai/plugin-sdk build
+pnpm --filter @paperclipai/ui build
 
 DATABASE_URL="postgresql://postgres:nk80i6gdclspvhehau9dg2ia0s8cdtr4@gondola.proxy.rlwy.net:39595/railway" \
 PORT=3101 \
