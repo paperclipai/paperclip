@@ -1,4 +1,4 @@
-export { metricsRegistry, isMetricsEnabled } from "./metrics.js";
+export { metricsRegistry, isMetricsEnabled, httpMetricsMiddleware } from "./metrics.js";
 export {
   heartbeatRunsTotal,
   heartbeatDurationSeconds,

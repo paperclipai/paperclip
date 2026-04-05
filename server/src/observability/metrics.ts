@@ -5,6 +5,7 @@
  * Exposes a /metrics endpoint for Prometheus scraping.
  */
 import { Registry, Counter, Histogram, Gauge, collectDefaultMetrics } from "prom-client";
+import type { Request, Response, NextFunction } from "express";
 
 export const metricsRegistry = new Registry();
 
@@ -76,6 +77,22 @@ export const agentBudgetUsedPercent = new Gauge({
   labelNames: ["agent_id"],
   registers: [metricsRegistry],
 });
+
+/**
+ * Express middleware that records HTTP request duration and count
+ * using the existing Prometheus metrics. Skips /metrics to avoid
+ * self-measurement.
+ */
+export function httpMetricsMiddleware(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === "/metrics") { next(); return; }
+  const end = httpRequestDurationSeconds.startTimer({ method: req.method, route: req.baseUrl ?? req.path });
+  res.on("finish", () => {
+    const route = req.route?.path ?? req.baseUrl ?? req.path;
+    end({ route });
+    httpRequestsTotal.inc({ method: req.method, route, status_code: String(res.statusCode) });
+  });
+  next();
+}
 
 export function isMetricsEnabled(): boolean {
   return (
