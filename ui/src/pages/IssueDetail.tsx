@@ -1317,6 +1317,22 @@ export function IssueDetail() {
     },
   });
 
+  const approveMerge = useMutation({
+    mutationFn: () => issuesApi.approveMerge(issueId!),
+    onSuccess: () => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+  });
+
+  const requestChanges = useMutation({
+    mutationFn: () => issuesApi.requestChanges(issueId!),
+    onSuccess: () => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+    },
+  });
+
   const addComment = useMutation({
     mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
       issuesApi.addComment(issueId!, body, reopen, interrupt),
@@ -2336,6 +2352,28 @@ export function IssueDetail() {
             </Popover>
           </div>
         </div>
+
+        {issue.status === "in_review" && issue.assigneeAgentId && (
+          <div className="flex items-center gap-2 rounded-lg border border-violet-300 dark:border-violet-700/40 bg-violet-50 dark:bg-violet-900/20 px-3 py-2">
+            <span className="text-sm text-violet-800 dark:text-violet-200 mr-auto">Ready for review</span>
+            <Button
+              size="sm"
+              className="bg-green-700 hover:bg-green-600 text-white"
+              onClick={() => approveMerge.mutate()}
+              disabled={approveMerge.isPending || requestChanges.isPending}
+            >
+              {approveMerge.isPending ? "Approving\u2026" : "Approve Merge"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => requestChanges.mutate()}
+              disabled={approveMerge.isPending || requestChanges.isPending}
+            >
+              {requestChanges.isPending ? "Sending\u2026" : "Request Changes"}
+            </Button>
+          </div>
+        )}
 
         <InlineEditor
           value={issue.title}

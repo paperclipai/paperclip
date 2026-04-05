@@ -166,4 +166,14 @@ export const issuesApi = {
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
   deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  approveMerge: (id: string, decisionNote?: string) =>
+    api.post<{ issue: Issue; comment: IssueComment }>(
+      `/issues/${id}/approve-merge`,
+      { decisionNote },
+    ),
+  requestChanges: (id: string, decisionNote?: string) =>
+    api.post<{ issue: Issue; comment: IssueComment }>(
+      `/issues/${id}/request-changes`,
+      { decisionNote },
+    ),
 };

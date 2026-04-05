@@ -47,7 +47,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -2113,6 +2113,137 @@ export function issueRoutes(
     });
 
     res.json(released);
+  });
+
+  // ── Merge approval actions ──────────────────────────────────────────
+  router.post("/issues/:id/approve-merge", async (req, res) => {
+    const id = req.params.id as string;
+    assertBoard(req);
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (issue.status !== "in_review") {
+      res.status(409).json({ error: "Issue must be in_review to approve merge" });
+      return;
+    }
+    if (!issue.assigneeAgentId) {
+      res.status(409).json({ error: "Issue has no assigned agent" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const note = typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+    const body = note ? `Merge approved. ${note}` : "Merge approved.";
+
+    const comment = await svc.addComment(id, body, {
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: null,
+      runId: null,
+      action: "issue.merge_approved",
+      entityType: "issue",
+      entityId: id,
+      details: { identifier: issue.identifier, commentId: comment.id },
+    });
+
+    heartbeat
+      .wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "merge_approved",
+        payload: { issueId: id, commentId: comment.id },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: id,
+          taskId: id,
+          commentId: comment.id,
+          wakeReason: "merge_approved",
+          source: "issue.merge_approved",
+        },
+      })
+      .catch((err) =>
+        logger.warn({ err, issueId: id }, "failed to wake agent on merge approval"),
+      );
+
+    res.json({ issue, comment });
+  });
+
+  router.post("/issues/:id/request-changes", async (req, res) => {
+    const id = req.params.id as string;
+    assertBoard(req);
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (issue.status !== "in_review") {
+      res.status(409).json({ error: "Issue must be in_review to request changes" });
+      return;
+    }
+    if (!issue.assigneeAgentId) {
+      res.status(409).json({ error: "Issue has no assigned agent" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const note = typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+    const body = note ? `Changes requested. ${note}` : "Changes requested.";
+
+    const updated = await svc.update(id, { status: "in_progress" });
+    if (!updated) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const comment = await svc.addComment(id, body, {
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: null,
+      runId: null,
+      action: "issue.changes_requested",
+      entityType: "issue",
+      entityId: id,
+      details: { identifier: issue.identifier, commentId: comment.id },
+    });
+
+    heartbeat
+      .wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "changes_requested",
+        payload: { issueId: id, commentId: comment.id },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: id,
+          taskId: id,
+          commentId: comment.id,
+          wakeReason: "changes_requested",
+          source: "issue.changes_requested",
+        },
+      })
+      .catch((err) =>
+        logger.warn({ err, issueId: id }, "failed to wake agent on changes requested"),
+      );
+
+    res.json({ issue: updated, comment });
   });
 
   router.get("/issues/:id/comments", async (req, res) => {

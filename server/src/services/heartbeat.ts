@@ -971,11 +971,23 @@ function deriveTaskKey(
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
  * - The wake source is "timer" (scheduled heartbeat)
+ *
+ * Routine-dispatched wakes (source === "routine.dispatch") also use a
+ * stable task key so that successive fires of the same routine reuse the
+ * same Claude session instead of starting fresh each time.
  */
 export function deriveTaskKeyWithHeartbeatFallback(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
 ) {
+  const source = readNonEmptyString(contextSnapshot?.source);
+  if (source === "routine.dispatch") {
+    // Routine-dispatched wakes create a new issue per fire, but the agent
+    // should reuse its session across fires.  Use the heartbeat task key
+    // so all routine fires share the same session slot.
+    return HEARTBEAT_TASK_KEY;
+  }
+
   const explicit = deriveTaskKey(contextSnapshot, payload);
   if (explicit) return explicit;
 
@@ -997,6 +1009,12 @@ export function shouldResetTaskSessionForWake(
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
   ) {
+    // Routine-dispatched wakes create a fresh issue per fire but should
+    // reuse the existing session so agents accumulate context across runs.
+    if (wakeReason === "issue_assigned") {
+      const source = readNonEmptyString(contextSnapshot?.source);
+      if (source === "routine.dispatch") return false;
+    }
     return true;
   }
   return false;
@@ -1027,7 +1045,11 @@ function describeSessionResetReason(
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_assigned") {
+    const source = readNonEmptyString(contextSnapshot?.source);
+    if (source === "routine.dispatch") return null;
+    return "wake reason is issue_assigned";
+  }
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
