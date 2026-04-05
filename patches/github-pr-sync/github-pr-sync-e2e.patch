@@ -1,0 +1,1692 @@
+From 13ee516e65e097d612dbd1f6f9c3bb8e7059d0fa Mon Sep 17 00:00:00 2001
+From: Kfir Amar <kfira2002@gmail.com>
+Date: Sun, 5 Apr 2026 18:14:54 +0300
+Subject: [PATCH] Make GitHub PR collaboration visible to Paperclip control
+ flow
+
+This adds a board-operated sync surface for pull-request events so
+GitHub review activity can update Paperclip issue state, wake the next
+owner, and track founder-approval handoffs without turning Paperclip
+into a PR UI.
+
+The change includes a normalized sync endpoint, work-product/approval
+handling, bridge scripts for direct payloads and GitHub-style webhook
+payloads, and docs/tests that prove the flow locally.
+
+Constraint: Production currently uses a packaged Paperclip image, so the feature must remain deployable via additive patching and bridge scripts
+Rejected: Direct production hot-patching of the published container | caused runtime/package-layout mismatch and unsafe rollout risk
+Confidence: medium
+Scope-risk: moderate
+Reversibility: clean
+Directive: Keep GitHub as the execution conversation surface; do not expand this into a full PR management UI without an explicit product decision
+Tested: pnpm -r typecheck; pnpm test:run; pnpm build; local patch reapply in fresh worktree; local E2E smoke after apply; remote staging E2E on paperclip-prsync-stage:52879
+Not-tested: Production cutover on the live VPS image; GitHub branch-protection merge enforcement; full webhook coverage beyond pull_request/pull_request_review/issue_comment
+---
+ .../board-operator/github-pr-collaboration.md | 155 +++++++
+ packages/shared/src/constants.ts              |   7 +-
+ packages/shared/src/index.ts                  |   3 +
+ .../shared/src/validators/github-pr-sync.ts   |  50 +++
+ packages/shared/src/validators/index.ts       |   6 +
+ scripts/github-pr-sync.mjs                    |  40 ++
+ scripts/github-pr-webhook-bridge.mjs          | 145 ++++++
+ .../src/__tests__/approvals-service.test.ts   |  13 +
+ .../__tests__/github-pr-sync-routes.test.ts   | 174 ++++++++
+ .../__tests__/github-pr-sync-service.test.ts  | 389 +++++++++++++++++
+ server/src/app.ts                             |   2 +
+ server/src/routes/github-pr-sync.ts           |  89 ++++
+ server/src/services/approvals.ts              |  10 +-
+ server/src/services/github-pr-sync.ts         | 411 ++++++++++++++++++
+ 14 files changed, 1490 insertions(+), 4 deletions(-)
+ create mode 100644 docs/guides/board-operator/github-pr-collaboration.md
+ create mode 100644 packages/shared/src/validators/github-pr-sync.ts
+ create mode 100644 scripts/github-pr-sync.mjs
+ create mode 100644 scripts/github-pr-webhook-bridge.mjs
+ create mode 100644 server/src/__tests__/github-pr-sync-routes.test.ts
+ create mode 100644 server/src/__tests__/github-pr-sync-service.test.ts
+ create mode 100644 server/src/routes/github-pr-sync.ts
+ create mode 100644 server/src/services/github-pr-sync.ts
+
+diff --git a/docs/guides/board-operator/github-pr-collaboration.md b/docs/guides/board-operator/github-pr-collaboration.md
+new file mode 100644
+index 00000000..023b1093
+--- /dev/null
++++ b/docs/guides/board-operator/github-pr-collaboration.md
+@@ -0,0 +1,155 @@
++---
++title: GitHub PR Collaboration
++summary: How to use GitHub pull request comments as the execution conversation surface while keeping Paperclip as the control plane
++---
++
++# GitHub PR Collaboration
++
++Paperclip is the company control plane. GitHub PRs are the best place for code-level discussion once a pull request exists.
++
++## Workflow rule
++
++- **Before a PR exists**: discuss in the Paperclip issue
++- **After a PR exists**: implementation, review, QA, and release discussion should happen on the GitHub PR
++- **At every stage transition**: sync a short status summary back into the linked Paperclip issue
++
++## Required PR documentation
++
++### Engineer PR body or opening comment
++
++Include:
++
++- linked Paperclip issue
++- problem being solved
++- scope / non-goals
++- tests run
++- risks
++- docs touched or `no-doc-impact`
++- what feedback is desired now
++
++### Reviewer summary
++
++Include:
++
++- verdict: `APPROVE`, `REQUEST_CHANGES`, or `BLOCKED`
++- top issues
++- merge conditions
++- documentation impact
++
++### QA summary
++
++Include:
++
++- environment used
++- commands run
++- manual / MCP / browser checks
++- evidence links, screenshots, or logs
++- verdict: `QA PASS` or `QA FAIL`
++- known gaps
++
++### Release summary
++
++Include:
++
++- reviewer verdict
++- QA verdict
++- docs status
++- founder approval state if heavy
++- recommendation: `MERGE` or `HOLD`
++
++## Syncing GitHub PR state back into Paperclip
++
++Paperclip exposes a normalized sync endpoint:
++
++```http
++POST /api/issues/:issueId/github-pr-sync
++```
++
++This endpoint is designed for a small bridge layer that receives GitHub webhook events or polling results, normalizes them, and sends them into Paperclip.
++
++For a minimal bridge client, this repo now includes:
++
++```bash
++node scripts/github-pr-sync.mjs <issue-id> <payload.json>
++```
++
++For GitHub webhook-style payloads, this repo also includes:
++
++```bash
++node scripts/github-pr-webhook-bridge.mjs <event-name> <payload.json>
++```
++
++The webhook bridge expects the PR body to include:
++
++```text
++Paperclip-Issue: SUP-33
++```
++
++or a UUID issue id.
++
++### Example payload
++
++```json
++{
++  "repositoryFullName": "acme/supportopia",
++  "pullRequestNumber": 61,
++  "pullRequestUrl": "https://github.com/acme/supportopia/pull/61",
++  "pullRequestTitle": "Add onboarding knowledge-base sync progress UI",
++  "eventKey": "github:pr-61:review-12345",
++  "eventKind": "review_submitted",
++  "pullRequestStatus": "changes_requested",
++  "reviewState": "changes_requested",
++  "summary": "Reviewer requested two fixes before QA.",
++  "stage": "implementation",
++  "waitingOnRole": "Founding Engineer",
++  "nextAction": "Address reviewer feedback and request re-review.",
++  "documentationStatus": "no-doc-impact",
++  "labels": ["needs-review"],
++  "wakeAssignee": true,
++  "wakeAgentRefs": ["Founding Engineer"],
++  "syncComment": true
++}
++```
++
++### What the sync endpoint does
++
++When called successfully, Paperclip will:
++
++1. upsert the linked GitHub pull request as an issue work product
++2. update PR metadata such as stage, review state, QA verdict, labels, and last synced event
++3. optionally add a concise sync-back comment to the issue
++4. optionally wake the issue assignee and named agents
++5. optionally create a pull-request-merge approval when founder review is required
++
++If `eventKey` is provided and matches the last synced event for the same PR work product, Paperclip treats the call as an idempotent replay and skips duplicate comments and wakeups.
++
++This endpoint is intended for **board-operated bridge automation**, not normal engineering-agent mutations.
++
++## Heavy PR founder approval
++
++Use founder approval only for high-blast-radius PRs.
++
++Typical heavy PR triggers:
++
++- auth, secrets, permissions, billing, budgets
++- deployment or runtime configuration
++- schema migrations or irreversible data changes
++- public API contract changes
++- broad cross-cutting architecture changes
++
++When a sync payload sets `needsFounderApproval: true` or `createApproval: true`, Paperclip can create an `approve_pull_request_merge` approval linked to the issue.
++
++When the PR later syncs as `merged` or `closed`, Paperclip cancels any still-pending merge approval for that issue.
++
++## Suggested bridge pattern
++
++Keep the bridge layer small.
++
++Recommended flow:
++
++1. GitHub event arrives
++2. bridge maps PR -> Paperclip issue using `Paperclip-Issue: ...` in the PR body
++3. bridge posts normalized payload to `/api/issues/:issueId/github-pr-sync`
++4. Paperclip updates state, comments, approvals, and wakeups
++
++This keeps GitHub as the execution conversation surface without turning Paperclip into a pull request UI clone.
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+index 1e82a5ce..91538242 100644
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@ -198,7 +198,12 @@ export const PROJECT_COLORS = [
+   "#3b82f6", // blue
+ ] as const;
+ 
+-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
++export const APPROVAL_TYPES = [
++  "hire_agent",
++  "approve_ceo_strategy",
++  "budget_override_required",
++  "approve_pull_request_merge",
++] as const;
+ export type ApprovalType = (typeof APPROVAL_TYPES)[number];
+ 
+ export const APPROVAL_STATUSES = [
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 0f936bc2..2eeffe6e 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -360,6 +360,8 @@ export {
+ } from "./validators/index.js";
+ 
+ export {
++  githubPullRequestSyncEventKindSchema,
++  githubPullRequestSyncSchema,
+   createCompanySchema,
+   updateCompanySchema,
+   updateCompanyBrandingSchema,
+@@ -462,6 +464,7 @@ export {
+   resubmitApprovalSchema,
+   addApprovalCommentSchema,
+   type CreateApproval,
++  type GithubPullRequestSyncInput,
+   type UpsertBudgetPolicy,
+   type ResolveBudgetIncident,
+   type ResolveApproval,
+diff --git a/packages/shared/src/validators/github-pr-sync.ts b/packages/shared/src/validators/github-pr-sync.ts
+new file mode 100644
+index 00000000..262387fc
+--- /dev/null
++++ b/packages/shared/src/validators/github-pr-sync.ts
+@@ -0,0 +1,50 @@
++import { z } from "zod";
++import { issueWorkProductReviewStateSchema, issueWorkProductStatusSchema } from "./work-product.js";
++
++export const githubPullRequestSyncEventKindSchema = z.enum([
++  "opened",
++  "ready_for_review",
++  "review_requested",
++  "review_submitted",
++  "comment_created",
++  "qa_requested",
++  "qa_result",
++  "release_requested",
++  "merge_ready",
++  "merged",
++  "closed",
++  "label_changed",
++  "ci_failed",
++  "ci_passed",
++  "sync_note",
++]);
++
++export const githubPullRequestSyncSchema = z.object({
++  repositoryFullName: z.string().trim().min(1).optional().nullable(),
++  pullRequestNumber: z.number().int().positive().optional().nullable(),
++  pullRequestUrl: z.string().url(),
++  pullRequestTitle: z.string().trim().min(1).optional().nullable(),
++  pullRequestBody: z.string().optional().nullable(),
++  eventKey: z.string().trim().min(1).optional().nullable(),
++  pullRequestStatus: issueWorkProductStatusSchema.optional(),
++  reviewState: issueWorkProductReviewStateSchema.optional(),
++  summary: z.string().trim().min(1),
++  details: z.string().optional().nullable(),
++  commentUrl: z.string().url().optional().nullable(),
++  actorLogin: z.string().trim().min(1).optional().nullable(),
++  eventKind: githubPullRequestSyncEventKindSchema,
++  stage: z.string().trim().min(1).optional().nullable(),
++  waitingOnRole: z.string().trim().min(1).optional().nullable(),
++  nextAction: z.string().trim().min(1).optional().nullable(),
++  documentationStatus: z.string().trim().min(1).optional().nullable(),
++  qaVerdict: z.string().trim().min(1).optional().nullable(),
++  labels: z.array(z.string().trim().min(1)).optional().default([]),
++  needsFounderApproval: z.boolean().optional().default(false),
++  createApproval: z.boolean().optional().default(false),
++  wakeAssignee: z.boolean().optional().default(true),
++  wakeAgentRefs: z.array(z.string().trim().min(1)).optional().default([]),
++  syncComment: z.boolean().optional().default(true),
++  eventAt: z.string().datetime().optional().nullable(),
++});
++
++export type GithubPullRequestSyncInput = z.infer<typeof githubPullRequestSyncSchema>;
+diff --git a/packages/shared/src/validators/index.ts b/packages/shared/src/validators/index.ts
+index 20c26ddb..cf48f64d 100644
+--- a/packages/shared/src/validators/index.ts
++++ b/packages/shared/src/validators/index.ts
+@@ -163,6 +163,12 @@ export {
+   type UpdateIssueWorkProduct,
+ } from "./work-product.js";
+ 
++export {
++  githubPullRequestSyncEventKindSchema,
++  githubPullRequestSyncSchema,
++  type GithubPullRequestSyncInput,
++} from "./github-pr-sync.js";
++
+ export {
+   executionWorkspaceConfigSchema,
+   updateExecutionWorkspaceSchema,
+diff --git a/scripts/github-pr-sync.mjs b/scripts/github-pr-sync.mjs
+new file mode 100644
+index 00000000..b8e34f5c
+--- /dev/null
++++ b/scripts/github-pr-sync.mjs
+@@ -0,0 +1,40 @@
++#!/usr/bin/env node
++import { readFileSync } from "node:fs";
++
++function fail(message) {
++  console.error(message);
++  process.exit(1);
++}
++
++const [, , issueId, payloadFile] = process.argv;
++if (!issueId || !payloadFile) {
++  fail("usage: node scripts/github-pr-sync.mjs <issue-id> <payload-json-file>");
++}
++
++const baseUrl = process.env.PAPERCLIP_API_URL?.trim() || "http://127.0.0.1:3100/api";
++const token = process.env.PAPERCLIP_API_TOKEN?.trim() || process.env.PAPERCLIP_BOARD_TOKEN?.trim() || "";
++
++let payload;
++try {
++  payload = JSON.parse(readFileSync(payloadFile, "utf8"));
++} catch (error) {
++  fail(`failed to parse payload file ${payloadFile}: ${error instanceof Error ? error.message : String(error)}`);
++}
++
++const headers = {
++  "content-type": "application/json",
++  ...(token ? { authorization: `Bearer ${token}` } : {}),
++};
++
++const response = await fetch(`${baseUrl}/issues/${issueId}/github-pr-sync`, {
++  method: "POST",
++  headers,
++  body: JSON.stringify(payload),
++});
++
++const text = await response.text();
++if (!response.ok) {
++  fail(`${response.status} ${text}`);
++}
++
++console.log(text);
+diff --git a/scripts/github-pr-webhook-bridge.mjs b/scripts/github-pr-webhook-bridge.mjs
+new file mode 100644
+index 00000000..8b011e51
+--- /dev/null
++++ b/scripts/github-pr-webhook-bridge.mjs
+@@ -0,0 +1,145 @@
++#!/usr/bin/env node
++import { readFileSync } from "node:fs";
++
++function fail(message) {
++  console.error(message);
++  process.exit(1);
++}
++
++function usage() {
++  fail("usage: node scripts/github-pr-webhook-bridge.mjs <event-name> <payload-json-file>");
++}
++
++function linkedIssueReferenceFromBody(body) {
++  if (!body) return null;
++  const match = body.match(/Paperclip-Issue:\s*([^\s]+)/i);
++  return match?.[1]?.trim() || null;
++}
++
++function toReviewState(state) {
++  if (state === "approved") return "approved";
++  if (state === "changes_requested") return "changes_requested";
++  return undefined;
++}
++
++function normalize(eventName, payload, eventKey) {
++  if (eventName === "pull_request") {
++    const pr = payload.pull_request;
++    if (!pr) fail("pull_request payload missing pull_request");
++    const issueRef = linkedIssueReferenceFromBody(pr.body);
++    if (!issueRef) fail("pull_request body missing 'Paperclip-Issue: <issue-id-or-identifier>'");
++    const action = payload.action;
++    const labels = Array.isArray(pr.labels) ? pr.labels.map((label) => label.name).filter(Boolean) : [];
++    const isHeavy = labels.includes("founder-approval-required");
++    let eventKind = "sync_note";
++    if (action === "opened" || action === "reopened" || action === "synchronize") eventKind = "opened";
++    else if (action === "ready_for_review") eventKind = "ready_for_review";
++    else if (action === "review_requested") eventKind = "review_requested";
++    else if (action === "closed" && pr.merged_at) eventKind = "merged";
++    else if (action === "closed") eventKind = "closed";
++    return {
++      issueRef,
++      syncPayload: {
++        repositoryFullName: payload.repository?.full_name ?? null,
++        pullRequestNumber: pr.number,
++        pullRequestUrl: pr.html_url,
++        pullRequestTitle: pr.title ?? null,
++        pullRequestBody: pr.body ?? null,
++        pullRequestStatus:
++          eventKind === "merged" ? "merged" : eventKind === "closed" ? "closed" : pr.draft ? "draft" : "ready_for_review",
++        eventKey,
++        eventKind,
++        summary: `GitHub PR ${action}: ${pr.title}`,
++        stage: eventKind,
++        labels,
++        needsFounderApproval: isHeavy,
++        createApproval: isHeavy && !["merged", "closed"].includes(eventKind),
++        syncComment: true,
++      },
++    };
++  }
++
++  if (eventName === "pull_request_review") {
++    const pr = payload.pull_request;
++    const review = payload.review;
++    if (!pr || !review) fail("pull_request_review payload missing pull_request/review");
++    const issueRef = linkedIssueReferenceFromBody(pr.body);
++    if (!issueRef) fail("pull_request body missing 'Paperclip-Issue: <issue-id-or-identifier>'");
++    return {
++      issueRef,
++      syncPayload: {
++        repositoryFullName: payload.repository?.full_name ?? null,
++        pullRequestNumber: pr.number,
++        pullRequestUrl: pr.html_url,
++        pullRequestTitle: pr.title ?? null,
++        eventKey,
++        eventKind: "review_submitted",
++        summary: `GitHub review ${review.state}: ${pr.title}`,
++        stage: "review_submitted",
++        reviewState: toReviewState(review.state),
++        commentUrl: review.html_url ?? null,
++        actorLogin: review.user?.login ?? null,
++        syncComment: true,
++      },
++    };
++  }
++
++  if (eventName === "issue_comment") {
++    const issue = payload.issue;
++    const pr = payload.issue?.pull_request;
++    if (!issue || !pr) fail("issue_comment payload is not for a pull request");
++    const body = issue.body ?? "";
++    const issueRef = linkedIssueReferenceFromBody(body);
++    if (!issueRef) fail("pull_request body missing 'Paperclip-Issue: <issue-id-or-identifier>'");
++    return {
++      issueRef,
++      syncPayload: {
++        repositoryFullName: payload.repository?.full_name ?? null,
++        pullRequestNumber: issue.number,
++        pullRequestUrl: issue.html_url,
++        pullRequestTitle: issue.title ?? null,
++        eventKey,
++        eventKind: "comment_created",
++        summary: `GitHub PR comment by ${payload.comment?.user?.login ?? "unknown"}`,
++        stage: "comment_created",
++        commentUrl: payload.comment?.html_url ?? null,
++        actorLogin: payload.comment?.user?.login ?? null,
++        details: payload.comment?.body ?? null,
++        syncComment: true,
++      },
++    };
++  }
++
++  fail(`unsupported GitHub event '${eventName}'`);
++}
++
++const [, , eventName, payloadFile] = process.argv;
++if (!eventName || !payloadFile) usage();
++
++let payload;
++try {
++  payload = JSON.parse(readFileSync(payloadFile, "utf8"));
++} catch (error) {
++  fail(`failed to parse payload file ${payloadFile}: ${error instanceof Error ? error.message : String(error)}`);
++}
++
++const baseUrl = process.env.PAPERCLIP_API_URL?.trim() || "http://127.0.0.1:3100/api";
++const token = process.env.PAPERCLIP_API_TOKEN?.trim() || process.env.PAPERCLIP_BOARD_TOKEN?.trim() || "";
++const eventKey =
++  process.env.GITHUB_EVENT_KEY?.trim()
++  || process.env.GITHUB_DELIVERY?.trim()
++  || `github:${eventName}:${Date.now()}`;
++
++const { issueRef, syncPayload } = normalize(eventName, payload, eventKey);
++const response = await fetch(`${baseUrl}/issues/${issueRef}/github-pr-sync`, {
++  method: "POST",
++  headers: {
++    "content-type": "application/json",
++    ...(token ? { authorization: `Bearer ${token}` } : {}),
++  },
++  body: JSON.stringify(syncPayload),
++});
++
++const text = await response.text();
++if (!response.ok) fail(`${response.status} ${text}`);
++console.log(text);
+diff --git a/server/src/__tests__/approvals-service.test.ts b/server/src/__tests__/approvals-service.test.ts
+index b15298f0..305a3868 100644
+--- a/server/src/__tests__/approvals-service.test.ts
++++ b/server/src/__tests__/approvals-service.test.ts
+@@ -104,4 +104,17 @@ describe("approvalService resolution idempotency", () => {
+     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+   });
++
++  it("cancels pending approvals idempotently without hire side effects", async () => {
++    const cancelled = createApproval("cancelled");
++    const dbStub = createDbStub([[createApproval("pending")]], [cancelled]);
++
++    const svc = approvalService(dbStub.db as any);
++    const result = await svc.cancel("approval-1", "board", "pr merged");
++
++    expect(result.applied).toBe(true);
++    expect(result.approval.status).toBe("cancelled");
++    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
++    expect(mockAgentService.terminate).not.toHaveBeenCalled();
++  });
+ });
+diff --git a/server/src/__tests__/github-pr-sync-routes.test.ts b/server/src/__tests__/github-pr-sync-routes.test.ts
+new file mode 100644
+index 00000000..31c7af2c
+--- /dev/null
++++ b/server/src/__tests__/github-pr-sync-routes.test.ts
+@@ -0,0 +1,174 @@
++import express from "express";
++import request from "supertest";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { githubPrSyncRoutes } from "../routes/github-pr-sync.js";
++import { errorHandler } from "../middleware/index.js";
++
++const mockIssueService = vi.hoisted(() => ({
++  getById: vi.fn(),
++  addComment: vi.fn(),
++}));
++
++const mockApprovalService = vi.hoisted(() => ({
++  create: vi.fn(),
++}));
++
++const mockIssueApprovalService = vi.hoisted(() => ({
++  listApprovalsForIssue: vi.fn(),
++  link: vi.fn(),
++}));
++
++const mockAgentService = vi.hoisted(() => ({
++  resolveByReference: vi.fn(),
++}));
++
++const mockHeartbeatService = vi.hoisted(() => ({
++  wakeup: vi.fn(),
++}));
++
++const mockWorkProductService = vi.hoisted(() => ({
++  listForIssue: vi.fn(),
++  createForIssue: vi.fn(),
++  update: vi.fn(),
++}));
++
++const mockLogActivity = vi.hoisted(() => vi.fn());
++const mockSyncIssue = vi.hoisted(() => vi.fn());
++
++vi.mock("../services/index.js", () => ({
++  issueService: () => mockIssueService,
++  approvalService: () => mockApprovalService,
++  issueApprovalService: () => mockIssueApprovalService,
++  agentService: () => mockAgentService,
++  heartbeatService: () => mockHeartbeatService,
++  workProductService: () => mockWorkProductService,
++  logActivity: mockLogActivity,
++}));
++
++vi.mock("../services/github-pr-sync.js", () => ({
++  createGithubPrSyncService: () => ({
++    syncIssue: mockSyncIssue,
++  }),
++}));
++
++function createApp() {
++  const app = express();
++  app.use(express.json());
++  app.use((req, _res, next) => {
++    (req as any).actor = {
++      type: "board",
++      userId: "user-1",
++      companyIds: ["company-1"],
++      source: "session",
++      isInstanceAdmin: false,
++    };
++    next();
++  });
++  app.use("/api", githubPrSyncRoutes({} as any));
++  app.use(errorHandler);
++  return app;
++}
++
++function createAgentApp() {
++  const app = express();
++  app.use(express.json());
++  app.use((req, _res, next) => {
++    (req as any).actor = {
++      type: "agent",
++      agentId: "agent-1",
++      companyId: "company-1",
++      source: "agent_key",
++    };
++    next();
++  });
++  app.use("/api", githubPrSyncRoutes({} as any));
++  app.use(errorHandler);
++  return app;
++}
++
++describe("githubPrSyncRoutes", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it("returns 404 when the issue does not exist", async () => {
++    mockIssueService.getById.mockReset().mockResolvedValue(null);
++
++    const res = await request(createApp())
++      .post("/api/issues/issue-1/github-pr-sync")
++      .send({
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "comment_created",
++        summary: "Comment added",
++      });
++
++    expect(res.status).toBe(404);
++    expect(mockSyncIssue).not.toHaveBeenCalled();
++  });
++
++  it("accepts a normalized PR sync payload and logs the sync", async () => {
++    mockIssueService.getById.mockReset().mockResolvedValue({
++      id: "issue-1",
++      companyId: "company-1",
++      assigneeAgentId: "agent-1",
++      title: "Implement PR sync",
++    });
++    mockSyncIssue.mockReset().mockResolvedValue({
++      workProduct: { id: "wp-1" },
++      approvalCreated: true,
++      approvalId: "approval-1",
++      wokenAgentIds: ["agent-1"],
++    });
++    mockLogActivity.mockResolvedValue(undefined);
++
++    const res = await request(createApp())
++      .post("/api/issues/issue-1/github-pr-sync")
++      .send({
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        pullRequestNumber: 61,
++        eventKind: "review_requested",
++        summary: "Review requested from Code Reviewer.",
++        waitingOnRole: "Code Reviewer",
++      });
++
++    expect(res.status).toBe(202);
++    expect(mockSyncIssue).toHaveBeenCalledWith(
++      "issue-1",
++      expect.objectContaining({
++        pullRequestNumber: 61,
++        waitingOnRole: "Code Reviewer",
++      }),
++      expect.objectContaining({
++        actorType: "user",
++        actorId: "user-1",
++      }),
++    );
++    expect(mockLogActivity).toHaveBeenCalledWith(
++      expect.anything(),
++      expect.objectContaining({
++        action: "issue.github_pr_synced",
++        entityId: "issue-1",
++      }),
++    );
++  });
++
++  it("rejects same-company agent keys because the bridge is board-operated", async () => {
++    mockIssueService.getById.mockReset().mockResolvedValue({
++      id: "issue-1",
++      companyId: "company-1",
++      assigneeAgentId: "agent-1",
++      title: "Implement PR sync",
++    });
++
++    const res = await request(createAgentApp())
++      .post("/api/issues/issue-1/github-pr-sync")
++      .send({
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "comment_created",
++        summary: "Agent tried to sync PR comments directly.",
++      });
++
++    expect(res.status).toBe(403);
++    expect(mockSyncIssue).not.toHaveBeenCalled();
++  });
++});
+diff --git a/server/src/__tests__/github-pr-sync-service.test.ts b/server/src/__tests__/github-pr-sync-service.test.ts
+new file mode 100644
+index 00000000..f6c51be1
+--- /dev/null
++++ b/server/src/__tests__/github-pr-sync-service.test.ts
+@@ -0,0 +1,389 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { createGithubPrSyncService } from "../services/github-pr-sync.js";
++
++function makeIssue() {
++  return {
++    id: "issue-1",
++    companyId: "company-1",
++    assigneeAgentId: "agent-assignee",
++    title: "Implement PR sync",
++    identifier: "SUP-99",
++  };
++}
++
++function makeWorkProduct(overrides: Partial<Record<string, unknown>> = {}) {
++  const now = new Date("2026-04-05T00:00:00.000Z");
++  return {
++    id: "wp-1",
++    companyId: "company-1",
++    projectId: null,
++    issueId: "issue-1",
++    executionWorkspaceId: null,
++    runtimeServiceId: null,
++    type: "pull_request",
++    provider: "github",
++    externalId: "61",
++    title: "PR 61",
++    url: "https://github.com/acme/supportopia/pull/61",
++    status: "active",
++    reviewState: "none",
++    isPrimary: true,
++    healthStatus: "unknown",
++    summary: null,
++    metadata: null,
++    createdByRunId: null,
++    createdAt: now,
++    updatedAt: now,
++    ...overrides,
++  };
++}
++
++function createDeps() {
++  return {
++    issues: {
++      getById: vi.fn(),
++      addComment: vi.fn(),
++    },
++    workProducts: {
++      listForIssue: vi.fn(),
++      createForIssue: vi.fn(),
++      update: vi.fn(),
++    },
++    approvals: {
++      create: vi.fn(),
++      cancel: vi.fn(),
++    },
++    issueApprovals: {
++      listApprovalsForIssue: vi.fn(),
++      link: vi.fn(),
++    },
++    agents: {
++      resolveByReference: vi.fn(),
++    },
++    heartbeat: {
++      wakeup: vi.fn(),
++    },
++  };
++}
++
++describe("createGithubPrSyncService", () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it("creates a PR work product, sync comment, approval, and wakeups for the assignee and waiting role", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([]);
++    deps.workProducts.createForIssue.mockResolvedValue(makeWorkProduct());
++    deps.issueApprovals.listApprovalsForIssue.mockResolvedValue([]);
++    deps.approvals.create.mockResolvedValue({ id: "approval-1" });
++    deps.approvals.cancel.mockResolvedValue({ approval: { id: "approval-1", status: "cancelled" }, applied: true });
++    deps.issueApprovals.link.mockResolvedValue({ id: "link-1" });
++    deps.issues.addComment.mockResolvedValue({ id: "comment-1" });
++    deps.agents.resolveByReference.mockResolvedValue({ agent: { id: "agent-reviewer", name: "Code Reviewer" }, ambiguous: false });
++    deps.heartbeat.wakeup.mockResolvedValue({ id: "wake-1" });
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        repositoryFullName: "acme/supportopia",
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        pullRequestTitle: "Add onboarding progress UI",
++        eventKind: "review_submitted",
++        pullRequestStatus: "changes_requested",
++        reviewState: "changes_requested",
++        summary: "Reviewer requested two fixes before QA.",
++        stage: "implementation",
++        waitingOnRole: "Code Reviewer",
++        nextAction: "Address feedback and request re-review.",
++        needsFounderApproval: true,
++        createApproval: true,
++        wakeAssignee: true,
++        wakeAgentRefs: [],
++        syncComment: true,
++        labels: ["needs-review", "founder-approval-required"],
++      },
++      {
++        actorType: "agent",
++        actorId: "agent-founder",
++        agentId: "agent-founder",
++        runId: "run-1",
++      },
++    );
++
++    expect(deps.workProducts.createForIssue).toHaveBeenCalledTimes(1);
++    expect(deps.approvals.create).toHaveBeenCalledWith(
++      "company-1",
++      expect.objectContaining({
++        type: "approve_pull_request_merge",
++        requestedByAgentId: "agent-founder",
++      }),
++    );
++    expect(deps.issues.addComment).toHaveBeenCalledWith(
++      "issue-1",
++      expect.stringContaining("STATE: implementation"),
++      expect.any(Object),
++    );
++    expect(deps.issues.addComment).toHaveBeenCalledWith(
++      "issue-1",
++      expect.stringContaining("WAITING ON: Code Reviewer"),
++      expect.any(Object),
++    );
++    expect(deps.heartbeat.wakeup).toHaveBeenCalledTimes(2);
++    expect(result.approvalCreated).toBe(true);
++    expect(result.wokenAgentIds).toEqual(["agent-assignee", "agent-reviewer"]);
++  });
++
++  it("updates an existing PR work product and skips duplicate approvals/comments when disabled", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([makeWorkProduct()]);
++    deps.workProducts.update.mockResolvedValue(makeWorkProduct({ status: "approved", reviewState: "approved" }));
++    deps.issueApprovals.listApprovalsForIssue.mockResolvedValue([
++      { id: "approval-1", type: "approve_pull_request_merge", status: "pending" },
++    ]);
++    deps.approvals.cancel.mockResolvedValue({ approval: { id: "approval-1", status: "cancelled" }, applied: true });
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "merged",
++        summary: "Merged to main.",
++        pullRequestStatus: "merged",
++        reviewState: "approved",
++        wakeAssignee: false,
++        wakeAgentRefs: [],
++        syncComment: false,
++        createApproval: true,
++        labels: [],
++      },
++      {
++        actorType: "user",
++        actorId: "board-user",
++        userId: "board-user",
++      },
++    );
++
++    expect(deps.workProducts.update).toHaveBeenCalledTimes(1);
++    expect(deps.approvals.create).not.toHaveBeenCalled();
++    expect(deps.approvals.cancel).toHaveBeenCalledWith(
++      "approval-1",
++      "board-user",
++      "Automatically cancelled after pull request merged",
++    );
++    expect(deps.issues.addComment).not.toHaveBeenCalled();
++    expect(deps.heartbeat.wakeup).not.toHaveBeenCalled();
++    expect(result.approvalCreated).toBe(false);
++    expect(result.approvalId).toBe("approval-1");
++    expect(result.approvalCancelledId).toBe("approval-1");
++    expect(result.workProduct.status).toBe("approved");
++  });
++
++  it("creates a fresh merge approval after a previously rejected one", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([makeWorkProduct()]);
++    deps.workProducts.update.mockResolvedValue(makeWorkProduct({ status: "ready_for_review" }));
++    deps.issueApprovals.listApprovalsForIssue.mockResolvedValue([
++      { id: "approval-old", type: "approve_pull_request_merge", status: "rejected" },
++    ]);
++    deps.approvals.create.mockResolvedValue({ id: "approval-new" });
++    deps.approvals.cancel.mockResolvedValue({ approval: { id: "approval-old", status: "cancelled" }, applied: true });
++    deps.issueApprovals.link.mockResolvedValue({ id: "link-2" });
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "merge_ready",
++        summary: "A new heavy PR is ready for founder approval.",
++        needsFounderApproval: true,
++        createApproval: true,
++        wakeAssignee: false,
++        wakeAgentRefs: [],
++        syncComment: false,
++        labels: ["founder-approval-required"],
++      },
++      {
++        actorType: "user",
++        actorId: "board-user",
++        userId: "board-user",
++      },
++    );
++
++    expect(deps.approvals.create).toHaveBeenCalledTimes(1);
++    expect(result.approvalCreated).toBe(true);
++    expect(result.approvalId).toBe("approval-new");
++  });
++
++  it("treats matching eventKey replays as idempotent and skips comments and wakeups", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([
++      makeWorkProduct({
++        metadata: {
++          lastAppliedEventKey: "github:pr-61:review-123",
++        },
++      }),
++    ]);
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKey: "github:pr-61:review-123",
++        eventKind: "review_submitted",
++        summary: "Replay of the same review event.",
++        wakeAssignee: true,
++        wakeAgentRefs: ["Code Reviewer"],
++        syncComment: true,
++        labels: [],
++      },
++      {
++        actorType: "agent",
++        actorId: "agent-founder",
++        agentId: "agent-founder",
++      },
++    );
++
++    expect(result.idempotentReplay).toBe(true);
++    expect(deps.issues.addComment).not.toHaveBeenCalled();
++    expect(deps.heartbeat.wakeup).not.toHaveBeenCalled();
++    expect(deps.approvals.create).not.toHaveBeenCalled();
++  });
++
++  it("preserves existing review state on non-state comment events", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([
++      makeWorkProduct({
++        status: "changes_requested",
++        reviewState: "changes_requested",
++      }),
++    ]);
++    deps.workProducts.update.mockResolvedValue(
++      makeWorkProduct({
++        status: "changes_requested",
++        reviewState: "changes_requested",
++      }),
++    );
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "comment_created",
++        summary: "Reviewer left a follow-up comment.",
++        wakeAssignee: false,
++        wakeAgentRefs: [],
++        syncComment: false,
++        labels: [],
++      },
++      {
++        actorType: "user",
++        actorId: "board-user",
++        userId: "board-user",
++      },
++    );
++
++    expect(result.workProduct.status).toBe("changes_requested");
++    expect(result.workProduct.reviewState).toBe("changes_requested");
++  });
++
++  it("does not create a new approval on merged terminal events", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([makeWorkProduct()]);
++    deps.workProducts.update.mockResolvedValue(makeWorkProduct({ status: "merged", reviewState: "approved" }));
++    deps.issueApprovals.listApprovalsForIssue.mockResolvedValue([]);
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 61,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/61",
++        eventKind: "merged",
++        summary: "Pull request merged.",
++        pullRequestStatus: "merged",
++        needsFounderApproval: true,
++        createApproval: true,
++        wakeAssignee: false,
++        wakeAgentRefs: [],
++        syncComment: false,
++        labels: ["founder-approval-required"],
++      },
++      {
++        actorType: "user",
++        actorId: "board-user",
++        userId: "board-user",
++      },
++    );
++
++    expect(deps.approvals.create).not.toHaveBeenCalled();
++    expect(result.approvalCreated).toBe(false);
++    expect(result.approvalId).toBe(null);
++  });
++
++  it("creates a new PR work product instead of overwriting a different existing PR on the same issue", async () => {
++    const deps = createDeps();
++    deps.issues.getById.mockResolvedValue(makeIssue());
++    deps.workProducts.listForIssue.mockResolvedValue([
++      makeWorkProduct({
++        externalId: "61",
++        url: "https://github.com/acme/supportopia/pull/61",
++      }),
++      makeWorkProduct({
++        id: "wp-2",
++        externalId: "62",
++        url: "https://github.com/acme/supportopia/pull/62",
++        title: "PR 62",
++      }),
++    ]);
++    deps.workProducts.createForIssue.mockResolvedValue(
++      makeWorkProduct({
++        id: "wp-3",
++        externalId: "63",
++        url: "https://github.com/acme/supportopia/pull/63",
++        title: "PR 63",
++      }),
++    );
++
++    const svc = createGithubPrSyncService(deps as any);
++    const result = await svc.syncIssue(
++      "issue-1",
++      {
++        pullRequestNumber: 63,
++        pullRequestUrl: "https://github.com/acme/supportopia/pull/63",
++        eventKind: "opened",
++        summary: "A third PR was opened for the issue.",
++        wakeAssignee: false,
++        wakeAgentRefs: [],
++        syncComment: false,
++        labels: [],
++      },
++      {
++        actorType: "user",
++        actorId: "board-user",
++        userId: "board-user",
++      },
++    );
++
++    expect(deps.workProducts.update).not.toHaveBeenCalled();
++    expect(deps.workProducts.createForIssue).toHaveBeenCalledTimes(1);
++    expect(result.workProduct.id).toBe("wp-3");
++  });
++
++});
+diff --git a/server/src/app.ts b/server/src/app.ts
+index b9faee2f..dcc8773a 100644
+--- a/server/src/app.ts
++++ b/server/src/app.ts
+@@ -15,6 +15,7 @@ import { companySkillRoutes } from "./routes/company-skills.js";
+ import { agentRoutes } from "./routes/agents.js";
+ import { projectRoutes } from "./routes/projects.js";
+ import { issueRoutes } from "./routes/issues.js";
++import { githubPrSyncRoutes } from "./routes/github-pr-sync.js";
+ import { routineRoutes } from "./routes/routines.js";
+ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
+ import { goalRoutes } from "./routes/goals.js";
+@@ -153,6 +154,7 @@ export async function createApp(
+   api.use(assetRoutes(db, opts.storageService));
+   api.use(projectRoutes(db));
+   api.use(issueRoutes(db, opts.storageService));
++  api.use(githubPrSyncRoutes(db));
+   api.use(routineRoutes(db));
+   api.use(executionWorkspaceRoutes(db));
+   api.use(goalRoutes(db));
+diff --git a/server/src/routes/github-pr-sync.ts b/server/src/routes/github-pr-sync.ts
+new file mode 100644
+index 00000000..99254583
+--- /dev/null
++++ b/server/src/routes/github-pr-sync.ts
+@@ -0,0 +1,89 @@
++import { Router } from "express";
++import type { Db } from "@paperclipai/db";
++import { githubPullRequestSyncSchema } from "@paperclipai/shared";
++import { validate } from "../middleware/validate.js";
++import {
++  agentService,
++  approvalService,
++  heartbeatService,
++  issueApprovalService,
++  issueService,
++  logActivity,
++  workProductService,
++} from "../services/index.js";
++import { createGithubPrSyncService } from "../services/github-pr-sync.js";
++import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
++
++export function githubPrSyncRoutes(db: Db) {
++  const router = Router();
++  const issues = issueService(db);
++  const approvals = approvalService(db);
++  const issueApprovals = issueApprovalService(db);
++  const agents = agentService(db);
++  const heartbeat = heartbeatService(db);
++  const workProducts = workProductService(db);
++  const syncService = createGithubPrSyncService({
++    issues,
++    approvals,
++    issueApprovals,
++    agents,
++    heartbeat,
++    workProducts,
++  });
++
++  router.post("/issues/:id/github-pr-sync", validate(githubPullRequestSyncSchema), async (req, res) => {
++    assertBoard(req);
++    const issueId = req.params.id as string;
++    const issue = await issues.getById(issueId);
++    if (!issue) {
++      res.status(404).json({ error: "Issue not found" });
++      return;
++    }
++    assertCompanyAccess(req, issue.companyId);
++    const actor = getActorInfo(req);
++    const input = req.body;
++    const result = await syncService.syncIssue(issue.id, input, {
++      actorType: actor.actorType,
++      actorId: actor.actorId,
++      agentId: actor.agentId ?? null,
++      userId: actor.actorType === "user" ? actor.actorId : null,
++      runId: actor.runId ?? null,
++    });
++
++    await logActivity(db, {
++      companyId: issue.companyId,
++      actorType: actor.actorType,
++      actorId: actor.actorId,
++      agentId: actor.agentId,
++      runId: actor.runId,
++      action: "issue.github_pr_synced",
++      entityType: "issue",
++      entityId: issue.id,
++      details: {
++        pullRequestUrl: input.pullRequestUrl,
++        pullRequestNumber: input.pullRequestNumber ?? null,
++        eventKind: input.eventKind,
++        stage: input.stage ?? null,
++        waitingOnRole: input.waitingOnRole ?? null,
++        approvalCreated: result.approvalCreated,
++        approvalId: result.approvalId,
++        approvalCancelledId: result.approvalCancelledId,
++        idempotentReplay: result.idempotentReplay,
++        wokenAgentIds: result.wokenAgentIds,
++      },
++    });
++
++    res.status(202).json({
++      ok: true,
++      issueId: issue.id,
++      workProductId: result.workProduct.id,
++      approvalCreated: result.approvalCreated,
++      approvalId: result.approvalId,
++      approvalCancelledId: result.approvalCancelledId,
++      idempotentReplay: result.idempotentReplay,
++      wokenAgentIds: result.wokenAgentIds,
++    });
++  });
++
++  return router;
++}
+diff --git a/server/src/services/approvals.ts b/server/src/services/approvals.ts
+index bf101e23..50127e83 100644
+--- a/server/src/services/approvals.ts
++++ b/server/src/services/approvals.ts
+@@ -36,7 +36,7 @@ export function approvalService(db: Db) {
+ 
+   async function resolveApproval(
+     id: string,
+-    targetStatus: "approved" | "rejected",
++    targetStatus: "approved" | "rejected" | "cancelled",
+     decidedByUserId: string,
+     decisionNote: string | null | undefined,
+   ): Promise<ResolutionResult> {
+@@ -46,7 +46,7 @@ export function approvalService(db: Db) {
+         return { approval: existing, applied: false };
+       }
+       throw unprocessable(
+-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
++        `Only pending or revision requested approvals can be ${targetStatus}`,
+       );
+     }
+ 
+@@ -74,7 +74,7 @@ export function approvalService(db: Db) {
+     }
+ 
+     throw unprocessable(
+-      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
++      `Only pending or revision requested approvals can be ${targetStatus}`,
+     );
+   }
+ 
+@@ -187,6 +187,10 @@ export function approvalService(db: Db) {
+       return { approval: updated, applied };
+     },
+ 
++    cancel: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
++      return resolveApproval(id, "cancelled", decidedByUserId, decisionNote);
++    },
++
+     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+       const existing = await getExistingApproval(id);
+       if (existing.status !== "pending") {
+diff --git a/server/src/services/github-pr-sync.ts b/server/src/services/github-pr-sync.ts
+new file mode 100644
+index 00000000..83d317c9
+--- /dev/null
++++ b/server/src/services/github-pr-sync.ts
+@@ -0,0 +1,411 @@
++import { conflict, notFound } from "../errors.js";
++import type { GithubPullRequestSyncInput, IssueWorkProduct } from "@paperclipai/shared";
++
++type ActorInfo = {
++  actorType: "user" | "agent" | "system";
++  actorId: string;
++  agentId?: string | null;
++  userId?: string | null;
++  runId?: string | null;
++};
++
++type IssueRecord = {
++  id: string;
++  companyId: string;
++  assigneeAgentId: string | null;
++  title: string;
++  identifier?: string | null;
++};
++
++type ApprovalSummary = {
++  id: string;
++  type: string;
++  status: string;
++};
++
++type AgentSummary = {
++  id: string;
++  name: string;
++};
++
++type WakeRun = { id?: string | null } | null;
++
++interface GithubPrSyncDeps {
++  issues: {
++    getById(issueId: string): Promise<IssueRecord | null>;
++    addComment(
++      issueId: string,
++      body: string,
++      actor: { agentId?: string | null; userId?: string | null; runId?: string | null },
++    ): Promise<{ id: string } | null>;
++  };
++  workProducts: {
++    listForIssue(issueId: string): Promise<IssueWorkProduct[]>;
++    createForIssue(
++      issueId: string,
++      companyId: string,
++      data: Omit<IssueWorkProduct, "id" | "companyId" | "issueId" | "createdAt" | "updatedAt">,
++    ): Promise<IssueWorkProduct | null>;
++    update(
++      id: string,
++      patch: Partial<Omit<IssueWorkProduct, "id" | "companyId" | "issueId" | "createdAt" | "updatedAt">>,
++    ): Promise<IssueWorkProduct | null>;
++  };
++  approvals: {
++    create(
++      companyId: string,
++      data: {
++        type: string;
++        requestedByAgentId: string | null;
++        requestedByUserId: string | null;
++        status: string;
++        payload: Record<string, unknown>;
++        decisionNote: null;
++        decidedByUserId: null;
++        decidedAt: null;
++        updatedAt: Date;
++      },
++    ): Promise<{ id: string }>;
++    cancel(
++      id: string,
++      decidedByUserId: string,
++      decisionNote?: string | null,
++    ): Promise<{ approval: { id: string; status: string }; applied: boolean }>;
++  };
++  issueApprovals: {
++    listApprovalsForIssue(issueId: string): Promise<ApprovalSummary[]>;
++    link(issueId: string, approvalId: string, actor?: { agentId?: string | null; userId?: string | null }): Promise<unknown>;
++  };
++  agents: {
++    resolveByReference(
++      companyId: string,
++      reference: string,
++    ): Promise<{ agent: AgentSummary | null; ambiguous: boolean }>;
++  };
++  heartbeat: {
++    wakeup(agentId: string, input: Record<string, unknown>): Promise<WakeRun>;
++  };
++}
++
++type SyncResult = {
++  workProduct: IssueWorkProduct;
++  approvalCreated: boolean;
++  approvalId: string | null;
++  approvalCancelledId: string | null;
++  idempotentReplay: boolean;
++  wokenAgentIds: string[];
++};
++
++function normalizeWhitespace(value: string | null | undefined) {
++  return value?.trim() || null;
++}
++
++function deriveWorkProductStatus(input: GithubPullRequestSyncInput, existingPr: IssueWorkProduct | null): string {
++  if (input.pullRequestStatus) return input.pullRequestStatus;
++  if (input.eventKind === "merged") return "merged";
++  if (input.eventKind === "closed") return "closed";
++  if (input.eventKind === "ready_for_review" || input.eventKind === "review_requested") return "ready_for_review";
++  if (input.eventKind === "review_submitted" && input.reviewState === "changes_requested") return "changes_requested";
++  if (input.eventKind === "review_submitted" && input.reviewState === "approved") return "approved";
++  return existingPr?.status ?? "active";
++}
++
++function deriveReviewState(input: GithubPullRequestSyncInput, existingPr: IssueWorkProduct | null): IssueWorkProduct["reviewState"] {
++  if (input.reviewState) return input.reviewState;
++  if (input.needsFounderApproval) return "needs_board_review";
++  return existingPr?.reviewState ?? "none";
++}
++
++function isTerminalPrEvent(input: GithubPullRequestSyncInput) {
++  return input.eventKind === "merged" || input.eventKind === "closed";
++}
++
++function findMatchingPrWorkProduct(existingProducts: IssueWorkProduct[], input: GithubPullRequestSyncInput) {
++  const githubPrProducts = existingProducts.filter(
++    (product) => product.type === "pull_request" && product.provider === "github",
++  );
++
++  const exactByNumber =
++    input.pullRequestNumber != null
++      ? githubPrProducts.find((product) => product.externalId === String(input.pullRequestNumber)) ?? null
++      : null;
++  if (exactByNumber) return exactByNumber;
++
++  const exactByUrl = githubPrProducts.find((product) => product.url === input.pullRequestUrl) ?? null;
++  if (exactByUrl) return exactByUrl;
++
++  if (githubPrProducts.length === 1 && input.pullRequestNumber == null && !input.repositoryFullName) {
++    return githubPrProducts[0] ?? null;
++  }
++
++  return null;
++}
++
++function buildSyncComment(input: GithubPullRequestSyncInput) {
++  const lines = [
++    `STATE: ${input.stage ?? input.eventKind}`,
++    `LINK: ${input.pullRequestUrl}`,
++    `SUMMARY: ${input.summary}`,
++  ];
++  if (input.waitingOnRole) lines.push(`WAITING ON: ${input.waitingOnRole}`);
++  if (input.documentationStatus) lines.push(`DOCS: ${input.documentationStatus}`);
++  if (input.qaVerdict) lines.push(`QA: ${input.qaVerdict}`);
++  if (input.nextAction) lines.push(`NEXT: ${input.nextAction}`);
++  if (input.details) lines.push("", input.details);
++  return lines.join("\n");
++}
++
++function shouldCreatePrMergeApproval(existingApprovals: ApprovalSummary[]) {
++  return !existingApprovals.some(
++    (approval) =>
++      approval.type === "approve_pull_request_merge"
++      && !["rejected", "cancelled"].includes(approval.status),
++  );
++}
++
++function toActorCommentContext(actor: ActorInfo) {
++  return {
++    agentId: actor.agentId ?? null,
++    userId: actor.userId ?? (actor.actorType === "user" ? actor.actorId : null),
++    runId: actor.runId ?? null,
++  };
++}
++
++function toWakeContext(input: GithubPullRequestSyncInput, issueId: string) {
++  return {
++    source: "automation",
++    triggerDetail: "system",
++    reason: "github_pull_request_sync",
++    payload: {
++      issueId,
++      pullRequestUrl: input.pullRequestUrl,
++      pullRequestNumber: input.pullRequestNumber ?? null,
++      eventKind: input.eventKind,
++      commentUrl: input.commentUrl ?? null,
++      stage: input.stage ?? null,
++      waitingOnRole: input.waitingOnRole ?? null,
++    },
++    requestedByActorType: "system",
++    requestedByActorId: "github_pr_sync",
++    contextSnapshot: {
++      issueId,
++      taskId: issueId,
++      source: "github.pull_request.sync",
++      wakeReason: "github_pull_request_sync",
++      pullRequestUrl: input.pullRequestUrl,
++      pullRequestNumber: input.pullRequestNumber ?? null,
++      eventKind: input.eventKind,
++      stage: input.stage ?? null,
++      waitingOnRole: input.waitingOnRole ?? null,
++      commentUrl: input.commentUrl ?? null,
++      actorLogin: input.actorLogin ?? null,
++    },
++  };
++}
++
++async function resolveWakeAgentIds(
++  deps: GithubPrSyncDeps,
++  issue: IssueRecord,
++  input: GithubPullRequestSyncInput,
++) {
++  const ids = new Set<string>();
++  if (input.wakeAssignee && issue.assigneeAgentId) ids.add(issue.assigneeAgentId);
++  const refs = [...input.wakeAgentRefs];
++  if (input.waitingOnRole) refs.push(input.waitingOnRole);
++  for (const ref of refs) {
++    const resolved = await deps.agents.resolveByReference(issue.companyId, ref);
++    if (resolved.ambiguous) {
++      throw conflict(`Ambiguous agent reference '${ref}' in GitHub PR sync wake targets`);
++    }
++    if (resolved.agent) ids.add(resolved.agent.id);
++  }
++  return [...ids];
++}
++
++export function createGithubPrSyncService(deps: GithubPrSyncDeps) {
++  return {
++    async syncIssue(issueId: string, input: GithubPullRequestSyncInput, actor: ActorInfo): Promise<SyncResult> {
++      const issue = await deps.issues.getById(issueId);
++      if (!issue) throw notFound("Issue not found");
++
++      const existingProducts = await deps.workProducts.listForIssue(issue.id);
++      const existingPr = findMatchingPrWorkProduct(existingProducts, input);
++      const existingMetadata = (existingPr?.metadata ?? {}) as Record<string, unknown>;
++      const priorEventKey =
++        typeof existingMetadata.lastAppliedEventKey === "string" ? existingMetadata.lastAppliedEventKey : null;
++
++      if (input.eventKey && priorEventKey === input.eventKey && existingPr) {
++        return {
++          workProduct: existingPr,
++          approvalCreated: false,
++          approvalId: null,
++          approvalCancelledId: null,
++          idempotentReplay: true,
++          wokenAgentIds: [],
++        };
++      }
++
++      const metadata = {
++        ...existingMetadata,
++        repositoryFullName: normalizeWhitespace(input.repositoryFullName),
++        pullRequestNumber: input.pullRequestNumber ?? null,
++        pullRequestUrl: input.pullRequestUrl,
++        pullRequestTitle: normalizeWhitespace(input.pullRequestTitle),
++        pullRequestBody: normalizeWhitespace(input.pullRequestBody),
++        eventKind: input.eventKind,
++        actorLogin: normalizeWhitespace(input.actorLogin),
++        commentUrl: normalizeWhitespace(input.commentUrl),
++        stage: normalizeWhitespace(input.stage),
++        waitingOnRole: normalizeWhitespace(input.waitingOnRole),
++        documentationStatus: normalizeWhitespace(input.documentationStatus),
++        qaVerdict: normalizeWhitespace(input.qaVerdict),
++        labels: input.labels,
++        needsFounderApproval: input.needsFounderApproval,
++        lastSyncedAt: input.eventAt ?? new Date().toISOString(),
++      };
++
++      const patch = {
++        externalId: input.pullRequestNumber != null ? String(input.pullRequestNumber) : existingPr?.externalId ?? null,
++        title: normalizeWhitespace(input.pullRequestTitle) ?? existingPr?.title ?? `PR ${input.pullRequestNumber ?? ""}`.trim(),
++        url: input.pullRequestUrl,
++        status: deriveWorkProductStatus(input, existingPr),
++        reviewState: deriveReviewState(input, existingPr),
++        isPrimary: true,
++        summary: input.summary,
++        metadata,
++      } satisfies Partial<Omit<IssueWorkProduct, "id" | "companyId" | "issueId" | "createdAt" | "updatedAt">>;
++
++      const workProduct = existingPr
++        ? await deps.workProducts.update(existingPr.id, patch)
++        : await deps.workProducts.createForIssue(issue.id, issue.companyId, {
++            projectId: null,
++            executionWorkspaceId: null,
++            runtimeServiceId: null,
++            type: "pull_request",
++            provider: "github",
++            externalId: patch.externalId ?? null,
++            title: patch.title ?? `PR ${input.pullRequestNumber ?? ""}`.trim(),
++            url: patch.url ?? null,
++            status: patch.status ?? "active",
++            reviewState: patch.reviewState ?? "none",
++            isPrimary: true,
++            healthStatus: "unknown",
++            summary: patch.summary ?? null,
++            metadata: patch.metadata ?? null,
++            createdByRunId: actor.runId ?? null,
++          });
++
++      if (!workProduct) {
++        throw conflict("Failed to persist GitHub pull request work product");
++      }
++
++      let approvalId: string | null = null;
++      let approvalCreated = false;
++      let approvalCancelledId: string | null = null;
++      const existingApprovals = await deps.issueApprovals.listApprovalsForIssue(issue.id);
++      if (!isTerminalPrEvent(input) && (input.createApproval || input.needsFounderApproval)) {
++        const existingApproval =
++          existingApprovals.find(
++            (approval) =>
++              approval.type === "approve_pull_request_merge"
++              && !["rejected", "cancelled"].includes(approval.status),
++          )
++          ?? null;
++        if (existingApproval) {
++          approvalId = existingApproval.id;
++        }
++        if (shouldCreatePrMergeApproval(existingApprovals)) {
++          const approval = await deps.approvals.create(issue.companyId, {
++            type: "approve_pull_request_merge",
++            requestedByAgentId: actor.agentId ?? null,
++            requestedByUserId: actor.userId ?? (actor.actorType === "user" ? actor.actorId : null),
++            status: "pending",
++            payload: {
++              issueId: issue.id,
++              issueIdentifier: issue.identifier ?? null,
++              issueTitle: issue.title,
++              provider: "github",
++              pullRequestUrl: input.pullRequestUrl,
++              pullRequestNumber: input.pullRequestNumber ?? null,
++              repositoryFullName: input.repositoryFullName ?? null,
++              summary: input.summary,
++              stage: input.stage ?? null,
++              waitingOnRole: input.waitingOnRole ?? null,
++              documentationStatus: input.documentationStatus ?? null,
++              qaVerdict: input.qaVerdict ?? null,
++              labels: input.labels,
++              reason: input.needsFounderApproval ? "founder_approval_required" : "manual_request",
++            },
++            decisionNote: null,
++            decidedByUserId: null,
++            decidedAt: null,
++            updatedAt: new Date(),
++          });
++          await deps.issueApprovals.link(issue.id, approval.id, {
++            agentId: actor.agentId ?? null,
++            userId: actor.userId ?? (actor.actorType === "user" ? actor.actorId : null),
++          });
++          approvalId = approval.id;
++          approvalCreated = true;
++        }
++      }
++      if (isTerminalPrEvent(input)) {
++        const activeApproval =
++          existingApprovals.find(
++            (approval) =>
++              approval.type === "approve_pull_request_merge"
++              && ["pending", "revision_requested"].includes(approval.status),
++          )
++          ?? null;
++        if (activeApproval) {
++          await deps.approvals.cancel(
++            activeApproval.id,
++            actor.userId ?? actor.actorId,
++            `Automatically cancelled after pull request ${input.eventKind}`,
++          );
++          approvalCancelledId = activeApproval.id;
++          if (!approvalId) approvalId = activeApproval.id;
++        }
++      }
++
++      if (input.syncComment) {
++        await deps.issues.addComment(issue.id, buildSyncComment(input), toActorCommentContext(actor));
++      }
++
++      const wakeAgentIds = await resolveWakeAgentIds(deps, issue, input);
++      for (const agentId of wakeAgentIds) {
++        await deps.heartbeat.wakeup(agentId, toWakeContext(input, issue.id));
++      }
++
++      if (input.eventKey) {
++        const appliedMetadata = {
++          ...((workProduct.metadata ?? {}) as Record<string, unknown>),
++          lastAppliedEventKey: input.eventKey,
++          lastAppliedAt: input.eventAt ?? new Date().toISOString(),
++        };
++        const updated = await deps.workProducts.update(workProduct.id, {
++          metadata: appliedMetadata,
++        });
++        if (updated) {
++          return {
++            workProduct: updated,
++            approvalCreated,
++            approvalId,
++            approvalCancelledId,
++            idempotentReplay: false,
++            wokenAgentIds: wakeAgentIds,
++          };
++        }
++      }
++
++      return {
++        workProduct,
++        approvalCreated,
++        approvalId,
++        approvalCancelledId,
++        idempotentReplay: false,
++        wokenAgentIds: wakeAgentIds,
++      };
++    },
++  };
++}
+-- 
+2.52.0
+
