@@ -6,7 +6,8 @@ import { stripeService } from "../services/stripe.js";
 export function stripeWebhookRoute(db: Db) {
   const router = Router();
 
-  router.post("/webhooks/stripe", async (req, res) => {
+  // Support both URL patterns (Stripe dashboard may use either)
+  router.post(["/webhooks/stripe", "/stripe/webhook"], async (req, res) => {
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
     const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
     if (!stripeSecretKey || !endpointSecret) {
