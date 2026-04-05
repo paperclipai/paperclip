@@ -139,6 +139,30 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
     localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
     tag: "example",
   },
+  {
+    packageName: "@paperclipai/plugin-decision-surface",
+    pluginKey: "paperclip.decision-surface",
+    displayName: "Decision Surface",
+    description: "Surfaces pending approvals and blocked issues in a single decision queue. Provides a `decisions` tool for agents, a dashboard widget, and a full /decisions page. Auto-unblocks issues after approvals resolve.",
+    localPath: "packages/plugins/examples/plugin-decision-surface",
+    tag: "example",
+  },
+  {
+    packageName: "@paperclipai/plugin-feedback-collection",
+    pluginKey: "paperclip.feedback-collection",
+    displayName: "Feedback Collection",
+    description: "Ingests Jira, Bitbucket, and Slack feedback payloads into normalized Paperclip issues via tool calls or webhooks.",
+    localPath: "packages/plugins/examples/plugin-feedback-collection",
+    tag: "example",
+  },
+  {
+    packageName: "@paperclipai/plugin-agent-activity",
+    pluginKey: "paperclip.agent-activity",
+    displayName: "Agent Activity",
+    description: "Clean, noise-free view of agent activity. Strips injected context and surfaces only the meaningful work turns: tool calls, comments posted, and current task per running agent.",
+    localPath: "packages/plugins/examples/plugin-agent-activity",
+    tag: "example",
+  },
 ];
 
 function listBundledPluginExamples(): AvailablePluginExample[] {
