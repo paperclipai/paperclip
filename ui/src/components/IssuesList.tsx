@@ -207,7 +207,7 @@ export function IssuesList({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserId = session?.user?.id ?? null;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -652,11 +652,10 @@ export function IssuesList({
                       return (
                         <button
                           key={preset.label}
-                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                            isActive
-                              ? "bg-primary text-primary-foreground border-primary"
-                              : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
-                          }`}
+                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${isActive
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/30"
+                            }`}
                           onClick={() => updateView({ statuses: isActive ? [] : [...preset.statuses] })}
                         >
                           {preset.label}
@@ -715,16 +714,16 @@ export function IssuesList({
                             checked={viewState.assignees.includes("__unassigned")}
                             onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
                           />
-                          <span className="text-sm">No assignee</span>
+                          <span className="text-sm">No Assignee</span>
                         </label>
-                        {currentUserId && (
+                        {(currentUserId || viewState.assignees.includes("__me")) && (
                           <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                             <Checkbox
                               checked={viewState.assignees.includes("__me")}
                               onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
                             />
                             <User className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-sm">Me</span>
+                            <span className="text-sm">Me (human)</span>
                           </label>
                         )}
                         {(agents ?? []).map((agent) => (
@@ -799,9 +798,8 @@ export function IssuesList({
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
-                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
-                      }`}
+                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        }`}
                       onClick={() => {
                         if (viewState.sortField === field) {
                           updateView({ sortDir: viewState.sortDir === "asc" ? "desc" : "asc" });
@@ -842,9 +840,8 @@ export function IssuesList({
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
-                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
-                      }`}
+                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                        }`}
                       onClick={() => updateView({ groupBy: value })}
                     >
                       <span>{label}</span>
