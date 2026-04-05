@@ -50,6 +50,13 @@ const mockHeartbeatService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockCreateRecorder = vi.hoisted(() =>
+  vi.fn(() => ({
+    attachExecutionWorkspaceId: vi.fn(async () => undefined),
+    recordOperation: vi.fn(async () => ({})),
+  })),
+);
+
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -68,6 +75,9 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
+  workspaceOperationService: () => ({
+    createRecorder: mockCreateRecorder,
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -135,8 +145,13 @@ describe("issue terminal-state workspace cleanup", () => {
         db: expect.anything(),
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
+        recorder: expect.objectContaining({ recordOperation: expect.any(Function) }),
         actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
+    });
+    expect(mockCreateRecorder).toHaveBeenCalledWith({
+      companyId: "company-1",
+      executionWorkspaceId: WORKSPACE_ID,
     });
   });
 
@@ -155,6 +170,7 @@ describe("issue terminal-state workspace cleanup", () => {
         db: expect.anything(),
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
+        recorder: expect.objectContaining({ recordOperation: expect.any(Function) }),
         actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
     });

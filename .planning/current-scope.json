@@ -1,0 +1,8 @@
+{
+  "files": [
+    "server/src/services/workspace-runtime.ts",
+    "server/src/routes/issues.ts",
+    "server/src/__tests__/issue-terminal-workspace-cleanup.test.ts",
+    "server/src/__tests__/workspace-runtime-archive.test.ts"
+  ]
+}
