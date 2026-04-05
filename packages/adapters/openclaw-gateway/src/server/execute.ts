@@ -1,6 +1,8 @@
 /**
  * Changes: HTTP POST mode for OpenClaw `/hooks/agent` URLs (message, agentId: main, deliver: true,
  * plus paperclip context); WebSocket gateway unchanged for ws/wss.
+ * 2026-04-04 — Normalize PAPERCLIP_API_URL (strip trailing slash) so `${base}/api/...` never becomes `//api`;
+ * wake text documents curl base + POSIX sh constraints for OpenClaw exec.
  */
 import type {
   AdapterExecutionContext,
@@ -305,13 +307,17 @@ function buildWakePayload(ctx: AdapterExecutionContext): WakePayload {
   };
 }
 
+function normalizePaperclipApiBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
 function resolvePaperclipApiUrlOverride(value: unknown): string | null {
   const raw = nonEmpty(value);
   if (!raw) return null;
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    return parsed.toString();
+    return normalizePaperclipApiBaseUrl(parsed.toString());
   } catch {
     return null;
   }
@@ -334,6 +340,10 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   if (wakePayload.approvalStatus) paperclipEnv.PAPERCLIP_APPROVAL_STATUS = wakePayload.approvalStatus;
   if (wakePayload.issueIds.length > 0) {
     paperclipEnv.PAPERCLIP_LINKED_ISSUE_IDS = wakePayload.issueIds.join(",");
+  }
+
+  if (paperclipEnv.PAPERCLIP_API_URL) {
+    paperclipEnv.PAPERCLIP_API_URL = normalizePaperclipApiBaseUrl(paperclipEnv.PAPERCLIP_API_URL);
   }
 
   return paperclipEnv;
@@ -386,9 +396,14 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "HTTP rules:",
     "- Use Authorization: Bearer $PAPERCLIP_API_KEY on every API call.",
-    "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call.",
+    "- Build absolute curl URLs as ${PAPERCLIP_API_URL}/api/... (base has no trailing slash). Never produce //api (that serves the web UI HTML instead of JSON).",
+    "- Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating API call (must match this heartbeat run id).",
     "- Use only /api endpoints listed below.",
     "- Do NOT call guessed endpoints like /api/cloud-adapter/*, /api/cloud-adapters/*, /api/adapters/cloud/*, or /api/heartbeat.",
+    "",
+    "Shell rules (exec uses POSIX sh, not bash):",
+    "- Do not use bash-only features like `set -o pipefail` or `set -euo pipefail`.",
+    "- Do not run python/python3 in exec to parse the API key; use the read tool on the claimed key path, then pass the token to curl (file may be plain text or JSON).",
     "",
     "Workflow:",
     "1) GET /api/agents/me",

@@ -1,4 +1,5 @@
 // Changes: Added HTTP /hooks/agent execute coverage (message, agentId, deliver, Bearer header).
+// Changes: 2026-04-04 — Assert PAPERCLIP_API_URL trailing slashes stripped in wake message (no //api).
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
@@ -505,6 +506,48 @@ describe("openclaw gateway adapter execute", () => {
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("strips trailing slashes from paperclipApiUrl in wake text", async () => {
+    const gateway = await createMockGatewayServer();
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2000,
+            paperclipApiUrl: "http://127.0.0.1:3100///",
+          },
+          {
+            context: {
+              taskId: "task-123",
+              issueId: "issue-123",
+              wakeReason: "issue_assigned",
+              issueIds: ["issue-123"],
+              paperclipWorkspace: {
+                cwd: "/tmp/worktrees/pap-123",
+                strategy: "git_worktree",
+                branchName: "pap-123-test",
+              },
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      const message = String(payload?.message ?? "");
+      expect(message).toContain("PAPERCLIP_API_URL=http://127.0.0.1:3100");
+      expect(message).not.toMatch(/PAPERCLIP_API_URL=http:\/\/127\.0\.0\.1:3100\/+/);
     } finally {
       await gateway.close();
     }
