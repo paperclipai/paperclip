@@ -27,7 +27,7 @@ const SCORE_WEIGHTS = {
   build: 0.15,
 } as const;
 
-const DEFAULT_SCORE_THRESHOLD = 50;
+const DEFAULT_SCORE_THRESHOLD = 70;
 const DEFAULT_OUTPUT_DIR = "benchmarks";
 // Resolved relative to PROJECT_ROOT after it's computed
 const COVERAGE_SUMMARY_RELATIVE = "coverage/coverage-summary.json";
@@ -363,30 +363,39 @@ async function main() {
   const coverageData = await readCoverage();
   const coverageScore = computeCoverageScore(coverageData);
 
-  // Step 3: Typecheck
-  let typecheckResult: CheckResult;
-  if (options.skipTypecheck) {
-    typecheckResult = { passed: true, durationMs: 0 };
-  } else {
-    console.error("Running typecheck...");
-    typecheckResult = await runCheck("typecheck", "pnpm", ["-r", "typecheck"]);
-  }
-
-  // Step 4: Build
-  let buildResult: CheckResult;
-  if (options.skipBuild) {
-    buildResult = { passed: true, durationMs: 0 };
-  } else {
-    console.error("Running build...");
-    buildResult = await runCheck("build", "pnpm", ["build"]);
-  }
+  // Step 3+4: Typecheck and build (run in parallel — they are independent)
+  console.error("Running typecheck and build...");
+  const [typecheckResult, buildResult] = await Promise.all([
+    options.skipTypecheck
+      ? Promise.resolve({ passed: true, durationMs: 0 } as CheckResult)
+      : runCheck("typecheck", "pnpm", ["-r", "typecheck"]),
+    options.skipBuild
+      ? Promise.resolve({ passed: true, durationMs: 0 } as CheckResult)
+      : runCheck("build", "pnpm", ["build"]),
+  ]);
 
   // Compute composite score
+  // When coverage data is unavailable, redistribute its weight proportionally
+  // to avoid permanently penalizing commits before coverage tooling is set up
+  const hasCoverage = coverageData !== null;
+  const effectiveWeights = hasCoverage
+    ? SCORE_WEIGHTS
+    : (() => {
+        const pool = SCORE_WEIGHTS.coverage;
+        const remaining = 1 - pool;
+        return {
+          tests: SCORE_WEIGHTS.tests + pool * (SCORE_WEIGHTS.tests / remaining),
+          coverage: 0,
+          typecheck: SCORE_WEIGHTS.typecheck + pool * (SCORE_WEIGHTS.typecheck / remaining),
+          build: SCORE_WEIGHTS.build + pool * (SCORE_WEIGHTS.build / remaining),
+        };
+      })();
+
   const composite =
-    testScore * SCORE_WEIGHTS.tests +
-    coverageScore * SCORE_WEIGHTS.coverage +
-    (typecheckResult.passed ? 100 : 0) * SCORE_WEIGHTS.typecheck +
-    (buildResult.passed ? 100 : 0) * SCORE_WEIGHTS.build;
+    testScore * effectiveWeights.tests +
+    coverageScore * effectiveWeights.coverage +
+    (typecheckResult.passed ? 100 : 0) * effectiveWeights.typecheck +
+    (buildResult.passed ? 100 : 0) * effectiveWeights.build;
 
   const scorecard: Scorecard = {
     version: 1,
@@ -394,10 +403,10 @@ async function main() {
     commit: gitInfo.commit,
     branch: gitInfo.branch,
     scores: {
-      tests: { score: testScore, weight: SCORE_WEIGHTS.tests, details: testResults },
+      tests: { score: testScore, weight: effectiveWeights.tests, details: testResults },
       coverage: {
         score: coverageScore,
-        weight: SCORE_WEIGHTS.coverage,
+        weight: effectiveWeights.coverage,
         details: {
           lines: coverageData?.lines.pct ?? 0,
           statements: coverageData?.statements.pct ?? 0,
@@ -405,8 +414,8 @@ async function main() {
           branches: coverageData?.branches.pct ?? 0,
         },
       },
-      typecheck: { score: typecheckResult.passed ? 100 : 0, weight: SCORE_WEIGHTS.typecheck, details: typecheckResult },
-      build: { score: buildResult.passed ? 100 : 0, weight: SCORE_WEIGHTS.build, details: buildResult },
+      typecheck: { score: typecheckResult.passed ? 100 : 0, weight: effectiveWeights.typecheck, details: typecheckResult },
+      build: { score: buildResult.passed ? 100 : 0, weight: effectiveWeights.build, details: buildResult },
     },
     composite: Math.round(composite * 10) / 10,
     threshold: options.threshold,

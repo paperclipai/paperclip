@@ -39,20 +39,23 @@ jobs:
       - name: Run benchmark
         id: benchmark
         run: |
+          EXIT_CODE=0
           pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-score.ts \
             -- --json \
             --output ../benchmarks/latest.json \
             --markdown-summary "$GITHUB_STEP_SUMMARY" \
-            --threshold 50 \
-            || true
+            --threshold 70 \
+            || EXIT_CODE=$?
 
-          # Always upload the scorecard, even if below threshold
+          # Extract score for PR comment (even if below threshold)
           if [ -f benchmarks/latest.json ]; then
             SCORE=$(node -e "console.log(require('./benchmarks/latest.json').composite)")
             PASS=$(node -e "console.log(require('./benchmarks/latest.json').pass)")
             echo "score=$SCORE" >> "$GITHUB_OUTPUT"
             echo "pass=$PASS" >> "$GITHUB_OUTPUT"
           fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
       - name: Upload benchmark scorecard
         uses: actions/upload-artifact@v4
@@ -65,10 +68,13 @@ jobs:
       - name: Comment on PR with score
         if: github.event_name == 'pull_request' && steps.benchmark.outputs.score
         uses: actions/github-script@v7
+        env:
+          BENCH_SCORE: ${{ steps.benchmark.outputs.score }}
+          BENCH_PASS: ${{ steps.benchmark.outputs.pass }}
         with:
           script: |
-            const score = '${{ steps.benchmark.outputs.score }}';
-            const pass = '${{ steps.benchmark.outputs.pass }}' === 'true';
+            const score = process.env.BENCH_SCORE;
+            const pass = process.env.BENCH_PASS === 'true';
             const emoji = pass ? '✅' : '⚠️';
             const body = `${emoji} **Benchmark Score: ${score}/100** ${pass ? '(passing)' : '(below threshold)'}`;
 
@@ -95,3 +101,9 @@ jobs:
                 body,
               });
             }
+
+      - name: Enforce threshold
+        if: steps.benchmark.outputs.exit_code != '0'
+        run: |
+          echo "::error::Benchmark score below threshold"
+          exit 1
