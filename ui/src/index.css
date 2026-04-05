@@ -41,12 +41,13 @@
   --font-display: 'Syne', sans-serif;
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
 }
 
 :root {
   color-scheme: light;
+  --raava-gradient: linear-gradient(90deg, #224AE8, #716EFF, #00BDB7);
   --radius: 0;
   --background: oklch(0.99 0 0);
   --foreground: oklch(0.15 0 0);
@@ -782,4 +783,40 @@ a.paperclip-project-mention-chip {
 [class*="_toolbarButtonDropdownContainer_"],
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
+}
+
+/* ==========================================================================
+   Raava Brand Utilities
+   ========================================================================== */
+
+.raava-gradient-bg {
+  background: var(--raava-gradient);
+}
+
+.raava-gradient-text {
+  background: var(--raava-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.raava-card {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.font-display {
+  font-family: Syne, system-ui, sans-serif;
+  font-weight: 800;
+}
+
+.raava-stat-number {
+  font-family: Syne, system-ui, sans-serif;
+  font-weight: 800;
+  font-size: 2.5rem;
+  background: var(--raava-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }

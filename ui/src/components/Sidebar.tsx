@@ -11,9 +11,13 @@ import {
   Boxes,
   Repeat,
   Settings,
-  Server,
+  Home,
+  Users,
+  ListChecks,
+  FolderKanban,
+  CreditCard,
 } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -46,7 +50,7 @@ export function Sidebar() {
     refetchInterval: 10_000,
   });
   const liveRunCount = liveRuns?.length ?? 0;
-  const { data: health } = useQuery({
+  const { data: health, error: healthError } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     retry: false,
@@ -58,6 +62,17 @@ export function Sidebar() {
   const lastKnownFleetosRef = useRef(false);
   if (health) lastKnownFleetosRef.current = isFleetosMode;
   const showFleet = lastKnownFleetosRef.current;
+
+  useEffect(() => {
+    if (healthError) {
+      // A UI toast is unnecessary here — `lastKnownFleetosRef` preserves the
+      // previous deployment-mode result, so the user continues to see the
+      // correct sidebar layout even when the health endpoint is temporarily
+      // unreachable.  A noisy toast would only confuse users for a transient
+      // backend hiccup that has zero visible impact on the interface.
+      console.warn("[Sidebar] Health check failed, using cached mode:", healthError);
+    }
+  }, [healthError]);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -92,64 +107,100 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
-          {/* New Issue button aligned with nav items */}
-          <button
-            onClick={() => openNewIssue()}
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
-          >
-            <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Issue</span>
-          </button>
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          <SidebarNavItem
-            to="/inbox"
-            label="Inbox"
-            icon={Inbox}
-            badge={inboxBadge.inbox}
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
-          />
-          <PluginSlotOutlet
-            slotTypes={["sidebar"]}
-            context={pluginContext}
-            className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
-            missingBehavior="placeholder"
-          />
-        </div>
+        {showFleet ? (
+          /* ── Raava / FleetOS sidebar ─────────────────────────────── */
+          /* Plugin slots (PluginSlotOutlet) are intentionally omitted in
+             FleetOS mode for the MVP/demo — plugins are not shown when
+             running as Raava. They remain in the standard Paperclip branch. */
+          <>
+            <div className="flex flex-col gap-0.5">
+              <button
+                onClick={() => openNewIssue()}
+                className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+              >
+                <SquarePen className="h-4 w-4 shrink-0" />
+                <span className="truncate">New Task</span>
+              </button>
+              <SidebarNavItem to="/dashboard" label="Home" icon={Home} liveCount={liveRunCount} />
+              <SidebarNavItem
+                to="/inbox"
+                label="Inbox"
+                icon={Inbox}
+                badge={inboxBadge.inbox}
+                badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+                alert={inboxBadge.failedRuns > 0}
+              />
+            </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-        </SidebarSection>
+            <SidebarSection label="Work">
+              <SidebarNavItem to="/agents/all" label="My Team" icon={Users} />
+              <SidebarNavItem to="/issues" label="Tasks" icon={ListChecks} />
+              <SidebarNavItem to="/projects" label="Projects" icon={FolderKanban} />
+              <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+            </SidebarSection>
 
-        <SidebarProjects />
+            <SidebarSection label="Manage">
+              <SidebarNavItem to="/costs" label="Billing" icon={CreditCard} />
+              <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+            </SidebarSection>
+          </>
+        ) : (
+          /* ── Paperclip / standard sidebar ────────────────────────── */
+          <>
+            <div className="flex flex-col gap-0.5">
+              {/* New Issue button aligned with nav items */}
+              <button
+                onClick={() => openNewIssue()}
+                className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+              >
+                <SquarePen className="h-4 w-4 shrink-0" />
+                <span className="truncate">New Issue</span>
+              </button>
+              <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+              <SidebarNavItem
+                to="/inbox"
+                label="Inbox"
+                icon={Inbox}
+                badge={inboxBadge.inbox}
+                badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+                alert={inboxBadge.failedRuns > 0}
+              />
+              <PluginSlotOutlet
+                slotTypes={["sidebar"]}
+                context={pluginContext}
+                className="flex flex-col gap-0.5"
+                itemClassName="text-[13px] font-medium"
+                missingBehavior="placeholder"
+              />
+            </div>
 
-        <SidebarAgents />
+            <SidebarSection label="Work">
+              <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
+              <SidebarNavItem to="/routines" label="Routines" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
+              <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+            </SidebarSection>
 
-        {showFleet && (
-          <SidebarSection label="Infrastructure">
-            <SidebarNavItem to="/fleet" label="Fleet" icon={Server} />
-          </SidebarSection>
+            <SidebarProjects />
+
+            <SidebarAgents />
+
+            <SidebarSection label="Company">
+              <SidebarNavItem to="/org" label="Org" icon={Network} />
+              <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+              <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+              <SidebarNavItem to="/activity" label="Activity" icon={History} />
+              <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+            </SidebarSection>
+
+            <PluginSlotOutlet
+              slotTypes={["sidebarPanel"]}
+              context={pluginContext}
+              className="flex flex-col gap-3"
+              itemClassName="rounded-lg border border-border p-3"
+              missingBehavior="placeholder"
+            />
+          </>
         )}
-
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
-        </SidebarSection>
-
-        <PluginSlotOutlet
-          slotTypes={["sidebarPanel"]}
-          context={pluginContext}
-          className="flex flex-col gap-3"
-          itemClassName="rounded-lg border border-border p-3"
-          missingBehavior="placeholder"
-        />
       </nav>
     </aside>
   );

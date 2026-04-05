@@ -19,6 +19,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { useIsRaava } from "../hooks/useIsRaava";
 
 const adapterLabels: Record<string, string> = {
   claude_local: "Claude",
@@ -70,6 +71,7 @@ export function Agents() {
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
+  const { isRaava } = useIsRaava();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const tab: FilterTab = (pathSegment === "all" || pathSegment === "active" || pathSegment === "paused" || pathSegment === "error") ? pathSegment : "all";
   const [view, setView] = useState<"list" | "org">("org");
@@ -119,11 +121,11 @@ export function Agents() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: isRaava ? "My Team" : "Agents" }]);
+  }, [setBreadcrumbs, isRaava]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={isRaava ? "Select a company to view your team." : "Select a company to view agents."} />;
   }
 
   if (isLoading) {
@@ -204,13 +206,17 @@ export function Agents() {
           )}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
-            New Agent
+            {isRaava ? "Hire a Team Member" : "New Agent"}
           </Button>
         </div>
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-muted-foreground">
+          {filtered.length} {isRaava
+            ? `team member${filtered.length !== 1 ? "s" : ""}`
+            : `agent${filtered.length !== 1 ? "s" : ""}`}
+        </p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -218,8 +224,8 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
-          action="New Agent"
+          message={isRaava ? "Hire your first team member to get started." : "Create your first agent to get started."}
+          action={isRaava ? "Hire a Team Member" : "New Agent"}
           onAction={openNewAgent}
         />
       )}
@@ -282,7 +288,7 @@ export function Agents() {
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {isRaava ? "No team members match the selected filter." : "No agents match the selected filter."}
         </p>
       )}
 
@@ -297,7 +303,7 @@ export function Agents() {
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected filter.
+          {isRaava ? "No team members match the selected filter." : "No agents match the selected filter."}
         </p>
       )}
 

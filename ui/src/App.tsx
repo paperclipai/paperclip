@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { RaavaOnboardingWizard } from "./components/RaavaOnboardingWizard";
 import { authApi } from "./api/auth";
 import { fleetosAuthApi } from "./api/fleetos";
 import { healthApi } from "./api/health";
@@ -423,7 +424,27 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>
-      <OnboardingWizard />
+      <OnboardingWizardSwitch />
     </>
   );
+}
+
+/**
+ * RAA-337: Conditionally renders the Raava or Paperclip onboarding wizard
+ * based on deploymentMode. In fleetos mode, users see the role-card wizard
+ * instead of the adapter-picker wizard.
+ */
+function OnboardingWizardSwitch() {
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+    staleTime: 60_000,
+  });
+
+  if (healthQuery.data?.deploymentMode === "fleetos") {
+    return <RaavaOnboardingWizard />;
+  }
+
+  return <OnboardingWizard />;
 }

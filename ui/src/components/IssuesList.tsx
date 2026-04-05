@@ -24,6 +24,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
+import { useIsRaava } from "../hooks/useIsRaava";
 
 /* ── Helpers ── */
 
@@ -231,6 +232,7 @@ export function IssuesList({
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const { isRaava } = useIsRaava();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -370,7 +372,7 @@ export function IssuesList({
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
             <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">New Issue</span>
+            <span className="hidden sm:inline">{isRaava ? "New Task" : "New Issue"}</span>
           </Button>
           <IssuesSearchInput
             initialValue={initialSearch ?? ""}
@@ -652,8 +654,8 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
-          action="Create Issue"
+          message={isRaava ? "No tasks match the current filters or search." : "No issues match the current filters or search."}
+          action={isRaava ? "Create Task" : "Create Issue"}
           onAction={() => openNewIssue(newIssueDefaults())}
         />
       )}

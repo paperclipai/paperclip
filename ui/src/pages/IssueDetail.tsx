@@ -65,6 +65,7 @@ import {
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
+import { useIsRaava } from "../hooks/useIsRaava";
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
@@ -213,6 +214,7 @@ export function IssueDetail() {
   const { selectedCompanyId } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isRaava } = useIsRaava();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -292,8 +294,8 @@ export function IssueDetail() {
     [activeRun, liveRuns],
   );
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: "Issues", href: "/issues" },
-    [location.state, location.search],
+    () => readIssueDetailBreadcrumb(location.state, location.search) ?? { label: isRaava ? "Tasks" : "Issues", href: "/issues" },
+    [location.state, location.search, isRaava],
   );
 
   // Filter out runs already shown by the live widget to avoid duplication
@@ -775,12 +777,12 @@ export function IssueDetail() {
   });
 
   useEffect(() => {
-    const titleLabel = issue?.title ?? issueId ?? "Issue";
+    const titleLabel = issue?.title ?? issueId ?? (isRaava ? "Task" : "Issue");
     setBreadcrumbs([
       sourceBreadcrumb,
       { label: hasLiveRuns ? `🔵 ${titleLabel}` : titleLabel },
     ]);
-  }, [setBreadcrumbs, sourceBreadcrumb, issue, issueId, hasLiveRuns]);
+  }, [setBreadcrumbs, sourceBreadcrumb, issue, issueId, hasLiveRuns, isRaava]);
 
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
