@@ -1547,62 +1547,8 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         }
       }
 
-      // Handle issue creation from Linear (new issues created in Linear appear in Paperclip)
-      if (type === "Issue" && action === "create") {
-        const identifier = data.identifier as string | undefined;
-        if (identifier && companyId) {
-          // Check if already exists
-          const [existing] = await db.select({ id: issuesTable.id }).from(issuesTable)
-            .where(eq(issuesTable.identifier, identifier)).limit(1);
-
-          if (!existing) {
-            const statusMap: Record<string, string> = {
-              backlog: "backlog", unstarted: "todo", started: "in_progress",
-              completed: "done", cancelled: "cancelled",
-            };
-            const priorityMap: Record<number, string> = {
-              0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
-            };
-            const state = data.state as Record<string, unknown> | undefined;
-            const status = statusMap[(state?.type as string) ?? "backlog"] ?? "backlog";
-            const priority = priorityMap[(data.priority as number) ?? 0] ?? "medium";
-
-            await db.insert(issuesTable).values({
-              companyId,
-              issueNumber: data.number as number,
-              identifier,
-              title: (data.title as string) ?? "Untitled",
-              description: (data.description as string) ?? null,
-              status,
-              priority,
-              originKind: "linear",
-              originId: data.id as string,
-            });
-
-            // Create plugin state link for future webhook lookups
-            await db.insert(pluginStateTable).values({
-              pluginId: plugin.id,
-              scopeKind: "instance",
-              scopeId: null,
-              namespace: "default",
-              stateKey: `linear:${data.id}`,
-              valueJson: JSON.stringify(paperclipIssueId),
-            }).onConflictDoNothing();
-
-            await logActivity(db, {
-              companyId,
-              actorType: "user",
-              actorId: "linear-webhook",
-              action: "issue.created",
-              entityType: "issue",
-              entityId: identifier,
-              details: { source: "linear", identifier },
-            });
-
-            console.log(`[linear-webhook] created issue from Linear: ${identifier}`);
-          }
-        }
-      }
+      // Issue.create is handled by the plugin webhook handler (forwarded above)
+      // which creates proper bidirectional link state for comment/update sync.
 
       // Handle comments (create and update)
       if (type === "Comment" && (action === "create" || action === "update")) {
