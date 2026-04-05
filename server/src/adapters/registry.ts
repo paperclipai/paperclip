@@ -80,6 +80,18 @@ import {
   models as hermesModels,
 } from "hermes-paperclip-adapter";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
+import {
+  execute as qodoExecute,
+  listQodoSkills,
+  syncQodoSkills,
+  testEnvironment as qodoTestEnvironment,
+  sessionCodec as qodoSessionCodec,
+} from "@paperclipai/adapter-qodo-local/server";
+import {
+  agentConfigurationDoc as qodoAgentConfigurationDoc,
+  models as qodoModels,
+} from "@paperclipai/adapter-qodo-local";
+import { listQodoModels } from "./qodo-models.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
@@ -202,6 +214,21 @@ const builtinFallbacks = new Map<string, ServerAdapterModule>();
 // external.  Persisted across reloads via the same disabled-adapters store.
 const pausedOverrides = new Set<string>();
 
+
+const qodoLocalAdapter: ServerAdapterModule = {
+  type: "qodo_local",
+  execute: qodoExecute,
+  testEnvironment: qodoTestEnvironment,
+  listSkills: listQodoSkills,
+  syncSkills: syncQodoSkills,
+  sessionCodec: qodoSessionCodec,
+  sessionManagement: getAdapterSessionManagement("qodo_local") ?? undefined,
+  models: qodoModels,
+  listModels: listQodoModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: qodoAgentConfigurationDoc,
+};
+
 function registerBuiltInAdapters() {
   for (const adapter of [
     claudeLocalAdapter,
@@ -212,6 +239,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    qodoLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
