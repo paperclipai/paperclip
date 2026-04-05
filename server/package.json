@@ -67,7 +67,7 @@
     "express": "^5.1.0",
     "hermes-paperclip-adapter": "^0.2.0",
     "jsdom": "^28.1.0",
-    "multer": "^2.0.2",
+    "multer": "^2.1.1",
     "open": "^11.0.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
