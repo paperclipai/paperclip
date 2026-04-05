@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { SlidersHorizontal } from "lucide-react";
+import { LogOut, SlidersHorizontal } from "lucide-react";
+import { authApi } from "@/api/auth";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -10,6 +20,7 @@ export function InstanceGeneralSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [showSignOutDialog, setShowSignOutDialog] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -21,6 +32,16 @@ export function InstanceGeneralSettings() {
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
+  });
+
+  const signOutMutation = useMutation({
+    mutationFn: () => authApi.signOut(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+    },
   });
 
   const toggleMutation = useMutation({
@@ -99,6 +120,52 @@ export function InstanceGeneralSettings() {
           </button>
         </div>
       </section>
+
+      <section className="rounded-xl border border-destructive/30 bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Sign out</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Sign out of this IronWorks instance. You will need to sign back in to continue using the app.
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setShowSignOutDialog(true)}
+          >
+            <LogOut className="mr-1.5 h-4 w-4" />
+            Sign out
+          </Button>
+        </div>
+      </section>
+
+      <Dialog open={showSignOutDialog} onOpenChange={setShowSignOutDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign out?</DialogTitle>
+            <DialogDescription>
+              You will be signed out of this instance and redirected to the sign-in page.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSignOutDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={signOutMutation.isPending}
+              onClick={() => {
+                setShowSignOutDialog(false);
+                signOutMutation.mutate();
+              }}
+            >
+              Sign out
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

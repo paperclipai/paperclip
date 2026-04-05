@@ -60,6 +60,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { logActivity } from "./activity-log.js";
 import { buildMorningBriefing, detectContextDrift, saveSessionState, getLatestSessionState } from "./session-state.js";
+import { webSearch, isResearchTask, extractSearchQuery } from "./web-search.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
   hasSessionCompactionThresholds,
@@ -619,6 +620,14 @@ function parseIssueAssigneeAdapterOverrides(
   };
 }
 
+/**
+ * Synthetic task key for timer/heartbeat wakes that have no issue context.
+ * This allows timer wakes to participate in the `agentTaskSessions` system
+ * and benefit from robust session resume, instead of relying solely on the
+ * simpler `agentRuntimeState.sessionId` fallback.
+ */
+const HEARTBEAT_TASK_KEY = "__heartbeat__";
+
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -632,6 +641,28 @@ function deriveTaskKey(
     readNonEmptyString(payload?.issueId) ??
     null
   );
+}
+
+/**
+ * Extended task key derivation that falls back to a stable synthetic key
+ * for timer/heartbeat wakes. This ensures timer wakes can resume their
+ * previous session via `agentTaskSessions` instead of starting fresh.
+ *
+ * The synthetic key is only used when:
+ * - No explicit task/issue key exists in the context
+ * - The wake source is "timer" (scheduled heartbeat)
+ */
+export function deriveTaskKeyWithHeartbeatFallback(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+) {
+  const explicit = deriveTaskKey(contextSnapshot, payload);
+  if (explicit) return explicit;
+
+  const wakeSource = readNonEmptyString(contextSnapshot?.wakeSource);
+  if (wakeSource === "timer") return HEARTBEAT_TASK_KEY;
+
+  return null;
 }
 
 export function shouldResetTaskSessionForWake(
@@ -1741,7 +1772,7 @@ export function heartbeatService(db: Db) {
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const taskKey = deriveTaskKey(contextSnapshot, null);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = {
       ...contextSnapshot,
@@ -2418,7 +2449,7 @@ export function heartbeatService(db: Db) {
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKey(context, null);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
 
@@ -3160,6 +3191,39 @@ export function heartbeatService(db: Db) {
       }
     } catch (err) {
       logger.debug({ err, agentId: agent.id }, "batch tasks assembly failed, skipping");
+    }
+
+    // ── Web Research: Auto-inject search results for research tasks ──────────
+    // If the issue title/description contains research keywords, run a web
+    // search and inject the top 3 results into the agent's context.
+    // This is best-effort: if SearXNG is down, the agent continues without it.
+    try {
+      const issueTitle = typeof context.issueTitle === "string" ? context.issueTitle : "";
+      const issueDescription =
+        issueContext && "description" in issueContext && typeof issueContext.description === "string"
+          ? issueContext.description
+          : "";
+      const researchText = `${issueTitle} ${issueDescription}`.trim();
+      if (researchText && isResearchTask(researchText)) {
+        const searchQuery = extractSearchQuery(issueTitle || researchText);
+        const searchResults = await webSearch(searchQuery, 3);
+        if (searchResults.length > 0) {
+          const resultLines = searchResults.map(
+            (r, i) => `${i + 1}. **${r.title}**\n   URL: ${r.url}\n   ${r.content.slice(0, 300)}${r.content.length > 300 ? "..." : ""}`,
+          );
+          context.ironworksWebResearch = [
+            `## Web Research - ${searchQuery}`,
+            "",
+            ...resultLines,
+          ].join("\n");
+          logger.info(
+            { agentId: agent.id, query: searchQuery, resultCount: searchResults.length },
+            "[web-search] injected web research into agent context",
+          );
+        }
+      }
+    } catch (err) {
+      logger.debug({ err, agentId: agent.id }, "web research injection failed, skipping");
     }
 
     context.ironworksWorkspace = {

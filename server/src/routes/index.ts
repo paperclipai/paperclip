@@ -16,3 +16,4 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { messagingRoutes, emailWebhookRoutes } from "./messaging.js";
+export { searchRoutes } from "./search.js";
