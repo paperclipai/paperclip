@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -2032,6 +2032,104 @@ export function heartbeatService(db: Db) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  /**
+   * Periodic sweep for stale execution locks.
+   *
+   * When a heartbeat run transitions to a terminal state, `releaseIssueExecutionAndPromote`
+   * normally clears the issue's `executionRunId`. If that cleanup fails (e.g., DB error,
+   * process crash), the issue retains a stale lock pointing to a dead run. This function
+   * detects and clears those orphaned locks.
+   *
+   * Gated behind the `enableExecutionLockReaping` experimental flag (default off).
+   */
+  async function reapStaleExecutionLocks() {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableExecutionLockReaping) return { reaped: 0, issueIds: [] as string[] };
+
+    const TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"];
+    const STALE_QUEUED_THRESHOLD_MS = 15 * 60 * 1000;
+    const now = new Date();
+
+    // Find all issues with a non-null executionRunId, LEFT JOIN to check run state
+    const lockedIssues = await db
+      .select({
+        issueId: issues.id,
+        executionRunId: issues.executionRunId,
+        runId: heartbeatRuns.id,
+        runStatus: heartbeatRuns.status,
+        runStartedAt: heartbeatRuns.startedAt,
+        runCreatedAt: heartbeatRuns.createdAt,
+      })
+      .from(issues)
+      .leftJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+      .where(isNotNull(issues.executionRunId));
+
+    const reaped: string[] = [];
+
+    for (const row of lockedIssues) {
+      let isStale = false;
+
+      if (!row.runId) {
+        // Run missing — FK cascade should have cleared this, but handle as safety net
+        isStale = true;
+      } else if (TERMINAL_STATUSES.includes(row.runStatus!)) {
+        isStale = true;
+      } else if (
+        row.runStatus === "queued" &&
+        !row.runStartedAt &&
+        row.runCreatedAt &&
+        now.getTime() - new Date(row.runCreatedAt).getTime() > STALE_QUEUED_THRESHOLD_MS
+      ) {
+        isStale = true;
+      }
+
+      if (!isStale) continue;
+
+      // If the run exists and is terminal, use the full release+promote path
+      // so deferred wakeup requests are properly handled.
+      if (row.runId) {
+        const run = await getRun(row.runId);
+        if (run) {
+          try {
+            await releaseIssueExecutionAndPromote(run);
+          } catch (err) {
+            logger.warn({ err, issueId: row.issueId, runId: row.runId }, "failed to release+promote stale execution lock");
+            continue;
+          }
+          reaped.push(row.issueId);
+          continue;
+        }
+      }
+
+      // Run is missing — clear lock fields directly
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, row.issueId),
+            eq(issues.executionRunId, row.executionRunId!),
+          ),
+        );
+
+      reaped.push(row.issueId);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn(
+        { reapedCount: reaped.length, issueIds: reaped },
+        "reaped stale execution locks from issues",
+      );
+    }
+
+    return { reaped: reaped.length, issueIds: reaped };
   }
 
   /**
@@ -4202,6 +4300,8 @@ export function heartbeatService(db: Db) {
     reportRunActivity: clearDetachedRunWarning,
 
     reapOrphanedRuns,
+
+    reapStaleExecutionLocks,
 
     recoverErroredAgents,
 

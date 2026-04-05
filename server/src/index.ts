@@ -586,6 +586,7 @@ export async function startServer(): Promise<StartedServer> {
     // Also auto-recover agents stuck in error state from the previous process.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.reapStaleExecutionLocks())
       .then(() => heartbeat.recoverErroredAgents())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
@@ -614,10 +615,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "routine scheduler tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Periodically reap orphaned runs (5-min staleness threshold), clear stale
+      // execution locks, and make sure persisted queued work is still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.reapStaleExecutionLocks())
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");

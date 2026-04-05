@@ -30,6 +30,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorkflows: z.boolean().default(true),
   enableIssueDocuments: z.boolean().default(true),
   enableWorkProductReconciliation: z.boolean().default(true),
+  enableExecutionLockReaping: z.boolean().default(false),
   crashMonitoring: crashMonitoringSettingsSchema.default({}),
 }).strict();
 

@@ -50,6 +50,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       enableWorkflows: parsed.data.enableWorkflows ?? true,
       enableIssueDocuments: parsed.data.enableIssueDocuments ?? true,
       enableWorkProductReconciliation: parsed.data.enableWorkProductReconciliation ?? true,
+      enableExecutionLockReaping: parsed.data.enableExecutionLockReaping ?? false,
       crashMonitoring: parsed.data.crashMonitoring ?? DEFAULT_CRASH_MONITORING,
     };
   }
@@ -61,6 +62,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     enableWorkflows: true,
     enableIssueDocuments: true,
     enableWorkProductReconciliation: true,
+    enableExecutionLockReaping: false,
     crashMonitoring: DEFAULT_CRASH_MONITORING,
   };
 }

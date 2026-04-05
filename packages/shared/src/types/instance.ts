@@ -22,6 +22,7 @@ export interface InstanceExperimentalSettings {
   enableWorkflows: boolean;
   enableIssueDocuments: boolean;
   enableWorkProductReconciliation: boolean;
+  enableExecutionLockReaping: boolean;
   crashMonitoring: CrashMonitoringSettings;
 }
 
