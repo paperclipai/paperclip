@@ -233,8 +233,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     if (typeof value === "string") env[key] = value;
   }
 
-  if (!hasExplicitApiKey && authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+  if (!hasExplicitApiKey) {
+    if (authToken) {
+      env.PAPERCLIP_API_KEY = authToken;
+    } else {
+      // runChildProcess merges { ...process.env, ...env }. If we leave
+      // PAPERCLIP_API_KEY absent from env, the Paperclip server process's
+      // board-user token leaks into the agent subprocess and the agent
+      // authenticates as local-board instead of as the agent run.
+      // Explicitly set an empty value so the leaked token is overridden.
+      env.PAPERCLIP_API_KEY = "";
+    }
   }
 
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
