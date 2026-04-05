@@ -41,7 +41,7 @@ export function SidebarNavItem({
         cn(
           "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
           isActive
-            ? "bg-accent text-foreground"
+            ? "bg-accent text-foreground font-semibold"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           className,
         )

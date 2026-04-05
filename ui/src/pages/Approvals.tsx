@@ -109,6 +109,7 @@ export function Approvals() {
           <p className="text-sm text-muted-foreground">
             {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
           </p>
+          <p className="text-xs text-muted-foreground/60 mt-2">Agents request approvals when they need permission for critical actions</p>
         </div>
       )}
 
