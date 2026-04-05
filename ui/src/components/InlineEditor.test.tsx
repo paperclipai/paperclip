@@ -2,7 +2,11 @@
 
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { queueContainedBlurCommit } from "./InlineEditor";
+import {
+  normalizeInlineEditorValue,
+  queueContainedBlurCommit,
+  shouldSaveInlineEditorValue,
+} from "./InlineEditor";
 
 vi.mock("./MarkdownEditor", () => ({
   MarkdownEditor: () => null,
@@ -21,6 +25,25 @@ vi.mock("../hooks/useAutosaveIndicator", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("InlineEditor save behavior", () => {
+  it("trims values before saving", () => {
+    expect(normalizeInlineEditorValue("  hello world  ")).toBe("hello world");
+  });
+
+  it("does not save when the normalized value is unchanged", () => {
+    expect(shouldSaveInlineEditorValue("  hello  ", "hello")).toBe(false);
+  });
+
+  it("normalizes the current value before comparing", () => {
+    expect(shouldSaveInlineEditorValue("hello", "  hello  ")).toBe(false);
+  });
+
+  it("saves when clearing an existing value", () => {
+    expect(shouldSaveInlineEditorValue("", "Has description")).toBe(true);
+    expect(shouldSaveInlineEditorValue("   ", "Has description")).toBe(true);
+  });
+});
 
 describe("queueContainedBlurCommit", () => {
   let container: HTMLDivElement;

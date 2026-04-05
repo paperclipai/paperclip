@@ -19,6 +19,14 @@ const pad = "px-1 -mx-1";
 const markdownPad = "px-1";
 const AUTOSAVE_DEBOUNCE_MS = 900;
 
+export function normalizeInlineEditorValue(value: string): string {
+  return value.trim();
+}
+
+export function shouldSaveInlineEditorValue(nextValue: string, currentValue: string): boolean {
+  return normalizeInlineEditorValue(nextValue) !== normalizeInlineEditorValue(currentValue);
+}
+
 export function queueContainedBlurCommit(container: HTMLDivElement, onCommit: () => void) {
   let frameId = requestAnimationFrame(() => {
     frameId = requestAnimationFrame(() => {
@@ -102,8 +110,8 @@ export function InlineEditor({
   }, [editing, multiline]);
 
   const commit = useCallback(async (nextValue = draft) => {
-    const trimmed = nextValue.trim();
-    if (trimmed && trimmed !== value) {
+    const trimmed = normalizeInlineEditorValue(nextValue);
+    if (shouldSaveInlineEditorValue(nextValue, value)) {
       await Promise.resolve(onSave(trimmed));
     } else {
       setDraft(value);
@@ -127,8 +135,7 @@ export function InlineEditor({
         clearTimeout(autosaveDebounceRef.current);
       }
       setMultilineFocused(false);
-      const trimmed = draft.trim();
-      if (!trimmed || trimmed === value) {
+      if (!shouldSaveInlineEditorValue(draft, value)) {
         reset();
         void commit();
         return;
@@ -162,8 +169,8 @@ export function InlineEditor({
   useEffect(() => {
     if (!multiline) return;
     if (!multilineFocused) return;
-    const trimmed = draft.trim();
-    if (!trimmed || trimmed === value) {
+    const normalizedDraft = normalizeInlineEditorValue(draft);
+    if (!shouldSaveInlineEditorValue(draft, value)) {
       if (autosaveState !== "saved") {
         reset();
       }
@@ -174,7 +181,7 @@ export function InlineEditor({
       clearTimeout(autosaveDebounceRef.current);
     }
     autosaveDebounceRef.current = setTimeout(() => {
-      void runSave(() => commit(trimmed));
+      void runSave(() => commit(normalizedDraft));
     }, AUTOSAVE_DEBOUNCE_MS);
 
     return () => {
@@ -213,8 +220,7 @@ export function InlineEditor({
           imageUploadHandler={imageUploadHandler}
           mentions={mentions}
           onSubmit={() => {
-            const trimmed = draft.trim();
-            if (!trimmed || trimmed === value) {
+            if (!shouldSaveInlineEditorValue(draft, value)) {
               reset();
               void commit();
               return;
