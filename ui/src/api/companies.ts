@@ -47,8 +47,8 @@ export const companiesApi = {
     api.patch<Company>(`/companies/${companyId}/branding`, data),
   archive: (companyId: string) =>
     api.post<Company>(`/companies/${companyId}/archive`, {}),
-  remove: (companyId: string) =>
-    api.delete<{ ok: true }>(`/companies/${companyId}`),
+  remove: (companyId: string, confirmName?: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}`, confirmName ? { confirmCompanyName: confirmName } : {}),
   reset: (companyId: string, data: CompanyResetRequest) =>
     api.post<CompanyResetResult>(`/companies/${companyId}/reset`, data),
   exportBundle: (companyId: string, data: CompanyPortabilityExportRequest) =>

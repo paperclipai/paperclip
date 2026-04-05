@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -297,9 +297,24 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
-    remove: (id: string) =>
+    remove: (id: string, confirmName?: string) =>
       db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
+        // Step 1: Verify company exists and name matches if provided
+        if (confirmName !== undefined) {
+          const [company] = await tx
+            .select({ name: companies.name })
+            .from(companies)
+            .where(eq(companies.id, id))
+            .limit(1);
+          if (!company) {
+            throw notFound("Company not found");
+          }
+          if (confirmName !== company.name) {
+            throw unprocessable("Company name does not match");
+          }
+        }
+
+        // Step 2: Delete from child tables in dependency order
         await tx
           .delete(heartbeatRunEvents)
           .where(eq(heartbeatRunEvents.companyId, id));
@@ -332,6 +347,16 @@ export function companyService(db: Db) {
           .where(eq(companyMemberships.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(labels).where(eq(labels.companyId, id));
+        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
+        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx.delete(documents).where(eq(documents.companyId, id));
+        await tx.delete(documentRevisions).where(eq(documentRevisions.companyId, id));
+        await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
+        await tx.delete(feedbackExports).where(eq(feedbackExports.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
@@ -517,7 +542,7 @@ export function companyService(db: Db) {
           .where(
             and(
               eq(companyMemberships.companyId, id),
-              eq(companyMemberships.membershipRole, "board"),
+              ne(companyMemberships.membershipRole, "board"),
             ),
           );
         // Delete agents
@@ -526,18 +551,8 @@ export function companyService(db: Db) {
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
       });
 
-      // Step 5: Log activity
-      await logActivity(db, {
-        companyId: id,
-        actorType: "system",
-        actorId: "system",
-        action: "company.reset",
-        entityType: "company",
-        entityId: id,
-        details: { deletedCounts },
-      });
-
-      // Step 6: Return company (still exists) and deleted counts
+      // Step 5: Return company (still exists) and deleted counts
+      // (Activity is logged by the route handler with richer actor context)
       const updatedCompany = await getCompanyById(id);
       return {
         company: updatedCompany!,

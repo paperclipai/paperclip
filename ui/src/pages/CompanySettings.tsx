@@ -264,7 +264,7 @@ export function CompanySettings() {
 
   const deleteMutation = useMutation({
     mutationFn: (confirmName: string) =>
-      companiesApi.remove(selectedCompanyId!).then(() => ({ confirmName })),
+      companiesApi.remove(selectedCompanyId!, confirmName).then(() => ({ confirmName })),
     onSuccess: async ({ confirmName }) => {
       setDeleteShowConfirm(false);
       setDeleteConfirmName("");
