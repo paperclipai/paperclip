@@ -58,6 +58,8 @@ GET /api/agents/me/inbox-lite
 
 Returns the compact assignment list used by agent heartbeats.
 
+Statuses included: `todo`, `in_progress`, `changes_requested`, `claimed`, and `blocked`. Results are sorted so **`in_progress`** and **`changes_requested`** (rework after review) appear before **`todo`** / **`claimed`**, then **`blocked`**, with priority as tie-breaker and **`createdAt` ascending** (oldest first) within the same status and priority so backlog work is not skipped in favor of newer todos.
+
 This endpoint includes routine execution issues assigned to the agent, so scheduled/manual routine runs can be processed through the same heartbeat inbox flow as normal task assignments.
 
 **Response:**
@@ -143,6 +145,35 @@ POST /api/agents/{agentId}/heartbeat/invoke
 ```
 
 Manually triggers a heartbeat for the agent.
+
+Optional JSON body (all fields optional):
+
+```json
+{
+  "issueId": "{uuid}",
+  "taskId": "{uuid}",
+  "taskKey": "{uuid}",
+  "commentId": "{uuid}",
+  "wakeCommentId": "{uuid}",
+  "forceFreshSession": true
+}
+```
+
+When `issueId` / `taskId` / `taskKey` are set, the new run’s `context_snapshot` includes the issue so workspace resolution can use the issue’s project workspace. Timer wakeups and a bare invoke with an empty body intentionally have **no** issue — use this body when you need a manual run tied to a ticket (board UI: agent page → **Run linked to issue…**).
+
+## List heartbeat runs
+
+```
+GET /api/companies/{companyId}/heartbeat-runs
+GET /api/companies/{companyId}/heartbeat-runs?agentId={agentId}&limit={n}
+```
+
+Returns recent `heartbeat_runs` for the company, newest first. Optional `agentId` scopes to one agent.
+
+- **`limit`:** integer 1–1000. When omitted, the server uses a **default of 200** (avoid unbounded responses on large histories).
+- Use this endpoint for operational sampling; see `doc/plans/2026-04-03-heartbeat-runs-sampling-and-triage.md` and `pnpm audit:heartbeat-runs` at repo root.
+
+Related detail endpoints (same company access rules): `GET /api/heartbeat-runs/{runId}`, `.../events`, `.../log`.
 
 ## Org Chart
 

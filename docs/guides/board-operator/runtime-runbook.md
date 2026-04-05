@@ -10,6 +10,7 @@ This is the operator runbook for the current Paperclip runtime. Use it when sett
 Keep these open while operating the system:
 
 - [Managing Agents](/guides/board-operator/managing-agents)
+- [macOS background service (LaunchAgent)](/guides/board-operator/macos-background-service)
 - [Managing Tasks](/guides/board-operator/managing-tasks)
 - [Agent Runtime Guide](/agents-runtime)
 - [Adapters Overview](/adapters/overview)
@@ -30,6 +31,12 @@ Required files:
 - `HEARTBEAT.md`
 - `SOUL.md`
 - `TOOLS.md`
+
+Additionally, the server ensures `$AGENT_HOME/memory/YYYY-MM-DD.md` exists for the **local calendar date** of the Paperclip process when the file is missing (stub with “Today's Plan” and “Timeline” headings). That happens during managed-agent bootstrap validation and again at the start of each heartbeat run, so default `HEARTBEAT.md` steps that read the daily note do not hit a missing file on a fresh agent home.
+
+When the Paperclip process restarts, in-memory tracking of local adapter children is lost. If the database still shows a run as `running` with a live OS pid, startup recovery **sends SIGTERM** to that pid, marks the run `failed` (`process_lost` with `orphan_terminated`), applies the usual process-loss retry rules, and resumes `queued` runs for that agent. Periodic recovery does the same after a run has stayed `process_detached` long enough (aligned with the stale threshold), so the agent queue cannot stall forever on a zombie `running` row.
+
+If the run never had a recorded `processPid` (restart happened before spawn metadata was written), startup still classifies the row as **`server_restart`** `process_lost` and **enqueues the same single automatic retry** as for a known stale pid, so the agent is not left dead-ended.
 
 This integrity check applies to these adapter types:
 
@@ -76,9 +83,13 @@ Current guardrails:
 - A `git_worktree` policy must resolve from a real project git checkout. If the project workspace is not a git repo, the heartbeat fails early with `execution_workspace_policy_violation`.
 - Issue-level workspace settings may override the project default when enabled, but should still stay inside the declared workspace strategy rather than ad hoc `cwd` edits.
 
-Codex-specific note:
+Codex-specific notes:
 
 - When `PAPERCLIP_IN_WORKTREE=true`, `codex_local` switches to a worktree-isolated `CODEX_HOME` so skills, sessions, and logs do not leak across checkouts.
+- Unscoped heartbeats (no issue/task in the run context) do **not** resume the last Codex thread from agent runtime state, so idle timer wakeups are less likely to burn tokens replaying a huge session. Scoped work still resumes per-task sessions as usual.
+- Prefer explicit per-agent model config; managed roles default to **OpenCode + Minimax M2.5 (free)** via `pnpm rollout:codex-presets -- --apply` (use `--apply --all-agents` for every `opencode_local` / `codex_local` agent) — see [Agent Runtime Guide](/agents-runtime).
+- If Codex subscription quota is exhausted, the Costs UI may suggest the same OpenCode fallback model id; rollouts also use `pnpm rollout:opencode-from-codex-quota` (same script behavior).
+- To compare the latest heartbeat `usageJson.model` to config, run `pnpm audit:agent-models` (see [Agent Runtime Guide](/agents-runtime)).
 
 ## 4. Issue Lifecycle And Ownership
 
@@ -111,7 +122,8 @@ Moving a source issue to `handoff_ready` can dispatch technical review automatic
 
 Current dispatch contract:
 
-- Reviewer is resolved by the agent reference `revisor-pr`.
+- **Reviewer** is resolved in order: company field `technicalReviewerReference` (PATCH `/api/companies/{companyId}`), then env `PAPERCLIP_TECHNICAL_REVIEWER_REFERENCE`, then default agent name reference `revisor-pr` (must match a single non-terminated agent in the company; duplicate name slugs → dispatch noop `reviewer_ambiguous`).
+- **PR URLs** are parsed for **github.com** only (`owner/repo/pull/n`); other hosts are not auto-dispatched—attach a GitHub work product or link in handoff text, or create review issues manually.
 - PR context is resolved in this order:
   1. attached work product of type pull request
   2. latest handoff comment containing a GitHub PR URL
@@ -120,18 +132,41 @@ Current dispatch contract:
 - Dedup uses the current diff identity:
   - preferred: repository + PR number + head SHA
   - fallback: repository + PR number + handoff comment or description identity
+- When a handoff comment carries an explicit head marker such as `Head atual: abc1234`, Paperclip now promotes that comment to head-based diff identity even if the pull-request work product is missing or late.
 
 Practical effect:
 
 - same PR, new diff: a new review ticket can be opened
 - same PR, same diff: the dispatcher reuses or reports the existing review ticket
 - same PR, same code but a restored handoff comment explicitly says there was no new code/commit/push: the dispatcher treats it as the same diff and does not open a duplicate review ticket
-- no PR reference: dispatch is a no-op and the operator must attach or mention the PR explicitly
+- same PR, same explicit head SHA repeated in a new handoff comment: the dispatcher treats it as the same reviewed diff and does not open a duplicate review ticket
+- when the dispatcher lands on `already_reviewed` for a completed review child, Paperclip now tries to self-heal the source issue immediately instead of waiting for a coordinator reconciliation pass
+- no PR reference: dispatch is a no-op and the operator must attach or mention the PR explicitly (activity `issue.review_dispatch_noop` with `reason` is logged for `reviewer_not_found`, `reviewer_ambiguous`, and `pull_request_not_found`)
 - when the review child is closed with blocking findings, Paperclip requeues the source issue for the assigned executor and restores it to `in_progress`
 - when the review child is closed without blocking findings, Paperclip advances the source issue to `human_review`
 - this reconciliation also works when the reviewer posts the summary comment first and closes the review child in a later separate update
 - manual child issues titled like `Revisar PR #... de ...` are reconciled the same way as dispatched review children, which helps clean up historical/manual review tickets
 - when the source issue's pull-request work product is later updated to `merged` (or `closed` with merge metadata), Paperclip auto-reconciles the source issue to `done` and cancels any still-open technical-review child tickets for that PR
+
+### Direct merge eligible (executor + GitHub)
+
+Use this when you want **technical review** to stay the gate in Paperclip, but the **merge on GitHub** to happen without the board clicking merge—subject to branch protection and (when enabled) CI.
+
+**Contract**
+
+- **GitHub PR body** must contain the exact substring `direct_merge_eligible` (convention for humans and for the optional GitHub Action).
+- **Paperclip** only schedules an executor wake when the primary pull-request work product has **`metadata.directMergeEligible: true`** (boolean). Set this when creating or updating the work product via `POST /api/issues/{id}/work-products` or `PATCH /api/work-products/{id}` so the server does not scrape PR bodies.
+
+**Paperclip behavior**
+
+- After a technical review child closes **approved** and the parent reaches **`human_review`**, if the linked PR is not draft and `directMergeEligible` is true, the server wakes the **parent assignee** (typically the executor, e.g. Claudio) with payload `mutation: "review_approved_merge_delegate"` and a `contextSnapshot` that includes `pullRequestUrl`, `pullRequestNumber`, and `workProductId`. If that wakeup throws (budget, paused agent, wake policy), an activity entry **`issue.merge_delegate_wakeup_failed`** is recorded on the parent issue.
+- The executor should merge with `gh` (or rely on the GitHub Action below), then **`PATCH` the work product** to merged state so the issue auto-completes (see [Issues API](/api/issues) lifecycle notes).
+
+**GitHub Action**
+
+- Workflow `.github/workflows/direct-merge-eligible.yml` runs after the **`PR`** workflow succeeds on a pull request targeting **`master`**. If the PR body contains `direct_merge_eligible`, the PR is not draft, and the base is `master`, it runs `gh pr merge --auto --squash`.
+- **Billing / Actions off:** if organization workflows do not run, this job never fires; use the executor wake path and local `gh` only.
+- **Avoid double merge:** pick one primary path per team—either enable the Action **or** have the executor run `gh pr merge`, not both racing the same PR.
 
 ## 6. Routines And Compensation Loops
 
@@ -167,6 +202,8 @@ The native health monitor now creates or reuses corrective issues with `originKi
 
 When the underlying problem disappears, the alert is automatically cancelled.
 
+To reduce alert churn, non-review-queue agent health alerts now use a short reopen cooldown after auto-cancellation. If the same transient condition flaps again immediately, Paperclip suppresses the reopen instead of bouncing the same alert issue open/closed within minutes.
+
 ### Operational effect per run
 
 Heartbeat runs now expose `operationalEffect`, which answers whether a completed run changed anything meaningful.
@@ -187,6 +224,13 @@ Interpretation:
 
 - `Effect`: the run produced at least one meaningful mutation
 - `No effect`: the run finished but only read state, coalesced, or exited without changing anything material
+
+Activity logs also surface review-dispatch dedup signals. Reused/already-reviewed dispatches now include `duplicatePrevented=true` and a `dedupReason`, which helps separate healthy dedup from accidental review churn.
+
+The dashboard's Operational Observability panel now rolls these last-24-hour signals up into two explicit counters:
+
+- `Review Dedup (24h)`: repeated review dispatches that were prevented before creating churn
+- `Alert Suppressions (24h)`: transient health alerts whose reopen was intentionally suppressed during cooldown
 
 This is the fastest way to separate "the process ran" from "the system actually moved."
 

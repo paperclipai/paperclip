@@ -22,6 +22,7 @@ import {
   instanceUserRoles,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
+import { resolveListenPort } from "./resolve-listen-port.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
@@ -480,7 +481,7 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
-  const listenPort = await detectPort(config.port);
+  const listenPort = await resolveListenPort(config.port, config.strictListenPort);
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const app = await createApp(db as any, {

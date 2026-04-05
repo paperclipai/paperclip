@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.paperclip.local</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/nincius/paperclip</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/nincius/paperclip/cli/node_modules/tsx/dist/cli.mjs</string>
+    <string>/Users/nincius/paperclip/cli/src/index.ts</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/nincius</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PAPERCLIP_HOME</key>
+    <string>/Users/nincius/.paperclip</string>
+    <key>NODE_OPTIONS</key>
+    <string>--max-old-space-size=8192</string>
+    <key>PAPERCLIP_MANAGED_BY_LAUNCHD</key>
+    <string>1</string>
+    <key>PAPERCLIP_STRICT_LISTEN_PORT</key>
+    <string>1</string>
+    <key>PAPERCLIP_UI_DEV_MIDDLEWARE</key>
+    <string>false</string>
+    <key>SERVE_UI</key>
+    <string>true</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/nincius/.paperclip/launchd.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nincius/.paperclip/launchd.stderr.log</string>
+</dict>
+</plist>

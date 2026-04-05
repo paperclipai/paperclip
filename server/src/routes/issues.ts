@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -32,12 +33,13 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { REVIEW_DISPATCH_ORIGIN_KIND, reviewDispatchService } from "../services/review-dispatch.js";
+import { classifyTechnicalReviewOutcome } from "../services/technical-review-outcome.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 
@@ -95,42 +97,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
     );
   }
 
-  function normalizeReviewText(text: string) {
-    return text
-      .normalize("NFD")
-      .replace(/\p{Diacritic}+/gu, "")
-      .toLowerCase();
+  function isDraftPullRequestProduct(product: IssueWorkProduct) {
+    if (product.type !== "pull_request") return false;
+    if (product.status === "draft") return true;
+    const metadata = isRecord(product.metadata) ? product.metadata : null;
+    return (
+      metadata?.draft === true
+      || metadata?.isDraft === true
+      || metadata?.state === "draft"
+      || metadata?.status === "draft"
+    );
   }
 
-  function extractMarkdownSection(body: string, heading: RegExp) {
-    const match = body.match(heading);
-    if (!match || match.index === undefined) return null;
-    const start = match.index + match[0].length;
-    const rest = body.slice(start);
-    const nextHeading = rest.search(/\n###\s+/);
-    return (nextHeading >= 0 ? rest.slice(0, nextHeading) : rest).trim();
+  function isDirectMergeEligiblePullRequestProduct(product: IssueWorkProduct) {
+    if (product.type !== "pull_request") return false;
+    const metadata = isRecord(product.metadata) ? product.metadata : null;
+    return metadata?.directMergeEligible === true;
   }
 
-  function classifyTechnicalReviewOutcome(commentBody: string | null | undefined) {
-    if (!commentBody) return null;
-
-    const normalized = normalizeReviewText(commentBody);
-    if (/retornar[\s\S]*`in_progress`/.test(normalized)) return "blocking" as const;
-    if (/pode seguir para revisao humana/.test(normalized)) return "approved" as const;
-
-    const blockingSection = extractMarkdownSection(commentBody, /^###\s+Findings bloqueantes\s*$/im);
-    if (!blockingSection) return null;
-
-    const collapsed = normalizeReviewText(blockingSection)
-      .replace(/[`*_>#\-\d.[\]()]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    if (!collapsed) return null;
-    if (/\b(nenhum|nenhuma|nao ha|sem findings? bloqueantes?)\b/.test(collapsed)) {
-      return "approved" as const;
-    }
-    return "blocking" as const;
+  async function getIssuePullRequestProduct(issueId: string) {
+    const products = await workProductsSvc.listForIssue(issueId);
+    return products.find((product) => product.type === "pull_request") ?? null;
   }
 
   async function resolveTechnicalReviewOutcome(
@@ -149,6 +136,121 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (fallbackOutcome) return fallbackOutcome;
     }
     return null;
+  }
+
+  type TechnicalReviewSignal = {
+    outcome: "approved" | "blocking";
+    createdAt: Date;
+    source: "issue_comment" | "review_issue_comment";
+    commentId: string;
+    reviewIssueId?: string;
+    reviewIssueIdentifier?: string | null;
+  };
+
+  function pickLatestTechnicalReviewSignal(
+    current: TechnicalReviewSignal | null,
+    candidate: TechnicalReviewSignal | null,
+  ) {
+    if (!candidate) return current;
+    if (!current) return candidate;
+    return candidate.createdAt.getTime() > current.createdAt.getTime() ? candidate : current;
+  }
+
+  async function findLatestTechnicalReviewSignal(sourceIssue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    let latest: TechnicalReviewSignal | null = null;
+
+    const sourceComments = await svc.listComments(sourceIssue.id, {
+      order: "desc",
+      limit: 20,
+    });
+    for (const comment of sourceComments) {
+      const outcome = classifyTechnicalReviewOutcome(comment.body);
+      if (!outcome) continue;
+      latest = pickLatestTechnicalReviewSignal(latest, {
+        outcome,
+        createdAt: comment.createdAt,
+        source: "issue_comment",
+        commentId: comment.id,
+      });
+    }
+
+    const childIssues = await svc.list(sourceIssue.companyId, { parentId: sourceIssue.id });
+    const reviewChildren = childIssues
+      .filter((child) => isTechnicalReviewChildIssueCandidate(child) && child.status === "done");
+    for (const child of reviewChildren) {
+      const childComments = await svc.listComments(child.id, {
+        order: "desc",
+        limit: 10,
+      });
+      for (const comment of childComments) {
+        const outcome = classifyTechnicalReviewOutcome(comment.body);
+        if (!outcome) continue;
+        latest = pickLatestTechnicalReviewSignal(latest, {
+          outcome,
+          createdAt: comment.createdAt,
+          source: "review_issue_comment",
+          commentId: comment.id,
+          reviewIssueId: child.id,
+          reviewIssueIdentifier: child.identifier,
+        });
+      }
+    }
+
+    return latest;
+  }
+
+  async function reconcileApprovedReviewLane(input: {
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    targetStatus: string;
+  }) {
+    const { issue, targetStatus } = input;
+    if (isTechnicalReviewChildIssueCandidate(issue)) return null;
+    if (!["handoff_ready", "technical_review"].includes(issue.status)) return null;
+    if (!["human_review", "done"].includes(targetStatus)) return null;
+
+    const latestSignal = await findLatestTechnicalReviewSignal(issue);
+    if (!latestSignal || latestSignal.outcome !== "approved") return null;
+    const pullRequestProduct = await getIssuePullRequestProduct(issue.id);
+
+    const transitions: string[] = [];
+    let current = issue;
+    let deferredHumanReviewBecausePullRequestDraft = false;
+
+    if (current.status === "handoff_ready") {
+      const next = await svc.update(current.id, { status: "technical_review" });
+      if (!next) return null;
+      current = next;
+      transitions.push("handoff_ready->technical_review");
+    }
+
+    if (current.status === "technical_review") {
+      if (pullRequestProduct && isDraftPullRequestProduct(pullRequestProduct)) {
+        deferredHumanReviewBecausePullRequestDraft = true;
+      } else {
+        const next = await svc.update(current.id, { status: "human_review" });
+        if (!next) return null;
+        current = next;
+        transitions.push("technical_review->human_review");
+      }
+    }
+
+    if (targetStatus === "done" && current.status === "human_review") {
+      const next = await svc.update(current.id, { status: "done" });
+      if (!next) return null;
+      current = next;
+      transitions.push("human_review->done");
+    }
+
+    return transitions.length > 0 || deferredHumanReviewBecausePullRequestDraft
+      ? {
+        issue: current,
+        transitions,
+        signal: latestSignal,
+        deferredHumanReviewBecausePullRequestDraft,
+        pullRequestProductId: pullRequestProduct?.id ?? null,
+        pullRequestStatus: pullRequestProduct?.status ?? null,
+      }
+      : null;
   }
 
   function isTechnicalReviewChildIssueCandidate(issue: {
@@ -178,13 +280,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
       input.commentBody,
     );
     if (!outcome) return null;
+    if (!reviewIssueBefore.parentId) return null;
 
     const parent = await svc.getById(reviewIssueBefore.parentId);
     if (!parent || parent.status === "done" || parent.status === "cancelled") return null;
 
     if (outcome === "approved") {
+      const pullRequestProduct = await getIssuePullRequestProduct(parent.id);
       const transitions: string[] = [];
       let current = parent;
+      let deferredHumanReviewBecausePullRequestDraft = false;
 
       if (current.status === "handoff_ready") {
         const next = await svc.update(current.id, { status: "technical_review" });
@@ -194,13 +299,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
 
       if (current.status === "technical_review") {
-        const next = await svc.update(current.id, { status: "human_review" });
-        if (!next) return current;
-        current = next;
-        transitions.push("technical_review->human_review");
+        if (pullRequestProduct && isDraftPullRequestProduct(pullRequestProduct)) {
+          deferredHumanReviewBecausePullRequestDraft = true;
+        } else {
+          const next = await svc.update(current.id, { status: "human_review" });
+          if (!next) return current;
+          current = next;
+          transitions.push("technical_review->human_review");
+        }
       }
 
-      if (transitions.length === 0) return current;
+      if (transitions.length === 0 && !deferredHumanReviewBecausePullRequestDraft) return current;
+
+      const mergeDelegateEligible =
+        current.status === "human_review"
+        && !deferredHumanReviewBecausePullRequestDraft
+        && typeof parent.assigneeAgentId === "string"
+        && parent.assigneeAgentId.trim().length > 0
+        && pullRequestProduct !== null
+        && isDirectMergeEligiblePullRequestProduct(pullRequestProduct);
 
       await routinesSvc.syncRunStatusForIssue(current.id);
       await logActivity(db, {
@@ -217,8 +334,73 @@ export function issueRoutes(db: Db, storage: StorageService) {
           reviewIssueId: reviewIssueAfter.id,
           reviewIssueIdentifier: reviewIssueAfter.identifier,
           transitions,
+          deferredHumanReviewBecausePullRequestDraft,
+          pullRequestProductId: pullRequestProduct?.id ?? null,
+          pullRequestStatus: pullRequestProduct?.status ?? null,
+          mergeDelegateWakeupEnqueued: mergeDelegateEligible,
         },
       });
+
+      if (mergeDelegateEligible && parent.assigneeAgentId) {
+        const wpMeta = isRecord(pullRequestProduct.metadata) ? pullRequestProduct.metadata : null;
+        const prNumberFromMeta = typeof wpMeta?.prNumber === "number" ? wpMeta.prNumber : null;
+        const prNumberFromExternal =
+          typeof pullRequestProduct.externalId === "string"
+            ? Number.parseInt(pullRequestProduct.externalId, 10)
+            : NaN;
+        const pullRequestNumber = Number.isFinite(prNumberFromMeta)
+          ? prNumberFromMeta
+          : Number.isFinite(prNumberFromExternal)
+            ? prNumberFromExternal
+            : null;
+
+        try {
+          await heartbeat.wakeup(parent.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_status_changed",
+            payload: {
+              issueId: parent.id,
+              reviewIssueId: reviewIssueAfter.id,
+              mutation: "review_approved_merge_delegate",
+            },
+            requestedByActorType: input.actor.actorType,
+            requestedByActorId: input.actor.actorId,
+            contextSnapshot: {
+              issueId: parent.id,
+              taskId: parent.id,
+              source: "issue.review_outcome",
+              reviewIssueId: reviewIssueAfter.id,
+              reviewOutcome: "approved",
+              pullRequestUrl: pullRequestProduct.url,
+              pullRequestNumber,
+              workProductId: pullRequestProduct.id,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: parent.id, agentId: parent.assigneeAgentId },
+            "failed to wake executor for direct merge delegate",
+          );
+          await logActivity(db, {
+            companyId: current.companyId,
+            actorType: input.actor.actorType,
+            actorId: input.actor.actorId,
+            agentId: input.actor.agentId,
+            runId: input.actor.runId,
+            action: "issue.merge_delegate_wakeup_failed",
+            entityType: "issue",
+            entityId: parent.id,
+            details: {
+              reviewIssueId: reviewIssueAfter.id,
+              reviewIssueIdentifier: reviewIssueAfter.identifier,
+              assigneeAgentId: parent.assigneeAgentId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
+
       return current;
     }
 
@@ -345,6 +527,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return current;
   }
 
+  async function reconcileDraftPullRequestIssue(input: {
+    issueId: string;
+    workProduct: IssueWorkProduct;
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const issue = await svc.getById(input.issueId);
+    if (!issue) return null;
+    if (issue.status !== "human_review") return issue;
+
+    const next = await svc.update(issue.id, { status: "technical_review" });
+    if (!next) return issue;
+
+    await routinesSvc.syncRunStatusForIssue(next.id);
+    await logActivity(db, {
+      companyId: next.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: next.id,
+      details: {
+        status: "technical_review",
+        identifier: next.identifier,
+        source: "work_product",
+        resolvedFromPullRequestDraft: true,
+        workProductId: input.workProduct.id,
+        workProductStatus: input.workProduct.status,
+        statusTransitionPath: ["human_review->technical_review"],
+      },
+    });
+
+    return next;
+  }
+
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return true;
@@ -434,13 +652,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
-    if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      const issue = await svc.getByIdentifier(rawId);
+    const trimmed = rawId.trim();
+    if (/^[A-Z]+-\d+$/i.test(trimmed)) {
+      const issue = await svc.getByIdentifier(trimmed);
       if (issue) {
         return issue.id;
       }
+      throw notFound("Issue not found");
     }
-    return rawId;
+    const idParse = z.string().uuid().safeParse(trimmed);
+    if (!idParse.success) {
+      throw notFound("Issue not found");
+    }
+    return idParse.data;
   }
 
   async function resolveIssueProjectAndGoal(issue: {
@@ -758,6 +982,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -865,6 +1090,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
@@ -891,6 +1117,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
         workProduct: product,
         actor,
       });
+    } else if (isDraftPullRequestProduct(product)) {
+      await reconcileDraftPullRequestIssue({
+        issueId: issue.id,
+        workProduct: product,
+        actor,
+      });
     }
     res.status(201).json(product);
   });
@@ -903,6 +1135,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
     const product = await workProductsSvc.update(id, req.body);
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
@@ -922,6 +1155,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
     if (isMergedPullRequestProduct(product)) {
       await reconcileMergedPullRequestIssue({
+        issueId: existing.issueId,
+        workProduct: product,
+        actor,
+      });
+    } else if (isDraftPullRequestProduct(product)) {
+      await reconcileDraftPullRequestIssue({
         issueId: existing.issueId,
         workProduct: product,
         actor,
@@ -1010,6 +1249,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
 
     const actor = getActorInfo(req);
     await issueApprovalsSvc.link(id, req.body.approvalId, {
@@ -1042,6 +1282,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
 
     await issueApprovalsSvc.unlink(id, approvalId);
 
@@ -1067,6 +1308,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
     }
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
 
     const actor = getActorInfo(req);
     const issue = await svc.create(companyId, {
@@ -1138,8 +1380,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       updateFields.status = "todo";
     }
     let issue;
+    let reviewLaneReconciliation:
+      | Awaited<ReturnType<typeof reconcileApprovedReviewLane>>
+      | null = null;
     try {
-      issue = await svc.update(id, updateFields);
+      if (typeof updateFields.status === "string") {
+        reviewLaneReconciliation = await reconcileApprovedReviewLane({
+          issue: existing,
+          targetStatus: updateFields.status,
+        });
+      }
+      issue = reviewLaneReconciliation?.issue ?? await svc.update(id, updateFields);
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -1203,6 +1454,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        ...(reviewLaneReconciliation
+          ? {
+              resolvedFromApprovedTechnicalReview: true,
+              statusTransitionPath: reviewLaneReconciliation.transitions,
+              technicalReviewSignalSource: reviewLaneReconciliation.signal.source,
+              technicalReviewSignalCommentId: reviewLaneReconciliation.signal.commentId,
+              technicalReviewSignalReviewIssueId: reviewLaneReconciliation.signal.reviewIssueId,
+              technicalReviewSignalReviewIssueIdentifier:
+                reviewLaneReconciliation.signal.reviewIssueIdentifier,
+              deferredHumanReviewBecausePullRequestDraft:
+                reviewLaneReconciliation.deferredHumanReviewBecausePullRequestDraft,
+              pullRequestProductId: reviewLaneReconciliation.pullRequestProductId,
+              pullRequestStatus: reviewLaneReconciliation.pullRequestStatus,
+            }
+          : {}),
         ...(commentBody ? { source: "comment" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         _previous: hasFieldChanges ? previous : undefined,
@@ -1302,6 +1568,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
             requestedByActorId: actor.actorId,
           });
         } else if (dispatch.kind === "reused" || dispatch.kind === "already_reviewed") {
+          const reconciledIssue = dispatch.kind === "already_reviewed" && dispatch.reviewIssue.status === "done"
+            ? await reconcileTechnicalReviewChildOutcome({
+              reviewIssueBefore: dispatch.reviewIssue,
+              reviewIssueAfter: dispatch.reviewIssue,
+              commentBody: null,
+              actor,
+            })
+            : null;
           await logActivity(db, {
             companyId: issue.companyId,
             actorType: actor.actorType,
@@ -1318,6 +1592,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
               prUrl: dispatch.artifact.pullRequest.url,
               prNumber: dispatch.artifact.pullRequest.prNumber,
               diffIdentity: dispatch.artifact.diffIdentity,
+              duplicatePrevented: true,
+              dedupReason: dispatch.dedupReason ?? null,
+              reconciledSourceStatus: reconciledIssue?.status ?? null,
             },
           });
 
@@ -1330,6 +1607,29 @@ export function issueRoutes(db: Db, storage: StorageService) {
               contextSource: "issue.review_dispatch",
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
+            });
+          }
+        } else if (dispatch.kind === "noop") {
+          const observableNoops = new Set([
+            "reviewer_not_found",
+            "reviewer_ambiguous",
+            "pull_request_not_found",
+          ]);
+          if (observableNoops.has(dispatch.reason)) {
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.review_dispatch_noop",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                reason: dispatch.reason,
+                identifier: issue.identifier,
+                title: issue.title,
+              },
             });
           }
         }
@@ -1420,6 +1720,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -1851,6 +2152,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
     }
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
 
     try {
       await runSingleFileUpload(req, res);

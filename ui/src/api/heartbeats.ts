@@ -30,9 +30,9 @@ export const heartbeatsApi = {
   list: (companyId: string, agentId?: string, limit?: number) => {
     const searchParams = new URLSearchParams();
     if (agentId) searchParams.set("agentId", agentId);
-    if (limit) searchParams.set("limit", String(limit));
-    const qs = searchParams.toString();
-    return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
+    const resolvedLimit = limit ?? (agentId ? 200 : 1000);
+    searchParams.set("limit", String(resolvedLimit));
+    return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs?${searchParams.toString()}`);
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
   events: (runId: string, afterSeq = 0, limit = 200) =>

@@ -4,6 +4,7 @@ import { ApiConnectionError, ApiRequestError, PaperclipApiClient } from "../clie
 describe("PaperclipApiClient", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("adds authorization and run-id headers", async () => {
@@ -16,6 +17,7 @@ describe("PaperclipApiClient", () => {
       apiBase: "http://localhost:3100",
       apiKey: "token-123",
       runId: "run-abc",
+      transientRetry: { maxAttempts: 1, initialDelayMs: 0 },
     });
 
     await client.post("/api/test", { hello: "world" });
@@ -36,7 +38,10 @@ describe("PaperclipApiClient", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      transientRetry: { maxAttempts: 1, initialDelayMs: 0 },
+    });
     const result = await client.get("/api/missing", { ignoreNotFound: true });
     expect(result).toBeNull();
   });
@@ -50,7 +55,10 @@ describe("PaperclipApiClient", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      transientRetry: { maxAttempts: 1, initialDelayMs: 0 },
+    });
 
     await expect(client.post("/api/issues/1/checkout", {})).rejects.toMatchObject({
       status: 409,
@@ -63,7 +71,10 @@ describe("PaperclipApiClient", () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
     vi.stubGlobal("fetch", fetchMock);
 
-    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      transientRetry: { maxAttempts: 1, initialDelayMs: 0 },
+    });
 
     await expect(client.post("/api/companies/import/preview", {})).rejects.toBeInstanceOf(ApiConnectionError);
     await expect(client.post("/api/companies/import/preview", {})).rejects.toMatchObject({
@@ -93,6 +104,7 @@ describe("PaperclipApiClient", () => {
     const client = new PaperclipApiClient({
       apiBase: "http://localhost:3100",
       recoverAuth,
+      transientRetry: { maxAttempts: 1, initialDelayMs: 0 },
     });
 
     const result = await client.post<{ ok: boolean }>("/api/test", { hello: "world" });
@@ -102,5 +114,49 @@ describe("PaperclipApiClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const retryHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
     expect(retryHeaders.authorization).toBe("Bearer board-token-123");
+  });
+
+  it("retries on 503 then succeeds", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "down" }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      transientRetry: { maxAttempts: 4, initialDelayMs: 100, backoffMultiplier: 2, maxDelayMs: 100 },
+    });
+
+    const promise = client.get<{ ok: boolean }>("/api/test");
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops retrying 503 after maxAttempts", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(
+      () => new Response(JSON.stringify({ error: "down" }), { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({
+      apiBase: "http://localhost:3100",
+      transientRetry: { maxAttempts: 2, initialDelayMs: 50, backoffMultiplier: 2, maxDelayMs: 50 },
+    });
+
+    const outcome = client
+      .get("/api/test")
+      .then(
+        () => ({ ok: true as const, err: undefined }),
+        (err: unknown) => ({ ok: false as const, err }),
+      );
+    await vi.runAllTimersAsync();
+    const { ok, err } = await outcome;
+    expect(ok).toBe(false);
+    expect(err).toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

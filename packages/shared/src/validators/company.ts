@@ -12,6 +12,14 @@ export const createCompanySchema = z.object({
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
+const technicalReviewerReferenceSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .nullable()
+  .optional();
+
 export const updateCompanySchema = createCompanySchema
   .partial()
   .extend({
@@ -20,6 +28,8 @@ export const updateCompanySchema = createCompanySchema
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
+    /** Agent name reference for automatic technical review assignment (e.g. `revisor-pr`). Null clears override. */
+    technicalReviewerReference: technicalReviewerReferenceSchema,
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

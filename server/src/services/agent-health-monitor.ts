@@ -7,6 +7,7 @@ import type { AdapterEnvironmentCheck } from "@paperclipai/shared";
 import { findServerAdapter } from "../adapters/index.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
 import { secretService } from "./secrets.js";
 
@@ -21,12 +22,14 @@ const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set([
 ]);
 const NON_BLOCKING_BOOTSTRAP_WARN_CODES = new Set([
   "claude_anthropic_api_key_overrides_subscription",
+  "opencode_hello_probe_timed_out",
 ]);
 const REQUIRED_AGENT_BOOTSTRAP_FILES = ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"] as const;
 const DEFAULT_ENVIRONMENT_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const DEFAULT_HEARTBEAT_STALE_MULTIPLIER = 3;
 const DEFAULT_HEARTBEAT_STALE_MIN_MS = 30 * 60 * 1000;
 const DEFAULT_QUEUE_STARVATION_MS = 15 * 60 * 1000;
+const DEFAULT_ALERT_REOPEN_COOLDOWN_MS = 30 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const OPEN_ISSUE_STATUSES = [
   "backlog",
@@ -102,6 +105,7 @@ type AgentHealthMonitorDeps = {
   heartbeatStaleMultiplier?: number;
   heartbeatStaleMinMs?: number;
   queueStarvationMs?: number;
+  alertReopenCooldownMs?: number;
   reviewQueuePolicies?: Partial<Record<ReviewQueueStatus, Partial<ReviewQueuePolicy>>>;
 };
 
@@ -210,6 +214,12 @@ function normalizeAlertOriginId(agentId: string, code: string) {
   return `agent:${agentId}:health:${code}`;
 }
 
+function parseAgentIdFromOrigin(originId: string | null | undefined) {
+  if (typeof originId !== "string") return null;
+  const match = /^agent:([^:]+):health:/.exec(originId);
+  return match?.[1] ?? null;
+}
+
 function normalizeReviewQueueOriginId(
   companyId: string,
   ownerKey: string,
@@ -217,6 +227,10 @@ function normalizeReviewQueueOriginId(
   code: "wip_limit" | "sla_breach",
 ) {
   return `company:${companyId}:review_queue:${ownerKey}:${status}:${code}`;
+}
+
+function isReviewQueueAlertOriginId(originId: string | null | undefined) {
+  return typeof originId === "string" && originId.includes(":review_queue:");
 }
 
 function isManagedInstructionsAdapterType(adapterType: string | null | undefined) {
@@ -334,6 +348,7 @@ export function agentHealthMonitorService(db: Db, deps: AgentHealthMonitorDeps =
   const heartbeatStaleMultiplier = deps.heartbeatStaleMultiplier ?? DEFAULT_HEARTBEAT_STALE_MULTIPLIER;
   const heartbeatStaleMinMs = deps.heartbeatStaleMinMs ?? DEFAULT_HEARTBEAT_STALE_MIN_MS;
   const queueStarvationMs = deps.queueStarvationMs ?? DEFAULT_QUEUE_STARVATION_MS;
+  const alertReopenCooldownMs = deps.alertReopenCooldownMs ?? DEFAULT_ALERT_REOPEN_COOLDOWN_MS;
   const reviewQueuePolicies = mergeReviewQueuePolicies(deps.reviewQueuePolicies);
 
   async function evaluateManagedBootstrap(
@@ -515,8 +530,17 @@ export function agentHealthMonitorService(db: Db, deps: AgentHealthMonitorDeps =
       });
     }
 
+    const hasRunningRun = queuedRuns.some((run) => run.status === "running");
+
     const heartbeatPolicy = parseHeartbeatPolicy(agent.runtimeConfig);
-    if (heartbeatPolicy.enabled && heartbeatPolicy.intervalSec > 0) {
+    // `agents.lastHeartbeatAt` advances only when a heartbeat **finishes**. A long-running local CLI
+    // (OpenCode/Codex/Claude) can legitimately exceed the interval while `heartbeat_runs.status` is
+    // still `running`. Do not flag "stalled" in that case — it is active work, not a missed timer.
+    if (
+      heartbeatPolicy.enabled
+      && heartbeatPolicy.intervalSec > 0
+      && !hasRunningRun
+    ) {
       const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
       const staleAfterMs = Math.max(heartbeatStaleMinMs, heartbeatPolicy.intervalSec * 1000 * heartbeatStaleMultiplier);
       if (now.getTime() - baseline >= staleAfterMs) {
@@ -539,8 +563,6 @@ export function agentHealthMonitorService(db: Db, deps: AgentHealthMonitorDeps =
         });
       }
     }
-
-    const hasRunningRun = queuedRuns.some((run) => run.status === "running");
     const oldestQueuedRun = queuedRuns
       .filter((run) => run.status === "queued")
       .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())[0] ?? null;
@@ -926,6 +948,28 @@ export function agentHealthMonitorService(db: Db, deps: AgentHealthMonitorDeps =
         if (!existing) {
           const reusable = latestHistoricalAlertByOriginId.get(finding.originId) ?? null;
           if (reusable) {
+            const latestAlertTimestamp = reusable.updatedAt ?? reusable.createdAt;
+            const withinCooldown =
+              !isReviewQueueAlertOriginId(finding.originId)
+              && now.getTime() - latestAlertTimestamp.getTime() < alertReopenCooldownMs;
+            if (withinCooldown) {
+              await logActivity(db, {
+                companyId: finding.companyId,
+                actorType: "system",
+                actorId: "agent-health-monitor",
+                action: "issue.health_alert_reopen_suppressed",
+                entityType: "issue",
+                entityId: reusable.id,
+                agentId: parseAgentIdFromOrigin(finding.originId),
+                details: {
+                  originId: finding.originId,
+                  cooldownMs: alertReopenCooldownMs,
+                  latestAlertAt: latestAlertTimestamp.toISOString(),
+                  reason: "recent_auto_resolve_cooldown",
+                },
+              });
+              continue;
+            }
             await issuesSvc.update(reusable.id, {
               status: "todo",
               title: finding.title,

@@ -97,3 +97,43 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+/** Non-interactive `opencode run` auto-denies permission prompts; resumed sessions may still hit this until retried fresh. */
+export function isOpenCodePermissionAutoRejectError(
+  stdout: string,
+  stderr: string,
+  parsedErrorMessage: string | null,
+): boolean {
+  const haystack = [stdout, stderr, parsedErrorMessage ?? ""]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (/auto-rejecting/i.test(haystack)) return true;
+  if (/permission requested:/i.test(haystack) && /auto-reject/i.test(haystack)) return true;
+  if (/rejected permission to use this specific tool call/i.test(haystack)) return true;
+  if (/user rejected permission/i.test(haystack)) return true;
+  return false;
+}
+
+/**
+ * OpenCode tracks read-time metadata for edited files; if the file changes on disk before a write
+ * (another run, tooling, or manual edit), the tool fails with this message. Retrying a fresh
+ * `opencode run` re-reads the file and usually succeeds.
+ */
+export function isOpenCodeStaleWorkspaceFileError(
+  stdout: string,
+  stderr: string,
+  parsedErrorMessage: string | null,
+): boolean {
+  const haystack = [stdout, stderr, parsedErrorMessage ?? ""]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  return /modified\s+since\s+it\s+was\s+last\s+read/i.test(haystack);
+}

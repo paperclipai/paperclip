@@ -43,11 +43,28 @@ interface RecoverAuthInput {
   error: ApiRequestError;
 }
 
+/** Retries for connection failures and selected HTTP statuses (502/503/504/429). Safe for idempotent reads; mutating calls may still double-apply if the server processed the first attempt but the response was lost—keep maxAttempts modest. */
+export interface TransientRetryOptions {
+  maxAttempts: number;
+  initialDelayMs: number;
+  backoffMultiplier?: number;
+  maxDelayMs?: number;
+}
+
+const DEFAULT_TRANSIENT_RETRY: TransientRetryOptions = {
+  maxAttempts: 4,
+  initialDelayMs: 1000,
+  backoffMultiplier: 2,
+  maxDelayMs: 12_000,
+};
+
 interface ApiClientOptions {
   apiBase: string;
   apiKey?: string;
   runId?: string;
   recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
+  /** Set to `false` to disable transient retries. Default: bounded backoff on 502/503/504/429 and fetch network errors. */
+  transientRetry?: false | TransientRetryOptions;
 }
 
 export class PaperclipApiClient {
@@ -55,12 +72,20 @@ export class PaperclipApiClient {
   apiKey?: string;
   readonly runId?: string;
   readonly recoverAuth?: (input: RecoverAuthInput) => Promise<string | null>;
+  private readonly transientRetry: TransientRetryOptions | null;
 
   constructor(opts: ApiClientOptions) {
     this.apiBase = opts.apiBase.replace(/\/+$/, "");
     this.apiKey = opts.apiKey?.trim() || undefined;
     this.runId = opts.runId?.trim() || undefined;
     this.recoverAuth = opts.recoverAuth;
+    if (opts.transientRetry === false) {
+      this.transientRetry = null;
+    } else {
+      const merged = { ...DEFAULT_TRANSIENT_RETRY, ...opts.transientRetry };
+      merged.maxAttempts = Math.max(1, merged.maxAttempts);
+      this.transientRetry = merged;
+    }
   }
 
   get<T>(path: string, opts?: RequestOptions): Promise<T | null> {
@@ -98,68 +123,100 @@ export class PaperclipApiClient {
     const url = buildUrl(this.apiBase, path);
     const method = String(init.method ?? "GET").toUpperCase();
 
-    const headers: Record<string, string> = {
-      accept: "application/json",
-      ...toStringRecord(init.headers),
-    };
+    const maxAttempts = this.transientRetry?.maxAttempts ?? 1;
 
-    if (init.body !== undefined) {
-      headers["content-type"] = headers["content-type"] ?? "application/json";
-    }
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const headers: Record<string, string> = {
+        accept: "application/json",
+        ...toStringRecord(init.headers),
+      };
 
-    if (this.apiKey) {
-      headers.authorization = `Bearer ${this.apiKey}`;
-    }
-
-    if (this.runId) {
-      headers["x-paperclip-run-id"] = this.runId;
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        ...init,
-        headers,
-      });
-    } catch (error) {
-      throw new ApiConnectionError({
-        apiBase: this.apiBase,
-        path,
-        method,
-        cause: error,
-      });
-    }
-
-    if (opts?.ignoreNotFound && response.status === 404) {
-      return null;
-    }
-
-    if (!response.ok) {
-      const apiError = await toApiError(response);
-      if (!hasRetriedAuth && this.recoverAuth) {
-        const recoveredToken = await this.recoverAuth({
-          path,
-          method,
-          error: apiError,
-        });
-        if (recoveredToken) {
-          this.setApiKey(recoveredToken);
-          return this.request<T>(path, init, opts, true);
-        }
+      if (init.body !== undefined) {
+        headers["content-type"] = headers["content-type"] ?? "application/json";
       }
-      throw apiError;
+
+      if (this.apiKey) {
+        headers.authorization = `Bearer ${this.apiKey}`;
+      }
+
+      if (this.runId) {
+        headers["x-paperclip-run-id"] = this.runId;
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          ...init,
+          headers,
+        });
+      } catch (error) {
+        if (!this.shouldRetryTransient(attempt, maxAttempts, "connection")) {
+          throw new ApiConnectionError({
+            apiBase: this.apiBase,
+            path,
+            method,
+            cause: error,
+          });
+        }
+        await sleep(transientBackoffMs(this.transientRetry!, attempt));
+        continue;
+      }
+
+      if (opts?.ignoreNotFound && response.status === 404) {
+        return null;
+      }
+
+      if (!response.ok) {
+        const apiError = await toApiError(response);
+        if (!hasRetriedAuth && this.recoverAuth) {
+          const recoveredToken = await this.recoverAuth({
+            path,
+            method,
+            error: apiError,
+          });
+          if (recoveredToken) {
+            this.setApiKey(recoveredToken);
+            return this.request<T>(path, init, opts, true);
+          }
+        }
+
+        if (isTransientHttpStatus(response.status) && this.shouldRetryTransient(attempt, maxAttempts, response.status)) {
+          const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+          await sleep(
+            retryAfterMs ?? transientBackoffMs(this.transientRetry!, attempt),
+          );
+          continue;
+        }
+
+        throw apiError;
+      }
+
+      if (response.status === 204) {
+        return null;
+      }
+
+      const text = await response.text();
+      if (!text.trim()) {
+        return null;
+      }
+
+      return safeParseJson(text) as T;
     }
 
-    if (response.status === 204) {
-      return null;
-    }
+    throw new Error(
+      `[paperclip] internal: API request loop ended without result (${method} ${path}, maxAttempts=${maxAttempts})`,
+    );
+  }
 
-    const text = await response.text();
-    if (!text.trim()) {
-      return null;
+  private shouldRetryTransient(
+    attemptIndex: number,
+    maxAttempts: number,
+    kind: "connection" | number,
+  ): boolean {
+    if (!this.transientRetry || attemptIndex >= maxAttempts - 1) {
+      return false;
     }
-
-    return safeParseJson(text) as T;
+    return kind === "connection" || isTransientHttpStatus(kind);
   }
 }
 
@@ -252,4 +309,29 @@ function toStringRecord(headers: HeadersInit | undefined): Record<string, string
   return Object.fromEntries(
     Object.entries(headers).map(([key, value]) => [key, String(value)]),
   );
+}
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function transientBackoffMs(cfg: TransientRetryOptions, attemptIndex: number): number {
+  const mult = cfg.backoffMultiplier ?? 2;
+  const cap = cfg.maxDelayMs ?? 12_000;
+  const raw = cfg.initialDelayMs * mult ** attemptIndex;
+  const capped = Math.min(cap, raw);
+  const jitter = Math.floor(Math.random() * 250);
+  return capped + jitter;
+}
+
+/** `Retry-After` as delay-seconds (common for 429/503). Ignores HTTP-date form. */
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header?.trim()) return undefined;
+  const n = Number.parseInt(header.trim(), 10);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return Math.min(n * 1000, 120_000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

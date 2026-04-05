@@ -163,7 +163,7 @@ export const ISSUE_STATUS_TRANSITIONS: Record<IssueStatus, readonly IssueStatus[
   handoff_ready: ["in_progress", "technical_review", "blocked", "cancelled"],
   technical_review: ["changes_requested", "human_review", "blocked", "cancelled"],
   changes_requested: ["claimed", "in_progress", "blocked", "cancelled"],
-  human_review: ["changes_requested", "blocked", "done", "cancelled"],
+  human_review: ["technical_review", "changes_requested", "blocked", "done", "cancelled"],
   blocked: ["todo", "claimed", "in_progress", "cancelled"],
   done: [],
   cancelled: [],

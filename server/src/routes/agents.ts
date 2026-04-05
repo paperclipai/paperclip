@@ -48,6 +48,38 @@ import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } f
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+
+/**
+ * Order for `GET /agents/me/inbox-lite`: active work, review feedback, then new work.
+ * Within the same status + priority, oldest `createdAt` first (FIFO) so backlog items are not
+ * starved when new todos keep arriving (a pure `updatedAt` desc tie-breaker favored “fresh” work).
+ */
+function compareAgentInboxLiteIssues(
+  a: { id: string; status: string; priority: string; createdAt: Date },
+  b: { id: string; status: string; priority: string; createdAt: Date },
+): number {
+  const statusRank: Record<string, number> = {
+    in_progress: 0,
+    changes_requested: 1,
+    claimed: 2,
+    todo: 3,
+    blocked: 4,
+  };
+  const ra = statusRank[a.status] ?? 99;
+  const rb = statusRank[b.status] ?? 99;
+  if (ra !== rb) return ra - rb;
+
+  const priorityRank = (p: string) =>
+    p === "critical" ? 0 : p === "high" ? 1 : p === "medium" ? 2 : p === "low" ? 3 : 4;
+  const pa = priorityRank(a.priority);
+  const pb = priorityRank(b.priority);
+  if (pa !== pb) return pa - pb;
+
+  const ca = a.createdAt.getTime();
+  const cb = b.createdAt.getTime();
+  if (ca !== cb) return ca - cb;
+  return a.id.localeCompare(b.id);
+}
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
@@ -63,6 +95,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { ensureAgentHomeDailyMemoryNote } from "../services/ensure-agent-daily-memory.js";
 
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -85,6 +118,8 @@ export function agentRoutes(db: Db) {
   const REQUIRED_AGENT_BOOTSTRAP_FILES = ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"] as const;
   const NON_BLOCKING_BOOTSTRAP_WARN_CODES = new Set([
     "claude_anthropic_api_key_overrides_subscription",
+    // Slow or loaded hosts: allow saving adapter config when the hello probe hits the wall clock.
+    "opencode_hello_probe_timed_out",
   ]);
 
   const router = Router();
@@ -599,6 +634,7 @@ export function agentRoutes(db: Db) {
 
       const agentHome = resolveDefaultAgentWorkspaceDir(preparedAgent.id);
       await fs.mkdir(agentHome, { recursive: true });
+      await ensureAgentHomeDailyMemoryNote(preparedAgent.id);
       for (const fileName of REQUIRED_AGENT_BOOTSTRAP_FILES) {
         const relativePath = resolveBootstrapBundleRelativePath(bundle, fileName);
         if (!relativePath) continue;
@@ -1140,12 +1176,14 @@ export function agentRoutes(db: Db) {
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,changes_requested,claimed,blocked",
       includeRoutineExecutions: true,
     });
 
+    const sorted = [...rows].sort(compareAgentInboxLiteIssues);
+
     res.json(
-      rows.map((issue) => ({
+      sorted.map((issue) => ({
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
@@ -2268,7 +2306,10 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const limit =
+      limitParam !== undefined && limitParam !== ""
+        ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200))
+        : 200;
     const runs = await heartbeat.list(companyId, agentId, limit);
     res.json(runs);
   });

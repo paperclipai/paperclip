@@ -237,7 +237,7 @@ describe("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
-  it("keeps a local run active when the recorded pid is still alive", async () => {
+  it("startup reap terminates a still-alive local pid and fails the run to unblock the queue", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeTypeOf("number");
@@ -249,19 +249,62 @@ describe("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns();
-    expect(result.reaped).toBe(0);
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
 
     const run = await heartbeat.getRun(runId);
-    expect(run?.status).toBe("running");
-    expect(run?.errorCode).toBe("process_detached");
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
     expect(run?.error).toContain(String(child.pid));
+    expect(run?.error).toContain("terminated");
+    expect(run?.resultJson).toEqual(
+      expect.objectContaining({
+        processLoss: expect.objectContaining({
+          reason: "orphan_terminated",
+          processPid: child.pid,
+        }),
+      }),
+    );
 
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("claimed");
+    expect(wakeup?.status).toBe("failed");
+  });
+
+  it("queues a retry on server_restart reap when process pid was never recorded", async () => {
+    const past = new Date(Date.now() - 120_000);
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: null,
+      startedAt: past,
+      updatedAt: past,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
@@ -391,6 +434,56 @@ describe("heartbeat orphaned process recovery", () => {
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
   });
+
+  it.each(["assignment", "on_demand"] as const)(
+    "coalesces %s wakeups into the active checkout run when executionRunId is missing",
+    async (source) => {
+      const { companyId, agentId, runId, issueId } = await seedRunFixture();
+      await db
+        .update(agents)
+        .set({ status: "running" })
+        .where(eq(agents.id, agentId));
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+        })
+        .where(eq(issues.id, issueId));
+
+      const heartbeat = heartbeatService(db);
+      const mergedRun = await heartbeat.wakeup(agentId, {
+        source,
+        triggerDetail: source === "assignment" ? "system" : "manual",
+        reason: source === "assignment" ? "issue_assigned" : "manual_resume",
+        contextSnapshot: { issueId },
+      });
+
+      expect(mergedRun?.id).toBe(runId);
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.checkoutRunId).toBe(runId);
+      expect(issue?.executionRunId).toBe(runId);
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId));
+      expect(
+        wakeups.some(
+          (row) =>
+            row.status === "coalesced" &&
+            row.reason === "issue_execution_same_name" &&
+            row.runId === runId,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("fails early when a git_worktree policy resolves to a non-git project workspace", async () => {
     const companyId = randomUUID();

@@ -264,7 +264,7 @@ All endpoints already exist. No new server work needed for V1.
 | Create API key | `POST /agents/:id/keys` | Overflow menu |
 | Get runtime state | `GET /agents/:id/runtime-state` | Overview tab, properties panel |
 | Invoke/Wakeup | `POST /agents/:id/heartbeat/invoke` | Header invoke button |
-| List runs | `GET /companies/:id/heartbeat-runs?agentId=X` | Runs tab |
+| List runs | `GET /companies/:id/heartbeat-runs?agentId=X&limit=N` (default limit 200) | Runs tab |
 | Cancel run | `POST /heartbeat-runs/:id/cancel` | Run detail |
 | Run events | `GET /heartbeat-runs/:id/events` | Log viewer |
 | Run log | `GET /heartbeat-runs/:id/log` | Full log view |

@@ -38,6 +38,13 @@ if (!isSameFile && existsSync(CWD_ENV_PATH)) {
 
 type DatabaseMode = "embedded-postgres" | "postgres";
 
+function parseStrictListenPortEnv(): boolean {
+  const raw = process.env.PAPERCLIP_STRICT_LISTEN_PORT;
+  if (raw === undefined || raw.trim() === "") return false;
+  const v = raw.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
 export interface Config {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -70,6 +77,8 @@ export interface Config {
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
+  /** When true, refuse to start if config.port is not free (no silent port drift). */
+  strictListenPort: boolean;
 }
 
 export function loadConfig(): Config {
@@ -252,5 +261,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
+    strictListenPort: parseStrictListenPortEnv(),
   };
 }

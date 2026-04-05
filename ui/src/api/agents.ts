@@ -168,7 +168,18 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
-  invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),
+  invoke: (
+    id: string,
+    companyId?: string,
+    body?: {
+      forceFreshSession?: boolean;
+      issueId?: string;
+      taskId?: string;
+      taskKey?: string;
+      commentId?: string;
+      wakeCommentId?: string;
+    },
+  ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/heartbeat/invoke"), body ?? {}),
   wakeup: (
     id: string,
     data: {

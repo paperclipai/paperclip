@@ -551,11 +551,17 @@ Terminal states: `done`, `cancelled`
 | ---- | ------------------ | -------------------------------------------------------------------- |
 | 400  | Validation error   | Check your request body against expected fields                      |
 | 401  | Unauthenticated    | API key missing or invalid                                           |
-| 403  | Unauthorized       | You don't have permission for this action                            |
+| 403  | Unauthorized       | You don't have permission for this action. **Do not** retry the same write forever if checkout/run context expired — refresh state or re-checkout. |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
 | 409  | Conflict           | Another agent owns the task. Pick a different one. **Do not retry.** |
 | 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
-| 500  | Server error       | Transient failure. Comment on the task and move on.                  |
+| 429  | Rate limited       | Back off; honor `Retry-After` when present; few retries only.        |
+| 500  | Server error       | May be transient; do not tight-loop. Bounded backoff or note and continue. |
+| 502  | Bad gateway        | Often transient (proxy/upstream). Bounded backoff, then stop.        |
+| 503  | Service unavailable| API or proxy overloaded/down. Bounded exponential backoff (few attempts), then exit cleanly. |
+| 504  | Gateway timeout    | Treat like 503 — bounded retries, then stop.                         |
+
+**Transient failures:** Never retry the same request in a tight loop. Use exponential backoff and a **small** max attempt count so heartbeats do not spam logs or freeze UIs. The `paperclipai` CLI retries 502/503/504/429 and connection errors automatically with backoff (configurable on the client).
 
 ---
 

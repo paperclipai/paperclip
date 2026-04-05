@@ -20,11 +20,29 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## When the Paperclip API is unavailable (503, timeouts, connection errors)
+
+The board or reverse proxy may return **502/503/504**, or `curl`/your HTTP client may fail with **connection refused**, **DNS**, or **timeout**. Do **not** hammer the API in a tight loop (no sub-second retries; never hundreds of attempts in one heartbeat).
+
+1. **Backoff:** If you retry, use **exponential backoff** (for example ~1s → 2s → 4s) and cap at **a few attempts** (3–4 total), then stop.
+2. **429 / rate limits:** Respect `Retry-After` when present; otherwise backoff and retry sparingly.
+3. **403 on mutations:** If a write (for example `PUT /api/issues/{id}/documents/...`) returns **403** after checkout or run context changed, **do not** retry that write indefinitely — re-read issue state, re-checkout if appropriate, or exit with a clear message.
+4. **Exit cleanly:** If the API stays down after bounded retries, end the run with a **short** explanation (stderr or comment if the API is reachable again later). Prefer leaving work for the **next heartbeat** over burning the whole run budget on polls.
+
+The `paperclipai` CLI HTTP client applies **bounded automatic retries** (with jitter) for **502/503/504/429** and connection failures; shell/curl-only workflows should follow the same discipline manually.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:
 
 **Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
+
+**Step 2a — Merge delegate (executor, when triggered).** If the wake payload or run context includes `mutation: "review_approved_merge_delegate"` (or `contextSnapshot.reviewOutcome === "approved"` with `pullRequestUrl` from `issue.review_outcome`), technical review already approved the parent issue and it should be in `human_review`. Do **not** checkout just to satisfy review-lane rules unless you need to run git from the issue workspace.
+
+1. Confirm the GitHub PR is ready (not draft) and matches `contextSnapshot.pullRequestUrl` / number.
+2. Merge using repo policy, typically: `gh pr merge <number> --squash` (or rely on org automation if your team disabled executor-driven merges).
+3. Update Paperclip so the issue can complete: `PATCH /api/work-products/{workProductId}` with `status: "merged"` and merge metadata (`merged`, `mergedAt`, etc.) as in the API contract—use `contextSnapshot.workProductId` when present.
+4. Comment on the issue with what you merged and any follow-ups.
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
@@ -37,7 +55,7 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,changes_requested,blocked` only when you need the full issue objects.
 
-**Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo` / `changes_requested`. Skip `blocked` unless you can unblock it. Treat `handoff_ready`, `technical_review`, and `human_review` as review-lane states, not normal executor checkout targets, unless the task is explicitly yours to review.
+**Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then **`changes_requested`** (voltou de revisão / feedback humano), then `todo` / `claimed`. Skip `blocked` unless you can unblock it. When using `inbox-lite`, the API already returns issues in this status order (after priority and **FIFO by `createdAt`** within the same status/priority, so older backlog is not skipped for newer todos). Treat `handoff_ready`, `technical_review`, and `human_review` as review-lane states, not normal executor checkout targets, unless the task is explicitly yours to review.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
 If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
@@ -67,6 +85,10 @@ Use comments incrementally:
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
 **Step 7 — Do the work.** Use your tools and capabilities.
+
+**File edits (OpenCode / search-replace style tools):** In the **same heartbeat session**, you must **`Read` (or equivalent) each file path before the first `Edit`/`Write`/`patch` on that path** — OpenCode enforces this and fails with `You must read file … before overwriting it. Use the Read tool first` if you skip it. Then: `oldString` must match the workspace **byte-for-byte** (line breaks and spacing), and **`newString` must differ** from `oldString`. If the file already has the desired text, **do not** call the edit tool. Duplicate applies cause `No changes to apply: oldString and newString are identical` and fail the run.
+
+**Worktree discipline:** Your shell `cwd` and the paths you edit must match the **issue’s execution workspace** (the branch/worktree for *this* ticket). Do not edit files under another worktree path (different ticket folder) unless the task explicitly requires it.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.

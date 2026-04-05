@@ -12,6 +12,8 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
+  /** When set, technical review dispatch uses this agent name reference before env/default. */
+  technicalReviewerReference: string | null;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

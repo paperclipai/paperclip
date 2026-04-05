@@ -90,6 +90,7 @@ describe("issue work product PR reconciliation routes", () => {
       priority: "medium",
       assigneeAgentId: "agent-reviewer",
       assigneeUserId: null,
+      parentId: "issue-1",
       originKind: "technical_review_dispatch",
     };
     const product = {
@@ -193,5 +194,71 @@ describe("issue work product PR reconciliation routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns a human review issue to technical_review when the PR becomes draft again", async () => {
+    const sourceIssue = {
+      id: "issue-3",
+      companyId: "company-1",
+      identifier: "PAP-702",
+      title: "Stale human review",
+      status: "human_review",
+      priority: "medium",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+    };
+    const draftProduct = {
+      id: "wp-3",
+      issueId: "issue-3",
+      companyId: "company-1",
+      projectId: null,
+      executionWorkspaceId: null,
+      runtimeServiceId: null,
+      type: "pull_request",
+      provider: "github",
+      externalId: "220",
+      title: "PR #220",
+      url: "https://github.com/acme/app/pull/220",
+      status: "draft",
+      reviewState: "changes_requested",
+      isPrimary: true,
+      healthStatus: "healthy",
+      summary: null,
+      metadata: { draft: true },
+      createdByRunId: null,
+      createdAt: new Date("2026-04-01T01:00:00.000Z"),
+      updatedAt: new Date("2026-04-01T01:10:00.000Z"),
+    };
+
+    mockWorkProductService.getById.mockResolvedValue({
+      ...draftProduct,
+      status: "ready_for_review",
+      metadata: { draft: false },
+    });
+    mockWorkProductService.update.mockResolvedValue(draftProduct);
+    mockIssueService.getById.mockResolvedValueOnce(sourceIssue);
+    mockIssueService.update.mockResolvedValueOnce({ ...sourceIssue, status: "technical_review" });
+
+    const res = await request(createApp())
+      .patch("/api/work-products/wp-3")
+      .send({ status: "draft", metadata: { draft: true } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update.mock.calls).toEqual([
+      ["issue-3", { status: "technical_review" }],
+    ]);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        entityId: "issue-3",
+        details: expect.objectContaining({
+          resolvedFromPullRequestDraft: true,
+          workProductId: "wp-3",
+          workProductStatus: "draft",
+          statusTransitionPath: ["human_review->technical_review"],
+        }),
+      }),
+    );
   });
 });

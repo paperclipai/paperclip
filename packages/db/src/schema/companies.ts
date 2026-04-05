@@ -17,6 +17,8 @@ export const companies = pgTable(
       .notNull()
       .default(true),
     brandColor: text("brand_color"),
+    /** Agent reference (name slug) for technical review dispatch; null = use instance env or default `revisor-pr`. */
+    technicalReviewerReference: text("technical_reviewer_reference"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

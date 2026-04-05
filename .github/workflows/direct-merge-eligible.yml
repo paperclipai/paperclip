@@ -1,0 +1,55 @@
+name: Direct merge eligible
+
+on:
+  workflow_run:
+    workflows:
+      - PR
+    types:
+      - completed
+
+jobs:
+  maybe-auto-merge:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Merge PR when body contains direct_merge_eligible
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr_json='${{ toJson(github.event.workflow_run.pull_requests) }}'
+          count="$(echo "$pr_json" | jq 'length')"
+          if [ "$count" -eq 0 ]; then
+            echo "No pull_requests on workflow_run; skipping."
+            exit 0
+          fi
+          pr_number="$(echo "$pr_json" | jq -r '.[0].number')"
+          repo="${{ github.repository }}"
+
+          body="$(gh pr view "$pr_number" --repo "$repo" --json body -q .body)"
+          case "$body" in *direct_merge_eligible*) ;; *)
+            echo "PR body does not contain direct_merge_eligible; skipping."
+            exit 0
+            ;; esac
+
+          base="$(gh pr view "$pr_number" --repo "$repo" --json baseRefName -q .baseRefName)"
+          if [ "$base" != "master" ]; then
+            echo "Base ref is $base (expected master); skipping."
+            exit 0
+          fi
+
+          draft="$(gh pr view "$pr_number" --repo "$repo" --json isDraft -q .isDraft)"
+          if [ "$draft" = "true" ]; then
+            echo "PR is draft; skipping."
+            exit 0
+          fi
+
+          echo "Enabling auto-merge (squash) for PR #$pr_number"
+          gh pr merge "$pr_number" --repo "$repo" --auto --squash

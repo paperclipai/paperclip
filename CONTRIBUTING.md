@@ -71,4 +71,47 @@ Please include screenshots if possible if you have a visible change. (use someth
 
 Questions? Just ask in #dev — we're happy to help.
 
+## Monorepo bootstrap (first clone / after `git clean`)
+
+The server imports [`@paperclipai/plugin-sdk`](packages/plugins/sdk), which only ships compiled output under `dist/`. Without a build, Node fails with **Cannot find module** … `plugin-sdk/dist/index.js` (e.g. from `server/src/routes/plugins.ts`).
+
+From the repo root, after `pnpm install`:
+
+```bash
+pnpm --filter @paperclipai/shared build
+pnpm --filter @paperclipai/plugin-sdk build
+```
+
+Or run a full `pnpm build` if you prefer. Re-run the SDK build after pulling changes that touch `packages/plugins/sdk` or `packages/shared`.
+
+The UI lists **`hermes-paperclip-adapter`** in [`ui/package.json`](ui/package.json) so Vite can resolve `hermes-paperclip-adapter/ui` (same major line as the server dependency).
+
+## launchd (`io.paperclip.local`)
+
+If you start Paperclip via **LaunchAgents**, ensure:
+
+- **`WorkingDirectory`** is the monorepo root (where `pnpm-workspace.yaml` lives).
+- **`PATH`** includes Homebrew **and** your `pnpm` location (e.g. `~/Library/pnpm` or `~/.local/share/pnpm`) so child processes spawned by the CLI can find tooling.
+- **`NODE_OPTIONS`**: optional `--max-old-space-size=…` (e.g. `8192`) if you hit **JavaScript heap out of memory**; fix missing modules / restart loops first, since those often amplify memory use.
+
+After `git clean` or a fresh clone, run the bootstrap commands above (or `pnpm dev` from an interactive shell once) before relying on launchd alone.
+
+After editing `io.paperclip.local.plist`, reload the agent:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/io.paperclip.local.plist
+launchctl load ~/Library/LaunchAgents/io.paperclip.local.plist
+```
+
+## "503" on deep links (e.g. `/TCN/agents/.../runs/...`) on localhost
+
+The UI ships a **service worker** ([`ui/public/sw.js`](ui/public/sw.js)) that, on **navigation** requests, returns a synthetic **`503` + "Offline"** when `fetch()` throws (network error). That is **not** necessarily an Express route returning 503: it often happens after a **brief disconnect** to `127.0.0.1` while the server restarts.
+
+[`ui/src/main.tsx`](ui/src/main.tsx) **does not register** the service worker on loopback hosts and **unregisters** existing registrations there, so local dev avoids this pitfall. If you still see stale behaviour, hard-reload once or clear site data for the origin.
+
+## If heap OOM persists
+
+1. Confirm whether **Vite** or the **server** (`tsx`) is crashing (timestamps in `~/.paperclip/launchd.stderr.log`).
+2. Review high-volume JSON paths: plugin routes in `server/src/routes/plugins.ts`, plugin loader / webhooks, and any code that `JSON.parse`s large streamed bodies; prefer pagination, size limits, or streaming parsers.
+
 Happy hacking!

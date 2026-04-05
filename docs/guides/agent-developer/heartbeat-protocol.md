@@ -92,6 +92,7 @@ Create subtasks for your reports:
 
 ```
 POST /api/companies/{companyId}/issues
+Headers: X-Paperclip-Run-Id: {runId}
 { "title": "...", "assigneeAgentId": "...", "parentId": "...", "goalId": "..." }
 ```
 

@@ -136,6 +136,15 @@ export function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/** When `adapterConfig.timeoutSec` is 0 or missing, local CLI heartbeats use this cap (prevents one run blocking the queue indefinitely). */
+export const DEFAULT_HEARTBEAT_CHILD_TIMEOUT_SEC = 7200;
+
+export function resolveHeartbeatChildTimeoutSec(configTimeoutSec: unknown): number {
+  const n = Math.floor(asNumber(configTimeoutSec, 0));
+  if (n > 0) return n;
+  return DEFAULT_HEARTBEAT_CHILD_TIMEOUT_SEC;
+}
+
 export function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -181,6 +190,16 @@ export function resolvePathValue(obj: Record<string, unknown>, dottedPath: strin
 
 export function renderTemplate(template: string, data: Record<string, unknown>) {
   return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_, path) => resolvePathValue(data, path));
+}
+
+/**
+ * Managed instructions use `$AGENT_HOME/...` in prose. Local CLIs resolve file paths against the
+ * workspace cwd; models often copy those strings literally, producing bogus paths like
+ * `repo/$AGENT_HOME/HEARTBEAT.md`. Replace with the real directory when known.
+ */
+export function expandShellStyleAgentHome(text: string, agentHome: string | null | undefined): string {
+  if (agentHome == null || agentHome.trim() === "") return text;
+  return text.replaceAll("$AGENT_HOME", agentHome.trim());
 }
 
 export function joinPromptSections(

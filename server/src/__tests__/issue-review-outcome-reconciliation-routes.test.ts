@@ -14,6 +14,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  list: vi.fn(),
   listComments: vi.fn(),
   findMentionedAgents: vi.fn(),
   checkout: vi.fn(),
@@ -37,6 +38,9 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
+const mockWorkProductService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -50,9 +54,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({
-    listForIssue: vi.fn(async () => []),
-  }),
+  workProductService: () => mockWorkProductService,
 }));
 
 function createApp() {
@@ -111,12 +113,40 @@ function makeParentIssue(status: string) {
   };
 }
 
+function makePrimaryPullRequestProduct(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "wp-1",
+    issueId: parentIssueId,
+    companyId: "company-1",
+    projectId: null,
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "pull_request",
+    provider: "github",
+    externalId: "218",
+    title: "PR #218",
+    url: "https://github.com/acme/app/pull/218",
+    status: "ready_for_review",
+    reviewState: "approved",
+    isPrimary: true,
+    healthStatus: "healthy",
+    summary: null,
+    metadata: {},
+    createdByRunId: null,
+    createdAt: new Date("2026-04-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-01T00:05:00.000Z"),
+    ...overrides,
+  };
+}
+
 describe("issue review outcome reconciliation routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockWorkProductService.listForIssue.mockResolvedValue([]);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: childIssueId,
@@ -238,6 +268,126 @@ describe("issue review outcome reconciliation routes", () => {
             "handoff_ready->technical_review",
             "technical_review->human_review",
           ],
+          mergeDelegateWakeupEnqueued: false,
+        }),
+      }),
+    );
+  });
+
+  it("wakes the executor when review approves and the PR work product has directMergeEligible metadata", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update
+      .mockResolvedValueOnce(updatedChild)
+      .mockResolvedValueOnce({ ...parent, status: "technical_review" })
+      .mockResolvedValueOnce({ ...parent, status: "human_review" });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      makePrimaryPullRequestProduct({
+        metadata: { directMergeEligible: true, prNumber: 218 },
+      }),
+    ]);
+    mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisao tecnica concluida
+
+### Findings bloqueantes
+- Nenhum.
+
+### Decisao operacional
+- [PAP-700](/PAP/issues/PAP-700) pode seguir para revisao humana final/merge.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      executorAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: parentIssueId,
+          reviewIssueId: childIssueId,
+          mutation: "review_approved_merge_delegate",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: parentIssueId,
+          taskId: parentIssueId,
+          source: "issue.review_outcome",
+          reviewOutcome: "approved",
+          pullRequestUrl: "https://github.com/acme/app/pull/218",
+          pullRequestNumber: 218,
+          workProductId: "wp-1",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.review_outcome_reconciled",
+        entityId: parentIssueId,
+        details: expect.objectContaining({
+          outcome: "approved",
+          mergeDelegateWakeupEnqueued: true,
+        }),
+      }),
+    );
+  });
+
+  it("does not wake the executor for direct merge when the PR is still draft even if metadata requests it", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update
+      .mockResolvedValueOnce(updatedChild)
+      .mockResolvedValueOnce({ ...parent, status: "technical_review" });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        ...makePrimaryPullRequestProduct({
+          id: "wp-draft-1",
+          externalId: "321",
+          url: "https://github.com/acme/app/pull/321",
+          status: "draft",
+          metadata: { draft: true, directMergeEligible: true },
+        }),
+      },
+    ]);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisao tecnica concluida
+
+### Findings bloqueantes
+- Nenhum.
+
+### Decisao operacional
+- [PAP-700](/PAP/issues/PAP-700) pode seguir para revisao humana final/merge.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.review_outcome_reconciled",
+        entityId: parentIssueId,
+        details: expect.objectContaining({
+          mergeDelegateWakeupEnqueued: false,
+          deferredHumanReviewBecausePullRequestDraft: true,
         }),
       }),
     );
@@ -334,5 +484,176 @@ describe("issue review outcome reconciliation routes", () => {
         }),
       }),
     );
+  });
+
+  it("stops at technical_review when the linked pull request is still draft", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update
+      .mockResolvedValueOnce(updatedChild)
+      .mockResolvedValueOnce({ ...parent, status: "technical_review" });
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "wp-draft-1",
+        issueId: parentIssueId,
+        companyId: "company-1",
+        projectId: null,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "pull_request",
+        provider: "github",
+        externalId: "321",
+        title: "PR #321",
+        url: "https://github.com/acme/app/pull/321",
+        status: "draft",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: null,
+        metadata: { draft: true },
+        createdByRunId: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:05:00.000Z"),
+      },
+    ]);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisao tecnica concluida
+
+### Findings bloqueantes
+- Nenhum.
+
+### Decisao operacional
+- [PAP-700](/PAP/issues/PAP-700) pode seguir para revisao humana final/merge.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update.mock.calls).toEqual([
+      [childIssueId, { status: "done" }],
+      [parentIssueId, { status: "technical_review" }],
+    ]);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.review_outcome_reconciled",
+        entityId: parentIssueId,
+        details: expect.objectContaining({
+          outcome: "approved",
+          transitions: ["handoff_ready->technical_review"],
+          deferredHumanReviewBecausePullRequestDraft: true,
+          pullRequestProductId: "wp-draft-1",
+          pullRequestStatus: "draft",
+          mergeDelegateWakeupEnqueued: false,
+        }),
+      }),
+    );
+  });
+
+  it("treats all-caps findings heading and English none as approved", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update
+      .mockResolvedValueOnce(updatedChild)
+      .mockResolvedValueOnce({ ...parent, status: "technical_review" })
+      .mockResolvedValueOnce({ ...parent, status: "human_review" });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisao tecnica
+
+### FINDINGS BLOQUEANTES
+- None.
+
+### Decisao operacional
+- PR pronto para revisao humana.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update.mock.calls).toEqual([
+      [childIssueId, { status: "done" }],
+      [parentIssueId, { status: "technical_review" }],
+      [parentIssueId, { status: "human_review" }],
+    ]);
+  });
+
+  it("detects blocking findings when heading uses '### Blocking (N)' format", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update.mockResolvedValueOnce(updatedChild);
+    mockIssueService.checkout.mockResolvedValue({ ...parent, status: "in_progress" });
+    mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-123" });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisão Técnica Concluída — Round 1
+
+### Blocking (1)
+- **Frontend caller não envia X-API-Key** — \`propertySearchService.ts\` não passa o header obrigatório.
+
+### Non-blocking (2)
+- Minor style issue.
+- Missing test edge case.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
+    expect(mockIssueService.checkout).toHaveBeenCalled();
+  });
+
+  it("detects approved when heading uses '### Blocking (N)' with 'Nenhum'", async () => {
+    const existingChild = makeReviewIssue("technical_review");
+    const updatedChild = makeReviewIssue("done");
+    const parent = makeParentIssue("handoff_ready");
+
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingChild)
+      .mockResolvedValueOnce(parent);
+    mockIssueService.update
+      .mockResolvedValueOnce(updatedChild)
+      .mockResolvedValueOnce({ ...parent, status: "technical_review" })
+      .mockResolvedValueOnce({ ...parent, status: "human_review" });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${childIssueId}`)
+      .send({
+        status: "done",
+        comment: `## Revisão Técnica — Round 1
+
+### Blocking findings
+Nenhum.
+
+### Non-blocking findings
+Nenhum.`,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update.mock.calls).toEqual([
+      [childIssueId, { status: "done" }],
+      [parentIssueId, { status: "technical_review" }],
+      [parentIssueId, { status: "human_review" }],
+    ]);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

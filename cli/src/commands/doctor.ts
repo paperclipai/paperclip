@@ -12,6 +12,7 @@ import {
   portCheck,
   secretsCheck,
   storageCheck,
+  uiStaticArtifactsCheck,
   type CheckResult,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
@@ -119,6 +120,11 @@ export async function doctor(opts: {
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
+
+  // 10. Static UI artifacts (LaunchAgent / no Vite)
+  const uiStaticResult = uiStaticArtifactsCheck(config);
+  results.push(uiStaticResult);
+  printResult(uiStaticResult);
 
   // Summary
   return printSummary(results);

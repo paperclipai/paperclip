@@ -79,6 +79,7 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
+  getBundle: vi.fn(),
   materializeManagedBundle: vi.fn(),
 }));
 const mockCompanySkillService = vi.hoisted(() => ({
@@ -87,6 +88,8 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockFindServerAdapter = vi.hoisted(() => vi.fn());
+const mockListAdapterModels = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -102,6 +105,11 @@ vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../adapters/index.js", () => ({
+  findServerAdapter: mockFindServerAdapter,
+  listAdapterModels: mockListAdapterModels,
 }));
 
 function createDbStub() {
@@ -135,6 +143,10 @@ function createApp(actor: Record<string, unknown>) {
 describe("agent permission routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFindServerAdapter.mockReturnValue({
+      testEnvironment: vi.fn().mockResolvedValue({ checks: [] }),
+    });
+    mockListAdapterModels.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(baseAgent);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -169,6 +181,12 @@ describe("agent permission routes", () => {
         },
       }),
     );
+    mockAgentInstructionsService.getBundle.mockResolvedValue({
+      mode: "external",
+      rootPath: null,
+      entryFile: "AGENTS.md",
+      files: [],
+    });
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) => requested,
@@ -361,6 +379,7 @@ describe("agent permission routes", () => {
         projectId: "project-1",
         goalId: "goal-1",
         parentId: "parent-1",
+        createdAt: new Date("2026-03-30T18:00:00.000Z"),
         updatedAt: new Date("2026-03-30T18:11:22.699Z"),
         activeRun: null,
         originKind: "routine_execution",
@@ -379,7 +398,7 @@ describe("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
       assigneeAgentId: agentId,
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,changes_requested,claimed,blocked",
       includeRoutineExecutions: true,
     });
     expect(res.body).toEqual([
@@ -389,5 +408,95 @@ describe("agent permission routes", () => {
         status: "todo",
       }),
     ]);
+  });
+
+  it("sorts inbox-lite so changes_requested ranks before todo at equal priority", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-todo",
+        identifier: "TCN-10",
+        title: "New work",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        createdAt: new Date("2026-03-29T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T20:00:00.000Z"),
+        activeRun: null,
+        originKind: "manual",
+      },
+      {
+        id: "issue-chg",
+        identifier: "TCN-11",
+        title: "Rework after review",
+        status: "changes_requested",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        createdAt: new Date("2026-03-28T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-30T10:00:00.000Z"),
+        activeRun: null,
+        originKind: "manual",
+      },
+    ]);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "api_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox-lite");
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((row: { identifier: string }) => row.identifier)).toEqual(["TCN-11", "TCN-10"]);
+  });
+
+  it("sorts inbox-lite todos FIFO by createdAt when status and priority tie (older first)", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-new",
+        identifier: "TCN-20",
+        title: "New todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        createdAt: new Date("2026-04-02T12:00:00.000Z"),
+        updatedAt: new Date("2026-04-04T10:00:00.000Z"),
+        activeRun: null,
+        originKind: "manual",
+      },
+      {
+        id: "issue-old",
+        identifier: "TCN-19",
+        title: "Stale todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        createdAt: new Date("2026-03-01T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-05T10:00:00.000Z"),
+        activeRun: null,
+        originKind: "manual",
+      },
+    ]);
+
+    const app = createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "api_key",
+    });
+
+    const res = await request(app).get("/api/agents/me/inbox-lite");
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((row: { identifier: string }) => row.identifier)).toEqual(["TCN-19", "TCN-20"]);
   });
 });

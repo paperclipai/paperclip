@@ -240,7 +240,7 @@ export async function testEnvironment(
         {
           cwd,
           env: runtimeEnv,
-          timeoutSec: 60,
+          timeoutSec: 120,
           graceSec: 5,
           stdin: "Respond with hello.",
           onLog: async () => {},

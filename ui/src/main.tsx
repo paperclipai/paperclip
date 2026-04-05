@@ -21,9 +21,27 @@ import "./index.css";
 
 initPluginBridge(React, ReactDOM);
 
+/**
+ * Service worker (`public/sw.js`) returns synthetic **503** for failed navigations when the
+ * network fetch errors (offline / connection reset). On loopback that often happens during
+ * Paperclip server restarts (launchd, OOM, `pnpm dev`), which looks like "503" on deep links
+ * such as `/TCN/agents/.../runs/...` even though the API never sent 503.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.trim().toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h.endsWith(".localhost");
+}
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js");
+    const host = window.location.hostname;
+    if (isLoopbackHost(host)) {
+      void navigator.serviceWorker.getRegistrations().then((regs) => {
+        for (const r of regs) void r.unregister();
+      });
+      return;
+    }
+    void navigator.serviceWorker.register("/sw.js");
   });
 }
 

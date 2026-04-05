@@ -7,6 +7,7 @@ import {
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveRuntimeSessionLegacyFallback,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -181,6 +182,52 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveRuntimeSessionLegacyFallback", () => {
+  it("returns null for codex_local when there is no task key", () => {
+    expect(
+      resolveRuntimeSessionLegacyFallback({
+        taskKey: null,
+        resetTaskSession: false,
+        adapterType: "codex_local",
+        legacySessionId: "thread-abc",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns legacy session id for other adapters without a task key", () => {
+    expect(
+      resolveRuntimeSessionLegacyFallback({
+        taskKey: null,
+        resetTaskSession: false,
+        adapterType: "claude_local",
+        legacySessionId: "sess-1",
+      }),
+    ).toBe("sess-1");
+  });
+
+  it("returns null when task key is set", () => {
+    expect(
+      resolveRuntimeSessionLegacyFallback({
+        taskKey: "issue-1",
+        resetTaskSession: false,
+        adapterType: "codex_local",
+        legacySessionId: "thread-abc",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when task session reset is requested", () => {
+    expect(
+      resolveRuntimeSessionLegacyFallback({
+        taskKey: null,
+        resetTaskSession: true,
+        adapterType: "claude_local",
+        legacySessionId: "sess-1",
+      }),
+    ).toBeNull();
   });
 });
 

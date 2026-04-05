@@ -19,7 +19,9 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   joinPromptSections,
+  expandShellStyleAgentHome,
   runChildProcess,
+  resolveHeartbeatChildTimeoutSec,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
@@ -35,6 +37,26 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+/** Stable `errorCode` values for heartbeat / SQL aggregation (see `scripts/audit-heartbeat-runs.mjs`). */
+function resolveCursorErrorCode(input: {
+  timedOut: boolean;
+  exitCode: number | null;
+  parsedError: string;
+  stderrLine: string;
+}): string | null {
+  if (input.timedOut) return "timeout";
+  if ((input.exitCode ?? 0) === 0) return null;
+  const blob = `${input.parsedError}\n${input.stderrLine}`.toLowerCase();
+  if (
+    /\b(login|sign in|sign-in|authenticate|authentication|unauthorized|not authenticated|not logged in)\b/.test(blob) ||
+    /\b401\b/.test(blob) ||
+    /invalid_?api_?key|incorrect api key|api key.*invalid|missing api key/i.test(blob)
+  ) {
+    return "cursor_auth_required";
+  }
+  return "cursor_exit_nonzero";
 }
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
@@ -272,7 +294,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeEnv = ensurePathInEnv(effectiveEnv);
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
-  const timeoutSec = asNumber(config.timeoutSec, 0);
+  const timeoutSec = resolveHeartbeatChildTimeoutSec(config.timeoutSec);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -352,13 +374,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const prompt = joinPromptSections([
-    instructionsPrefix,
-    renderedBootstrapPrompt,
-    sessionHandoffNote,
-    paperclipEnvNote,
-    renderedPrompt,
-  ]);
+  const prompt = expandShellStyleAgentHome(
+    joinPromptSections([
+      instructionsPrefix,
+      renderedBootstrapPrompt,
+      sessionHandoffNote,
+      paperclipEnvNote,
+      renderedPrompt,
+    ]),
+    agentHome || null,
+  );
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars,
@@ -462,6 +487,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: "timeout",
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -482,6 +508,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Cursor exited with code ${attempt.proc.exitCode ?? -1}`;
+    const errorCode = resolveCursorErrorCode({
+      timedOut: false,
+      exitCode: attempt.proc.exitCode,
+      parsedError,
+      stderrLine,
+    });
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -491,6 +523,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

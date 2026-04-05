@@ -29,6 +29,7 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { ensureAgentHomeDailyMemoryNote } from "./ensure-agent-daily-memory.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import { loadHeartbeatRunOperationalEffects } from "./heartbeat-run-effect.js";
 import {
@@ -556,6 +557,21 @@ function deriveTaskKey(
     readNonEmptyString(payload?.issueId) ??
     null
   );
+}
+
+/**
+ * Legacy session id from `agent_runtime_state` used only when no task-scoped session was resolved.
+ * For `codex_local`, omitting this on unscoped runs avoids resuming huge Codex threads during idle heartbeats.
+ */
+export function resolveRuntimeSessionLegacyFallback(input: {
+  taskKey: string | null;
+  resetTaskSession: boolean;
+  adapterType: string;
+  legacySessionId: string | null;
+}): string | null {
+  if (input.taskKey || input.resetTaskSession) return null;
+  if (input.adapterType === "codex_local") return null;
+  return input.legacySessionId;
 }
 
 export function shouldResetTaskSessionForWake(
@@ -1329,6 +1345,41 @@ export function heartbeatService(db: Db) {
       }
     }
 
+    const adapterConfigForCwd = parseObject(agent.adapterConfig);
+    const adapterPreferredCwd = readNonEmptyString(adapterConfigForCwd.cwd);
+    if (adapterPreferredCwd) {
+      const adapterCwdExists = await fs
+        .stat(adapterPreferredCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (adapterCwdExists) {
+        const adapterCwdWarnings: string[] = [];
+        if (sessionCwd) {
+          adapterCwdWarnings.push(
+            `Saved session workspace "${sessionCwd}" is not available. Using adapter-config cwd "${adapterPreferredCwd}" for this run.`,
+          );
+        } else if (resolvedProjectId) {
+          adapterCwdWarnings.push(
+            `No project workspace directory is currently available for this issue. Using adapter-config cwd "${adapterPreferredCwd}" for this run.`,
+          );
+        } else {
+          adapterCwdWarnings.push(
+            `No project or prior session workspace was available. Using adapter-config cwd "${adapterPreferredCwd}" for this run.`,
+          );
+        }
+        return {
+          cwd: adapterPreferredCwd,
+          source: "agent_home" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings: adapterCwdWarnings,
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
@@ -1896,6 +1947,67 @@ export function heartbeatService(db: Db) {
     const reaped: string[] = [];
     const diagnosticReasons: Record<string, number> = {};
 
+    async function finalizeRunAsProcessLost(input: {
+      run: typeof heartbeatRuns.$inferSelect;
+      adapterType: string;
+      baseMessage: string;
+      processLossDetails: Record<string, unknown>;
+    }) {
+      const { run, adapterType, baseMessage, processLossDetails } = input;
+      const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      const lossReason = typeof processLossDetails.reason === "string" ? processLossDetails.reason : "";
+      // Local adapters: retry once after restart even when processPid was never persisted (common if the
+      // server came back up before onSpawn wrote pid). Without this, reaped runs stay terminal with no queue.
+      const shouldRetry =
+        tracksLocalChild &&
+        (run.processLossRetryCount ?? 0) < 1 &&
+        (!!run.processPid || lossReason === "server_restart");
+      const reasonKey = typeof processLossDetails.reason === "string" ? processLossDetails.reason : "unknown";
+      diagnosticReasons[reasonKey] = (diagnosticReasons[reasonKey] ?? 0) + 1;
+
+      let finalizedRun = await setRunStatus(run.id, "failed", {
+        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        errorCode: "process_lost",
+        finishedAt: now,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          processLoss: processLossDetails,
+        },
+      });
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: now,
+        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+      });
+      if (!finalizedRun) finalizedRun = await getRun(run.id);
+      if (!finalizedRun) return;
+
+      let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      if (shouldRetry) {
+        const agent = await getAgent(run.agentId);
+        if (agent) {
+          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
+        }
+      } else {
+        await releaseIssueExecutionAndPromote(finalizedRun);
+      }
+
+      await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: shouldRetry ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim() : baseMessage,
+        payload: {
+          ...processLossDetails,
+          ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+        },
+      });
+
+      await finalizeAgentStatus(run.agentId, "failed");
+      await startNextQueuedRunForAgent(run.agentId);
+      runningProcesses.delete(run.id);
+      reaped.push(run.id);
+    }
+
     for (const { run, adapterType } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
@@ -1907,6 +2019,33 @@ export function heartbeatService(db: Db) {
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       if (tracksLocalChild && run.processPid && isProcessAlive(run.processPid)) {
+        const startupSweep = staleThresholdMs === 0;
+        const detachedLongEnough =
+          run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+          staleThresholdMs > 0 &&
+          run.updatedAt &&
+          now.getTime() - new Date(run.updatedAt).getTime() >= staleThresholdMs;
+
+        if (startupSweep || detachedLongEnough) {
+          try {
+            process.kill(run.processPid, "SIGTERM");
+          } catch {
+            // ESRCH: process already exited
+          }
+          const baseDiag = buildProcessLossDiagnostic(run, now);
+          const baseMessage =
+            `Orphaned agent process (pid ${run.processPid}) was terminated` +
+            (startupSweep ? " during Paperclip startup recovery" : " after prolonged detach") +
+            " to unblock queued work";
+          await finalizeRunAsProcessLost({
+            run,
+            adapterType,
+            baseMessage,
+            processLossDetails: { ...baseDiag.details, reason: "orphan_terminated" },
+          });
+          continue;
+        }
+
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -1928,54 +2067,13 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
       const processLoss = buildProcessLossDiagnostic(run, now);
-      diagnosticReasons[processLoss.details.reason] =
-        (diagnosticReasons[processLoss.details.reason] ?? 0) + 1;
-
-      let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${processLoss.baseMessage}; retrying once` : processLoss.baseMessage,
-        errorCode: "process_lost",
-        finishedAt: now,
-        resultJson: {
-          ...parseObject(run.resultJson),
-          processLoss: processLoss.details,
-        },
+      await finalizeRunAsProcessLost({
+        run,
+        adapterType,
+        baseMessage: processLoss.baseMessage,
+        processLossDetails: processLoss.details,
       });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
-        finishedAt: now,
-        error: shouldRetry ? `${processLoss.baseMessage}; retrying once` : processLoss.baseMessage,
-      });
-      if (!finalizedRun) finalizedRun = await getRun(run.id);
-      if (!finalizedRun) continue;
-
-      let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
-      if (shouldRetry) {
-        const agent = await getAgent(run.agentId);
-        if (agent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, agent, now);
-        }
-      } else {
-        await releaseIssueExecutionAndPromote(finalizedRun);
-      }
-
-      await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "error",
-        message: shouldRetry
-          ? `${processLoss.baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : processLoss.baseMessage,
-        payload: {
-          ...processLoss.details,
-          ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
-        },
-      });
-
-      await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
-      runningProcesses.delete(run.id);
-      reaped.push(run.id);
     }
 
     if (reaped.length > 0) {
@@ -2446,6 +2544,7 @@ export function heartbeatService(db: Db) {
       agentHome: await (async () => {
         const home = resolveDefaultAgentWorkspaceDir(agent.id);
         await fs.mkdir(home, { recursive: true });
+        await ensureAgentHomeDailyMemoryNote(agent.id);
         return home;
       })(),
     };
@@ -2466,7 +2565,12 @@ export function heartbeatService(db: Db) {
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+    const runtimeSessionFallback = resolveRuntimeSessionLegacyFallback({
+      taskKey,
+      resetTaskSession,
+      adapterType: agent.adapterType,
+      legacySessionId: runtime.sessionId,
+    });
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
@@ -3266,6 +3370,9 @@ export function heartbeatService(db: Db) {
           .select({
             id: issues.id,
             companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
           })
@@ -3312,6 +3419,38 @@ export function heartbeatService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(issues.id, issue.id));
+        }
+
+        if (
+          !activeExecutionRun &&
+          issue.status === "in_progress" &&
+          issue.assigneeAgentId === agentId &&
+          issue.checkoutRunId
+        ) {
+          const activeCheckoutRun = await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+            .then((rows) => rows[0] ?? null);
+
+          if (activeCheckoutRun && ["queued", "running"].includes(activeCheckoutRun.status)) {
+            activeExecutionRun = activeCheckoutRun;
+            const checkoutAgent = await tx
+              .select({ name: agents.name })
+              .from(agents)
+              .where(eq(agents.id, activeCheckoutRun.agentId))
+              .then((rows) => rows[0] ?? null);
+
+            await tx
+              .update(issues)
+              .set({
+                executionRunId: activeCheckoutRun.id,
+                executionAgentNameKey: normalizeAgentNameKey(checkoutAgent?.name),
+                executionLockedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(issues.id, issue.id));
+          }
         }
 
         if (!activeExecutionRun) {

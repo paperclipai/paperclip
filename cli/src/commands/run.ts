@@ -140,6 +140,12 @@ function getMissingModuleSpecifier(err: unknown): string | null {
 
 function maybeEnableUiDevMiddleware(entrypoint: string): void {
   if (process.env.PAPERCLIP_UI_DEV_MIDDLEWARE !== undefined) return;
+  const launchdManaged =
+    process.env.PAPERCLIP_MANAGED_BY_LAUNCHD === "1" || process.env.PAPERCLIP_MANAGED_BY_LAUNCHD === "true";
+  if (launchdManaged && !process.stdin.isTTY) {
+    process.env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
+    return;
+  }
   const normalized = entrypoint.replaceAll("\\", "/");
   if (normalized.endsWith("/server/src/index.ts") || normalized.endsWith("@paperclipai/server/src/index.ts")) {
     process.env.PAPERCLIP_UI_DEV_MIDDLEWARE = "true";

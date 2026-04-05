@@ -1,11 +1,13 @@
 import type { Db } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { agentService } from "./agents.js";
+import { companyService } from "./companies.js";
 import { issueService } from "./issues.js";
 import { workProductService } from "./work-products.js";
 
 const REVIEW_DISPATCH_ORIGIN_KIND = "technical_review_dispatch";
-const REVIEWER_REFERENCE = "revisor-pr";
+/** Default agent name reference when company and env omit overrides. */
+export const DEFAULT_TECHNICAL_REVIEWER_REFERENCE = "revisor-pr";
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
 type IssueSummary = Awaited<ReturnType<ReturnType<typeof issueService>["getById"]>>;
@@ -32,6 +34,7 @@ type ResolvedReviewArtifact = {
   bodyContext: string;
   pullRequest: ResolvedPullRequestRef;
   diffIdentity: string;
+  headSha: string | null;
 };
 
 type PreviousReviewReference = {
@@ -39,20 +42,45 @@ type PreviousReviewReference = {
   pullRequest: ResolvedPullRequestRef | null;
 };
 
+export type ReviewDispatchDedupReason =
+  | "exact_diff_identity"
+  | "same_pr_recent_comment"
+  | "same_head_sha"
+  | "same_pr_existing_artifact"
+  | "no_new_diff_declared";
+
+export type ReviewDispatchNoopReason =
+  | "issue_not_found"
+  | "status_not_handoff_ready"
+  | "reviewer_not_found"
+  | "reviewer_ambiguous"
+  | "pull_request_not_found";
+
 export type ReviewDispatchResult =
-  | { kind: "noop"; reason: string }
+  | { kind: "noop"; reason: ReviewDispatchNoopReason | string }
   | {
     kind: "created" | "reused" | "already_reviewed";
     artifact: ResolvedReviewArtifact;
     reviewIssue: ReviewIssueRecord;
     reviewer: AgentSummary;
+    dedupReason?: ReviewDispatchDedupReason;
   };
 
 type ReviewDispatchDeps = {
   agents?: ReturnType<typeof agentService>;
   issues?: ReturnType<typeof issueService>;
   workProducts?: ReturnType<typeof workProductService>;
+  companies?: {
+    getById: (
+      id: string,
+    ) => Promise<{ technicalReviewerReference?: string | null } | null>;
+  };
 };
+
+function technicalReviewerReferenceFromEnv() {
+  const t = process.env.PAPERCLIP_TECHNICAL_REVIEWER_REFERENCE?.trim();
+  return t && t.length > 0 ? t : null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -126,6 +154,14 @@ function extractHeadSha(metadata: Record<string, unknown> | null) {
   );
 }
 
+function extractHeadShaFromText(text: string | null | undefined) {
+  if (!text) return null;
+  const match = text.match(
+    /\bhead(?:\s+atual|\s+sha|\s+commit|\s+ref)?\b[^0-9a-fA-F]{0,16}([0-9a-fA-F]{7,40})\b/i,
+  );
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
 function resolvedPullRequestRefFromWorkProduct(product: IssueWorkProduct): ResolvedPullRequestRef | null {
   const fromUrl = pullRequestRefFromUrl(product.url);
   if (fromUrl) return fromUrl;
@@ -175,7 +211,30 @@ function commentDeclaresNoNewDiff(commentBody: string | null | undefined) {
     "mesmo change set",
     "mesmo diff ja entregue",
     "mantive o mesmo change set",
+    "sem diff novo",
+    "nao houve diff novo",
+    "nao houve novo diff",
+    "sem novo diff nem novo commit",
+    "nao houve novo diff nem novo commit",
+    "diff permaneceu inalterado",
+    "codigo permaneceu inalterado",
+    "estado do codigo: inalterado",
+    "estado do codigo inalterado",
+    "inalterado desde o commit",
+    "codigo inalterado desde o commit",
   ].some((pattern) => normalized.includes(pattern));
+}
+
+function commentSignalsExplicitReviewHandoff(commentBody: string | null | undefined) {
+  if (!commentBody) return false;
+  const normalized = normalizeFreeformText(commentBody);
+  const suppressingPatterns = [
+    "sem novo handoff",
+    "nao estou emitindo novo handoff",
+    "nao houve novo handoff",
+  ];
+  if (suppressingPatterns.some((pattern) => normalized.includes(pattern))) return false;
+  return /(^|\n)\s*#+\s*handoff\b/.test(normalized) || /(^|\s)@revisor pr\b/.test(normalized);
 }
 
 function buildArtifactTitle(ref: ResolvedPullRequestRef, rawTitle: string | null | undefined) {
@@ -201,6 +260,9 @@ function buildReviewDescription(input: {
     lines.push(`- Handoff atual: [comentario mais recente](${artifact.sourceLink})`);
   } else if (artifact.bodyContext) {
     lines.push(`- Origem do PR: ${artifact.bodyContext}`);
+  }
+  if (artifact.headSha) {
+    lines.push(`- Head do diff atual: \`${artifact.headSha}\``);
   }
 
   if (previousReview?.issue) {
@@ -239,6 +301,7 @@ function buildCommentArtifact(sourceIssue: NonNullable<IssueSummary>, comment: N
   const pullRequest = extractPullRequestRefFromText(comment.body);
   if (!pullRequest) return null;
   const noNewDiff = commentDeclaresNoNewDiff(comment.body);
+  const headSha = extractHeadShaFromText(comment.body);
   return {
     source: "comment" as const,
     sourceId: comment.id,
@@ -249,7 +312,10 @@ function buildCommentArtifact(sourceIssue: NonNullable<IssueSummary>, comment: N
     pullRequest,
     diffIdentity: noNewDiff
       ? `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:no-new-diff`
-      : `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:comment:${comment.id}`,
+      : (headSha
+        ? `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:head:${headSha}`
+        : `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:comment:${comment.id}`),
+    headSha,
   };
 }
 
@@ -265,6 +331,7 @@ function buildDescriptionArtifact(sourceIssue: NonNullable<IssueSummary>) {
     bodyContext: "descricao da issue fonte",
     pullRequest,
     diffIdentity: `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:description`,
+    headSha: extractHeadShaFromText(sourceIssue.description),
   };
 }
 
@@ -284,6 +351,7 @@ function buildWorkProductArtifact(product: IssueWorkProduct) {
     diffIdentity: headSha
       ? `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:head:${headSha}`
       : `github:${pullRequest.repoFullName}:pr:${pullRequest.prNumber}:work-product:${product.id}:${product.updatedAt.toISOString()}`,
+    headSha,
   };
 }
 
@@ -291,11 +359,27 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
   const agents = deps.agents ?? agentService(db);
   const issues = deps.issues ?? issueService(db);
   const workProducts = deps.workProducts ?? workProductService(db);
+  const companies = deps.companies ?? companyService(db);
+
+  async function resolveReviewerReferenceString(companyId: string) {
+    const row = await companies.getById(companyId);
+    const fromCompany = row?.technicalReviewerReference?.trim();
+    if (fromCompany) return fromCompany;
+    const fromEnv = technicalReviewerReferenceFromEnv();
+    if (fromEnv) return fromEnv;
+    return DEFAULT_TECHNICAL_REVIEWER_REFERENCE;
+  }
 
   async function resolveReviewer(companyId: string) {
-    const resolved = await agents.resolveByReference(companyId, REVIEWER_REFERENCE);
-    if (resolved.ambiguous) return null;
-    return resolved.agent;
+    const reference = await resolveReviewerReferenceString(companyId);
+    const resolved = await agents.resolveByReference(companyId, reference);
+    if (resolved.ambiguous) {
+      return { reviewer: null as AgentSummary | null, noopReason: "reviewer_ambiguous" as const };
+    }
+    if (!resolved.agent) {
+      return { reviewer: null as AgentSummary | null, noopReason: "reviewer_not_found" as const };
+    }
+    return { reviewer: resolved.agent, noopReason: null as null };
   }
 
   async function resolveArtifact(sourceIssue: NonNullable<IssueSummary>, comment: IssueComment | null | undefined) {
@@ -307,12 +391,17 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
     }
 
     if (comment) {
-      const fromCurrentComment = buildCommentArtifact(sourceIssue, comment);
-      if (fromCurrentComment) return fromCurrentComment;
+      const shouldUseCurrentComment =
+        commentSignalsExplicitReviewHandoff(comment.body) || commentDeclaresNoNewDiff(comment.body);
+      if (shouldUseCurrentComment) {
+        const fromCurrentComment = buildCommentArtifact(sourceIssue, comment);
+        if (fromCurrentComment) return fromCurrentComment;
+      }
     }
 
     const latestComments = await issues.listComments(sourceIssue.id, { order: "desc", limit: 20 });
     for (const entry of latestComments) {
+      if (!commentSignalsExplicitReviewHandoff(entry.body)) continue;
       const artifact = buildCommentArtifact(sourceIssue, entry);
       if (artifact) return artifact;
     }
@@ -340,31 +429,64 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
   function matchExistingReview(
     childIssues: ReviewIssueRecord[],
     artifact: ResolvedReviewArtifact,
-  ): ReviewIssueRecord | null {
+  ): { reviewIssue: ReviewIssueRecord; dedupReason: ReviewDispatchDedupReason } | null {
     const byOrigin = childIssues.find((child) =>
       child.originKind === REVIEW_DISPATCH_ORIGIN_KIND
       && child.originId === artifact.diffIdentity,
     );
-    if (byOrigin) return byOrigin;
+    if (byOrigin) {
+      return {
+        reviewIssue: byOrigin,
+        dedupReason: artifact.diffIdentity.endsWith(":no-new-diff") ? "no_new_diff_declared" : "exact_diff_identity",
+      };
+    }
 
     if (artifact.source === "comment" && artifact.sourceCreatedAt) {
       const fallback = childIssues
         .filter((child) => parseReviewTicketPullRequest(child)?.url === artifact.pullRequest.url)
         .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
         .find((child) => new Date(child.createdAt).getTime() >= artifact.sourceCreatedAt!.getTime());
-      if (fallback) return fallback;
+      if (fallback) {
+        return {
+          reviewIssue: fallback,
+          dedupReason: "same_pr_recent_comment",
+        };
+      }
+    }
+
+    if (artifact.headSha) {
+      const sameHead = childIssues.find((child) =>
+        child.originKind === REVIEW_DISPATCH_ORIGIN_KIND
+        && child.originId === `github:${artifact.pullRequest.repoFullName}:pr:${artifact.pullRequest.prNumber}:head:${artifact.headSha}`,
+      );
+      if (sameHead) {
+        return {
+          reviewIssue: sameHead,
+          dedupReason: "same_head_sha",
+        };
+      }
     }
 
     if (artifact.source !== "comment") {
       const fallback = childIssues.find((child) => parseReviewTicketPullRequest(child)?.url === artifact.pullRequest.url);
-      if (fallback) return fallback;
+      if (fallback) {
+        return {
+          reviewIssue: fallback,
+          dedupReason: "same_pr_existing_artifact",
+        };
+      }
     }
 
     if (artifact.diffIdentity.endsWith(":no-new-diff")) {
       const samePullRequest = childIssues
         .filter((child) => parseReviewTicketPullRequest(child)?.url === artifact.pullRequest.url)
         .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
-      if (samePullRequest) return samePullRequest;
+      if (samePullRequest) {
+        return {
+          reviewIssue: samePullRequest,
+          dedupReason: "no_new_diff_declared",
+        };
+      }
     }
 
     return null;
@@ -378,8 +500,13 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
     if (!sourceIssue) return { kind: "noop", reason: "issue_not_found" };
     if (sourceIssue.status !== "handoff_ready") return { kind: "noop", reason: "status_not_handoff_ready" };
 
-    const reviewer = await resolveReviewer(sourceIssue.companyId);
-    if (!reviewer) return { kind: "noop", reason: "reviewer_not_found" };
+    const { reviewer, noopReason: reviewerResolution } = await resolveReviewer(sourceIssue.companyId);
+    if (!reviewer) {
+      return {
+        kind: "noop",
+        reason: reviewerResolution ?? "reviewer_not_found",
+      };
+    }
 
     const comment = input.commentId ? await issues.getComment(input.commentId) : null;
     const artifact = await resolveArtifact(sourceIssue, comment);
@@ -390,10 +517,11 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
     const existingReview = matchExistingReview(reviewerChildren, artifact);
     if (existingReview) {
       return {
-        kind: TERMINAL_ISSUE_STATUSES.has(existingReview.status) ? "already_reviewed" : "reused",
+        kind: TERMINAL_ISSUE_STATUSES.has(existingReview.reviewIssue.status) ? "already_reviewed" : "reused",
         artifact,
-        reviewIssue: existingReview,
+        reviewIssue: existingReview.reviewIssue,
         reviewer,
+        dedupReason: existingReview.dedupReason,
       };
     }
 

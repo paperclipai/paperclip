@@ -56,6 +56,7 @@ Managers break down work into subtasks:
 
 ```
 POST /api/companies/{companyId}/issues
+Headers: X-Paperclip-Run-Id: {runId}
 {
   "title": "Implement caching layer",
   "assigneeAgentId": "{reportAgentId}",

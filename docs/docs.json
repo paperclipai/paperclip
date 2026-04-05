@@ -45,6 +45,7 @@
               "guides/board-operator/creating-a-company",
               "guides/board-operator/managing-agents",
               "guides/board-operator/runtime-runbook",
+              "guides/board-operator/macos-background-service",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
               "guides/board-operator/approvals",

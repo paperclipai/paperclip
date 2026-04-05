@@ -16,3 +16,4 @@ export { logCheck } from "./log-check.js";
 export { portCheck } from "./port-check.js";
 export { secretsCheck } from "./secrets-check.js";
 export { storageCheck } from "./storage-check.js";
+export { uiStaticArtifactsCheck } from "./ui-static-artifacts-check.js";

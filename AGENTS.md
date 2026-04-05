@@ -37,6 +37,14 @@ pnpm install
 pnpm dev
 ```
 
+`pnpm dev` uses **`tsx watch`** on the server. If the process dies with logs like `Previous process hasn't exited yet. Force killing`, or embedded Postgres ends up in `shutting down`, prefer a **single long-lived** server:
+
+```sh
+pnpm dev:once
+```
+
+Same URL as below; you restart manually after code changes (or use the board “Restart required” / guarded auto-restart from Instance Settings when enabled).
+
 This starts:
 
 - API: `http://localhost:3100`
@@ -48,6 +56,10 @@ Quick checks:
 curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
+
+Operator tooling: `pnpm audit:heartbeat-runs` (with `PAPERCLIP_COMPANY_ID`) samples recent heartbeat runs for triage; see `doc/plans/2026-04-03-heartbeat-runs-sampling-and-triage.md`.
+
+On macOS, Paperclip can run as a user **LaunchAgent** (background, no terminal): see `docs/guides/board-operator/macos-background-service.md`.
 
 Reset local dev DB:
 
@@ -78,7 +90,10 @@ If you change schema/API behavior, update all impacted layers:
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep plan docs dated and centralized.
+5. Document every code change in the right place before commit.
+Before finishing a code change, review the existing documentation for that area and update the most specific relevant file. Use `docs/` for user/operator-facing behavior, `doc/` for internal engineering/reference material, package-level `CHANGELOG.md` files for shipped package changes, and repo/workspace `AGENTS.md` files for contributor workflow rules. Do not leave code-only changes undocumented or hide them in a generic report when a stable doc already exists.
+
+6. Keep plan docs dated and centralized.
 New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
 
 ## 6. Database Change Workflow
@@ -142,4 +157,4 @@ A change is done when all are true:
 1. Behavior matches `doc/SPEC-implementation.md`
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+4. Relevant docs/changelogs/AGENTS files updated in the appropriate location for every code change

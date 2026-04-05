@@ -33,6 +33,9 @@ self.addEventListener("fetch", (event) => {
         return response;
       })
       .catch(() => {
+        // Synthetic 503: only used when fetch() rejects (e.g. server down, connection reset).
+        // On localhost, prefer disabling SW registration (see ui/src/main.tsx) to avoid false
+        // "503" after brief Paperclip restarts.
         if (request.mode === "navigate") {
           return caches.match("/") || new Response("Offline", { status: 503 });
         }

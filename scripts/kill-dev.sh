@@ -2,6 +2,10 @@
 #
 # Kill all local Paperclip dev server processes (across all worktrees).
 #
+# Does NOT kill processes started under LaunchAgent when they set
+# PAPERCLIP_MANAGED_BY_LAUNCHD=1 (see contrib/macos-launchagent/). To stop
+# that service use: launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/io.paperclip.local.plist
+#
 # Usage:
 #   scripts/kill-dev.sh        # kill all paperclip dev processes
 #   scripts/kill-dev.sh --dry  # preview what would be killed
@@ -14,20 +18,40 @@ if [[ "${1:-}" == "--dry" || "${1:-}" == "--dry-run" || "${1:-}" == "-n" ]]; the
   DRY_RUN=true
 fi
 
+# macOS: wide ps output includes process environment; LaunchAgent should set PAPERCLIP_MANAGED_BY_LAUNCHD=1.
+is_launchagent_paperclip_service() {
+  local pid="$1"
+  local cmd
+  cmd=$(ps wwwe -p "$pid" -o command= 2>/dev/null || true)
+  [[ "$cmd" == *"PAPERCLIP_MANAGED_BY_LAUNCHD=1"* ]] && return 0
+  [[ "$cmd" == *"PAPERCLIP_MANAGED_BY_LAUNCHD=true"* ]] && return 0
+  return 1
+}
+
 # Collect PIDs of node processes running from any paperclip directory.
 # Matches paths like /Users/*/paperclip/... or /Users/*/paperclip-*/...
 # Excludes postgres-related processes.
 pids=()
 lines=()
+skipped_launchd=0
 
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   # skip postgres processes
   [[ "$line" == *postgres* ]] && continue
   pid=$(echo "$line" | awk '{print $2}')
+  if is_launchagent_paperclip_service "$pid"; then
+    skipped_launchd=$((skipped_launchd + 1))
+    continue
+  fi
   pids+=("$pid")
   lines+=("$line")
 done < <(ps aux | grep -E '/paperclip(-[^/]+)?/' | grep node | grep -v grep || true)
+
+if [[ $skipped_launchd -gt 0 ]]; then
+  echo "Skipped $skipped_launchd process(es) marked PAPERCLIP_MANAGED_BY_LAUNCHD (LaunchAgent service)."
+  echo ""
+fi
 
 if [[ ${#pids[@]} -eq 0 ]]; then
   echo "No Paperclip dev processes found."

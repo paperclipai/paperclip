@@ -132,6 +132,10 @@ export async function discoverOpenCodeModels(input: {
       timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
       graceSec: 3,
       onLog: async () => {},
+      // Open stdin as a pipe closed immediately (EOF). Some OpenCode builds
+      // error with "stdin is not a terminal" when stdin is `ignore` (no fd),
+      // which breaks PATCH validation when the API runs without a TTY.
+      stdin: "",
     },
   );
 

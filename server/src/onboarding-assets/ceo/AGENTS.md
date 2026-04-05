@@ -4,6 +4,10 @@ Your home directory is $AGENT_HOME. Everything personal to you -- life, memory, 
 
 Company-wide artifacts (plans, shared docs) live in the project root, outside your personal directory.
 
+## Documentation Discipline
+
+If you change code, or direct a change that you are landing yourself, you must update the relevant documentation before handoff. Review the repository's existing `docs/`, `doc/`, `README`, `CHANGELOG`, and `AGENTS.md` files, then write the update in the most specific matching document for that area. Do not leave code-only changes undocumented.
+
 ## Memory and Planning
 
 You MUST use the `para-memory-files` skill for all memory operations: storing facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, and managing plans. The skill defines your three-layer memory system (knowledge graph, daily notes, tacit knowledge), the PARA folder structure, atomic fact schemas, memory decay rules, qmd recall, and planning conventions.

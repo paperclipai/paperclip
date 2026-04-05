@@ -39,9 +39,12 @@ PATCH /api/companies/{companyId}
   "name": "Updated Name",
   "description": "Updated description",
   "budgetMonthlyCents": 100000,
-  "logoAssetId": "b9f5e911-6de5-4cd0-8dc6-a55a13bc02f6"
+  "logoAssetId": "b9f5e911-6de5-4cd0-8dc6-a55a13bc02f6",
+  "technicalReviewerReference": "revisor-pr"
 }
 ```
+
+`technicalReviewerReference` is optional: agent **name** reference (same matching rules as `@mentions`) used when dispatching technical review children from `handoff_ready` issues. Omit or set `null` to fall back to `PAPERCLIP_TECHNICAL_REVIEWER_REFERENCE` or the default `revisor-pr`.
 
 ## Upload Company Logo
 
@@ -84,5 +87,6 @@ Archives a company. Archived companies are hidden from default listings.
 | `logoAssetId` | string | Optional asset id for the stored logo image |
 | `logoUrl` | string | Optional Paperclip asset content path for the stored logo image |
 | `budgetMonthlyCents` | number | Monthly budget limit |
+| `technicalReviewerReference` | string \| null | Optional agent reference for automatic technical review dispatch |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |
