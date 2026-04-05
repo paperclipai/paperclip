@@ -26,6 +26,7 @@ import {
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
+import { calculateCodexUsageCostUsd } from "./pricing.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -603,9 +604,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionDisplayId: resolvedSessionId,
       provider: "openai",
       biller: resolveCodexBiller(effectiveEnv, billingType),
-      model,
+      model: model || "codex-mini",
       billingType,
-      costUsd: null,
+      costUsd: calculateCodexUsageCostUsd(
+        model || "codex-mini",
+        attempt.parsed.usage,
+      ),
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCodexUnknownSessionError, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
+import {
+  calculateCodexUsageCostUsd,
+  isCodexUnknownSessionError,
+  parseCodexJsonl,
+  resolveCodexModelPricingPerToken,
+} from "@paperclipai/adapter-codex-local/server";
 import { parseCodexStdoutLine } from "@paperclipai/adapter-codex-local/ui";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 
@@ -30,6 +35,72 @@ describe("codex_local stale session detection", () => {
       "2026-02-19T19:58:53.281939Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c775d-967c-7ef1-acc7-e396dc2c87cc";
 
     expect(isCodexUnknownSessionError("", stderr)).toBe(true);
+  });
+});
+
+describe("codex_local pricing", () => {
+  it("uses codex-mini pricing for known models", () => {
+    const cost = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      outputTokens: 500,
+    });
+    expect(cost).toBeCloseTo(0.0045, 9);
+  });
+
+  it("calculates cost correctly with cached input tokens", () => {
+    const cost = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 200,
+      outputTokens: 500,
+    });
+    // regular input: 800 tokens * $1.50/1M = $0.0012
+    // cached input: 200 tokens * $0.375/1M = $0.000075
+    // output: 500 tokens * $6.00/1M = $0.003
+    // total ~= $0.004275
+    expect(cost).toBeGreaterThan(0.004);
+    expect(cost).toBeLessThan(0.005);
+  });
+
+  it("does not double-count cached tokens", () => {
+    const withCache = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 500,
+      outputTokens: 0,
+    });
+    const noCache = calculateCodexUsageCostUsd("codex-mini", {
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    });
+    expect(withCache).toBeLessThan(noCache);
+  });
+
+  it("uses codex-mini pricing for versioned codex-mini model ids", () => {
+    const cost = calculateCodexUsageCostUsd("codex-mini-2025-01-31", {
+      inputTokens: 1000,
+      cachedInputTokens: 0,
+      outputTokens: 500,
+    });
+    expect(cost).toBeCloseTo(0.0045, 9);
+  });
+
+  it("falls back for unknown models with warning", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pricing = resolveCodexModelPricingPerToken("unknown-model");
+      const cost = calculateCodexUsageCostUsd("unknown-model", {
+        inputTokens: 1000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+      });
+      expect(pricing.input).toBeCloseTo(3 / 1_000_000, 12);
+      expect(pricing.output).toBeCloseTo(15 / 1_000_000, 12);
+      expect(cost).toBeCloseTo(0.0105, 9);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
