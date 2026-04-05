@@ -832,13 +832,13 @@ async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description: string | null;
         status: string;
         priority: string;
       }
     | null;
 }) {
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
-  if (commentIds.length === 0) return null;
 
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const issueSummary =
@@ -849,6 +849,7 @@ async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
           })
@@ -857,7 +858,9 @@ async function buildPaperclipWakePayload(input: {
           .then((rows) => rows[0] ?? null)
       : null);
 
-  const commentRows = await input.db
+  if (commentIds.length === 0 && !issueSummary) return null;
+
+  const commentRows = commentIds.length > 0 ? await input.db
     .select({
       id: issueComments.id,
       issueId: issueComments.issueId,
@@ -872,7 +875,7 @@ async function buildPaperclipWakePayload(input: {
         eq(issueComments.companyId, input.companyId),
         inArray(issueComments.id, commentIds),
       ),
-    );
+    ) : [];
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
@@ -925,6 +928,7 @@ async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description: issueSummary.description ?? null,
           status: issueSummary.status,
           priority: issueSummary.priority,
         }
@@ -2283,6 +2287,7 @@ export function heartbeatService(db: Db) {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
             projectId: issues.projectId,
@@ -2355,6 +2360,7 @@ export function heartbeatService(db: Db) {
           id: issueContext.id,
           identifier: issueContext.identifier,
           title: issueContext.title,
+          description: issueContext.description,
           status: issueContext.status,
           priority: issueContext.priority,
           projectId: issueContext.projectId,
@@ -2372,6 +2378,7 @@ export function heartbeatService(db: Db) {
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueRef.description,
             status: issueRef.status,
             priority: issueRef.priority,
           }
