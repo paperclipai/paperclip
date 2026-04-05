@@ -4,6 +4,9 @@ import { FileStack, ExternalLink } from "lucide-react";
 import { blogRunsApi, type BlogRunListItem } from "../api/blogRuns";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
+import { Button } from "@/components/ui/button";
+import { useState } from "react";
+import { NewBlogRunDialog } from "./NewBlogRunDialog";
 
 interface ActiveBlogRunsPanelProps {
   companyId: string;
@@ -57,6 +60,7 @@ function toneClass(tone: "active" | "warning" | "danger" | "neutral") {
 }
 
 export function ActiveBlogRunsPanel({ companyId }: ActiveBlogRunsPanelProps) {
+  const [createOpen, setCreateOpen] = useState(false);
   const { data } = useQuery({
     queryKey: queryKeys.blogRuns.list(companyId, "active", 5),
     queryFn: () => blogRunsApi.listForCompany(companyId, { mode: "active", limit: 5 }),
@@ -71,7 +75,11 @@ export function ActiveBlogRunsPanel({ companyId }: ActiveBlogRunsPanelProps) {
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Active blog runs
         </h3>
+        <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
+          New blog run
+        </Button>
       </div>
+      <NewBlogRunDialog companyId={companyId} open={createOpen} onOpenChange={setCreateOpen} />
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
           <p className="text-sm text-muted-foreground">No active blog runs.</p>

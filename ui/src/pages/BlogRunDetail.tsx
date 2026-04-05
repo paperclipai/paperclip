@@ -84,6 +84,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((entry) => String(entry ?? "").trim()).filter(Boolean) : [];
+}
+
 export function BlogRunDetail() {
   const { runId } = useParams<{ runId: string }>();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -153,6 +157,8 @@ export function BlogRunDetail() {
     const raw = data?.stopReason?.resumeRequirements;
     return Array.isArray(raw) ? raw.map((entry) => String(entry ?? "").trim()).filter(Boolean) : [];
   }, [data]);
+  const stopReason = useMemo(() => asRecord(data?.stopReason), [data]);
+  const supportingOwners = useMemo(() => asStringList(stopReason?.supportingOwners), [stopReason]);
 
   const invalidateRun = async () => {
     if (!runId) return;
@@ -321,6 +327,43 @@ export function BlogRunDetail() {
         </div>
 
         <div className="space-y-6">
+          {stopReason ? (
+            <div className="rounded-xl border border-border bg-background/70 p-5">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Failure routing</h2>
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {stopReason.failureName ? summaryChip("failure", String(stopReason.failureName)) : null}
+                  {stopReason.primaryOwner ? summaryChip("owner", String(stopReason.primaryOwner)) : null}
+                  {stopReason.escalationOwner ? summaryChip("escalation", String(stopReason.escalationOwner)) : null}
+                  {stopReason.followUpTrack ? summaryChip("track", String(stopReason.followUpTrack)) : null}
+                </div>
+                {stopReason.currentDecision ? (
+                  <p className="text-sm text-muted-foreground">{String(stopReason.currentDecision)}</p>
+                ) : null}
+                {stopReason.nextAction ? (
+                  <p className="text-sm text-muted-foreground">
+                    Next action: {String(stopReason.nextAction)}
+                  </p>
+                ) : null}
+                {supportingOwners.length > 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Supporting owners: {supportingOwners.join(", ")}
+                  </p>
+                ) : null}
+                {resumeRequirements.length > 0 ? (
+                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
+                    <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Resume requirements</p>
+                    <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                      {resumeRequirements.map((item) => (
+                        <li key={item}>- {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           <div className="rounded-xl border border-border bg-background/70 p-5">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Publish evidence</h2>
             <div className="mt-4 space-y-3">
@@ -513,16 +556,6 @@ export function BlogRunDetail() {
               <p className="text-sm text-muted-foreground">
                 Confirm the recovery requirements and reopen this run for execution.
               </p>
-              {resumeRequirements.length > 0 ? (
-                <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-                  <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Resume requirements</p>
-                  <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
-                    {resumeRequirements.map((item) => (
-                      <li key={item}>- {item}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
               <input
                 value={resumableForm.specialistAcknowledgedBy}
                 onChange={(event) => setResumableForm((prev) => ({ ...prev, specialistAcknowledgedBy: event.target.value }))}

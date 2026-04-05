@@ -602,6 +602,113 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
+  it("persists topic-scout artifacts and initial traceability when blog_run_create opens a fresh run", async () => {
+    const stubDir = await fs.mkdtemp("/tmp/paperclip-routine-blog-run-fresh-");
+    const homeDir = await fs.mkdtemp("/tmp/paperclip-routine-blog-home-");
+    const topicScoutPath = `${stubDir}/topic_scout_stub.py`;
+    writeFileSync(
+      topicScoutPath,
+      [
+        "import json",
+        "import sys",
+        "",
+        "out_path = sys.argv[sys.argv.index('--out') + 1]",
+        "with open(out_path, 'w', encoding='utf-8') as handle:",
+        "    json.dump({",
+        "        'selected_topic': 'Fresh Topic',",
+        "        'selected_bucket': 'ai_updates',",
+        "        'selection_reason': 'fresh_official_source',",
+        "        'top10_candidates': [",
+        "            {'rank': 1, 'title': 'Fresh Topic', 'bucket': 'ai_updates', 'link': 'https://example.com/fresh-topic'}",
+        "        ]",
+        "    }, handle)",
+        "",
+      ].join("\n"),
+    );
+
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture({
+      runBlogRunStep: vi.fn().mockResolvedValue({ run: { id: "blog-run-fresh", status: "research_ready" } }),
+    });
+
+    const invokingIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "fresh routine issue",
+      description: "Fresh routine issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "manual",
+    });
+
+    await db.update(routines).set({
+      metadata: {
+        executionMode: "blog_run_create",
+        vertical: "ai-tech",
+        targetSite: "fluxaivory.com",
+      },
+    }).where(eq(routines.id, routine.id));
+
+    const originalScriptEnv = process.env.ARTICLE_LOOP_CREATOR_SCRIPT;
+    const originalTopicScoutEnv = process.env.ARTICLE_LOOP_TOPIC_SCOUT_SCRIPT;
+    const originalRssRefreshEnv = process.env.ARTICLE_LOOP_RSS_REFRESH_SCRIPT;
+    const originalPublishedTitlesEnv = process.env.ARTICLE_LOOP_FETCH_PUBLISHED_TITLES;
+    const originalDbEnv = process.env.PAPERCLIP_DB_URL;
+    const originalHomeEnv = process.env.HOME;
+    process.env.ARTICLE_LOOP_CREATOR_SCRIPT = "/Users/daehan/Documents/persona/paperclip/scripts/create_article_quality_loop_run.cjs";
+    process.env.ARTICLE_LOOP_TOPIC_SCOUT_SCRIPT = topicScoutPath;
+    process.env.ARTICLE_LOOP_RSS_REFRESH_SCRIPT = "off";
+    process.env.ARTICLE_LOOP_FETCH_PUBLISHED_TITLES = "false";
+    process.env.PAPERCLIP_DB_URL = tempDb!.connectionString;
+    process.env.HOME = homeDir;
+    try {
+      const routineRun = await svc.runRoutine(routine.id, {
+        source: "manual",
+        payload: {
+          issueId: invokingIssue.id,
+          vertical: "ai-tech",
+        },
+      });
+
+      expect(routineRun.status).toBe("blog_run_created");
+      expect((routineRun.triggerPayload as any)?.reusedBlogRun).toBe(false);
+
+      const createdRun = await db
+        .select()
+        .from(blogRuns)
+        .where(eq(blogRuns.id, String((routineRun.triggerPayload as any)?.blogRunId)))
+        .then((rows) => rows[0] ?? null);
+
+      expect((createdRun?.contextJson as any)?.traceability).toMatchObject({
+        originIssueIdentifier: invokingIssue.identifier,
+        lastTouchedIssueIdentifier: invokingIssue.identifier,
+        continuity: "created_new_run",
+      });
+      expect((createdRun?.contextJson as any)?.sourceRoutineIssueId).toBe(invokingIssue.id);
+
+      const topicScoutSnapshotPath = `${homeDir}/.paperclip/instances/default/data/blog-runs/${createdRun?.id}/topic-scout.json`;
+      const topicScoutSnapshot = JSON.parse(await fs.readFile(topicScoutSnapshotPath, "utf8"));
+      expect(topicScoutSnapshot).toMatchObject({
+        selected_topic: "Fresh Topic",
+        selected_bucket: "ai_updates",
+      });
+    } finally {
+      if (originalScriptEnv === undefined) delete process.env.ARTICLE_LOOP_CREATOR_SCRIPT;
+      else process.env.ARTICLE_LOOP_CREATOR_SCRIPT = originalScriptEnv;
+      if (originalTopicScoutEnv === undefined) delete process.env.ARTICLE_LOOP_TOPIC_SCOUT_SCRIPT;
+      else process.env.ARTICLE_LOOP_TOPIC_SCOUT_SCRIPT = originalTopicScoutEnv;
+      if (originalRssRefreshEnv === undefined) delete process.env.ARTICLE_LOOP_RSS_REFRESH_SCRIPT;
+      else process.env.ARTICLE_LOOP_RSS_REFRESH_SCRIPT = originalRssRefreshEnv;
+      if (originalPublishedTitlesEnv === undefined) delete process.env.ARTICLE_LOOP_FETCH_PUBLISHED_TITLES;
+      else process.env.ARTICLE_LOOP_FETCH_PUBLISHED_TITLES = originalPublishedTitlesEnv;
+      if (originalDbEnv === undefined) delete process.env.PAPERCLIP_DB_URL;
+      else process.env.PAPERCLIP_DB_URL = originalDbEnv;
+      if (originalHomeEnv === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHomeEnv;
+      await fs.rm(stubDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(homeDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger, secretMaterial } = await svc.createTrigger(

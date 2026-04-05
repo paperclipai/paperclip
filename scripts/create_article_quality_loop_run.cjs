@@ -23,6 +23,8 @@ const BLOG_RUNS_DIR = path.join(os.homedir(), '.paperclip', 'instances', 'defaul
 const REUSED_RUN_TRACEABILITY_REASON = 'article_quality_loop_bridge';
 const TOPIC_COOLDOWN_HOURS = Number(process.env.ARTICLE_LOOP_TOPIC_COOLDOWN_HOURS || 12);
 const RSS_MAX_AGE_HOURS = Number(process.env.ARTICLE_LOOP_RSS_MAX_AGE_HOURS || 48);
+const HOLDOVER_SUPPRESSION_THRESHOLD = Number(process.env.ARTICLE_LOOP_HOLDOVER_SUPPRESSION_THRESHOLD || 4);
+const HOLDOVER_WINDOW_HOURS = Number(process.env.ARTICLE_LOOP_HOLDOVER_WINDOW_HOURS || 24);
 const WP_API_URL = String(process.env.PUBLISH_WP_API_URL || process.env.WP_API_URL || 'https://fluxaivory.com/wp-json/wp/v2').trim();
 const PUBLISHED_TITLES_TIMEOUT_MS = Number(process.env.ARTICLE_LOOP_PUBLISHED_TITLES_TIMEOUT_MS || 1500);
 
@@ -81,10 +83,16 @@ async function refreshDashboardIfConfigured() {
 
 function buildContext(topicScout, vertical, issueId) {
   const topic = String(topicScout?.selected_topic || '').trim();
+  const selectionPolicy = topicScout?.selection_policy && typeof topicScout.selection_policy === 'object' && !Array.isArray(topicScout.selection_policy)
+    ? { ...topicScout.selection_policy }
+    : null;
+  const issueIdentifier = String(topicScout?.traceability_issue_identifier || '').trim() || null;
+  const touchedAt = new Date().toISOString();
   return {
     topic,
     verticalKey: vertical,
     topicScout: topicScout || null,
+    selectionPolicy,
     title: topic,
     publishReadyGateMode: 'strict',
     publicVerifyContractMode: 'compat',
@@ -97,9 +105,26 @@ function buildContext(topicScout, vertical, issueId) {
       lastFailedGates: [],
       lastGateReasonSummary: {},
       backlog: false,
+      selectionPolicy,
     },
     sourceRoutineIssueId: issueId || null,
+    traceability: {
+      originIssueIdentifier: issueIdentifier,
+      lastTouchedIssueIdentifier: issueIdentifier,
+      continuity: 'created_new_run',
+      lastTouchedAt: touchedAt,
+    },
   };
+}
+
+function toRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...value }
+    : {};
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function resolveTopicSelectionFromArgs(args, topicScout, recentTopics, publishedTitles, cooldownHours) {
@@ -114,10 +139,19 @@ function resolveTopicSelectionFromArgs(args, topicScout, recentTopics, published
       cooldownApplied: false,
       skippedRecentTopics: [],
       skippedPublishedTopics: [],
+      skippedSuppressedTopics: [],
+      managerReviewRequired: false,
+      selectionPolicy: null,
       explicitTopic: true,
     };
   }
-  const selected = selectTopicAvoidingPublished(topicScout, recentTopics, publishedTitles, cooldownHours);
+  const selected = selectTopicAvoidingPublished(
+    topicScout,
+    recentTopics,
+    publishedTitles,
+    cooldownHours,
+    arguments[5] || {},
+  );
   return {
     ...selected,
     explicitTopic: false,
@@ -138,9 +172,158 @@ function normalizeTopicKey(value) {
     .trim();
 }
 
-function selectTopicWithCooldown(topicScout, recentTopics, cooldownHours) {
+function canonicalUrl(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return normalized.replace(/\/+$/, '').toLowerCase();
+}
+
+function buildResearchSignature(researchResult) {
+  const record = toRecord(researchResult);
+  const factPack = toRecord(record.fact_pack);
+  const claimSource = toArray(factPack.claim_list).length > 0 ? toArray(factPack.claim_list) : toArray(factPack.fact_table);
+  const claims = claimSource
+    .map((entry) => {
+      const item = toRecord(entry);
+      return {
+        claim: String(item.claim || '').trim(),
+        evidence: String(item.evidence || '').trim(),
+      };
+    })
+    .filter((entry) => entry.claim || entry.evidence)
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const sourceRegistry = toArray(record.source_registry)
+    .map((entry) => {
+      const item = toRecord(entry);
+      return {
+        title: String(item.title || '').trim().toLowerCase(),
+        url: canonicalUrl(item.url) || '',
+        source_type: String(item.source_type || '').trim().toLowerCase(),
+      };
+    })
+    .filter((entry) => entry.url || entry.title)
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const uncertaintyLedger = toArray(record.uncertainty_ledger)
+    .map((entry) => {
+      const item = toRecord(entry);
+      return {
+        kind: String(item.kind || '').trim().toLowerCase(),
+        issue: String(item.issue || item.item || '').trim().toLowerCase(),
+        status: String(item.status || item.reason || '').trim().toLowerCase(),
+      };
+    })
+    .filter((entry) => entry.kind || entry.issue || entry.status)
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+
+  if (claims.length === 0 && sourceRegistry.length === 0 && uncertaintyLedger.length === 0) {
+    return null;
+  }
+
+  return JSON.stringify({
+    claims,
+    sourceRegistry,
+    uncertaintyLedger,
+  });
+}
+
+function extractSourceUrls(researchResult) {
+  return new Set(
+    toArray(toRecord(researchResult).source_registry)
+      .map((entry) => canonicalUrl(toRecord(entry).url))
+      .filter(Boolean),
+  );
+}
+
+function summarizeTopicSelectionPolicy(historyEntries, candidateLink, referenceAt, options = {}) {
+  const suppressionThreshold = Math.max(2, Number(options.suppressionThreshold || HOLDOVER_SUPPRESSION_THRESHOLD) || HOLDOVER_SUPPRESSION_THRESHOLD);
+  const repeatWindowHours = Math.max(0, Number(options.repeatWindowHours || HOLDOVER_WINDOW_HOURS) || HOLDOVER_WINDOW_HOURS);
+  const referenceMs = Date.parse(String(referenceAt || ''));
+  const sorted = [...toArray(historyEntries)]
+    .map((entry) => toRecord(entry))
+    .sort((left, right) => Date.parse(String(right.created_at || '')) - Date.parse(String(left.created_at || '')));
+  const latestWithResearch = sorted.find((entry) => buildResearchSignature(entry.research_result_json));
+  const latestSignature = latestWithResearch ? buildResearchSignature(latestWithResearch.research_result_json) : null;
+  let identicalEvidenceStreak = 0;
+  if (latestSignature) {
+    for (const entry of sorted) {
+      const signature = buildResearchSignature(entry.research_result_json);
+      if (!signature || signature !== latestSignature) break;
+      identicalEvidenceStreak += 1;
+    }
+  }
+
+  const latestSourceUrls = latestWithResearch ? extractSourceUrls(latestWithResearch.research_result_json) : new Set();
+  const candidateUrl = canonicalUrl(candidateLink);
+  const hasNewSourceSignal = Boolean(candidateUrl) && !latestSourceUrls.has(candidateUrl);
+
+  const historyWindowCount = Number.isFinite(referenceMs) && repeatWindowHours > 0
+    ? sorted.filter((entry) => {
+      const createdAtMs = Date.parse(String(entry.created_at || ''));
+      return Number.isFinite(createdAtMs) && (referenceMs - createdAtMs) <= repeatWindowHours * 60 * 60 * 1000;
+    }).length
+    : sorted.length;
+  const repeatCount = historyWindowCount + 1;
+
+  let grokExceptionStreak = 0;
+  for (const entry of sorted) {
+    const artifacts = toArray(entry.artifacts);
+    const hasSuccess = artifacts.some((artifact) => {
+      const item = toRecord(artifact);
+      const metadata = toRecord(item.metadata);
+      return item.artifactKind === 'grok_trend_scan_json' && metadata.ok !== false;
+    });
+    const hasError = artifacts.some((artifact) => toRecord(artifact).artifactKind === 'grok_artifact_step_error');
+    if (hasError && !hasSuccess) {
+      grokExceptionStreak += 1;
+      continue;
+    }
+    break;
+  }
+
+  let holdoverTag = null;
+  if (latestSignature && identicalEvidenceStreak >= 1 && !hasNewSourceSignal) {
+    holdoverTag = 'delta / repeated holdover confirmation';
+  }
+  if (
+    latestSignature
+    && identicalEvidenceStreak >= (suppressionThreshold - 1)
+    && repeatCount >= suppressionThreshold
+    && !hasNewSourceSignal
+  ) {
+    holdoverTag = 'suppressed stale holdover';
+  }
+
+  return {
+    holdoverTag,
+    repeatCount,
+    identicalEvidenceStreak,
+    historyRunCount: sorted.length,
+    hasNewSourceSignal,
+    grokExceptionStreak,
+    latestResearchRunId: String(latestWithResearch?.run_id || latestWithResearch?.id || '').trim() || null,
+    nextAction:
+      holdoverTag === 'suppressed stale holdover'
+        ? 'pivot_to_next_candidate_or_manager_review'
+        : holdoverTag
+          ? 'allow_holdover_confirmation'
+          : 'fresh_topic_ok',
+  };
+}
+
+function buildTopicSelection(topicScout, recentTopics, cooldownHours, options = {}) {
   const generatedAt = Date.parse(String(topicScout?.generated_at || ''));
-  const candidates = Array.isArray(topicScout?.top10_candidates) ? topicScout.top10_candidates : [];
+  const candidates = Array.isArray(topicScout?.top10_candidates) && topicScout.top10_candidates.length > 0
+    ? topicScout.top10_candidates
+    : [
+        {
+          rank: 1,
+          title: topicScout?.selected_topic,
+          bucket: topicScout?.selected_bucket,
+          why_now: topicScout?.selection_reason,
+          topic_scorecard: topicScout?.topic_scorecard || {},
+          link: topicScout?.link || null,
+        },
+      ].filter((entry) => String(entry.title || '').trim());
   const normalizedRecent = recentTopics
     .map((entry) => ({
       topicKey: normalizeTopicKey(entry.topic),
@@ -148,25 +331,20 @@ function selectTopicWithCooldown(topicScout, recentTopics, cooldownHours) {
     }))
     .filter((entry) => entry.topicKey && Number.isFinite(entry.createdAtMs));
   const cooldownMs = Math.max(0, Number(cooldownHours || 0)) * 60 * 60 * 1000;
-
-  if (!Number.isFinite(generatedAt) || cooldownMs <= 0) {
-    const selected = candidates[0] || null;
-    return {
-      selectedTopic: String(selected?.title || topicScout?.selected_topic || '').trim() || null,
-      selectedBucket: String(selected?.bucket || topicScout?.selected_bucket || '').trim() || null,
-      selectionReason: String(selected?.why_now || topicScout?.selection_reason || 'no candidates'),
-      topicScorecard: selected?.topic_scorecard || topicScout?.topic_scorecard || {},
-      selectedRank: selected?.rank || 1,
-      cooldownApplied: false,
-      skippedRecentTopics: [],
-    };
-  }
-
+  const published = new Set(toArray(options.publishedTitles).map((title) => normalizeTopicKey(title)).filter(Boolean));
   const skippedRecentTopics = [];
+  const skippedPublishedTopics = [];
+  const skippedSuppressedTopics = [];
+  const topicHistories = toRecord(options.topicHistories);
+  const referenceAt = String(options.referenceAt || topicScout?.generated_at || new Date().toISOString());
+  let lastSuppressedPolicy = null;
+
   for (const candidate of candidates) {
     const topicKey = normalizeTopicKey(candidate?.title);
     if (!topicKey) continue;
-    const conflict = normalizedRecent.find((entry) => entry.topicKey === topicKey && (generatedAt - entry.createdAtMs) < cooldownMs);
+    const conflict = Number.isFinite(generatedAt) && cooldownMs > 0
+      ? normalizedRecent.find((entry) => entry.topicKey === topicKey && (generatedAt - entry.createdAtMs) < cooldownMs)
+      : null;
     if (conflict) {
       skippedRecentTopics.push({
         title: String(candidate?.title || '').trim(),
@@ -175,6 +353,34 @@ function selectTopicWithCooldown(topicScout, recentTopics, cooldownHours) {
       });
       continue;
     }
+    if (published.has(topicKey)) {
+      skippedPublishedTopics.push({
+        title: String(candidate?.title || '').trim(),
+        rank: Number(candidate?.rank || 0) || 1,
+      });
+      continue;
+    }
+
+    const policy = options.applySuppressionPolicy === false
+      ? null
+      : summarizeTopicSelectionPolicy(
+          topicHistories[topicKey] || [],
+          candidate?.link,
+          referenceAt,
+          options,
+        );
+    if (policy?.holdoverTag === 'suppressed stale holdover') {
+      skippedSuppressedTopics.push({
+        title: String(candidate?.title || '').trim(),
+        rank: Number(candidate?.rank || 0) || 1,
+        holdoverTag: policy.holdoverTag,
+        repeatCount: policy.repeatCount,
+        grokExceptionStreak: policy.grokExceptionStreak,
+      });
+      lastSuppressedPolicy = policy;
+      continue;
+    }
+
     return {
       selectedTopic: String(candidate?.title || '').trim() || null,
       selectedBucket: String(candidate?.bucket || '').trim() || null,
@@ -183,58 +389,43 @@ function selectTopicWithCooldown(topicScout, recentTopics, cooldownHours) {
       selectedRank: Number(candidate?.rank || 0) || 1,
       cooldownApplied: skippedRecentTopics.length > 0,
       skippedRecentTopics,
+      skippedPublishedTopics,
+      skippedSuppressedTopics,
+      managerReviewRequired: false,
+      selectionPolicy: policy,
     };
   }
 
   const selected = candidates[0] || null;
   return {
-    selectedTopic: String(selected?.title || topicScout?.selected_topic || '').trim() || null,
-    selectedBucket: String(selected?.bucket || topicScout?.selected_bucket || '').trim() || null,
-    selectionReason: String(selected?.why_now || topicScout?.selection_reason || 'no candidates'),
+    selectedTopic: skippedSuppressedTopics.length > 0 ? null : String(selected?.title || topicScout?.selected_topic || '').trim() || null,
+    selectedBucket: skippedSuppressedTopics.length > 0 ? null : String(selected?.bucket || topicScout?.selected_bucket || '').trim() || null,
+    selectionReason: skippedSuppressedTopics.length > 0
+      ? 'manager_review_required_no_fresh_winner'
+      : String(selected?.why_now || topicScout?.selection_reason || 'no candidates'),
     topicScorecard: selected?.topic_scorecard || topicScout?.topic_scorecard || {},
-    selectedRank: selected?.rank || 1,
+    selectedRank: skippedSuppressedTopics.length > 0 ? 0 : selected?.rank || 1,
     cooldownApplied: skippedRecentTopics.length > 0,
     skippedRecentTopics,
+    skippedPublishedTopics,
+    skippedSuppressedTopics,
+    managerReviewRequired: skippedSuppressedTopics.length > 0,
+    selectionPolicy: lastSuppressedPolicy,
   };
 }
 
+function selectTopicWithCooldown(topicScout, recentTopics, cooldownHours) {
+  return buildTopicSelection(topicScout, recentTopics, cooldownHours, {
+    applySuppressionPolicy: false,
+  });
+}
+
 function selectTopicAvoidingPublished(topicScout, recentTopics, publishedTitles, cooldownHours) {
-  const base = selectTopicWithCooldown(topicScout, recentTopics, cooldownHours);
-  const candidates = Array.isArray(topicScout?.top10_candidates) ? topicScout.top10_candidates : [];
-  const published = new Set((publishedTitles || []).map((title) => normalizeTopicKey(title)).filter(Boolean));
-  const selectedKey = normalizeTopicKey(base.selectedTopic);
-  if (!selectedKey || !published.has(selectedKey)) {
-    return {
-      ...base,
-      skippedPublishedTopics: [],
-    };
-  }
-
-  const skippedPublishedTopics = [{ title: base.selectedTopic, rank: base.selectedRank }];
-  for (const candidate of candidates) {
-    const candidateKey = normalizeTopicKey(candidate?.title);
-    if (!candidateKey || published.has(candidateKey)) {
-      if (candidate?.title && candidate?.title !== base.selectedTopic) {
-        skippedPublishedTopics.push({ title: String(candidate.title), rank: Number(candidate.rank || 0) });
-      }
-      continue;
-    }
-    return {
-      selectedTopic: String(candidate?.title || '').trim() || null,
-      selectedBucket: String(candidate?.bucket || '').trim() || null,
-      selectionReason: String(candidate?.why_now || topicScout?.selection_reason || 'candidate selected'),
-      topicScorecard: candidate?.topic_scorecard || topicScout?.topic_scorecard || {},
-      selectedRank: Number(candidate?.rank || 0) || 1,
-      cooldownApplied: base.cooldownApplied,
-      skippedRecentTopics: base.skippedRecentTopics,
-      skippedPublishedTopics,
-    };
-  }
-
-  return {
-    ...base,
-    skippedPublishedTopics,
-  };
+  return buildTopicSelection(topicScout, recentTopics, cooldownHours, {
+    ...(arguments[4] || {}),
+    publishedTitles,
+    applySuppressionPolicy: true,
+  });
 }
 
 function getTopicScoutStaleReason(topicScout, maxAgeHours) {
@@ -268,7 +459,7 @@ async function resolveIssueIdentifier(client, issueId) {
 
 async function listRecentTopics(client, projectId, limit = 25) {
   const result = await client.query(
-    `select topic, created_at
+    `select id, topic, created_at
        from blog_runs
       where company_id = $1
         and project_id = $2
@@ -277,6 +468,65 @@ async function listRecentTopics(client, projectId, limit = 25) {
     [COMPANY_ID, projectId, limit],
   );
   return result.rows;
+}
+
+async function loadTopicHistories(client, recentRuns, topicKeys) {
+  const keys = new Set([...topicKeys].filter(Boolean));
+  const filteredRuns = toArray(recentRuns).filter((entry) => keys.has(normalizeTopicKey(entry.topic)));
+  if (filteredRuns.length === 0) return {};
+
+  const runIds = filteredRuns.map((entry) => entry.id);
+  const attemptsResult = await client.query(
+    `select blog_run_id, result_json, updated_at, attempt_number
+       from blog_run_step_attempts
+      where blog_run_id = any($1::uuid[])
+        and step_key = 'research'
+        and status = 'completed'
+      order by blog_run_id asc, updated_at desc, attempt_number desc`,
+    [runIds],
+  );
+  const attemptsByRunId = new Map();
+  for (const row of attemptsResult.rows) {
+    if (!attemptsByRunId.has(row.blog_run_id)) {
+      attemptsByRunId.set(row.blog_run_id, row.result_json || null);
+    }
+  }
+
+  const artifactsResult = await client.query(
+    `select blog_run_id, artifact_kind, metadata, body_preview
+       from blog_artifacts
+      where blog_run_id = any($1::uuid[])
+        and step_key = 'research'
+        and artifact_kind in ('grok_artifact_step_error', 'grok_trend_scan_json')
+      order by created_at desc`,
+    [runIds],
+  );
+  const artifactsByRunId = new Map();
+  for (const row of artifactsResult.rows) {
+    const list = artifactsByRunId.get(row.blog_run_id) || [];
+    list.push({
+      artifactKind: row.artifact_kind,
+      metadata: row.metadata || null,
+      bodyPreview: row.body_preview || null,
+    });
+    artifactsByRunId.set(row.blog_run_id, list);
+  }
+
+  const histories = {};
+  for (const row of filteredRuns) {
+    const topicKey = normalizeTopicKey(row.topic);
+    const list = histories[topicKey] || [];
+    list.push({
+      id: row.id,
+      run_id: row.id,
+      topic: row.topic,
+      created_at: row.created_at,
+      research_result_json: attemptsByRunId.get(row.id) || null,
+      artifacts: artifactsByRunId.get(row.id) || [],
+    });
+    histories[topicKey] = list;
+  }
+  return histories;
 }
 
 async function listPublishedTitles(limit = 50) {
@@ -316,11 +566,20 @@ async function writeJson(filePath, payload) {
   await fsp.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
+async function writeTopicScoutSnapshot(runDir, topicScout) {
+  const payload = toRecord(topicScout);
+  if (Object.keys(payload).length === 0) return null;
+  const filePath = path.join(runDir, 'topic-scout.json');
+  await writeJson(filePath, payload);
+  return filePath;
+}
+
 async function createRun({ topic, issueId, contextJson }) {
   const client = new Client({ connectionString: DB_URL });
   await client.connect();
   try {
     const normalizedContextJson = normalizeContext(topic, contextJson);
+    const lastTouchedIssueIdentifier = await resolveIssueIdentifier(client, issueId);
     const existing = await client.query(
       `select id, topic, lane, target_site, publish_mode, wordpress_post_id, status, current_step, context_json, created_at, issue_id
          from blog_runs
@@ -334,13 +593,27 @@ async function createRun({ topic, issueId, contextJson }) {
     );
     if (existing.rows[0]) {
       const row = existing.rows[0];
-      const nextContextJson = normalizeContext(topic, row.context_json);
-      const traceability = normalizeTraceability(nextContextJson.traceability);
+      const existingContextJson = normalizeContext(topic, row.context_json);
+      const nextContextJson = {
+        ...existingContextJson,
+        ...normalizedContextJson,
+        articleLoop: {
+          ...toRecord(existingContextJson.articleLoop),
+          ...toRecord(normalizedContextJson.articleLoop),
+        },
+      };
+      const existingTraceability = normalizeTraceability(existingContextJson.traceability);
+      const incomingTraceability = normalizeTraceability(normalizedContextJson.traceability);
+      const traceability = {
+        ...existingTraceability,
+        ...incomingTraceability,
+      };
       const originIssueIdentifier =
-        typeof traceability.originIssueIdentifier === 'string' && traceability.originIssueIdentifier.trim()
-          ? traceability.originIssueIdentifier.trim()
+        typeof existingTraceability.originIssueIdentifier === 'string' && existingTraceability.originIssueIdentifier.trim()
+          ? existingTraceability.originIssueIdentifier.trim()
+          : typeof incomingTraceability.originIssueIdentifier === 'string' && incomingTraceability.originIssueIdentifier.trim()
+            ? incomingTraceability.originIssueIdentifier.trim()
           : await resolveIssueIdentifier(client, row.issue_id);
-      const lastTouchedIssueIdentifier = await resolveIssueIdentifier(client, issueId);
       const touchedAt = new Date().toISOString();
       nextContextJson.traceability = {
         ...traceability,
@@ -375,8 +648,19 @@ async function createRun({ topic, issueId, contextJson }) {
         },
         ...nextContextJson,
       });
+      await writeTopicScoutSnapshot(runDir, nextContextJson.topicScout);
       return { reused: true, run: reusedRow };
     }
+
+    const touchedAt = new Date().toISOString();
+    const initialTraceability = normalizeTraceability(normalizedContextJson.traceability);
+    normalizedContextJson.traceability = {
+      ...initialTraceability,
+      originIssueIdentifier: initialTraceability.originIssueIdentifier || lastTouchedIssueIdentifier || null,
+      lastTouchedIssueIdentifier: lastTouchedIssueIdentifier || initialTraceability.lastTouchedIssueIdentifier || null,
+      continuity: initialTraceability.continuity || 'created_new_run',
+      lastTouchedAt: touchedAt,
+    };
 
     const runId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
@@ -399,6 +683,7 @@ async function createRun({ topic, issueId, contextJson }) {
       wordpress: { publish: false, status: 'draft', post_id: null },
       ...normalizedContextJson,
     });
+    await writeTopicScoutSnapshot(runDir, normalizedContextJson.topicScout);
     await writeJson(path.join(runDir, 'status.json'), {
       phase: 'research',
       state: 'running',
@@ -447,10 +732,31 @@ async function main() {
   let cooldownApplied = false;
   let skippedRecentTopics = [];
   let skippedPublishedTopics = [];
+  let issueIdentifier = null;
   try {
     const recentTopics = await listRecentTopics(client, PROJECT_ID);
     const publishedTitles = explicitTopic ? [] : await listPublishedTitles().catch(() => []);
-    const selected = resolveTopicSelectionFromArgs(args, topicScout, recentTopics, publishedTitles, TOPIC_COOLDOWN_HOURS);
+    issueIdentifier = await resolveIssueIdentifier(client, issueId);
+    const candidateTopicKeys = new Set(
+      [
+        normalizeTopicKey(topicScout?.selected_topic),
+        ...toArray(topicScout?.top10_candidates).map((entry) => normalizeTopicKey(entry?.title)),
+      ].filter(Boolean),
+    );
+    const topicHistories = explicitTopic ? {} : await loadTopicHistories(client, recentTopics, candidateTopicKeys);
+    const selected = resolveTopicSelectionFromArgs(
+      args,
+      topicScout,
+      recentTopics,
+      publishedTitles,
+      TOPIC_COOLDOWN_HOURS,
+      {
+        topicHistories,
+        referenceAt: topicScout?.generated_at,
+        suppressionThreshold: HOLDOVER_SUPPRESSION_THRESHOLD,
+        repeatWindowHours: HOLDOVER_WINDOW_HOURS,
+      },
+    );
     topic = selected.selectedTopic;
     selectedBucket = selected.selectedBucket;
     selectionReason = selected.selectionReason;
@@ -459,12 +765,20 @@ async function main() {
     cooldownApplied = selected.cooldownApplied;
     skippedRecentTopics = selected.skippedRecentTopics;
     skippedPublishedTopics = selected.skippedPublishedTopics;
+    if (selected.selectionPolicy) {
+      topicScout.selection_policy = selected.selectionPolicy;
+    }
+    topicScout.skipped_suppressed_topics = selected.skippedSuppressedTopics || [];
+    topicScout.manager_review_required = selected.managerReviewRequired === true;
   } finally {
     await client.end();
   }
   const staleReason = explicitTopic ? null : getTopicScoutStaleReason(topicScout, RSS_MAX_AGE_HOURS);
   if (staleReason) {
     throw new Error(staleReason);
+  }
+  if (!explicitTopic && topicScout.manager_review_required === true && !topic) {
+    throw new Error('article_quality_loop_manager_review_required:no_fresh_winner');
   }
   if (!topic) {
     throw new Error('article_quality_loop_topic_missing');
@@ -477,6 +791,7 @@ async function main() {
   topicScout.skipped_recent_topics = skippedRecentTopics;
   topicScout.skipped_published_topics = skippedPublishedTopics;
   topicScout.selected_rank = selectedRank;
+  topicScout.traceability_issue_identifier = issueIdentifier || null;
   const result = await createRun({
     topic,
     issueId,
@@ -500,6 +815,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  summarizeTopicSelectionPolicy,
   normalizeTopicKey,
   selectTopicWithCooldown,
   selectTopicAvoidingPublished,

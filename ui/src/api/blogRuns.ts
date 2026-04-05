@@ -134,6 +134,18 @@ export interface BlogRunDetail {
 }
 
 export const blogRunsApi = {
+  create: (
+    projectId: string,
+    body: {
+      topic: string;
+      issueId?: string | null;
+      lane?: string;
+      targetSite?: string;
+      approvalMode?: string;
+      publishMode?: string;
+      contextJson?: Record<string, unknown>;
+    },
+  ) => api.post(`/projects/${projectId}/blog-runs`, body),
   listForCompany: (companyId: string, options?: { limit?: number; mode?: "active" | "all" }) => {
     const params = new URLSearchParams();
     if (options?.limit) params.set("limit", String(options.limit));
