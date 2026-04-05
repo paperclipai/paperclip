@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -22,6 +22,13 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
+/**
+ * In-process cache of run IDs already ensured in heartbeat_runs.
+ * Avoids a redundant DB round-trip on every logActivity call within the same
+ * server process once a run has been confirmed or stub-inserted.
+ */
+const _ensuredRunIds = new Set<string>();
+
 export interface LogActivityInput {
   companyId: string;
   actorType: "agent" | "user" | "system";
@@ -35,6 +42,30 @@ export interface LogActivityInput {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
+  // Ensure the run exists in heartbeat_runs before writing it as a FK.
+  // Gateway agents (openclaw, http adapters) send X-Paperclip-Run-Id values
+  // that may arrive before the heartbeat system has registered the run.
+  // Upserting a stub row means the FK on activity_log.run_id never fails.
+  //
+  // When agentId is absent we cannot satisfy the NOT NULL constraint on
+  // heartbeat_runs.agent_id, so we drop runId from the insert instead.
+  // The heartbeat system owns these rows; our stub is overwritten once the
+  // real run record arrives, making status:"running" safe as a placeholder.
+  const effectiveRunId = (input.runId && input.agentId) ? input.runId : null;
+  if (effectiveRunId && !_ensuredRunIds.has(effectiveRunId)) {
+    await db
+      .insert(heartbeatRuns)
+      .values({
+        id: effectiveRunId,
+        companyId: input.companyId,
+        agentId: input.agentId as string,
+        invocationSource: "on_demand",
+        status: "running",
+      })
+      .onConflictDoNothing();
+    _ensuredRunIds.add(effectiveRunId);
+  }
+
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
@@ -50,7 +81,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: effectiveRunId,
     details: redactedDetails,
   });
 
@@ -64,7 +95,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId: effectiveRunId,
       details: redactedDetails,
     },
   });
@@ -82,7 +113,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId: effectiveRunId,
       },
     };
     void _pluginEventBus.emit(event).then(({ errors }) => {
