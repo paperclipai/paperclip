@@ -1080,13 +1080,6 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
-      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
-        delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
-      }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
@@ -1098,6 +1091,24 @@ export function issueService(db: Db) {
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      // Auto-inherit projectId and goalId from parent when not explicitly provided.
+      // Use || so each field is inherited independently — an explicit projectId still
+      // allows goalId to be inherited, and vice versa.
+      if (data.parentId && (!data.projectId || !data.goalId)) {
+        const [parent] = await db.select().from(issues).where(eq(issues.id, data.parentId));
+        if (parent) {
+          if (parent.projectId && !data.projectId) data = { ...data, projectId: parent.projectId };
+          if (parent.goalId && !data.goalId) data = { ...data, goalId: parent.goalId };
+        }
+      }
+      // Destructure AFTER inheritance so issueData includes any inherited fields.
+      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      if (!isolatedWorkspacesEnabled) {
+        delete issueData.executionWorkspaceId;
+        delete issueData.executionWorkspacePreference;
+        delete issueData.executionWorkspaceSettings;
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
