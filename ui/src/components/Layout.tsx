@@ -287,11 +287,10 @@ export function Layout() {
     }
   }, [location.hash, location.pathname, location.search]);
 
-  // Welcome screen for first-time users
-  if (showWelcome) {
+  // Welcome screen for first-time users (only if no company exists)
+  if (showWelcome && companies.length === 0) {
     return <WelcomeScreen onComplete={() => {
       setShowWelcome(false);
-      if (!hasCompletedFirstLogin()) setShowFirstLogin(true);
     }} />;
   }
 

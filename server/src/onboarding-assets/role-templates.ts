@@ -28,7 +28,7 @@ export interface RoleTemplate {
   /** Lucide icon name. */
   icon: string;
   /** Agent role enum value. */
-  role: "ceo" | "vp" | "director" | "manager" | "contractor" | "engineer";
+  role: "ceo" | "coo" | "cto" | "cmo" | "cfo" | "ciso" | "vp" | "director" | "manager" | "contractor" | "engineer" | "designer" | "marketer";
   /** Who this role reports to (key of another template, null for CEO). */
   reportsTo: string | null;
   /** Organizational department. */
@@ -195,8 +195,8 @@ You own #company. When the board assigns a task, announce it with your delegatio
     key: "cto",
     title: "CTO",
     tagline: "Technical leadership, architecture, and engineering management",
-    icon: "circuit-board",
-    role: "manager",
+    icon: "code",
+    role: "cto",
     reportsTo: "ceo",
     department: "engineering",
     roleLevel: "executive",
@@ -270,7 +270,7 @@ You are the Knowledge Base steward. This is the company's institutional memory.
     title: "CMO",
     tagline: "Marketing strategy, brand, and growth leadership",
     icon: "megaphone",
-    role: "manager",
+    role: "cmo",
     reportsTo: "ceo",
     department: "marketing",
     roleLevel: "executive",
@@ -424,7 +424,7 @@ You own the company culture. Build and maintain:
     title: "CFO",
     tagline: "Financial oversight, budget management, and cost optimization",
     icon: "dollar-sign",
-    role: "vp",
+    role: "cfo",
     reportsTo: "ceo",
     department: "finance",
     roleLevel: "executive",
@@ -842,8 +842,8 @@ Monitor all channels for legal risk signals: contract discussions, liability men
     key: "contentmarketer",
     title: "Content Marketer",
     tagline: "Content creation, SEO, and multi-channel distribution",
-    icon: "pen-tool",
-    role: "engineer",
+    icon: "pen-line",
+    role: "marketer",
     reportsTo: "cmo",
     department: "marketing",
     roleLevel: "staff",
