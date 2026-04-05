@@ -2084,7 +2084,7 @@ export function heartbeatService(db: Db) {
         continue;
       }
 
-      const shouldRetry = tracksLocalChild && !!run.processPid && (run.processLossRetryCount ?? 0) < 1;
+      const shouldRetry = tracksLocalChild && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = run.processPid
         ? `Process lost -- child pid ${run.processPid} is no longer running`
         : "Process lost -- server may have restarted";
@@ -2125,7 +2125,17 @@ export function heartbeatService(db: Db) {
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      if (retriedRun) {
+        // Delay retry by ~10s so the system has time to stabilize after restart
+        const agentId = run.agentId;
+        setTimeout(() => {
+          void startNextQueuedRunForAgent(agentId).catch((err) =>
+            logger.warn({ err, agentId, retryRunId: retriedRun!.id }, "delayed process_lost retry start failed"),
+          );
+        }, 10_000);
+      } else {
+        await startNextQueuedRunForAgent(run.agentId);
+      }
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
