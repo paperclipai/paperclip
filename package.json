@@ -14,6 +14,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
@@ -42,6 +43,7 @@
     "cross-env": "^10.1.0",
     "esbuild": "^0.27.3",
     "typescript": "^5.7.3",
+    "@vitest/coverage-v8": "^3.0.5",
     "vitest": "^3.0.5"
   },
   "engines": {

@@ -114,8 +114,31 @@ jobs:
       - name: Typecheck
         run: pnpm -r typecheck
 
-      - name: Run tests
-        run: pnpm test:run
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "
+              const r = require('./coverage/coverage-summary.json').total;
+              console.log('## Coverage Summary');
+              console.log('| Metric | Covered | Total | % |');
+              console.log('|--------|---------|-------|---|');
+              for (const [k,v] of Object.entries(r)) {
+                if (v.pct !== undefined) console.log('| ' + k + ' | ' + v.covered + ' | ' + v.total + ' | ' + v.pct + '% |');
+              }
+            " >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Build
         run: pnpm build
