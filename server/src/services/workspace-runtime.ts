@@ -232,13 +232,32 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
-  return value
+export function sanitizeBranchName(
+  value: string,
+  options?: { platform?: string },
+): string {
+  const platform = options?.platform ?? process.platform;
+  const maxLength = platform === "win32" ? 40 : 120;
+
+  let sanitized = value
     .trim()
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+    .replace(/^[-/.]+|[-/.]+$/g, "");
+
+  if (sanitized.length > maxLength) {
+    const truncated = sanitized.slice(0, maxLength);
+    const lastSep = Math.max(
+      truncated.lastIndexOf("-"),
+      truncated.lastIndexOf("."),
+      truncated.lastIndexOf("/"),
+    );
+    sanitized =
+      lastSep > maxLength / 2 ? truncated.slice(0, lastSep) : truncated;
+    sanitized = sanitized.replace(/[-/.]+$/, "");
+  }
+
+  return sanitized || "paperclip-work";
 }
 
 function isAbsolutePath(value: string) {

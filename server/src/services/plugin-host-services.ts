@@ -28,7 +28,7 @@ import { pluginStateStore } from "./plugin-state-store.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
-import { lookup as dnsLookup } from "node:dns/promises";
+import { lookup as dnsLookup, resolve4 as dnsResolve4 } from "node:dns/promises";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -130,7 +130,16 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
 
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
-  const dnsPromise = dnsLookup(originalHostname, { all: true });
+  //
+  // Use dns.resolve4 (c-ares, queries DNS server directly) as the primary
+  // resolver because dns.lookup / getaddrinfo can return incorrect results on
+  // Windows hosts running Docker Desktop or VPN software that intercept OS-level
+  // name resolution and may return private/internal IP addresses for public
+  // hostnames. dns.resolve4 bypasses the OS resolver cache and those shims.
+  // Fall back to dns.lookup if resolve4 fails (e.g. IPv6-only hosts).
+  const dnsPromise = dnsResolve4(originalHostname)
+    .then((addrs): Array<{ address: string }> => addrs.map(addr => ({ address: addr })))
+    .catch(() => dnsLookup(originalHostname, { all: true }));
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),

@@ -90,7 +90,7 @@ async function installSkillsForTarget(
         } catch (err) {
           await fs.unlink(target);
           try {
-            await fs.symlink(source, target);
+            await fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined);
             summary.linked.push(entry.name);
             continue;
           } catch (linkErr) {
@@ -128,7 +128,7 @@ async function installSkillsForTarget(
     }
 
     try {
-      await fs.symlink(source, target);
+      await fs.symlink(source, target, process.platform === "win32" ? "junction" : undefined);
       summary.linked.push(entry.name);
     } catch (err) {
       summary.failed.push({
