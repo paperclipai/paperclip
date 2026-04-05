@@ -135,6 +135,11 @@ function buildDashScopeRuntimeConfig(input: DashScopeExecutionInput) {
     env.DASHSCOPE_API_KEY = input.authToken;
   }
 
+  // Fallback to container environment variable
+  if (!env.DASHSCOPE_API_KEY) {
+    env.DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || "";
+  }
+
   return { cwd, env };
 }
 
