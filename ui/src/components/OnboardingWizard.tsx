@@ -83,12 +83,13 @@ interface RosterItem {
   title: string;
 }
 
-const LLM_PROVIDERS: readonly { key: string; label: string; secretName: string; placeholder: string; hint: string; recommended?: boolean }[] = [
-  { key: "anthropic", label: "Anthropic (Claude)", secretName: "ANTHROPIC_API_KEY", placeholder: "sk-ant-...", hint: "console.anthropic.com", recommended: true },
-  { key: "openai", label: "OpenAI", secretName: "OPENAI_API_KEY", placeholder: "sk-...", hint: "platform.openai.com/api-keys" },
-  { key: "google", label: "Google AI (Gemini)", secretName: "GEMINI_API_KEY", placeholder: "AIza...", hint: "aistudio.google.com/apikey" },
-  { key: "openrouter", label: "OpenRouter", secretName: "OPENROUTER_API_KEY", placeholder: "sk-or-...", hint: "openrouter.ai/keys" },
-  { key: "ollama", label: "Ollama (self-hosted)", secretName: "OLLAMA_BASE_URL", placeholder: "http://localhost:11434", hint: "ollama.com - no API key needed, enter your Ollama server URL" },
+const LLM_PROVIDERS: readonly { key: string; label: string; secretName: string; placeholder: string; hint: string }[] = [
+  { key: "anthropic", label: "Anthropic (Claude)", secretName: "ANTHROPIC_API_KEY", placeholder: "sk-ant-...", hint: "API key from console.anthropic.com (subscription not supported)" },
+  { key: "openai", label: "OpenAI", secretName: "OPENAI_API_KEY", placeholder: "sk-...", hint: "API key from platform.openai.com/api-keys (subscription not supported)" },
+  { key: "google", label: "Google AI (Gemini)", secretName: "GEMINI_API_KEY", placeholder: "AIza...", hint: "API key from aistudio.google.com/apikey" },
+  { key: "openrouter", label: "OpenRouter", secretName: "OPENROUTER_API_KEY", placeholder: "sk-or-...", hint: "API key from openrouter.ai/keys - access 200+ models" },
+  { key: "ollama_cloud", label: "Ollama Cloud", secretName: "OLLAMA_API_KEY", placeholder: "API key", hint: "API key from ollama.com - open-source models, flat monthly pricing" },
+  { key: "ollama", label: "Ollama (self-hosted)", secretName: "OLLAMA_BASE_URL", placeholder: "http://localhost:11434", hint: "Your Ollama server URL - no API key needed" },
 ];
 
 let rosterIdCounter = 0;
@@ -885,16 +886,12 @@ export function OnboardingWizard() {
                             llmProvider === p.key
                               ? "border-foreground bg-foreground/5 font-medium"
                               : "border-border hover:border-foreground/30",
-                            p.recommended && llmProvider !== p.key && "border-dashed"
                           )}
                         >
                           <span className="flex items-center gap-2">
                             <LlmProviderLogo provider={p.key} className="h-4 w-4 shrink-0" />
                             <span>{p.label}</span>
                           </span>
-                          {p.recommended && (
-                            <span className="text-[10px] text-muted-foreground ml-6">Recommended</span>
-                          )}
                         </button>
                       ))}
                     </div>

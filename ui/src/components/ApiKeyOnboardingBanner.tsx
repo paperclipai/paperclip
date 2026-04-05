@@ -9,14 +9,15 @@ import { Button } from "@/components/ui/button";
 import { Key, Check, AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 import type { CompanySecret } from "@ironworksai/shared";
 
-type ProviderKey = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GEMINI_API_KEY" | "OPENROUTER_API_KEY" | "OLLAMA_BASE_URL";
+type ProviderKey = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GEMINI_API_KEY" | "OPENROUTER_API_KEY" | "OLLAMA_API_KEY" | "OLLAMA_BASE_URL";
 
 const PROVIDERS: { key: ProviderKey; label: string; placeholder: string }[] = [
   { key: "ANTHROPIC_API_KEY", label: "Anthropic", placeholder: "sk-ant-..." },
   { key: "OPENAI_API_KEY", label: "OpenAI", placeholder: "sk-..." },
   { key: "GEMINI_API_KEY", label: "Gemini", placeholder: "AIza..." },
   { key: "OPENROUTER_API_KEY", label: "OpenRouter", placeholder: "sk-or-..." },
-  { key: "OLLAMA_BASE_URL", label: "Ollama", placeholder: "http://localhost:11434" },
+  { key: "OLLAMA_API_KEY", label: "Ollama Cloud", placeholder: "API key" },
+  { key: "OLLAMA_BASE_URL", label: "Ollama (self-hosted)", placeholder: "http://localhost:11434" },
 ];
 
 function maskKey(key: string): string {
