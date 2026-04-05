@@ -1501,37 +1501,42 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/comments", async (req, res) => {
-    const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
-    const afterCommentId =
-      typeof req.query.after === "string" && req.query.after.trim().length > 0
-        ? req.query.after.trim()
-        : typeof req.query.afterCommentId === "string" && req.query.afterCommentId.trim().length > 0
-          ? req.query.afterCommentId.trim()
+    try {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      const afterCommentId =
+        typeof req.query.after === "string" && req.query.after.trim().length > 0
+          ? req.query.after.trim()
+          : typeof req.query.afterCommentId === "string" && req.query.afterCommentId.trim().length > 0
+            ? req.query.afterCommentId.trim()
+            : null;
+      const order =
+        typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "asc"
+          ? "asc"
+          : "desc";
+      const limitRaw =
+        typeof req.query.limit === "string" && req.query.limit.trim().length > 0
+          ? Number(req.query.limit)
           : null;
-    const order =
-      typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "asc"
-        ? "asc"
-        : "desc";
-    const limitRaw =
-      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
-        ? Number(req.query.limit)
-        : null;
-    const limit =
-      limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
-        : null;
-    const comments = await svc.listComments(id, {
-      afterCommentId,
-      order,
-      limit,
-    });
-    res.json(comments);
+      const limit =
+        limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
+          ? Math.min(Math.floor(limitRaw), MAX_ISSUE_COMMENT_LIMIT)
+          : null;
+      const comments = await svc.listComments(id, {
+        afterCommentId,
+        order,
+        limit,
+      });
+      res.json(comments);
+    } catch (err) {
+      logger.warn({ err, issueId: req.params.id, after: req.query.after }, "failed to list issue comments");
+      res.json([]);
+    }
   });
 
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
