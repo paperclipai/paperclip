@@ -493,6 +493,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("does not queue a second retry after the first process-loss retry was already used", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
       processPid: 999_999_999,
       processLossRetryCount: 1,
     });
@@ -516,6 +517,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
     expect(issue?.checkoutRunId).toBe(runId);
+
+    // After exhausted process_lost retries, agent should be idle (not error)
+    // because process_lost is a transient infrastructure issue, not a persistent agent failure
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("idle");
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
