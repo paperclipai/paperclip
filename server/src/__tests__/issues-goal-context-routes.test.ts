@@ -199,5 +199,6 @@ describe("issue goal context routes", () => {
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+    expect(res.body.attachments).toEqual([]);
   });
 });
