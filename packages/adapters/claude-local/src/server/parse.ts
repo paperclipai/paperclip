@@ -167,6 +167,41 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+// Patterns indicating Claude exited cleanly but could not do any real work.
+const CLAUDE_SILENT_FAILURE_RE: RegExp[] = [
+  /unable to (?:proceed|continue|complete|execute|perform|accomplish)/i,
+  /cannot (?:proceed|continue|complete|execute|perform)/i,
+  /couldn'?t (?:proceed|continue|complete|execute|perform)/i,
+  /(?:all|every) (?:\w+ ){0,4}(?:blocked|denied|rejected)/i,
+  /blocked by permission/i,
+  /permissions? (?:block|denied|prevent|restrict)/i,
+  /failed to (?:complete|execute|perform) any/i,
+  /no (?:actions?|work|progress) (?:were |was )?(?:taken|done|made|completed|performed)/i,
+];
+
+export function isClaudeSilentFailure(
+  parsed: Record<string, unknown> | null | undefined,
+  summary: string,
+): { detected: boolean; reason: string | null } {
+  if (!parsed && !summary) return { detected: false, reason: null };
+
+  const texts: string[] = [];
+  if (summary.trim()) texts.push(summary);
+  if (parsed) {
+    for (const key of ["result", "summary", "message", "error"] as const) {
+      const val = asString(parsed[key], "").trim();
+      if (val) texts.push(val);
+    }
+  }
+
+  const combined = texts.join("\n");
+  for (const pattern of CLAUDE_SILENT_FAILURE_RE) {
+    const match = combined.match(pattern);
+    if (match) return { detected: true, reason: match[0] };
+  }
+  return { detected: false, reason: null };
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
