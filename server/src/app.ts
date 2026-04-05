@@ -51,6 +51,7 @@ import { slimRoutes } from "./routes/slim.js";
 import { adminRoutes } from "./routes/admin.js";
 import { executiveRoutes } from "./routes/executive.js";
 import { sseRoutes } from "./routes/sse.js";
+import { searchRoutes } from "./routes/search.js";
 // Plugin system disabled — not needed for V1 productization
 // import { pluginRoutes } from "./routes/plugins.js";
 // import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -301,6 +302,7 @@ export async function createApp(
   api.use(goalStatsRoutes(db));
   api.use(aiGoalBreakdownRoutes(db));
   api.use(messagingRoutes(db));
+  api.use(searchRoutes());
   api.use(slimRoutes(db));
   api.use(sseRoutes(db));
 
