@@ -44,6 +44,7 @@ interface IssuePropertiesProps {
   issue: Issue;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  childIssues?: Issue[];
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -117,7 +118,7 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({ issue, onUpdate, inline, childIssues }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -560,17 +561,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
-        {issue.parentId && (
-          <PropertyRow label="Parent">
-            <Link
-              to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
-              className="text-sm hover:underline"
-            >
-              {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
-            </Link>
-          </PropertyRow>
-        )}
-
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -615,6 +605,52 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
       </div>
+
+      {(issue.parentId || (childIssues && childIssues.length > 0)) && (
+        <>
+          <Separator />
+          <div className="space-y-3">
+            {issue.parentId && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Parent task</p>
+                <div className="flex items-start gap-1.5">
+                  {issue.ancestors?.[0] != null && (
+                    <div className="shrink-0 mt-0.5">
+                      <StatusIcon status={issue.ancestors[0].status} />
+                    </div>
+                  )}
+                  <Link
+                    to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
+                    className="text-sm hover:underline"
+                  >
+                    {issue.ancestors?.[0]?.title ?? issue.parentId.slice(0, 8)}
+                  </Link>
+                </div>
+              </div>
+            )}
+            {childIssues && childIssues.length > 0 && (
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Sub-tasks</p>
+                <div className="space-y-0.5">
+                  {childIssues.map((child) => (
+                    <div key={child.id} className="flex items-start gap-1.5">
+                      <div className="shrink-0 mt-0.5">
+                        <StatusIcon status={child.status} />
+                      </div>
+                      <Link
+                        to={`/issues/${child.identifier ?? child.id}`}
+                        className="text-sm hover:underline"
+                      >
+                        {child.title}
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
