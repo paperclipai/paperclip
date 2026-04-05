@@ -24,6 +24,7 @@ interface RunningProcess {
 interface SpawnTarget {
   command: string;
   args: string[];
+  windowsVerbatimArguments?: boolean;
 }
 
 type ChildProcessWithEvents = ChildProcess & {
@@ -468,12 +469,6 @@ export async function resolveCommandForLogs(command: string, cwd: string, env: N
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
-function quoteForCmd(arg: string) {
-  if (!arg.length) return '""';
-  const escaped = arg.replace(/"/g, '""');
-  return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
-}
-
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -492,11 +487,18 @@ async function resolveSpawnTarget(
     const commandLine = [quoteForCmd(executable), ...args.map(quoteForCmd)].join(" ");
     return {
       command: shell,
-      args: ["/d", "/s", "/c", commandLine],
+      args: ["/d", "/c", commandLine],
+      windowsVerbatimArguments: true,
     };
   }
 
   return { command: executable, args };
+}
+
+function quoteForCmd(arg: string) {
+  if (!arg.length) return '""';
+  const escaped = arg.replace(/"/g, '""');
+  return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -956,6 +958,7 @@ export async function runChildProcess(
           cwd: opts.cwd,
           env: mergedEnv,
           shell: false,
+          windowsVerbatimArguments: target.windowsVerbatimArguments,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
