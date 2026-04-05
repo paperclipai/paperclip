@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -120,6 +121,153 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+type WorkspaceLinkMismatch = {
+  packageName: string;
+  expectedPath: string;
+  actualPath: string | null;
+};
+
+function readJsonFile(filePath: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+}
+
+function findWorkspaceRoot(startCwd: string) {
+  let current = path.resolve(startCwd);
+  while (true) {
+    if (existsSync(path.join(current, "pnpm-workspace.yaml"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
+  const packagePaths = new Map<string, string>();
+  const ignoredDirNames = new Set([".git", ".paperclip", "dist", "node_modules"]);
+
+  function visit(dirPath: string) {
+    if (!existsSync(dirPath)) return;
+
+    const packageJsonPath = path.join(dirPath, "package.json");
+    if (existsSync(packageJsonPath)) {
+      const packageJson = readJsonFile(packageJsonPath);
+      if (typeof packageJson.name === "string" && packageJson.name.length > 0) {
+        packagePaths.set(packageJson.name, dirPath);
+      }
+    }
+
+    for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (ignoredDirNames.has(entry.name)) continue;
+      visit(path.join(dirPath, entry.name));
+    }
+  }
+
+  visit(path.join(rootDir, "packages"));
+  visit(path.join(rootDir, "server"));
+  visit(path.join(rootDir, "ui"));
+  visit(path.join(rootDir, "cli"));
+
+  return packagePaths;
+}
+
+function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismatch[] {
+  const serverPackageJsonPath = path.join(rootDir, "server", "package.json");
+  if (!existsSync(serverPackageJsonPath)) return [];
+
+  const serverPackageJson = readJsonFile(serverPackageJsonPath);
+  const dependencies = {
+    ...(serverPackageJson.dependencies as Record<string, unknown> | undefined),
+    ...(serverPackageJson.devDependencies as Record<string, unknown> | undefined),
+  };
+  const workspacePackagePaths = discoverWorkspacePackagePaths(rootDir);
+  const mismatches: WorkspaceLinkMismatch[] = [];
+
+  for (const [packageName, version] of Object.entries(dependencies)) {
+    if (typeof version !== "string" || !version.startsWith("workspace:")) continue;
+
+    const expectedPath = workspacePackagePaths.get(packageName);
+    if (!expectedPath) continue;
+    const normalizedExpectedPath = existsSync(expectedPath) ? path.resolve(realpathSync(expectedPath)) : path.resolve(expectedPath);
+
+    const linkPath = path.join(rootDir, "server", "node_modules", ...packageName.split("/"));
+    const actualPath = existsSync(linkPath) ? path.resolve(realpathSync(linkPath)) : null;
+    if (actualPath === normalizedExpectedPath) continue;
+
+    mismatches.push({
+      packageName,
+      expectedPath: normalizedExpectedPath,
+      actualPath,
+    });
+  }
+
+  return mismatches;
+}
+
+async function runCommand(command: string, args: string[], cwd: string) {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      stdio: "ignore",
+      shell: process.platform === "win32",
+    });
+
+    child.on("error", reject);
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `${command} ${args.join(" ")} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}`,
+        ),
+      );
+    });
+  });
+}
+
+export async function ensureServerWorkspaceLinksCurrent(
+  startCwd: string,
+  opts?: {
+    onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    runCommand?: (command: string, args: string[], cwd: string) => Promise<void>;
+  },
+) {
+  const workspaceRoot = findWorkspaceRoot(startCwd);
+  if (!workspaceRoot) return;
+
+  const mismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (mismatches.length === 0) return;
+
+  if (opts?.onLog) {
+    await opts.onLog("stdout", "[runtime] detected stale workspace package links for server; relinking dependencies...\n");
+    for (const mismatch of mismatches) {
+      await opts.onLog(
+        "stdout",
+        `[runtime]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}\n`,
+      );
+    }
+  }
+
+  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  await (opts?.runCommand ?? runCommand)(
+    pnpmBin,
+    ["install", "--force", "--config.confirmModulesPurge=false"],
+    workspaceRoot,
+  );
+
+  const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
+  if (remainingMismatches.length === 0) return;
+
+  throw new Error(
+    `Workspace relink did not repair all server package links: ${remainingMismatches.map((item) => item.packageName).join(", ")}`,
+  );
 }
 
 export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1374,7 +1522,11 @@ async function startLocalRuntimeService(input: {
       );
     }
   }
-  
+
+  await ensureServerWorkspaceLinksCurrent(serviceCwd, {
+    onLog: input.onLog,
+  });
+
   const shell = resolveShell();
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
