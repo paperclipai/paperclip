@@ -70,6 +70,31 @@ export const httpRequestDurationSeconds = new Histogram({
   registers: [metricsRegistry],
 });
 
+/** Total skill invocations, labelled by skill_name, agent_id, and status */
+export const skillInvocationsTotal = new Counter({
+  name: "paperclip_skill_invocations_total",
+  help: "Total number of skill invocations",
+  labelNames: ["skill_name", "agent_id", "status"],
+  registers: [metricsRegistry],
+});
+
+/** Skill invocation token estimates, labelled by skill_name */
+export const skillTokensTotal = new Counter({
+  name: "paperclip_skill_tokens_total",
+  help: "Estimated tokens consumed by skill invocations",
+  labelNames: ["skill_name"],
+  registers: [metricsRegistry],
+});
+
+/** Skill invocation duration in seconds */
+export const skillInvocationDurationSeconds = new Histogram({
+  name: "paperclip_skill_invocation_duration_seconds",
+  help: "Skill invocation duration in seconds",
+  labelNames: ["skill_name", "agent_id"],
+  buckets: [0.5, 1, 2, 5, 10, 30, 60, 120],
+  registers: [metricsRegistry],
+});
+
 /** Budget utilization per agent (percentage 0–100) */
 export const agentBudgetUsedPercent = new Gauge({
   name: "paperclip_agent_budget_used_percent",

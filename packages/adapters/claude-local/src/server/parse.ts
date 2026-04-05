@@ -1,4 +1,4 @@
-import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { UsageSummary, SkillInvocationReport } from "@paperclipai/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
@@ -10,6 +10,10 @@ export function parseClaudeStreamJson(stdout: string) {
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+
+  // Track skill invocations: toolUseId -> pending invocation metadata
+  const pendingSkills = new Map<string, { skillName: string; startMs: number }>();
+  const skillInvocations: SkillInvocationReport[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -35,14 +39,47 @@ export function parseClaudeStreamJson(stdout: string) {
           const text = asString(block.text, "");
           if (text) assistantTexts.push(text);
         }
+        // Detect Skill tool_use blocks
+        if (asString(block.type, "") === "tool_use" && asString(block.name, "") === "Skill") {
+          const toolUseId = asString(block.id, "");
+          const input = parseObject(block.input);
+          const skillName = asString(input.skill, "unknown");
+          if (toolUseId) {
+            pendingSkills.set(toolUseId, { skillName, startMs: Date.now() });
+          }
+        }
       }
       continue;
     }
 
-    if (type === "result") {
+    // Match tool_result events to complete skill invocation tracking
+    if (type === "result" || type === "tool_result") {
+      if (type === "tool_result") {
+        const toolUseId = asString(event.tool_use_id, "");
+        const pending = pendingSkills.get(toolUseId);
+        if (pending) {
+          const isError = event.is_error === true || asString(event.type, "") === "error";
+          skillInvocations.push({
+            skillName: pending.skillName,
+            status: isError ? "error" : "success",
+            durationMs: Date.now() - pending.startMs,
+          });
+          pendingSkills.delete(toolUseId);
+        }
+        continue;
+      }
       finalResult = event;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
     }
+  }
+
+  // Any pending skills that never got a tool_result are treated as errors
+  for (const [, pending] of pendingSkills) {
+    skillInvocations.push({
+      skillName: pending.skillName,
+      status: "error",
+      durationMs: Date.now() - pending.startMs,
+    });
   }
 
   if (!finalResult) {
@@ -53,6 +90,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      skillInvocations,
     };
   }
 
@@ -73,6 +111,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    skillInvocations,
   };
 }
 

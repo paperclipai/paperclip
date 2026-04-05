@@ -635,6 +635,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: parsed,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      skillInvocations: parsedStream.skillInvocations.length > 0 ? parsedStream.skillInvocations : undefined,
     };
   };
 

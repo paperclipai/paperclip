@@ -114,6 +114,14 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
+export interface SkillInvocationReport {
+  skillName: string;
+  status: "success" | "error";
+  durationMs?: number;
+  tokenEstimate?: number;
+  version?: string | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -137,6 +145,7 @@ export interface AdapterExecutionResult {
   runtimeServices?: AdapterRuntimeServiceReport[];
   summary?: string | null;
   clearSession?: boolean;
+  skillInvocations?: SkillInvocationReport[];
   question?: {
     prompt: string;
     choices: Array<{

@@ -68,6 +68,9 @@ import {
   heartbeatDurationSeconds,
   heartbeatRunsActive,
   tokensUsedTotal,
+  skillInvocationsTotal,
+  skillTokensTotal,
+  skillInvocationDurationSeconds,
   isMetricsEnabled,
 } from "../observability/metrics.js";
 
@@ -3827,6 +3830,17 @@ export function heartbeatService(db: Db) {
           }
           if (normalizedUsage.outputTokens > 0) {
             tokensUsedTotal.inc({ agent_id: agent.id, model, token_type: "output" }, normalizedUsage.outputTokens);
+          }
+        }
+        if (adapterResult.skillInvocations) {
+          for (const inv of adapterResult.skillInvocations) {
+            skillInvocationsTotal.inc({ skill_name: inv.skillName, agent_id: agent.id, status: inv.status });
+            if (inv.durationMs != null) {
+              skillInvocationDurationSeconds.observe({ skill_name: inv.skillName, agent_id: agent.id }, inv.durationMs / 1000);
+            }
+            if (inv.tokenEstimate != null && inv.tokenEstimate > 0) {
+              skillTokensTotal.inc({ skill_name: inv.skillName }, inv.tokenEstimate);
+            }
           }
         }
       }
