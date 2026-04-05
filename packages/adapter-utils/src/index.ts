@@ -30,6 +30,8 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
   AdapterFallbackChainEntryConfig,
+  AdapterFailureCategory,
+  AdapterFallbackEntry,
 } from "./types.js";
 export type {
   SessionCompactionPolicy,
