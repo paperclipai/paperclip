@@ -5,3 +5,4 @@ export { ChatIssueList } from "./ChatIssueList";
 export { ChatCostBreakdown } from "./ChatCostBreakdown";
 export { ChatApprovalCard } from "./ChatApprovalCard";
 export { ChatOrgChart } from "./ChatOrgChart";
+export { ChatGoalList } from "./ChatGoalList";

@@ -67,7 +67,7 @@ export function ChatApprovalCard({ approvals, onApprove, onReject, onRequestRevi
               Approve
             </button>
             <button
-              className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground"
+              className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-white"
               onClick={() => onReject(approval.id)}
             >
               Reject

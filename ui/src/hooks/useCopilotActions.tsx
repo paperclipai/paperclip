@@ -23,8 +23,9 @@ import {
   ChatCostBreakdown,
   ChatApprovalCard,
   ChatOrgChart,
+  ChatGoalList,
 } from "../components/chat";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 export function useCopilotActions() {
   const navigate = useNavigate();
@@ -32,6 +33,8 @@ export function useCopilotActions() {
   const { companies, selectedCompany, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { openNewIssue, openNewProject, openNewGoal, openNewAgent } = useDialog();
   const queryClient = useQueryClient();
+
+  const lastGoalsRef = useRef<unknown[]>([]);
 
   const companyNav = useCallback(
     (subpath: string) => {
@@ -266,9 +269,9 @@ export function useCopilotActions() {
     },
   });
 
-  useFrontendTool({
+  useHumanInTheLoop({
     name: "createIssue",
-    description: "Create a new issue/task",
+    description: "Create a new issue/task (requires user confirmation)",
     parameters: z.object({
       title: z.string().describe("Issue title"),
       description: z.string().optional().describe("Issue description (markdown)"),
@@ -276,20 +279,97 @@ export function useCopilotActions() {
       priority: z.string().optional().describe("Priority: none, low, medium, high, urgent"),
       projectId: z.string().optional().describe("Project ID to assign to"),
       assigneeAgentId: z.string().optional().describe("Agent ID to assign"),
+      assigneeUserId: z.string().optional().describe("User ID to assign (for human assignees like the CEO)"),
       goalId: z.string().optional().describe("Goal ID to link to"),
     }),
-    handler: async ({ title, description, status, priority, projectId, assigneeAgentId, goalId }) => {
-      if (!selectedCompanyId) return "No company selected";
-      const data: Record<string, unknown> = { title };
-      if (description) data.description = description;
-      if (status) data.status = status;
-      if (priority) data.priority = priority;
-      if (projectId) data.projectId = projectId;
-      if (assigneeAgentId) data.assigneeAgentId = assigneeAgentId;
-      if (goalId) data.goalId = goalId;
-      const result = await issuesApi.create(selectedCompanyId, data);
-      queryClient.invalidateQueries({ queryKey: ["issues"] });
-      return JSON.stringify({ id: result.id, identifier: result.identifier, title: result.title, status: result.status });
+    render: ({ args, respond, status }) => {
+      if (status === ToolCallStatus.Complete) {
+        return <p className="text-sm text-muted-foreground">Issue created.</p>;
+      }
+      if (status === ToolCallStatus.Executing && respond) {
+        const priorityColors: Record<string, string> = {
+          urgent: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+          high: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+          medium: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
+          low: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+        };
+        const statusColors: Record<string, string> = {
+          backlog: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
+          todo: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+          in_progress: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+          in_review: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+          done: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+          cancelled: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+        };
+        return (
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 text-sm">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              Create Issue
+            </p>
+            <p className="text-xs font-medium">{args.title}</p>
+            {args.description && (
+              <p className="text-xs text-muted-foreground line-clamp-2">{args.description}</p>
+            )}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {args.status && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${statusColors[args.status] ?? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"}`}>
+                  {args.status.replace(/_/g, " ")}
+                </span>
+              )}
+              {args.priority && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${priorityColors[args.priority] ?? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"}`}>
+                  {args.priority}
+                </span>
+              )}
+              {args.assigneeAgentId && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                  Agent: {args.assigneeAgentId.slice(0, 8)}
+                </span>
+              )}
+              {args.assigneeUserId && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                  User: {args.assigneeUserId.slice(0, 8)}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                onClick={async () => {
+                  if (!selectedCompanyId) {
+                    respond("No company selected");
+                    return;
+                  }
+                  try {
+                    const data: Record<string, unknown> = { title: args.title };
+                    if (args.description) data.description = args.description;
+                    if (args.status) data.status = args.status;
+                    if (args.priority) data.priority = args.priority;
+                    if (args.projectId) data.projectId = args.projectId;
+                    if (args.assigneeAgentId) data.assigneeAgentId = args.assigneeAgentId;
+                    if (args.assigneeUserId) data.assigneeUserId = args.assigneeUserId;
+                    if (args.goalId) data.goalId = args.goalId;
+                    const result = await issuesApi.create(selectedCompanyId, data);
+                    queryClient.invalidateQueries({ queryKey: ["issues"] });
+                    respond(`Created issue ${result.identifier ?? result.id} — "${result.title}"`);
+                  } catch (err) {
+                    respond(`Failed to create issue: ${err instanceof Error ? err.message : "Unknown error"}`);
+                  }
+                }}
+              >
+                Create
+              </button>
+              <button
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                onClick={() => respond("Cancelled by user")}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      }
+      return null;
     },
   });
 
@@ -304,6 +384,7 @@ export function useCopilotActions() {
       priority: z.string().optional().describe("New priority"),
       projectId: z.string().optional().describe("New project ID"),
       assigneeAgentId: z.string().optional().describe("New assignee agent ID"),
+      assigneeUserId: z.string().optional().describe("New assignee user ID (for human assignees)"),
       goalId: z.string().optional().describe("New goal ID"),
     }),
     handler: async ({ issueId, ...updates }) => {
@@ -353,16 +434,32 @@ export function useCopilotActions() {
         return <p className="text-sm text-muted-foreground">Issue deleted.</p>;
       }
       if (status === ToolCallStatus.Executing && respond) {
+        // Try to resolve a human-readable identifier from the query cache
+        const cached = queryClient.getQueriesData<Array<{ id: string; identifier?: string; title?: string }>>({ queryKey: ["issues"] });
+        let displayName = args.issueId.slice(0, 8);
+        let issueTitle: string | undefined;
+        for (const [, data] of cached) {
+          const match = Array.isArray(data) ? data.find((i) => i.id === args.issueId) : undefined;
+          if (match) {
+            if (match.identifier) displayName = match.identifier;
+            issueTitle = match.title;
+            break;
+          }
+        }
         return (
           <div className="flex flex-col gap-2 rounded-md border border-destructive/50 bg-destructive/5 p-3 text-sm">
-            <p>Delete issue <strong>{args.issueId}</strong>? This cannot be undone.</p>
+            <p>Delete issue <strong>{displayName}</strong>{issueTitle ? ` (${issueTitle})` : ""}? This cannot be undone.</p>
             <div className="flex gap-2">
               <button
-                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
+                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:bg-destructive/90"
                 onClick={async () => {
-                  await issuesApi.remove(args.issueId);
-                  queryClient.invalidateQueries({ queryKey: ["issues"] });
-                  respond("Issue deleted");
+                  try {
+                    await issuesApi.remove(args.issueId);
+                    queryClient.invalidateQueries({ queryKey: ["issues"] });
+                    respond("Issue deleted");
+                  } catch (err) {
+                    respond(`Failed to delete issue: ${err instanceof Error ? err.message : "Unknown error"}`);
+                  }
                 }}
               >
                 Delete
@@ -496,11 +593,15 @@ export function useCopilotActions() {
             <p>Delete project <strong>{args.projectId}</strong>? This cannot be undone.</p>
             <div className="flex gap-2">
               <button
-                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
+                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:bg-destructive/90"
                 onClick={async () => {
-                  await projectsApi.remove(args.projectId);
-                  queryClient.invalidateQueries({ queryKey: ["projects"] });
-                  respond("Project deleted");
+                  try {
+                    await projectsApi.remove(args.projectId);
+                    queryClient.invalidateQueries({ queryKey: ["projects"] });
+                    respond("Project deleted");
+                  } catch (err) {
+                    respond(`Failed to delete project: ${err instanceof Error ? err.message : "Unknown error"}`);
+                  }
                 }}
               >
                 Delete
@@ -528,7 +629,7 @@ export function useCopilotActions() {
     handler: async () => {
       if (!selectedCompanyId) return "No company selected";
       const result = await goalsApi.list(selectedCompanyId);
-      return JSON.stringify(result.map((g) => ({
+      const goals = result.map((g) => ({
         id: g.id,
         title: g.title,
         status: g.status,
@@ -536,13 +637,22 @@ export function useCopilotActions() {
         description: g.description,
         parentId: g.parentId,
         ownerAgentId: g.ownerAgentId,
-      })));
+      }));
+      lastGoalsRef.current = goals;
+      const summary = goals.map((g) => `• ${g.title} — ${g.status} (${g.level})`).join("\n");
+      return `${goals.length} goal(s):\n${summary}`;
+    },
+    render: ({ status }) => {
+      if (status === ToolCallStatus.Complete && lastGoalsRef.current.length > 0) {
+        return <ChatGoalList goals={lastGoalsRef.current as never[]} onNavigate={companyNav} />;
+      }
+      return <ChatLoadingSkeleton />;
     },
   });
 
-  useFrontendTool({
+  useHumanInTheLoop({
     name: "createGoal",
-    description: "Create a new goal",
+    description: "Create a new goal (requires user confirmation)",
     parameters: z.object({
       title: z.string().describe("Goal title"),
       description: z.string().optional().describe("Goal description"),
@@ -550,16 +660,63 @@ export function useCopilotActions() {
       parentId: z.string().optional().describe("Parent goal ID for sub-goals"),
       ownerAgentId: z.string().optional().describe("Owner agent ID"),
     }),
-    handler: async ({ title, description, level, parentId, ownerAgentId }) => {
-      if (!selectedCompanyId) return "No company selected";
-      const data: Record<string, unknown> = { title };
-      if (description) data.description = description;
-      if (level) data.level = level;
-      if (parentId) data.parentId = parentId;
-      if (ownerAgentId) data.ownerAgentId = ownerAgentId;
-      const result = await goalsApi.create(selectedCompanyId, data);
-      queryClient.invalidateQueries({ queryKey: ["goals"] });
-      return JSON.stringify({ id: result.id, title: result.title, status: result.status });
+    render: ({ args, respond, status }) => {
+      if (status === ToolCallStatus.Complete) {
+        return <p className="text-sm text-muted-foreground">Goal created.</p>;
+      }
+      if (status === ToolCallStatus.Executing && respond) {
+        const levelColors: Record<string, string> = {
+          company: "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+          team: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+          individual: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+        };
+        return (
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 text-sm">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              Create Goal
+            </p>
+            <p className="text-xs font-medium">{args.title}</p>
+            {args.description && (
+              <p className="text-xs text-muted-foreground">{args.description}</p>
+            )}
+            <div className="flex items-center gap-2">
+              {args.level && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${levelColors[args.level] ?? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"}`}>
+                  {args.level}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                onClick={async () => {
+                  if (!selectedCompanyId) {
+                    respond("No company selected");
+                    return;
+                  }
+                  const data: Record<string, unknown> = { title: args.title };
+                  if (args.description) data.description = args.description;
+                  if (args.level) data.level = args.level;
+                  if (args.parentId) data.parentId = args.parentId;
+                  if (args.ownerAgentId) data.ownerAgentId = args.ownerAgentId;
+                  const result = await goalsApi.create(selectedCompanyId, data);
+                  queryClient.invalidateQueries({ queryKey: ["goals"] });
+                  respond(`Created goal "${result.title}" (status: ${result.status})`);
+                }}
+              >
+                Create
+              </button>
+              <button
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                onClick={() => respond("Cancelled by user")}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      }
+      return null;
     },
   });
 
@@ -685,11 +842,15 @@ export function useCopilotActions() {
             <p>Terminate agent <strong>{args.agentId}</strong>? This is permanent and cannot be undone.</p>
             <div className="flex gap-2">
               <button
-                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
+                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-medium text-white hover:bg-destructive/90"
                 onClick={async () => {
-                  const result = await agentsApi.terminate(args.agentId);
-                  queryClient.invalidateQueries({ queryKey: ["agents"] });
-                  respond(`Agent ${result.name} terminated`);
+                  try {
+                    const result = await agentsApi.terminate(args.agentId);
+                    queryClient.invalidateQueries({ queryKey: ["agents"] });
+                    respond(`Agent ${result.name} terminated`);
+                  } catch (err) {
+                    respond(`Failed to terminate agent: ${err instanceof Error ? err.message : "Unknown error"}`);
+                  }
                 }}
               >
                 Terminate

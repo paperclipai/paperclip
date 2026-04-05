@@ -1,6 +1,6 @@
 import {
   CopilotRuntime,
-  createCopilotEndpointSingleRouteExpress,
+  createCopilotEndpointExpress,
   BuiltInAgent,
 } from "@copilotkit/runtime/v2";
 import { Router } from "express";
@@ -26,7 +26,7 @@ export function copilotKitRoutes(): Router {
 
   router.use(
     "/copilotkit",
-    createCopilotEndpointSingleRouteExpress({
+    createCopilotEndpointExpress({
       runtime,
       basePath: "/",
     }),
