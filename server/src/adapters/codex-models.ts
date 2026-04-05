@@ -1,4 +1,10 @@
 import type { AdapterModel } from "./types.js";
+
+// Fallback declarations for the IDE (unbuilt workspace)
+declare var process: { env: Record<string, string | undefined> };
+
+// @ts-ignore
+import { resolveZaiModelsEndpoint } from "@paperclipai/shared";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
 
@@ -31,21 +37,47 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
 }
 
-function resolveOpenAiApiKey(): string | null {
-  const envKey = process.env.OPENAI_API_KEY?.trim();
-  if (envKey) return envKey;
-
+function resolveLlmDetails(): {
+  apiKey: string | null;
+  endpoint: string | null;
+  provider: "claude" | "openai" | "zai" | string;
+} {
   const config = readConfigFile();
-  if (config?.llm?.provider !== "openai") return null;
-  const configKey = config.llm.apiKey?.trim();
-  return configKey && configKey.length > 0 ? configKey : null;
+  const provider = config?.llm?.provider || "openai";
+
+  if (provider === "zai") {
+    const envKey = process.env.ZAI_API_KEY?.trim();
+    const envEndpoint = resolveZaiModelsEndpoint(process.env.ZAI_BASE_URL);
+
+    if (envKey) {
+      return { apiKey: envKey, endpoint: envEndpoint, provider: "zai" };
+    }
+
+    const configKey = config?.llm?.apiKey?.trim();
+    return {
+      apiKey: configKey && configKey.length > 0 ? configKey : null,
+      endpoint: envEndpoint,
+      provider: "zai",
+    };
+  }
+
+  const envKey = process.env.OPENAI_API_KEY?.trim();
+  if (envKey) return { apiKey: envKey, endpoint: OPENAI_MODELS_ENDPOINT, provider };
+
+  const configKey = config?.llm?.apiKey?.trim();
+  return {
+    apiKey: configKey && configKey.length > 0 ? configKey : null,
+    endpoint: OPENAI_MODELS_ENDPOINT,
+    provider,
+  };
 }
 
-async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
+async function fetchModelsFromEndpoint(apiKey: string, endpoint: string | null): Promise<AdapterModel[]> {
+  if (!endpoint) return [];
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
   try {
-    const response = await fetch(OPENAI_MODELS_ENDPOINT, {
+    const response = await fetch(endpoint, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
@@ -71,7 +103,7 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 }
 
 export async function listCodexModels(): Promise<AdapterModel[]> {
-  const apiKey = resolveOpenAiApiKey();
+  const { apiKey, endpoint, provider } = resolveLlmDetails();
   const fallback = dedupeModels(codexFallbackModels);
   if (!apiKey) return fallback;
 
@@ -81,9 +113,9 @@ export async function listCodexModels(): Promise<AdapterModel[]> {
     return cached.models;
   }
 
-  const fetched = await fetchOpenAiModels(apiKey);
+  const fetched = await fetchModelsFromEndpoint(apiKey, endpoint);
   if (fetched.length > 0) {
-    const merged = mergedWithFallback(fetched);
+    const merged = provider === "zai" ? dedupeModels(fetched) : mergedWithFallback(fetched);
     cached = {
       keyFingerprint,
       expiresAt: now + OPENAI_MODELS_CACHE_TTL_MS,

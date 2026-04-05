@@ -1,6 +1,9 @@
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
+// Fallback declaration for the IDE (unbuilt node types)
+declare var process: { env: Record<string, string | undefined> };
+
 function isLoopbackHost(host: string) {
   const normalized = host.trim().toLowerCase();
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
