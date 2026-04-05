@@ -8,8 +8,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { relativeTime } from "../lib/utils";
 import { Link } from "@/lib/router";
 import { EmptyState } from "../components/EmptyState";
+import { MarkdownBody } from "../components/MarkdownBody";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -18,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Search, X } from "lucide-react";
+import { ArrowUpRight, FileText, Search, X } from "lucide-react";
 import type { IssueDocumentSummary, Issue, Agent } from "@paperclipai/shared";
 
 type DocumentEntry = {
@@ -32,6 +34,7 @@ export function Documents() {
   const [search, setSearch] = useState("");
   const [keyFilter, setKeyFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState("all");
+  const [selected, setSelected] = useState<DocumentEntry | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Documents" }]);
@@ -53,6 +56,17 @@ export function Documents() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  // Fetch body only when a document is selected
+  const { data: selectedDocFull, isLoading: previewLoading } = useQuery({
+    queryKey: queryKeys.issues.document(
+      selected?.issue.id ?? "",
+      selected?.document.key ?? "",
+    ),
+    queryFn: () => issuesApi.getDocument(selected!.issue.id, selected!.document.key),
+    enabled: !!selected,
+    staleTime: 30_000,
   });
 
   const issueMap = useMemo(() => {
@@ -137,7 +151,8 @@ export function Documents() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4 min-h-full">
+      {/* Header + filters */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold">Documents</h1>
@@ -205,28 +220,98 @@ export function Documents() {
         </div>
       </div>
 
-      {filteredDocuments.length === 0 ? (
-        <EmptyState
-          icon={FileText}
-          message={
-            hasActiveFilter
-              ? "No documents match your filters."
-              : "No documents have been created yet."
-          }
-          {...(hasActiveFilter ? { action: "Clear filters", onAction: clearFilters } : {})}
-        />
-      ) : (
-        <div className="border border-border rounded-md overflow-hidden">
-          {filteredDocuments.map((entry, i) => (
-            <DocumentRow
-              key={`${entry.issue.id}:${entry.document.key}`}
-              entry={entry}
-              agentMap={agentMap}
-              isLast={i === filteredDocuments.length - 1}
+      {/* Content area: list + optional preview panel */}
+      <div className="flex gap-4 min-w-0">
+        {/* Document list */}
+        <div className="flex-1 min-w-0">
+          {filteredDocuments.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              message={
+                hasActiveFilter
+                  ? "No documents match your filters."
+                  : "No documents have been created yet."
+              }
+              {...(hasActiveFilter ? { action: "Clear filters", onAction: clearFilters } : {})}
             />
-          ))}
+          ) : (
+            <div className="border border-border rounded-md overflow-hidden">
+              {filteredDocuments.map((entry, i) => (
+                <DocumentRow
+                  key={`${entry.issue.id}:${entry.document.key}`}
+                  entry={entry}
+                  agentMap={agentMap}
+                  isLast={i === filteredDocuments.length - 1}
+                  isSelected={
+                    selected?.issue.id === entry.issue.id &&
+                    selected?.document.key === entry.document.key
+                  }
+                  onSelect={setSelected}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Preview panel */}
+        {selected && (
+          <div className="w-[480px] shrink-0 border border-border rounded-md overflow-hidden flex flex-col">
+            <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30 shrink-0">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-semibold truncate">
+                    {selected.document.title ?? selected.document.key}
+                  </span>
+                  {selected.document.title && (
+                    <Badge variant="secondary" className="text-xs font-mono shrink-0">
+                      {selected.document.key}
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="text-xs font-mono text-muted-foreground">
+                    {selected.issue.identifier ?? selected.issue.id.slice(0, 8)}
+                  </span>
+                  <span className="text-xs text-muted-foreground">·</span>
+                  <span className="text-xs text-muted-foreground truncate">{selected.issue.title}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button variant="ghost" size="icon-sm" asChild>
+                  <Link
+                    to={`/issues/${selected.issue.id}#document-${selected.document.key}`}
+                    title="Open in issue"
+                  >
+                    <ArrowUpRight className="h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setSelected(null)}
+                  title="Close preview"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="p-4 overflow-y-auto">
+              {previewLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-5/6" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-2/3" />
+                </div>
+              ) : selectedDocFull ? (
+                <MarkdownBody className="text-sm">{selectedDocFull.body}</MarkdownBody>
+              ) : null}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -235,19 +320,24 @@ function DocumentRow({
   entry,
   agentMap,
   isLast,
+  isSelected,
+  onSelect,
 }: {
   entry: DocumentEntry;
   agentMap: Map<string, Agent>;
   isLast: boolean;
+  isSelected: boolean;
+  onSelect: (entry: DocumentEntry) => void;
 }) {
   const { document, issue } = entry;
   const updatedByAgent = document.updatedByAgentId ? agentMap.get(document.updatedByAgentId) : null;
   const title = document.title ?? document.key;
 
   return (
-    <Link
-      to={`/issues/${issue.id}#document-${document.key}`}
-      className={`flex items-center gap-3 px-4 py-2.5 hover:bg-accent/50 transition-colors group${!isLast ? " border-b border-border" : ""}`}
+    <button
+      type="button"
+      onClick={() => onSelect(entry)}
+      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors${!isLast ? " border-b border-border" : ""}${isSelected ? " bg-accent" : " hover:bg-accent/50"}`}
     >
       <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
 
@@ -277,6 +367,6 @@ function DocumentRow({
           {relativeTime(document.updatedAt)}
         </span>
       </div>
-    </Link>
+    </button>
   );
 }
