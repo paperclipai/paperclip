@@ -376,7 +376,11 @@ graph TD
 
 **Preconditions:** Task is checked out. Chain of command is known (from Workflow 1).
 
-**Inputs:** Parent task ID, goal ID, task description, available agents and their roles.
+**Inputs:** Parent task ID, goal ID, project ID, task description, available agents and their roles.
+
+#### Available Projects
+
+Before creating subtasks, identify the correct project for the work. Use `GET /api/companies/{companyId}/projects` to list available projects. Every subtask must include a `projectId` matching the domain of the work being delegated.
 
 #### Mermaid Diagram
 
@@ -385,7 +389,7 @@ graph TD
     A[Start Delegation] --> B[Determine which department owns the work]
     B --> C{Right agent exists?}
     C -->|No| D[Use paperclip-create-agent to hire]
-    C -->|Yes| E[Create subtask with parentId and goalId]
+    C -->|Yes| E[Create subtask with parentId, goalId, and projectId]
     D --> E
     E --> F[Assign subtask to correct agent]
     F --> G{Cross-functional?}
@@ -401,8 +405,8 @@ graph TD
   - Evidence: Department and target agent identified
 - [ ] If the right agent does not exist, use `paperclip-create-agent` skill to hire one
   - Evidence: Agent created or "agent already exists"
-- [ ] Create subtask via `POST /api/companies/{companyId}/issues` with `parentId` and `goalId` set
-  - Evidence: Subtask ID and link to parent
+- [ ] Create subtask via `POST /api/companies/{companyId}/issues` with `parentId`, `goalId`, and `projectId` set
+  - Evidence: Subtask ID and link to parent, projectId confirmed
 - [ ] For non-child follow-ups on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId`
   - Evidence: Workspace inheritance set or "not applicable"
 - [ ] Assign the subtask to the correct agent
@@ -412,7 +416,7 @@ graph TD
 
 #### Validation
 
-- Every subtask has `parentId` and `goalId` set.
+- Every subtask has `parentId`, `goalId`, and `projectId` set.
 - Assignment matches the routing rules (CTO for code, CMO for marketing, UXDesigner for design).
 - Parent task has a delegation comment.
 
