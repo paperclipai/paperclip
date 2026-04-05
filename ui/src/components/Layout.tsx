@@ -15,6 +15,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
+import { UserMenu } from "./UserMenu";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { useDialog } from "../context/DialogContext";
 import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
@@ -344,6 +345,7 @@ export function Layout() {
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
+                <UserMenu />
               </div>
             </div>
           </div>
@@ -402,6 +404,7 @@ export function Layout() {
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
+                <UserMenu />
               </div>
             </div>
           </div>

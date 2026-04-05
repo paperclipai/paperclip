@@ -1,6 +1,8 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
+  authUsers,
   companyMemberships,
   instanceUserRoles,
   principalPermissionGrants,
@@ -76,12 +78,62 @@ export function accessService(db: Db) {
   }
 
   async function listMembers(companyId: string) {
-    return db
+    const memberships = await db
       .select()
       .from(companyMemberships)
       .where(eq(companyMemberships.companyId, companyId))
       .orderBy(sql`${companyMemberships.createdAt} desc`);
+
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.companyId, companyId));
+
+    const userIds = memberships
+      .filter((m) => m.principalType === "user")
+      .map((m) => m.principalId);
+    const agentIds = memberships
+      .filter((m) => m.principalType === "agent")
+      .map((m) => m.principalId);
+
+    const userRows = userIds.length > 0
+      ? await db.select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+          .from(authUsers).where(inArray(authUsers.id, userIds))
+      : [];
+    const agentRows = agentIds.length > 0
+      ? await db.select({ id: agents.id, name: agents.name })
+          .from(agents).where(inArray(agents.id, agentIds))
+      : [];
+
+    const userMap = Object.fromEntries(userRows.map((u) => [u.id, u]));
+    const agentMap = Object.fromEntries(agentRows.map((a) => [a.id, a]));
+
+    const instanceAdminRows = userIds.length > 0
+      ? await db.select({ userId: instanceUserRoles.userId })
+          .from(instanceUserRoles)
+          .where(and(
+            inArray(instanceUserRoles.userId, userIds),
+            eq(instanceUserRoles.role, "instance_admin"),
+          ))
+      : [];
+    const instanceAdminSet = new Set(instanceAdminRows.map((r) => r.userId));
+
+    return memberships.map((m) => {
+      const principalGrants = grants
+        .filter((g) => g.principalType === m.principalType && g.principalId === m.principalId)
+        .map((g) => g.permissionKey);
+      const user = m.principalType === "user" ? userMap[m.principalId] : null;
+      const agent = m.principalType === "agent" ? agentMap[m.principalId] : null;
+      return {
+        ...m,
+        displayName: user?.name ?? agent?.name ?? m.principalId,
+        email: user?.email ?? null,
+        grants: principalGrants,
+        isInstanceAdmin: m.principalType === "user" && instanceAdminSet.has(m.principalId),
+      };
+    });
   }
+
 
   async function listActiveUserMemberships(companyId: string) {
     return db

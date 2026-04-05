@@ -1,6 +1,10 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
+import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
+import { MembersSection } from "../components/MembersSection";
+import { JoinRequestsSection } from "../components/JoinRequestsSection";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -35,6 +39,16 @@ export function CompanySettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    enabled: health?.deploymentMode === "authenticated",
+  });
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -535,6 +549,19 @@ export function CompanySettings() {
           )}
         </div>
       </div>
+
+      {/* Members & Permissions */}
+      {selectedCompanyId && (
+        <MembersSection
+          companyId={selectedCompanyId}
+          currentUserId={session?.user.id ?? null}
+        />
+      )}
+
+      {/* Join Requests */}
+      {selectedCompanyId && (
+        <JoinRequestsSection companyId={selectedCompanyId} />
+      )}
 
       {/* Import / Export */}
       <div className="space-y-4">
