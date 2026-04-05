@@ -60,10 +60,8 @@ import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
-  type AdapterFallbackEntry,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
-import { categorizeAdapterError } from "./adapter-failure-taxonomy.js";
 import {
   heartbeatRunsTotal,
   heartbeatDurationSeconds,
