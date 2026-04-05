@@ -378,7 +378,7 @@ export function ExecutionWorkspaceDetail() {
 
   return (
     <>
-      <div className="mx-auto max-w-5xl space-y-4 sm:space-y-6">
+      <div className="mx-auto max-w-5xl space-y-4 overflow-hidden sm:space-y-6">
         <div className="flex flex-wrap items-center gap-3">
           <Button variant="ghost" size="sm" asChild>
             <Link to={project ? `/projects/${projectRef}/workspaces` : "/projects"}>
@@ -394,14 +394,14 @@ export function ExecutionWorkspaceDetail() {
         </div>
 
         <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.95fr)]">
-          <div className="space-y-4 sm:space-y-6">
+          <div className="min-w-0 space-y-4 sm:space-y-6">
             <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
-                <div className="space-y-2">
+                <div className="min-w-0 space-y-2">
                   <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
                     Execution workspace
                   </div>
-                  <h1 className="text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
+                  <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
                   <p className="max-w-2xl text-sm text-muted-foreground">
                     Configure the concrete runtime workspace that Paperclip reuses for this issue flow.
                     <span className="hidden sm:inline"> These settings stay
@@ -595,7 +595,7 @@ export function ExecutionWorkspaceDetail() {
             </div>
           </div>
 
-          <div className="space-y-4 sm:space-y-6">
+          <div className="min-w-0 space-y-4 sm:space-y-6">
             <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Linked objects</div>
