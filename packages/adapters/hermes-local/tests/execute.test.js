@@ -71,3 +71,43 @@ test('execute retries once when Hermes reports an unknown session', async () => 
     await fs.rm(baseCtx.cwd, { recursive: true, force: true });
   }
 });
+
+test('createHermesExecutionPlan honors config.env.HERMES_HOME and avoids unsupported provider flags', async () => {
+  const baseCtx = await createBaseCtx();
+  const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-hermes-home-'));
+  await fs.writeFile(
+    path.join(hermesHome, 'config.yaml'),
+    [
+      'model:',
+      '  default: Nemotron-Cascade-2-30B-A3B',
+      '  provider: custom',
+      '  base_url: http://pgx.home:4000/v1',
+      '  api_key: sk-local-no-key-required',
+      '  api_mode: chat_completions',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+
+  baseCtx.config = {
+    cwd: baseCtx.cwd,
+    model: 'Nemotron-Cascade-2-30B-A3B',
+    env: {
+      HERMES_HOME: hermesHome,
+      OPENAI_BASE_URL: 'http://pgx.home:4000/v1',
+      OPENAI_API_KEY: 'sk-local-no-key-required',
+    },
+  };
+
+  try {
+    const plan = await createHermesExecutionPlan(baseCtx);
+    assert.equal(plan.model, 'Nemotron-Cascade-2-30B-A3B');
+    assert.equal(plan.provider, 'custom');
+    assert.equal(plan.env.HERMES_HOME, hermesHome);
+    assert.equal(plan.env.HERMES_INFERENCE_PROVIDER, 'custom');
+    assert.ok(!plan.args.includes('--provider'));
+  } finally {
+    await fs.rm(hermesHome, { recursive: true, force: true });
+    await fs.rm(baseCtx.cwd, { recursive: true, force: true });
+  }
+});

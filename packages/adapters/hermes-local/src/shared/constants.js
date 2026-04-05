@@ -44,6 +44,29 @@ export const VALID_PROVIDERS = [
 ];
 
 /**
+ * Providers accepted by the installed Hermes CLI's `hermes chat --provider`.
+ *
+ * Hermes also supports additional provider ids through config.yaml and runtime
+ * resolution, but those values hard-fail if passed as a CLI flag on v0.7.0.
+ * The adapter must avoid forwarding unsupported ids via `--provider`.
+ */
+export const CLI_PROVIDER_FLAG_VALUES = new Set([
+  'auto',
+  'openrouter',
+  'nous',
+  'openai-codex',
+  'copilot-acp',
+  'copilot',
+  'anthropic',
+  'huggingface',
+  'zai',
+  'kimi-coding',
+  'minimax',
+  'minimax-cn',
+  'kilocode',
+]);
+
+/**
  * Prefix hints are a last resort only.
  * They are intentionally opinionated and can be overridden by:
  * 1. adapterConfig.provider

@@ -16,6 +16,9 @@ export function buildHermesConfig(values) {
   if (typeof values.model === 'string' && values.model.trim()) config.model = values.model.trim();
   if (typeof values.provider === 'string' && values.provider.trim()) config.provider = values.provider.trim();
   if (typeof values.cwd === 'string' && values.cwd.trim()) config.cwd = values.cwd.trim();
+  if (typeof values.hermesHome === 'string' && values.hermesHome.trim()) {
+    config.env = { ...(config.env || {}), HERMES_HOME: values.hermesHome.trim() };
+  }
   if (typeof values.instructionsFilePath === 'string' && values.instructionsFilePath.trim()) config.instructionsFilePath = values.instructionsFilePath.trim();
   if (typeof values.promptTemplate === 'string' && values.promptTemplate.trim()) config.promptTemplate = values.promptTemplate;
   if (typeof values.bootstrapPrompt === 'string' && values.bootstrapPrompt.trim()) config.bootstrapPromptTemplate = values.bootstrapPrompt;
@@ -57,6 +60,7 @@ export function buildHermesConfig(values) {
   }
 
   const env = {
+    ...(config.env || {}),
     ...normalizeEnvBindings(values.envBindings),
     ...parseEnvText(typeof values.envVars === 'string' ? values.envVars : ''),
   };

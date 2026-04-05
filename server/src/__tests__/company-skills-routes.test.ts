@@ -13,8 +13,13 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -38,6 +43,7 @@ vi.mock("../telemetry.js", () => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companyService: () => mockCompanyService,
   companySkillService: () => mockCompanySkillService,
   logActivity: mockLogActivity,
 }));
@@ -58,13 +64,31 @@ describe("company skill mutation permissions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
+    mockCompanyService.getById.mockResolvedValue({ id: "company-1", name: "Company 1" });
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
       warnings: [],
     });
+    mockCompanySkillService.list.mockResolvedValue([]);
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
+  });
+
+  it("returns 404 when listing skills for a missing company", async () => {
+    mockCompanyService.getById.mockResolvedValueOnce(null);
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-404"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/companies/company-404/skills");
+
+    expect(res.status).toBe(404);
+    expect(mockCompanySkillService.list).not.toHaveBeenCalled();
   });
 
   it("allows local board operators to mutate company skills", async () => {

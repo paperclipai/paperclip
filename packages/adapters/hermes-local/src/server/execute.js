@@ -1,7 +1,7 @@
 
 import path from 'node:path';
-import { DEFAULT_GRACE_SEC, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SEC, HERMES_DEFAULT_COMMAND } from '../shared/constants.js';
-import { asBoolean, asNumber, asRecord, asStringArray, asTrimmedString, joinPromptSections, mergeRuntimeEnv, normalizeEnvBindings, ensureDir } from '../shared/utils.js';
+import { CLI_PROVIDER_FLAG_VALUES, DEFAULT_GRACE_SEC, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SEC, HERMES_DEFAULT_COMMAND } from '../shared/constants.js';
+import { asBoolean, asNumber, asRecord, asStringArray, asTrimmedString, joinPromptSections, mergeRuntimeEnv, normalizeEnvBindings, ensureDir, resolveHermesHome } from '../shared/utils.js';
 import { detectModel, resolveProvider } from './detect-model.js';
 import { buildPrompt } from './prompt.js';
 import { isUnknownSessionError, parseHermesOutput } from './parse.js';
@@ -18,7 +18,10 @@ import { runChildProcess } from './runtime.js';
 export async function createHermesExecutionPlan(ctx) {
   const config = asRecord(ctx.config);
   const explicitProvider = asTrimmedString(config.provider);
-  const detected = (!explicitProvider || !asTrimmedString(config.model)) ? await detectModel() : null;
+  const hermesConfigPath = path.join(resolveHermesHome(config), 'config.yaml');
+  const detected = (!explicitProvider || !asTrimmedString(config.model))
+    ? await detectModel(hermesConfigPath)
+    : null;
 
   const command = asTrimmedString(config.hermesCommand) || asTrimmedString(config.command) || HERMES_DEFAULT_COMMAND;
   const model = asTrimmedString(config.model) || asTrimmedString(detected?.model) || DEFAULT_MODEL;
@@ -64,7 +67,12 @@ export async function createHermesExecutionPlan(ctx) {
   const args = ['chat', '-q', prompt];
   if (quiet) args.push('-Q');
   if (model) args.push('-m', model);
-  if (providerResolution.provider !== DEFAULT_PROVIDER) args.push('--provider', providerResolution.provider);
+  if (
+    providerResolution.provider !== DEFAULT_PROVIDER &&
+    CLI_PROVIDER_FLAG_VALUES.has(providerResolution.provider)
+  ) {
+    args.push('--provider', providerResolution.provider);
+  }
   if (toolsets) args.push('-t', toolsets);
   if (maxTurns > 0) args.push('--max-turns', String(maxTurns));
   if (worktreeMode) args.push('-w');
@@ -93,7 +101,7 @@ export async function createHermesExecutionPlan(ctx) {
     workspaceId: asTrimmedString(workspace.workspaceId),
     repoUrl: asTrimmedString(workspace.repoUrl),
     repoRef: asTrimmedString(workspace.repoRef),
-    env: buildExecutionEnv(ctx, config, cwd, runtimeContext.context),
+    env: buildExecutionEnv(ctx, config, cwd, runtimeContext.context, providerResolution),
   };
 }
 
@@ -277,7 +285,7 @@ export async function buildInstructionsPrefix(config, cwd) {
  * @param {string} cwd
  * @param {Record<string, unknown>} context
  */
-export function buildExecutionEnv(ctx, config, cwd, context) {
+export function buildExecutionEnv(ctx, config, cwd, context, providerResolution = null) {
   const configEnv = {
     ...normalizeEnvBindings(config.envBindings),
     ...normalizeEnvBindings(config.env),
@@ -329,6 +337,17 @@ export function buildExecutionEnv(ctx, config, cwd, context) {
   if (workspaceId) env.PAPERCLIP_WORKSPACE_ID = workspaceId;
   if (repoUrl) env.PAPERCLIP_WORKSPACE_REPO_URL = repoUrl;
   if (repoRef) env.PAPERCLIP_WORKSPACE_REPO_REF = repoRef;
+
+  const explicitProvider = asTrimmedString(config.provider);
+  const resolvedProvider = asTrimmedString(providerResolution?.provider);
+  const effectiveProvider = explicitProvider || resolvedProvider;
+  if (
+    effectiveProvider &&
+    effectiveProvider !== DEFAULT_PROVIDER &&
+    !CLI_PROVIDER_FLAG_VALUES.has(effectiveProvider)
+  ) {
+    env.HERMES_INFERENCE_PROVIDER = effectiveProvider;
+  }
 
   return mergeRuntimeEnv(process.env, { ...env, ...configEnv });
 }

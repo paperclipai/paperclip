@@ -14,7 +14,12 @@ import {
   listConfiguredModelsSync,
 } from './detect-model.js';
 
-let cache = null;
+const cache = new Map();
+
+function resolveConfigPath(options = {}) {
+  const explicit = asTrimmedString(options.configPath);
+  return explicit || path.join(resolveHermesHome(), 'config.yaml');
+}
 
 /**
  * @param {Array<{model:string, provider:string, sourcePath:string, isDefault:boolean}>} entries
@@ -65,10 +70,12 @@ export function getStaticHermesModels() {
  * @param {{forceRefresh?: boolean, configPath?: string}=} options
  */
 export async function listHermesModels(options = {}) {
+  const cacheKey = resolveConfigPath(options);
   const now = Date.now();
-  if (!options.forceRefresh && cache && cache.expiresAt > now) return cache.models;
+  const cached = cache.get(cacheKey);
+  if (!options.forceRefresh && cached && cached.expiresAt > now) return cached.models;
 
-  const configured = await listConfiguredModels(options.configPath);
+  const configured = await listConfiguredModels(cacheKey);
   const models = configured.length
     ? formatConfiguredModels(configured)
     : (() => {
@@ -77,7 +84,7 @@ export async function listHermesModels(options = {}) {
       })();
 
   if (!models.length) {
-    const detected = await detectModel(options.configPath);
+    const detected = await detectModel(cacheKey);
     if (detected?.model) {
       models.push({
         id: detected.model,
@@ -93,10 +100,10 @@ export async function listHermesModels(options = {}) {
     });
   }
 
-  cache = { expiresAt: now + MODELS_CACHE_TTL_MS, models };
+  cache.set(cacheKey, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
 }
 
 export function resetHermesModelsCacheForTests() {
-  cache = null;
+  cache.clear();
 }

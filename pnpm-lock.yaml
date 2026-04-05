@@ -79,6 +79,9 @@ importers:
       embedded-postgres:
         specifier: ^18.1.0-beta.16
         version: 18.1.0-beta.16(patch_hash=55uhvnotpqyiy37rn3pqpukhei)
+      hermes-paperclip-adapter:
+        specifier: workspace:*
+        version: link:../packages/adapters/hermes-local
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1

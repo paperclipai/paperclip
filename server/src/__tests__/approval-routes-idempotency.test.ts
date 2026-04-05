@@ -30,6 +30,7 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const INVALID_UUID_ERROR = Object.assign(new Error("invalid uuid"), { code: "22P02" });
 
 vi.mock("../services/index.js", () => ({
   approvalService: () => mockApprovalService,
@@ -61,7 +62,14 @@ describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
-    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      {
+        id: "issue-1",
+        title: "Hire a Hermes worker",
+        description: "Create and onboard the requested worker.",
+        identifier: "HER-1",
+      },
+    ]);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -140,6 +148,9 @@ describe("approval routes idempotent retries", () => {
         }),
         contextSnapshot: expect.objectContaining({
           source: "approval.rejected",
+          taskTitle: "Hire a Hermes worker",
+          taskBody: "Create and onboard the requested worker.",
+          issueIdentifier: "HER-1",
           wakeReason: "approval_rejected",
           decisionNote: "Not yet",
         }),
@@ -176,6 +187,9 @@ describe("approval routes idempotent retries", () => {
         }),
         contextSnapshot: expect.objectContaining({
           source: "approval.revision_requested",
+          taskTitle: "Hire a Hermes worker",
+          taskBody: "Create and onboard the requested worker.",
+          issueIdentifier: "HER-1",
           wakeReason: "approval_revision_requested",
           decisionNote: "Please tighten the scope",
         }),
@@ -213,5 +227,28 @@ describe("approval routes idempotent retries", () => {
         userId: "user-1",
       }),
     );
+  });
+
+  it("treats malformed approval ids as missing on linked issue lookups", async () => {
+    mockApprovalService.getById.mockRejectedValue(INVALID_UUID_ERROR);
+
+    const res = await request(createApp())
+      .get("/api/approvals/not-a-uuid/issues");
+
+    expect(res.status).toBe(404);
+    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+  });
+
+  it("treats malformed approval ids as missing on revision requests", async () => {
+    mockApprovalService.requestRevision.mockRejectedValue(INVALID_UUID_ERROR);
+
+    const res = await request(createApp())
+      .post("/api/approvals/not-a-uuid/request-revision")
+      .send({ decisionNote: "Please tighten the scope" });
+
+    expect(res.status).toBe(404);
+    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

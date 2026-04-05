@@ -74,6 +74,16 @@ It should not be forced to read unresolved secret-ref objects from raw stored co
 `sessionParams` are intentionally richer than only `sessionId`.
 The host should round-trip them unchanged.
 
+### 7. Custom endpoints should use a dedicated Hermes home
+
+Hermes v0.7.0 supports custom OpenAI-compatible endpoints through config/runtime resolution, but its `chat` CLI does not accept `--provider custom` directly.
+
+For LiteLLM or similar endpoints:
+
+- configure a dedicated Hermes home/profile with `model.provider: custom`
+- set `model.base_url`, `model.api_key`, and the desired model id there
+- point the Paperclip agent at that home via `HERMES_HOME`
+
 ## Validation flow used for this integration
 
 The integration was verified with:

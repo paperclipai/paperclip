@@ -26,9 +26,16 @@ export async function getHermesConfigSchema() {
         label: 'Provider override',
         type: 'select',
         required: false,
-        hint: 'Usually leave blank or auto unless you need forced routing.',
+        hint: 'Usually leave blank or auto unless you need forced routing. Custom endpoints work best through a dedicated Hermes home/profile.',
         options: VALID_PROVIDERS.map((value) => ({ label: value, value })),
         default: 'auto',
+      },
+      {
+        key: 'hermesHome',
+        label: 'Hermes home',
+        type: 'text',
+        required: false,
+        hint: 'Optional alternate Hermes home/profile root. Useful for per-agent setups such as LiteLLM-backed custom endpoints.',
       },
       {
         key: 'hermesCommand',

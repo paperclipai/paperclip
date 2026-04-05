@@ -16,6 +16,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
+import { buildIssueWakeContextSnapshot } from "../services/issue-assignment-wakeup.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 
@@ -33,6 +34,35 @@ export function approvalRoutes(db: Db) {
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  function isInvalidUuidError(error: unknown) {
+    return typeof error === "object"
+      && error !== null
+      && "code" in error
+      && (error as { code?: unknown }).code === "22P02";
+  }
+
+  async function getApprovalOrNull(id: string) {
+    try {
+      return await svc.getById(id);
+    } catch (error) {
+      if (isInvalidUuidError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async function runApprovalMutationOrNull<T>(operation: () => Promise<T>) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (isInvalidUuidError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
 
   async function queueRequesterApprovalWakeup(input: {
     approval: {
@@ -57,7 +87,16 @@ export function approvalRoutes(db: Db) {
 
     const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
-    const primaryIssueId = linkedIssueIds[0] ?? null;
+    const primaryIssue = linkedIssues[0] ?? null;
+    const primaryIssueId = primaryIssue?.id ?? null;
+    const baseContextSnapshot = primaryIssue
+      ? buildIssueWakeContextSnapshot(primaryIssue, action, { issueIds: linkedIssueIds })
+      : {
+          source: action,
+          issueId: primaryIssueId,
+          issueIds: linkedIssueIds,
+          taskId: primaryIssueId,
+        };
 
     try {
       const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
@@ -75,12 +114,9 @@ export function approvalRoutes(db: Db) {
         requestedByActorType: "user",
         requestedByActorId: actorUserId,
         contextSnapshot: {
-          source: action,
+          ...baseContextSnapshot,
           approvalId: approval.id,
           approvalStatus: approval.status,
-          issueId: primaryIssueId,
-          issueIds: linkedIssueIds,
-          taskId: primaryIssueId,
           decisionNote: approval.decisionNote ?? null,
           wakeReason,
         },
@@ -137,7 +173,7 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const approval = await svc.getById(id);
+    const approval = await getApprovalOrNull(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -201,7 +237,7 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id/issues", async (req, res) => {
     const id = req.params.id as string;
-    const approval = await svc.getById(id);
+    const approval = await getApprovalOrNull(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -215,11 +251,18 @@ export function approvalRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const actorUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(
-      id,
-      req.body.decidedByUserId ?? "board",
-      req.body.decisionNote,
+    const resolved = await runApprovalMutationOrNull(() =>
+      svc.approve(
+        id,
+        req.body.decidedByUserId ?? "board",
+        req.body.decisionNote,
+      )
     );
+    if (!resolved) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    const { approval, applied } = resolved;
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -254,11 +297,18 @@ export function approvalRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const actorUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.reject(
-      id,
-      req.body.decidedByUserId ?? "board",
-      req.body.decisionNote,
+    const resolved = await runApprovalMutationOrNull(() =>
+      svc.reject(
+        id,
+        req.body.decidedByUserId ?? "board",
+        req.body.decisionNote,
+      )
     );
+    if (!resolved) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    const { approval, applied } = resolved;
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -294,11 +344,17 @@ export function approvalRoutes(db: Db) {
       assertBoard(req);
       const id = req.params.id as string;
       const actorUserId = req.actor.userId ?? "board";
-      const approval = await svc.requestRevision(
-        id,
-        req.body.decidedByUserId ?? "board",
-        req.body.decisionNote,
+      const approval = await runApprovalMutationOrNull(() =>
+        svc.requestRevision(
+          id,
+          req.body.decidedByUserId ?? "board",
+          req.body.decisionNote,
+        )
       );
+      if (!approval) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
 
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
@@ -328,7 +384,7 @@ export function approvalRoutes(db: Db) {
 
   router.post("/approvals/:id/resubmit", validate(resubmitApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
+    const existing = await getApprovalOrNull(id);
     if (!existing) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -349,7 +405,11 @@ export function approvalRoutes(db: Db) {
           )
         : req.body.payload
       : undefined;
-    const approval = await svc.resubmit(id, normalizedPayload);
+    const approval = await runApprovalMutationOrNull(() => svc.resubmit(id, normalizedPayload));
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,
@@ -366,7 +426,7 @@ export function approvalRoutes(db: Db) {
 
   router.get("/approvals/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const approval = await svc.getById(id);
+    const approval = await getApprovalOrNull(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;
@@ -378,7 +438,7 @@ export function approvalRoutes(db: Db) {
 
   router.post("/approvals/:id/comments", validate(addApprovalCommentSchema), async (req, res) => {
     const id = req.params.id as string;
-    const approval = await svc.getById(id);
+    const approval = await getApprovalOrNull(id);
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;

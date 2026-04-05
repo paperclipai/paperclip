@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { HERMES_DEFAULT_COMMAND, VALID_PROVIDERS } from '../shared/constants.js';
-import { asRecord, asTrimmedString, firstNonEmptyLine } from '../shared/utils.js';
+import { asRecord, asTrimmedString, firstNonEmptyLine, resolveHermesHome } from '../shared/utils.js';
 import { detectModel, detectConfiguredHermesHomePaths, resolveProvider } from './detect-model.js';
 import { detectCopilotCommand, detectClaudeCodeCredentialHint, readHermesAuthFile } from './hermes-auth.js';
 import { detectAvailableProviders, extractResolvedConfigEnv, readHermesEnvFile } from './hermes-env.js';
@@ -155,8 +155,9 @@ export async function checkCredentials(config, command) {
 
 export async function checkModel(config) {
   const explicitModel = asTrimmedString(config.model);
-  const detected = await detectModel();
-  const listed = await listHermesModels();
+  const configPath = path.join(resolveHermesHome(config), 'config.yaml');
+  const detected = await detectModel(configPath);
+  const listed = await listHermesModels({ configPath });
 
   if (!explicitModel && detected?.model) {
     return {
@@ -195,7 +196,8 @@ export async function checkProviderConsistency(config) {
   const explicitModel = asTrimmedString(config.model);
   if (!explicitModel) return null;
   const explicitProvider = asTrimmedString(config.provider);
-  const detected = await detectModel();
+  const configPath = path.join(resolveHermesHome(config), 'config.yaml');
+  const detected = await detectModel(configPath);
   const resolved = resolveProvider({
     explicitProvider,
     detectedProvider: detected?.provider,

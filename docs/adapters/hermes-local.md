@@ -34,6 +34,7 @@ Hermes itself must already be installed and available on `PATH` as `hermes`.
 - `hermes --version` succeeds
 - `~/.hermes/config.yaml` contains the models you expect to expose in Paperclip
 - any provider credentials Hermes needs are already configured
+- for custom endpoints such as LiteLLM, prefer a dedicated Hermes home/profile and point the agent at it with `HERMES_HOME`
 
 ## Validation checklist
 
@@ -79,3 +80,4 @@ The integration has been validated with:
 - If the model list does not show Hermes-configured entries, confirm `server/src/adapters/registry.ts` is using `listModels()` rather than relying on static metadata.
 - If a hired worker wakes up but asks for the task again, inspect the issue wake context and confirm it includes issue title/body fields.
 - Approval comments canonically use `{ "body": "..." }`. The server now also tolerates `content` and `comments` for compatibility with agent-generated requests.
+- For LiteLLM or other custom OpenAI-compatible endpoints, configure Hermes with a dedicated `HERMES_HOME` whose `config.yaml` sets `model.provider: custom`, `model.base_url`, and the model id you want to run.

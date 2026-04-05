@@ -12,6 +12,7 @@ test('buildHermesConfig maps documented fields', () => {
     model: 'gpt-5.4',
     provider: 'copilot',
     cwd: '/work',
+    hermesHome: '/profiles/litellm',
     instructionsFilePath: '/work/AGENT.md',
     promptTemplate: 'hello',
     bootstrapPrompt: 'boot',
@@ -30,9 +31,10 @@ test('buildHermesConfig maps documented fields', () => {
   assert.equal(config.hermesCommand, 'hermes_maximus');
   assert.equal(config.command, 'hermes_maximus');
   assert.equal(config.toolsets, 'web,terminal');
+  assert.equal(config.env.HERMES_HOME, '/profiles/litellm');
   assert.equal(config.instructionsFilePath, '/work/AGENT.md');
   assert.deepEqual(config.extraArgs, ['--foo', 'bar']);
-  assert.deepEqual(config.env, { FOO: 'bar' });
+  assert.deepEqual(config.env, { HERMES_HOME: '/profiles/litellm', FOO: 'bar' });
   assert.equal(config.maxTurnsPerRun, 15);
   assert.equal(config.dangerouslySkipPermissions, false);
 });
