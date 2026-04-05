@@ -1264,6 +1264,9 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      if (patch.status === "in_review" && !nextAssigneeAgentId && !nextAssigneeUserId) {
+        throw unprocessable("in_review issues require an assignee");
+      }
       if (issueData.assigneeAgentId) {
         await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
       }
