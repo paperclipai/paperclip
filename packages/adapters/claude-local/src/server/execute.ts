@@ -28,6 +28,7 @@ import {
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeMcpConfigDeadlock,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -589,7 +590,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    let initial = await runAttempt(sessionId ?? null);
+
+    // Retry on transient MCP config deadlock (EDEADLK) — multiple Claude Code
+    // processes racing to read ~/.claude/.mcp.json can trigger a file-lock
+    // deadlock on macOS.  Retrying with jittered back-off resolves it.
+    if (
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      !initial.parsed &&
+      isClaudeMcpConfigDeadlock(initial.proc.stderr)
+    ) {
+      const maxRetries = 3;
+      for (let i = 0; i < maxRetries; i++) {
+        const delaySec = (i + 1) + Math.random();
+        await onLog(
+          "stderr",
+          `[paperclip] MCP config read failed (EDEADLK); retrying in ${delaySec.toFixed(1)}s (attempt ${i + 2}/${maxRetries + 1}).\n`,
+        );
+        await new Promise((r) => setTimeout(r, delaySec * 1000));
+        const retry = await runAttempt(sessionId ?? null);
+        if (
+          retry.proc.timedOut ||
+          (retry.proc.exitCode ?? 0) === 0 ||
+          retry.parsed ||
+          !isClaudeMcpConfigDeadlock(retry.proc.stderr)
+        ) {
+          initial = retry;
+          break;
+        }
+        // Last retry still failed — fall through with initial result
+        if (i === maxRetries - 1) {
+          initial = retry;
+        }
+      }
+    }
+
     if (
       sessionId &&
       !initial.proc.timedOut &&

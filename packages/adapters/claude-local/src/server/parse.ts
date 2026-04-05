@@ -167,6 +167,15 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
   return /max(?:imum)?\s+turns?/i.test(resultText);
 }
 
+/**
+ * Detect transient MCP config deadlock — Claude Code exits with code 1 and
+ * stderr contains EDEADLK when multiple processes race to read the shared
+ * `~/.claude/.mcp.json` file simultaneously.
+ */
+export function isClaudeMcpConfigDeadlock(stderr: string): boolean {
+  return /EDEADLK/.test(stderr) && /Invalid MCP configuration/i.test(stderr);
+}
+
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {
   const resultText = asString(parsed.result, "").trim();
   const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
