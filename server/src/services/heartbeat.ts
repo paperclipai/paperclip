@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -25,6 +26,8 @@ import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
@@ -70,10 +73,14 @@ import {
 } from "../observability/metrics.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
+// Terminal statuses for heartbeatRuns (matches HeartbeatRunStatus from @paperclipai/shared).
+// "skipped" is a WakeupRequestStatus, not a heartbeat run status — excluded intentionally.
+const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const LOW_MEMORY_THRESHOLD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB — defer spawn if free memory is below this
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1816,6 +1823,8 @@ export function heartbeatService(db: Db) {
       return;
     }
 
+    const isFirstHeartbeat = !existing.lastHeartbeatAt;
+
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
@@ -1834,6 +1843,11 @@ export function heartbeatService(db: Db) {
       .where(eq(agents.id, agentId))
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (isFirstHeartbeat && updated) {
+      const tc = getTelemetryClient();
+      if (tc) trackAgentFirstHeartbeat(tc, { agentRole: updated.role });
+    }
 
     if (updated) {
       publishLiveEvent({
@@ -1936,6 +1950,8 @@ export function heartbeatService(db: Db) {
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          freeMemBytes: os.freemem(),
+          totalMemBytes: os.totalmem(),
         },
       });
 
@@ -1961,6 +1977,65 @@ export function heartbeatService(db: Db) {
     for (const agentId of agentIds) {
       await startNextQueuedRunForAgent(agentId);
     }
+  }
+
+  /**
+   * Reap issues whose executionRunId references a terminal run.
+   *
+   * This is a safety net for cases where releaseIssueExecutionAndPromote was
+   * skipped or threw — leaving an issue locked to a dead run.  Clears both
+   * executionRunId and checkoutRunId so the issue can be checked out again
+   * without manual board intervention.
+   *
+   * Called on startup and on every heartbeat-scheduler tick.
+   */
+  async function reapStaleExecutionRunLocks() {
+    const stale = await db
+      .select({
+        issueId: issues.id,
+        runId: heartbeatRuns.id,
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
+        ),
+      )
+      .where(isNotNull(issues.executionRunId));
+
+    if (stale.length === 0) return { reaped: 0, issueIds: [] as string[] };
+
+    // Single bulk UPDATE — one round-trip for all stale locks.
+    // The OR predicate preserves the per-row (id, executionRunId) guard so
+    // a concurrent checkout that already moved to a live run is never cleared.
+    // The CASE on checkoutRunId mirrors the same guard: only clear it when it
+    // still points at the same terminal run being reaped.
+    const updated = await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        checkoutRunId: sql`CASE WHEN checkout_run_id = execution_run_id THEN NULL ELSE checkout_run_id END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        or(...stale.map((r) => and(eq(issues.id, r.issueId), eq(issues.executionRunId, r.runId))))!,
+      )
+      .returning({ id: issues.id });
+
+    const reaped = updated.map((r) => r.id);
+
+    if (reaped.length > 0) {
+      logger.warn(
+        { reaped: reaped.length, issueIds: reaped },
+        "reaped stale executionRunId locks on issues",
+      );
+    }
+
+    return { reaped: reaped.length, issueIds: reaped };
   }
 
   async function updateRuntimeState(
@@ -2629,7 +2704,7 @@ export function heartbeatService(db: Db) {
               workspace: executionWorkspace,
               runtimeServices,
             }),
-            { agentId: agent.id },
+            { agentId: agent.id, runId: run.id },
           );
         } catch (err) {
           await onLog(
@@ -2664,6 +2739,29 @@ export function heartbeatService(db: Db) {
           `PAPERCLIP_API_KEY would not be injected, causing silent degradation. ` +
           `Fix: ensure PAPERCLIP_AGENT_JWT_SECRET is set in server config.`,
         );
+      }
+      // Memory pre-flight: defer if OS free memory is below threshold to avoid OOM kills
+      const freeMemBytes = os.freemem();
+      if (freeMemBytes < LOW_MEMORY_THRESHOLD_BYTES) {
+        const freeMemMB = Math.round(freeMemBytes / (1024 * 1024));
+        const totalMemMB = Math.round(os.totalmem() / (1024 * 1024));
+        logger.warn(
+          { runId: run.id, agentId: agent.id, freeMemMB, totalMemMB },
+          "low memory: deferring run back to queued",
+        );
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "queued", updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, run.id));
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: `Deferred: insufficient free memory (${freeMemMB} MB free of ${totalMemMB} MB total); will retry on next scheduler tick`,
+          payload: { freeMemBytes, totalMemBytes: os.totalmem() },
+        });
+        activeRunExecutions.delete(run.id);
+        return;
       }
       let adapterResult = await adapter.execute({
         runId: run.id,
@@ -2844,7 +2942,7 @@ export function heartbeatService(db: Db) {
                 workspace: executionWorkspace,
                 runtimeServices: adapterManagedRuntimeServices,
               }),
-              { agentId: agent.id },
+              { agentId: agent.id, runId: run.id },
             );
           } catch (err) {
             await onLog(
@@ -3148,6 +3246,7 @@ export function heartbeatService(db: Db) {
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
+          checkoutRunId: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, issue.id));
@@ -4110,6 +4209,8 @@ export function heartbeatService(db: Db) {
 
     reapOrphanedRuns,
 
+    reapStaleExecutionRunLocks,
+
     resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
@@ -4120,6 +4221,9 @@ export function heartbeatService(db: Db) {
 
       for (const agent of allAgents) {
         if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        // remote_trigger agents are driven by external schedulers (e.g. CoWork RemoteTriggers);
+        // skip native interval-based scheduling so they don't get double-fired.
+        if (agent.adapterType === "remote_trigger") continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 

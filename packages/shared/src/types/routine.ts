@@ -1,4 +1,4 @@
-import type { IssueOriginKind } from "../constants.js";
+import type { IssueOriginKind, RoutineVariableType } from "../constants.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -25,6 +25,17 @@ export interface RoutineIssueSummary {
   updatedAt: Date;
 }
 
+export type RoutineVariableDefaultValue = string | number | boolean | null;
+
+export interface RoutineVariable {
+  name: string;
+  label: string | null;
+  type: RoutineVariableType;
+  defaultValue: RoutineVariableDefaultValue;
+  required: boolean;
+  options: string[];
+}
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -38,6 +49,7 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  variables: RoutineVariable[];
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared";
+import type {
+  DocumentRevision,
+  FeedbackDataSharingPreference,
+  FeedbackVote,
+  FeedbackVoteValue,
+  Issue,
+  IssueDocument,
+} from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -9,6 +16,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
+import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,7 +29,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, ChevronRight, Copy, Download, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Download, FilePenLine, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
 
 type DraftState = {
   key: string;
@@ -98,17 +106,48 @@ function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null)
   return draft.body !== doc.body || (doc.title ?? "") !== draft.title;
 }
 
+function toDocumentSummary(document: IssueDocument) {
+  return {
+    id: document.id,
+    companyId: document.companyId,
+    issueId: document.issueId,
+    key: document.key,
+    title: document.title,
+    format: document.format,
+    latestRevisionId: document.latestRevisionId,
+    latestRevisionNumber: document.latestRevisionNumber,
+    createdByAgentId: document.createdByAgentId,
+    createdByUserId: document.createdByUserId,
+    updatedByAgentId: document.updatedByAgentId,
+    updatedByUserId: document.updatedByUserId,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 export function IssueDocumentsSection({
   issue,
   canDeleteDocuments,
+  feedbackVotes = [],
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
   mentions,
   imageUploadHandler,
+  onVote,
   extraActions,
 }: {
   issue: Issue;
   canDeleteDocuments: boolean;
+  feedbackVotes?: FeedbackVote[];
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
   mentions?: MentionOption[];
   imageUploadHandler?: (file: File) => Promise<string>;
+  onVote?: (
+    revisionId: string,
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
   extraActions?: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -161,6 +200,36 @@ export function IssueDocumentsSection({
     });
   }, [issue.id, queryClient]);
 
+  const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    queryClient.setQueryData<IssueDocument[] | undefined>(
+      queryKeys.issues.documents(issue.id),
+      (current) => {
+        if (!current) return [document];
+        const existingIndex = current.findIndex((entry) => entry.key === document.key);
+        if (existingIndex === -1) return [...current, document];
+        return current.map((entry, index) => index === existingIndex ? document : entry);
+      },
+    );
+    queryClient.setQueryData<Issue | undefined>(
+      queryKeys.issues.detail(issue.id),
+      (current) => {
+        if (!current) return current;
+        const nextSummaries = (() => {
+          const summary = toDocumentSummary(document);
+          const existingIndex = (current.documentSummaries ?? []).findIndex((entry) => entry.key === document.key);
+          if (existingIndex === -1) return [...(current.documentSummaries ?? []), summary];
+          return (current.documentSummaries ?? []).map((entry, index) => index === existingIndex ? summary : entry);
+        })();
+        return {
+          ...current,
+          planDocument: document.key === "plan" ? document : current.planDocument ?? null,
+          documentSummaries: nextSummaries,
+          legacyPlanDocument: document.key === "plan" ? null : current.legacyPlanDocument ?? null,
+        };
+      },
+    );
+  }, [issue.id, queryClient]);
+
   const upsertDocument = useMutation({
     mutationFn: async (nextDraft: DraftState) =>
       issuesApi.upsertDocument(issue.id, nextDraft.key, {
@@ -186,7 +255,8 @@ export function IssueDocumentsSection({
   const restoreDocumentRevision = useMutation({
     mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
       issuesApi.restoreDocumentRevision(issue.id, key, revisionId),
-    onSuccess: (_document, variables) => {
+    onSuccess: (document, variables) => {
+      syncDocumentCaches(document);
       setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
       setDraft((current) => current?.key === variables.key ? null : current);
       setDocumentConflict((current) => current?.key === variables.key ? null : current);
@@ -206,6 +276,15 @@ export function IssueDocumentsSection({
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
   }, [documents]);
+
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes) {
+      if (feedbackVote.targetType !== "issue_document_revision") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !issue.legacyPlanDocument;
@@ -340,6 +419,7 @@ export function IssueDocumentsSection({
           isNew: false,
         };
       });
+      syncDocumentCaches(saved);
       invalidateIssueDocuments();
     };
 
@@ -379,7 +459,7 @@ export function IssueDocumentsSection({
       setError(err instanceof Error ? err.message : "Failed to save document");
       return false;
     }
-  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, upsertDocument]);
+  }, [documentConflict, invalidateIssueDocuments, issue.id, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
 
   const reloadDocumentFromServer = useCallback((key: string) => {
     if (documentConflict?.key !== key) return;
@@ -718,6 +798,7 @@ export function IssueDocumentsSection({
           const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? doc.latestRevisionNumber;
           const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? doc.updatedAt;
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
+          const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
 
           return (
             <div
@@ -834,7 +915,14 @@ export function IssueDocumentsSection({
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end">
+                      {!isHistoricalPreview ? (
+                        <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
+                          <FilePenLine className="h-3.5 w-3.5" />
+                          Edit document
+                        </DropdownMenuItem>
+                      ) : null}
+                      {!isHistoricalPreview ? <DropdownMenuSeparator /> : null}
                       <DropdownMenuItem
                         onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                       >
@@ -859,13 +947,6 @@ export function IssueDocumentsSection({
               {!isFolded ? (
                 <div
                   className="mt-3 space-y-3"
-                  onFocusCapture={!isHistoricalPreview
-                    ? () => {
-                        if (!activeDraft) {
-                          beginEdit(doc.key);
-                        }
-                      }
-                    : undefined}
                   onBlurCapture={!isHistoricalPreview
                     ? async (event) => {
                         if (activeDraft) {
@@ -996,7 +1077,7 @@ export function IssueDocumentsSection({
                       <div className="rounded-md border border-amber-500/20 bg-background/50 p-3">
                         {renderBody(displayedBody, documentBodyContentClassName)}
                       </div>
-                    ) : (
+                    ) : activeDraft ? (
                       <MarkdownEditor
                         value={displayedBody}
                         onChange={(body) => {
@@ -1005,13 +1086,7 @@ export function IssueDocumentsSection({
                             if (current && current.key === doc.key && !current.isNew) {
                               return { ...current, body };
                             }
-                            return {
-                              key: doc.key,
-                              title: doc.title ?? "",
-                              body,
-                              baseRevisionId: doc.latestRevisionId,
-                              isNew: false,
-                            };
+                            return current;
                           });
                         }}
                         placeholder="Markdown body"
@@ -1022,6 +1097,10 @@ export function IssueDocumentsSection({
                         imageUploadHandler={imageUploadHandler}
                         onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
                       />
+                    ) : (
+                      <div className="rounded-md border border-border/60 bg-background/40 p-3">
+                        {renderBody(displayedBody, documentBodyContentClassName)}
+                      </div>
                     )}
                   </div>
                   <div className="flex min-h-4 items-center justify-end px-1">
@@ -1053,6 +1132,16 @@ export function IssueDocumentsSection({
                           : ""}
                     </span>
                   </div>
+                  {canVoteOnDocument && doc.latestRevisionId ? (
+                    <OutputFeedbackButtons
+                      activeVote={feedbackVoteByTargetId.get(doc.latestRevisionId) ?? null}
+                      sharingPreference={feedbackDataSharingPreference}
+                      termsUrl={feedbackTermsUrl}
+                      onVote={(vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) =>
+                        onVote?.(doc.latestRevisionId!, vote, options) ?? Promise.resolve()
+                      }
+                    />
+                  ) : null}
                 </div>
               ) : null}
 

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse } from "../api/routines";
 import { heartbeatsApi } from "../api/heartbeats";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -31,6 +32,12 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
+import {
+  RoutineRunVariablesDialog,
+  routineRunNeedsConfiguration,
+  type RoutineRunDialogSubmitData,
+} from "../components/RoutineRunVariablesDialog";
+import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
@@ -48,7 +55,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import type { RoutineTrigger } from "@paperclipai/shared";
+import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -216,7 +223,7 @@ function TriggerEditor({
             onClick={() => onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()))}
           >
             <Save className="mr-1.5 h-3.5 w-3.5" />
-            Save
+            Save trigger
           </Button>
           <Button
             variant="ghost"
@@ -247,13 +254,23 @@ export function RoutineDetail() {
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [runVariablesOpen, setRunVariablesOpen] = useState(false);
   const [newTrigger, setNewTrigger] = useState({
     kind: "schedule",
     cronExpression: "0 10 * * *",
     signingMode: "bearer",
     replayWindowSec: "300",
   });
-  const [editDraft, setEditDraft] = useState({
+  const [editDraft, setEditDraft] = useState<{
+    title: string;
+    description: string;
+    projectId: string;
+    assigneeAgentId: string;
+    priority: string;
+    concurrencyPolicy: string;
+    catchUpPolicy: string;
+    variables: RoutineVariable[];
+  }>({
     title: "",
     description: "",
     projectId: "",
@@ -261,6 +278,7 @@ export function RoutineDetail() {
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    variables: [],
   });
   const activeTab = useMemo(() => getRoutineTabFromSearch(location.search), [location.search]);
 
@@ -309,6 +327,11 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
 
   const routineDefaults = useMemo(
     () =>
@@ -321,6 +344,7 @@ export function RoutineDetail() {
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
+            variables: routine.variables,
           }
         : null,
     [routine],
@@ -334,7 +358,8 @@ export function RoutineDetail() {
       editDraft.assigneeAgentId !== routineDefaults.assigneeAgentId ||
       editDraft.priority !== routineDefaults.priority ||
       editDraft.concurrencyPolicy !== routineDefaults.concurrencyPolicy ||
-      editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy
+      editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy ||
+      JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)
     );
   }, [editDraft, routineDefaults]);
 
@@ -409,9 +434,20 @@ export function RoutineDetail() {
   });
 
   const runRoutine = useMutation({
-    mutationFn: () => routinesApi.run(routineId!),
+    mutationFn: (data?: RoutineRunDialogSubmitData) =>
+      routinesApi.run(routineId!, {
+        ...(data?.variables && Object.keys(data.variables).length > 0 ? { variables: data.variables } : {}),
+        ...(data?.executionWorkspaceId !== undefined ? { executionWorkspaceId: data.executionWorkspaceId } : {}),
+        ...(data?.executionWorkspacePreference !== undefined
+          ? { executionWorkspacePreference: data.executionWorkspacePreference }
+          : {}),
+        ...(data?.executionWorkspaceSettings !== undefined
+          ? { executionWorkspaceSettings: data.executionWorkspaceSettings }
+          : {}),
+      }),
     onSuccess: async () => {
       pushToast({ title: "Routine run started", tone: "success" });
+      setRunVariablesOpen(false);
       setActiveTab("runs");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -476,6 +512,12 @@ export function RoutineDetail() {
           webhookUrl: result.secretMaterial.webhookUrl,
           webhookSecret: result.secretMaterial.webhookSecret,
         });
+      } else {
+        pushToast({
+          title: "Trigger added",
+          body: "The routine schedule was saved.",
+          tone: "success",
+        });
       }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
@@ -495,6 +537,11 @@ export function RoutineDetail() {
   const updateTrigger = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
     onSuccess: async () => {
+      pushToast({
+        title: "Trigger saved",
+        body: "The routine cadence update was saved.",
+        tone: "success",
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -513,6 +560,10 @@ export function RoutineDetail() {
   const deleteTrigger = useMutation({
     mutationFn: (id: string) => routinesApi.deleteTrigger(id),
     onSuccess: async () => {
+      pushToast({
+        title: "Trigger deleted",
+        tone: "success",
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -600,6 +651,12 @@ export function RoutineDetail() {
   }
 
   const automationEnabled = routine.status === "active";
+  const selectedProject = projects?.find((project) => project.id === routine.projectId) ?? null;
+  const needsRunConfiguration = routineRunNeedsConfiguration({
+    variables: routine.variables ?? [],
+    project: selectedProject,
+    isolatedWorkspacesEnabled: experimentalSettings?.enableIsolatedWorkspaces === true,
+  });
   const automationToggleDisabled = updateRoutineStatus.isPending || routine.status === "archived";
   const automationLabel = routine.status === "archived" ? "Archived" : automationEnabled ? "Active" : "Paused";
   const automationLabelClassName = routine.status === "archived"
@@ -643,7 +700,16 @@ export function RoutineDetail() {
           }}
         />
         <div className="flex shrink-0 items-center gap-3 pt-1">
-          <RunButton onClick={() => runRoutine.mutate()} disabled={runRoutine.isPending} />
+          <RunButton
+            onClick={() => {
+              if (needsRunConfiguration) {
+                setRunVariablesOpen(true);
+                return;
+              }
+              runRoutine.mutate({});
+            }}
+            disabled={runRoutine.isPending}
+          />
           <button
             type="button"
             role="switch"
@@ -796,6 +862,12 @@ export function RoutineDetail() {
             saveRoutine.mutate();
           }
         }}
+      />
+      <RoutineVariablesHint />
+      <RoutineVariablesEditor
+        description={editDraft.description}
+        value={editDraft.variables}
+        onChange={(variables) => setEditDraft((current) => ({ ...current, variables }))}
       />
 
       {/* Advanced delivery settings */}
@@ -1016,6 +1088,16 @@ export function RoutineDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      <RoutineRunVariablesDialog
+        open={runVariablesOpen}
+        onOpenChange={setRunVariablesOpen}
+        companyId={routine.companyId}
+        project={selectedProject}
+        variables={routine.variables ?? []}
+        isPending={runRoutine.isPending}
+        onSubmit={(data) => runRoutine.mutate(data)}
+      />
     </div>
   );
 }

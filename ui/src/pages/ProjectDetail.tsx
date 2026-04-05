@@ -31,7 +31,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { Clock3, Copy, GitBranch, Loader2 } from "lucide-react";
+import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
+import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
 
@@ -256,152 +257,144 @@ function ProjectWorkspacesContent({
   const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
 
   const renderSummaryRow = (summary: ReturnType<typeof buildProjectWorkspaceSummaries>[number]) => {
-    const visibleIssues = summary.issues.slice(0, 3);
+    const visibleIssues = summary.issues.slice(0, 5);
     const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
     const workspaceHref =
       summary.kind === "project_workspace"
         ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
         : `/execution-workspaces/${summary.workspaceId}`;
+    const hasRunningServices = summary.runningServiceCount > 0;
+
+    const truncatePath = (path: string) => {
+      const parts = path.split("/").filter(Boolean);
+      if (parts.length <= 3) return path;
+      return `…/${parts.slice(-2).join("/")}`;
+    };
 
     return (
       <div
         key={summary.key}
         className="border-b border-border px-4 py-3 last:border-b-0"
       >
-        <div className="grid gap-4 md:grid-cols-[minmax(0,18rem)_minmax(0,1fr)_auto] md:items-start">
-          <div className="min-w-0">
-            <Link
-              to={workspaceHref}
-              className="block truncate text-sm font-medium hover:underline"
-            >
-              {summary.workspaceName}
-            </Link>
+        {/* Header row: name + actions */}
+        <div className="flex items-center gap-3">
+          <Link
+            to={workspaceHref}
+            className="min-w-0 shrink truncate text-sm font-medium hover:underline"
+          >
+            {summary.workspaceName}
+          </Link>
 
-            <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1">
-                <GitBranch className="h-3.5 w-3.5" />
-                <span className="font-mono">{summary.branchName ?? "No branch info"}</span>
+          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            {summary.serviceCount > 0 ? (
+              <span className={`inline-flex items-center gap-1 ${hasRunningServices ? "text-emerald-500" : ""}`}>
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                {summary.runningServiceCount}/{summary.serviceCount}
               </span>
-              <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
-                {summary.runningServiceCount}/{summary.serviceCount} services running
-              </span>
-              {summary.executionWorkspaceStatus ? (
-                <span className="rounded-full border border-border px-2 py-0.5 text-[11px]">
-                  {summary.executionWorkspaceStatus}
-                </span>
-              ) : null}
-            </div>
-            {summary.primaryServiceUrl ? (
-              <a
-                href={summary.primaryServiceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
-              >
-                {summary.primaryServiceUrl}
-              </a>
             ) : null}
-
-            {summary.cwd ? (
-              <div className="mt-2 flex min-w-0 items-start gap-2 text-xs text-muted-foreground">
-                <span className="min-w-0 truncate font-mono leading-tight" title={summary.cwd}>
-                  {summary.cwd}
-                </span>
-                <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
-                  <Copy className="h-3.5 w-3.5" />
-                </CopyText>
-              </div>
+            {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
+              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
             ) : null}
           </div>
 
-          <div className="min-w-0">
-            <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-              Issues ({summary.issues.length})
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {visibleIssues.map((issue) => (
-                <Link
-                  key={issue.id}
-                  to={`/issues/${issue.identifier ?? issue.id}`}
-                  className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-left text-xs leading-none transition-colors hover:bg-accent"
-                >
-                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                    {issue.identifier ?? issue.id.slice(0, 8)}
-                  </span>
-                  <span className="truncate leading-tight">{issue.title}</span>
-                </Link>
-              ))}
-              {hiddenIssueCount > 0 ? (
-                <span className="inline-flex items-center rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground">
-                  ... and {hiddenIssueCount} more
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="flex shrink-0 flex-col items-start gap-2 md:items-end">
-            <Link
-              to={workspaceHref}
-              className="text-xs font-medium text-foreground hover:underline"
-            >
-              {summary.kind === "project_workspace" ? "Configure workspace" : "View workspace"}
-            </Link>
-            <div className="flex flex-wrap gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <span className="text-xs text-muted-foreground">{timeAgo(summary.lastUpdatedAt)}</span>
+            {summary.hasRuntimeConfig ? (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                disabled={
-                  controlWorkspaceRuntime.isPending
-                  || !summary.hasRuntimeConfig
-                  || runtimeActionKey !== null && runtimeActionKey !== `${summary.key}:start`
-                }
+                className="h-7 gap-1.5 px-2 text-xs"
+                disabled={controlWorkspaceRuntime.isPending}
                 onClick={() =>
                   controlWorkspaceRuntime.mutate({
                     key: summary.key,
                     kind: summary.kind,
                     workspaceId: summary.workspaceId,
-                    action: "start",
+                    action: hasRunningServices ? "stop" : "start",
                   })
                 }
               >
-                {runtimeActionKey === `${summary.key}:start` ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                Start
+                {runtimeActionKey === `${summary.key}:start` || runtimeActionKey === `${summary.key}:stop` ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : hasRunningServices ? (
+                  <Square className="h-3 w-3" />
+                ) : (
+                  <Play className="h-3 w-3" />
+                )}
+                {hasRunningServices ? "Stop" : "Start"}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={controlWorkspaceRuntime.isPending || summary.serviceCount === 0}
-                onClick={() =>
-                  controlWorkspaceRuntime.mutate({
-                    key: summary.key,
-                    kind: summary.kind,
-                    workspaceId: summary.workspaceId,
-                    action: "stop",
-                  })
-                }
-              >
-                Stop
-              </Button>
-            </div>
+            ) : null}
             {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
                 onClick={() => setClosingWorkspace({
                   id: summary.executionWorkspaceId!,
                   name: summary.workspaceName,
                   status: summary.executionWorkspaceStatus!,
                 })}
               >
-                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close workspace"}
+                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
               </Button>
             ) : null}
-            <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <Clock3 className="h-3.5 w-3.5" />
-              {timeAgo(summary.lastUpdatedAt)}
-            </div>
           </div>
         </div>
+
+        {/* Metadata lines: branch, folder */}
+        <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+          {summary.branchName ? (
+            <div className="flex items-center gap-1.5">
+              <GitBranch className="h-3 w-3 shrink-0" />
+              <span className="font-mono">{summary.branchName}</span>
+            </div>
+          ) : null}
+          {summary.cwd ? (
+            <div className="flex items-center gap-1.5">
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate font-mono" title={summary.cwd}>
+                {truncatePath(summary.cwd)}
+              </span>
+              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
+                <Copy className="h-3 w-3" />
+              </CopyText>
+            </div>
+          ) : null}
+          {summary.primaryServiceUrl ? (
+            <div className="flex items-center gap-1.5">
+              <a
+                href={summary.primaryServiceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono hover:text-foreground hover:underline"
+              >
+                {summary.primaryServiceUrl}
+              </a>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Issues */}
+        {summary.issues.length > 0 ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span className="font-medium text-muted-foreground/70">Issues</span>
+            {visibleIssues.map((issue) => (
+              <IssuesQuicklook key={issue.id} issue={issue}>
+                <Link
+                  to={`/issues/${issue.identifier ?? issue.id}`}
+                  className="font-mono hover:text-foreground hover:underline"
+                >
+                  {issue.identifier ?? issue.id.slice(0, 8)}
+                </Link>
+              </IssuesQuicklook>
+            ))}
+            {hiddenIssueCount > 0 ? (
+              <Link to={workspaceHref} className="hover:text-foreground hover:underline">
+                +{hiddenIssueCount} more
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -488,6 +481,7 @@ export function ProjectDetail() {
   const experimentalSettingsQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
   });
   const {
     slots: pluginDetailSlots,

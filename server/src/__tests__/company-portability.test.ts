@@ -375,6 +375,7 @@ describe("company portability", () => {
     expect(
       parseGitHubSourceUrl("https://github.com/paperclipai/companies?ref=feature%2Fdemo&path=gstack"),
     ).toEqual({
+      hostname: "github.com",
       owner: "paperclipai",
       repo: "companies",
       ref: "feature/demo",
@@ -389,6 +390,7 @@ describe("company portability", () => {
         "https://github.com/paperclipai/companies?ref=abc123&companyPath=gstack%2FCOMPANY.md",
       ),
     ).toEqual({
+      hostname: "github.com",
       owner: "paperclipai",
       repo: "companies",
       ref: "abc123",

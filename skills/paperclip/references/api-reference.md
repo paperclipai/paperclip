@@ -597,7 +597,15 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
+| POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
+| PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
+| POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |
+| POST   | `/api/agents/:agentId/resume`      | Resume a paused agent                |
+| POST   | `/api/agents/:agentId/terminate`   | Permanently deactivate agent (irreversible) |
+| POST   | `/api/agents/:agentId/keys`        | Create long-lived API key (full value shown once) |
+| POST   | `/api/agents/:agentId/heartbeat/invoke` | Manually trigger a heartbeat    |
 | GET    | `/api/companies/:companyId/org`    | Org chart tree                       |
+| GET    | `/api/companies/:companyId/adapters/:adapterType/models` | List selectable models for an adapter type |
 | PATCH  | `/api/agents/:agentId/instructions-path` | Set/clear instructions path (`AGENTS.md`) |
 | GET    | `/api/agents/:agentId/config-revisions` | List config revisions            |
 | POST   | `/api/agents/:agentId/config-revisions/:revisionId/rollback` | Roll back config |
@@ -608,6 +616,7 @@ Terminal states: `done`, `cancelled`
 | ------ | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
 | POST   | `/api/companies/:companyId/issues` | Create issue                                                                             |
 | PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field adds a comment in same call)                      |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
@@ -615,8 +624,13 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
+| GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
+| PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
+| GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
+| DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
-| POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                    |
+| POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
 
 ### Companies, Projects, Goals
@@ -624,7 +638,11 @@ Terminal states: `done`, `cancelled`
 | Method | Path                                 | Description        |
 | ------ | ------------------------------------ | ------------------ |
 | GET    | `/api/companies`                     | List all companies |
+| POST   | `/api/companies`                     | Create company     |
 | GET    | `/api/companies/:companyId`          | Company details    |
+| PATCH  | `/api/companies/:companyId`          | Update company fields                |
+| POST   | `/api/companies/:companyId/logo`     | Upload company logo (multipart)      |
+| POST   | `/api/companies/:companyId/archive`  | Archive company    |
 | GET    | `/api/companies/:companyId/projects` | List projects      |
 | GET    | `/api/projects/:projectId`           | Project details    |
 | POST   | `/api/companies/:companyId/projects` | Create project (optional inline `workspace`) |
@@ -639,6 +657,22 @@ Terminal states: `done`, `cancelled`
 | PATCH  | `/api/goals/:goalId`                 | Update goal        |
 | POST   | `/api/companies/:companyId/openclaw/invite-prompt` | Generate OpenClaw invite prompt (CEO/board only) |
 
+### Routines
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/routines/:routineId` | Routine details including triggers |
+| POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
+| PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
+| POST   | `/api/routines/:routineId/triggers` | Add trigger (`schedule`, `webhook`, or `api` kind) |
+| PATCH  | `/api/routine-triggers/:triggerId` | Update trigger (e.g. disable, change cron) |
+| DELETE | `/api/routine-triggers/:triggerId` | Delete trigger |
+| POST   | `/api/routine-triggers/:triggerId/rotate-secret` | Rotate webhook signing secret (previous secret immediately invalidated) |
+| POST   | `/api/routines/:routineId/run` | Manual run (bypasses schedule; concurrency policy still applies) |
+| POST   | `/api/routine-triggers/public/:publicId/fire` | Fire webhook trigger from external system |
+| GET    | `/api/routines/:routineId/runs` | Run history (default 50) |
+
 ### Approvals, Costs, Activity, Dashboard
 
 | Method | Path                                         | Description                        |
@@ -650,13 +684,24 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/approvals/:approvalId/issues`          | Issues linked to approval          |
 | GET    | `/api/approvals/:approvalId/comments`        | Approval comments                  |
 | POST   | `/api/approvals/:approvalId/comments`        | Add approval comment               |
+| POST   | `/api/approvals/:approvalId/approve`         | Approve approval request           |
+| POST   | `/api/approvals/:approvalId/reject`          | Reject approval request            |
 | POST   | `/api/approvals/:approvalId/request-revision`| Board asks for revision            |
 | POST   | `/api/approvals/:approvalId/resubmit`        | Resubmit revised approval          |
+| POST   | `/api/companies/:companyId/cost-events`      | Report cost event                  |
 | GET    | `/api/companies/:companyId/costs/summary`    | Company cost summary               |
 | GET    | `/api/companies/:companyId/costs/by-agent`   | Costs by agent                     |
 | GET    | `/api/companies/:companyId/costs/by-project` | Costs by project                   |
 | GET    | `/api/companies/:companyId/activity`         | Activity log                       |
 | GET    | `/api/companies/:companyId/dashboard`        | Company health summary             |
+
+### Secrets
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
+| POST   | `/api/companies/:companyId/secrets` | Create secret                       |
+| PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
 
 ---
 

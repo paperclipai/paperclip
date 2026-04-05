@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -16,6 +16,23 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
+const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+
+vi.mock("../telemetry.ts", () => ({
+  getTelemetryClient: () => mockTelemetryClient,
+}));
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackAgentFirstHeartbeat: mockTrackAgentFirstHeartbeat,
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,6 +60,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.clearAllMocks();
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -67,6 +85,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    agentStatus?: "paused" | "idle" | "running";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processLossRetryCount?: number;
@@ -94,7 +113,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId,
       name: "CodexCoder",
       role: "engineer",
-      status: "paused",
+      status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -233,7 +252,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -251,5 +270,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    expect(mockTrackAgentFirstHeartbeat).toHaveBeenCalledWith(mockTelemetryClient, {
+      agentRole: "engineer",
+    });
+  });
+
+  it("reapStaleExecutionRunLocks: clears both locks when executionRunId references a terminal run", async () => {
+    const { issueId, runId } = await seedRunFixture({
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapStaleExecutionRunLocks();
+    expect(result.reaped).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("reapStaleExecutionRunLocks: does not touch issues whose executionRunId references a live run", async () => {
+    const { issueId, runId } = await seedRunFixture({
+      runStatus: "running",
+      processPid: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapStaleExecutionRunLocks();
+    expect(result.reaped).toBe(0);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("reapStaleExecutionRunLocks: is a no-op when no stale locks exist", async () => {
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapStaleExecutionRunLocks();
+    expect(result.reaped).toBe(0);
+    expect(result.issueIds).toHaveLength(0);
   });
 });

@@ -20,7 +20,7 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
-| `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
+| `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `1000`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (dev only) |
 
 ## Prompt Templates
