@@ -548,6 +548,13 @@ export function issueRoutes(
     res.json(workProducts);
   });
 
+  router.get("/companies/:companyId/documents", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const docs = await documentsSvc.listCompanyDocuments(companyId);
+    res.json(docs);
+  });
+
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

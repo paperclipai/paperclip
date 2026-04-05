@@ -115,6 +115,16 @@ export function documentService(db: Db) {
       };
     },
 
+    listCompanyDocuments: async (companyId: string) => {
+      const rows = await db
+        .select(issueDocumentSelect)
+        .from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .where(eq(documents.companyId, companyId))
+        .orderBy(desc(documents.updatedAt));
+      return rows.map((row) => mapIssueDocumentRow(row, false));
+    },
+
     listIssueDocuments: async (issueId: string) => {
       const rows = await db
         .select(issueDocumentSelect)
