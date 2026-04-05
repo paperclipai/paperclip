@@ -1502,6 +1502,7 @@ export function issueService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, id))
@@ -1539,11 +1540,55 @@ export function issueService(db: Db) {
         }
       }
 
+      // When checkoutRunId is null but executionRunId is stale, adopt the issue
+      // instead of throwing a conflict. This happens after process_lost_retry
+      // clears checkoutRunId but leaves executionRunId from a previous run.
+      if (
+        actorRunId &&
+        current.status === "in_progress" &&
+        current.assigneeAgentId === actorAgentId &&
+        current.checkoutRunId == null
+      ) {
+        const now = new Date();
+        const adopted = await db
+          .update(issues)
+          .set({
+            checkoutRunId: actorRunId,
+            executionRunId: actorRunId,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              eq(issues.status, "in_progress"),
+              eq(issues.assigneeAgentId, actorAgentId),
+              isNull(issues.checkoutRunId),
+            ),
+          )
+          .returning({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .then((rows) => rows[0] ?? null);
+
+        if (adopted) {
+          return {
+            ...adopted,
+            adoptedFromRunId: current.executionRunId,
+          };
+        }
+      }
+
       throw conflict("Issue run ownership conflict", {
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
         checkoutRunId: current.checkoutRunId,
+        executionRunId: current.executionRunId,
         actorAgentId,
         actorRunId,
       });
