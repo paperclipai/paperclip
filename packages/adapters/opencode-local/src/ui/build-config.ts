@@ -70,7 +70,12 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
       env[key] = { type: "plain", value };
     }
   }
-  if (Object.keys(env).length > 0) ac.env = env;
+  if (Object.keys(env).length > 0 || v.providerBaseUrl) {
+    if (v.providerBaseUrl) {
+      env["OPENAI_BASE_URL"] = { type: "plain", value: v.providerBaseUrl };
+    }
+    ac.env = env;
+  }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
   return ac;
