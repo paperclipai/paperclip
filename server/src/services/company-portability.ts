@@ -2393,7 +2393,7 @@ function buildManifestFromPackageFiles(
       name: asString(frontmatter.name) ?? title ?? slug,
       path: agentPath,
       skills: readAgentSkillRefs(frontmatter),
-      role: asString(extension.role) ?? "agent",
+      role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
       title,
       icon: asString(extension.icon),
       capabilities: asString(extension.capabilities),

@@ -1638,6 +1638,50 @@ describe("company portability", () => {
     }));
   });
 
+  it("preserves agent role from frontmatter when extension block omits it", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const preview = await portability.previewImport({
+      source: {
+        type: "inline",
+        rootPath: "ceo-package",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'schema: "agentcompanies/v1"',
+            'name: "CEO Role Test"',
+            "---",
+            "",
+          ].join("\n"),
+          "agents/ceo/AGENTS.md": [
+            "---",
+            'name: "CEO"',
+            'role: "ceo"',
+            "---",
+            "",
+            "# CEO",
+            "",
+            "You run the company.",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "CEO Role Test" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.agents).toEqual([
+      expect.objectContaining({
+        slug: "ceo",
+        name: "CEO",
+        role: "ceo",
+      }),
+    ]);
+  });
+
   it("treats no-separator auth and api key env names as secrets during export", async () => {
     const portability = companyPortabilityService({} as any);
 
