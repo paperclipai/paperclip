@@ -114,9 +114,10 @@ export function Documents() {
       if (search) {
         const q = search.toLowerCase();
         const docTitle = (entry.document.title ?? entry.document.key).toLowerCase();
+        const docKey = entry.document.key.toLowerCase();
         const issueTitle = entry.issue.title.toLowerCase();
         const issueId = (entry.issue.identifier ?? "").toLowerCase();
-        if (!docTitle.includes(q) && !issueTitle.includes(q) && !issueId.includes(q)) return false;
+        if (!docTitle.includes(q) && !docKey.includes(q) && !issueTitle.includes(q) && !issueId.includes(q)) return false;
       }
       return true;
     });
