@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useCallback } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -15,9 +16,11 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { Button } from "@/components/ui/button";
-import { CircleDot, Plus } from "lucide-react";
+import { CircleDot, Download, Plus } from "lucide-react";
+import { exportToCSV } from "../lib/exportCSV";
 
 export function Issues() {
+  usePageTitle("Issues");
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -132,10 +135,45 @@ export function Issues() {
             </p>
           )}
         </div>
-        <Button size="sm" onClick={() => openNewIssue()}>
-          <Plus className="h-3.5 w-3.5 mr-1.5" />
-          New Issue
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (!issues || issues.length === 0) return;
+              exportToCSV(
+                issues.map((i) => ({
+                  identifier: i.identifier ?? "",
+                  title: i.title,
+                  status: i.status,
+                  priority: i.priority ?? "",
+                  assignee: agents?.find((a) => a.id === i.assigneeAgentId)?.name ?? "",
+                  project: projects?.find((p) => p.id === i.projectId)?.name ?? "",
+                  createdAt: new Date(i.createdAt).toISOString(),
+                  updatedAt: new Date(i.updatedAt).toISOString(),
+                })),
+                "issues-export",
+                [
+                  { key: "identifier", label: "ID" },
+                  { key: "title", label: "Title" },
+                  { key: "status", label: "Status" },
+                  { key: "priority", label: "Priority" },
+                  { key: "assignee", label: "Assignee" },
+                  { key: "project", label: "Project" },
+                  { key: "createdAt", label: "Created" },
+                  { key: "updatedAt", label: "Updated" },
+                ],
+              );
+            }}
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            Export CSV
+          </Button>
+          <Button size="sm" onClick={() => openNewIssue()}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Issue
+          </Button>
+        </div>
       </div>
 
       {/* Issues list */}

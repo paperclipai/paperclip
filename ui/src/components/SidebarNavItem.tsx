@@ -15,6 +15,7 @@ interface SidebarNavItemProps {
   textBadgeTone?: "default" | "amber";
   alert?: boolean;
   liveCount?: number;
+  featureDot?: boolean;
 }
 
 export function SidebarNavItem({
@@ -29,6 +30,7 @@ export function SidebarNavItem({
   textBadgeTone = "default",
   alert = false,
   liveCount,
+  featureDot = false,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
 
@@ -41,7 +43,7 @@ export function SidebarNavItem({
         cn(
           "flex items-center gap-2.5 px-3 py-2.5 min-h-[36px] text-[13px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:rounded-md",
           isActive
-            ? "bg-accent text-foreground"
+            ? "bg-accent text-foreground font-semibold"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           className,
         )
@@ -87,6 +89,7 @@ export function SidebarNavItem({
           {badge}
         </span>
       )}
+      {featureDot && <span className="feature-dot ml-auto" />}
     </NavLink>
   );
 }

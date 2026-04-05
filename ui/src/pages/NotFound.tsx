@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
-import { AlertTriangle, Compass } from "lucide-react";
+import { AlertTriangle, Compass, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 type NotFoundScope = "board" | "invalid_company_prefix" | "global";
 
@@ -13,9 +15,11 @@ interface NotFoundPageProps {
 }
 
 export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPageProps) {
+  usePageTitle("Not Found");
   const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companies, selectedCompany } = useCompany();
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Not Found" }]);
@@ -30,7 +34,14 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const description =
     scope === "invalid_company_prefix"
       ? `No company matches prefix "${normalizedPrefix ?? "unknown"}".`
-      : "This route does not exist.";
+      : "The page you are looking for does not exist or has been moved.";
+
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
+    }
+  }
 
   return (
     <div className="mx-auto max-w-2xl py-10">
@@ -49,11 +60,24 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
           Requested path: <code className="font-mono">{currentPath}</code>
         </div>
 
+        {/* Search input */}
+        <form onSubmit={handleSearch} className="mt-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search for what you were looking for..."
+              className="pl-10"
+            />
+          </div>
+        </form>
+
         <div className="mt-5 flex flex-wrap gap-2">
           <Button asChild>
             <Link to={dashboardHref}>
               <Compass className="mr-1.5 h-4 w-4" />
-              Open dashboard
+              Go to Dashboard
             </Link>
           </Button>
           <Button variant="outline" asChild>

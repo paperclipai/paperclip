@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send, Crown, Pin, PinOff, ChevronDown, ChevronRight, BarChart2, Brain, GitPullRequest, Users } from "lucide-react";
+import { Send, Crown, Pin, PinOff, ChevronDown, ChevronRight, BarChart2, Brain, GitPullRequest, Users, MessageSquare, CircleDot, CheckCircle2, ShieldAlert, X } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { channelsApi } from "../api/channels";
@@ -132,21 +132,75 @@ function QuorumIndicator({ companyId, channelId, messageId }: { companyId: strin
   );
 }
 
+// ---- Issue ID chip renderer ----
+const ISSUE_ID_REGEX = /\b([A-Z]{2,8}-\d{1,6})\b/g;
+
+function IssueStatusIcon({ status }: { status?: string }) {
+  if (status === "done") return <CheckCircle2 className="h-3 w-3 text-emerald-500" />;
+  if (status === "in_progress") return <CircleDot className="h-3 w-3 text-blue-500" />;
+  if (status === "blocked") return <ShieldAlert className="h-3 w-3 text-red-500" />;
+  return <CircleDot className="h-3 w-3 text-muted-foreground" />;
+}
+
+function renderBodyWithEmbeds(
+  body: string,
+  issueMap: Map<string, { identifier: string; title: string; status?: string }>,
+): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  const regex = new RegExp(ISSUE_ID_REGEX.source, "g");
+
+  while ((match = regex.exec(body)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(body.slice(lastIndex, match.index));
+    }
+    const issueId = match[1];
+    const issue = [...issueMap.values()].find((i) => i.identifier === issueId);
+    if (issue) {
+      parts.push(
+        <Link
+          key={`${issueId}-${match.index}`}
+          to={`/issues/${issueId}`}
+          className="inline-flex items-center gap-1 mx-0.5 px-1.5 py-0.5 text-[11px] font-medium border border-border rounded-md bg-muted/30 hover:bg-accent/50 transition-colors no-underline text-inherit"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <IssueStatusIcon status={issue.status} />
+          {issueId}
+        </Link>,
+      );
+    } else {
+      parts.push(
+        <span key={`${issueId}-${match.index}`} className="inline-flex items-center gap-1 mx-0.5 px-1.5 py-0.5 text-[11px] font-mono border border-border rounded-md bg-muted/20">
+          {issueId}
+        </span>,
+      );
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < body.length) {
+    parts.push(body.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : [body];
+}
+
 // ---- Single message row ----
 interface MessageRowProps {
   msg: ChannelMessage;
   agentMap: Map<string, { name: string; icon: string | null; role: string | null; employmentType?: string }>;
-  issueMap: Map<string, { identifier: string; title: string }>;
+  issueMap: Map<string, { identifier: string; title: string; status?: string }>;
   replyMap: Map<string, ChannelMessage>;
   onPin?: (messageId: string) => void;
   onUnpin?: (messageId: string) => void;
   isPinned?: boolean;
   onCreateIssue?: (messageId: string) => void;
+  onReply?: (messageId: string) => void;
+  threadReplies?: ChannelMessage[];
   companyId?: string;
   channelId?: string;
 }
 
-function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinned, onCreateIssue, companyId, channelId }: MessageRowProps) {
+function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinned, onCreateIssue, onReply, threadReplies, companyId, channelId }: MessageRowProps) {
   const isBoard = !msg.authorAgentId && !msg.authorUserId;
   const agent = msg.authorAgentId ? agentMap.get(msg.authorAgentId) : null;
   const authorName = isBoard ? "Board" : (agent?.name ?? "User");
@@ -163,6 +217,16 @@ function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinne
     >
       {/* Action buttons shown on hover */}
       <div className="absolute right-3 top-2 hidden group-hover:flex items-center gap-1.5">
+        {/* Reply button */}
+        {onReply && (
+          <button
+            onClick={() => onReply(msg.id)}
+            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            title="Reply to message"
+          >
+            <MessageSquare className="h-3 w-3" />
+          </button>
+        )}
         {/* Create Issue button */}
         {onCreateIssue && !msg.linkedIssueId && msg.messageType === "message" && (
           <button
@@ -252,9 +316,9 @@ function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinne
           </div>
         )}
 
-        {/* Body */}
+        {/* Body with rich embeds for issue IDs */}
         <p className="text-[13px] text-foreground/90 whitespace-pre-wrap break-words">
-          {msg.body}
+          {renderBodyWithEmbeds(msg.body, issueMap)}
         </p>
 
         {/* Transparent reasoning collapsible */}
@@ -271,6 +335,32 @@ function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinne
               <span className="font-medium">{linkedIssue.identifier}:</span>
               <span className="truncate max-w-[200px]">{linkedIssue.title}</span>
             </Link>
+          </div>
+        )}
+
+        {/* Threaded replies */}
+        {threadReplies && threadReplies.length > 0 && (
+          <div className="mt-2 ml-2 border-l-2 border-border/50 pl-3 space-y-1">
+            {threadReplies.map((reply) => {
+              const replyAgent = reply.authorAgentId ? agentMap.get(reply.authorAgentId) : null;
+              const replyAuthor = !reply.authorAgentId && !reply.authorUserId ? "Board" : (replyAgent?.name ?? "User");
+              return (
+                <div key={reply.id} className="flex items-start gap-2 py-1">
+                  <div className="h-5 w-5 rounded-full bg-accent flex items-center justify-center shrink-0 mt-0.5">
+                    <AgentIcon icon={replyAgent?.icon ?? null} className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12px] font-semibold">{replyAuthor}</span>
+                      <span className="text-[10px] text-muted-foreground">{formatTime(reply.createdAt)}</span>
+                    </div>
+                    <p className="text-[12px] text-foreground/80 whitespace-pre-wrap break-words">
+                      {renderBodyWithEmbeds(reply.body, issueMap)}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -349,6 +439,9 @@ export function ChannelView() {
   const [draftBody, setDraftBody] = useState("");
   const [filter, setFilter] = useState<FilterMode>("all");
   const [pinnedExpanded, setPinnedExpanded] = useState(true);
+  const [replyToId, setReplyToId] = useState<string | null>(null);
+  const prevMessageCount = useRef(0);
+  const [newMessageDividerIndex, setNewMessageDividerIndex] = useState<number | null>(null);
 
   // Fetch channels list to find the current channel name
   const { data: channels } = useQuery({
@@ -431,9 +524,26 @@ export function ChannelView() {
   const replyMap = new Map(messages.map((m) => [m.id, m]));
 
   // Issue map - derive unique linkedIssueIds and fetch titles
-  // We use a simple approach: collect unique ids and show identifier from message data
-  // (The API may not expose issue detail here, so we surface what we have)
-  const issueMap = new Map<string, { identifier: string; title: string }>();
+  const issueMap = new Map<string, { identifier: string; title: string; status?: string }>();
+
+  // Build thread map: parentId -> replies
+  const threadMap = useMemo(() => {
+    const map = new Map<string, ChannelMessage[]>();
+    for (const m of messages) {
+      if (m.replyToId) {
+        const arr = map.get(m.replyToId) ?? [];
+        arr.push(m);
+        map.set(m.replyToId, arr);
+      }
+    }
+    return map;
+  }, [messages]);
+
+  // Top-level messages (not replies)
+  const topLevelMessages = useMemo(
+    () => messages.filter((m) => !m.replyToId),
+    [messages],
+  );
 
   // Breadcrumbs
   useEffect(() => {
@@ -444,6 +554,15 @@ export function ChannelView() {
     ]);
   }, [setBreadcrumbs, channel, channelId]);
 
+  // Track new messages arriving and set divider
+  useEffect(() => {
+    const currentCount = topLevelMessages.length;
+    if (prevMessageCount.current > 0 && currentCount > prevMessageCount.current) {
+      setNewMessageDividerIndex(prevMessageCount.current);
+    }
+    prevMessageCount.current = currentCount;
+  }, [topLevelMessages.length]);
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -451,24 +570,26 @@ export function ChannelView() {
 
   // Post message mutation
   const postMutation = useMutation({
-    mutationFn: (body: string) =>
+    mutationFn: ({ body, replyTo }: { body: string; replyTo?: string | null }) =>
       channelsApi.postMessage(selectedCompanyId!, channelId!, {
         body,
         messageType: "message",
+        ...(replyTo ? { replyToId: replyTo } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: queryKeys.channels.messages(selectedCompanyId!, channelId!),
       });
       setDraftBody("");
+      setReplyToId(null);
     },
   });
 
   const handleSend = useCallback(() => {
     const trimmed = draftBody.trim();
     if (!trimmed || postMutation.isPending) return;
-    postMutation.mutate(trimmed);
-  }, [draftBody, postMutation]);
+    postMutation.mutate({ body: trimmed, replyTo: replyToId });
+  }, [draftBody, postMutation, replyToId]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -499,7 +620,7 @@ export function ChannelView() {
     },
   });
 
-  const filteredMessages = messages.filter((m) => matchesFilter(m, filter));
+  const filteredMessages = topLevelMessages.filter((m) => matchesFilter(m, filter));
 
   const channelName = channel?.name ?? channelId ?? "";
 
@@ -599,20 +720,31 @@ export function ChannelView() {
               </div>
             ) : (
               <>
-                {filteredMessages.map((msg) => (
-                  <MessageRow
-                    key={msg.id}
-                    msg={msg}
-                    agentMap={agentMap}
-                    issueMap={issueMap}
-                    replyMap={replyMap}
-                    isPinned={pinnedMessages.some((p) => p.id === msg.id)}
-                    onPin={(id) => pinMutation.mutate(id)}
-                    onUnpin={(id) => unpinMutation.mutate(id)}
-                    onCreateIssue={(id) => createIssueMutation.mutate(id)}
-                    companyId={selectedCompanyId!}
-                    channelId={channelId!}
-                  />
+                {filteredMessages.map((msg, idx) => (
+                  <div key={msg.id}>
+                    {/* New messages divider */}
+                    {newMessageDividerIndex !== null && idx === newMessageDividerIndex && (
+                      <div className="flex items-center gap-3 px-4 py-1.5">
+                        <div className="flex-1 h-px bg-red-400/50" />
+                        <span className="text-[11px] font-medium text-red-500 shrink-0">New messages</span>
+                        <div className="flex-1 h-px bg-red-400/50" />
+                      </div>
+                    )}
+                    <MessageRow
+                      msg={msg}
+                      agentMap={agentMap}
+                      issueMap={issueMap}
+                      replyMap={replyMap}
+                      isPinned={pinnedMessages.some((p) => p.id === msg.id)}
+                      onPin={(id) => pinMutation.mutate(id)}
+                      onUnpin={(id) => unpinMutation.mutate(id)}
+                      onCreateIssue={(id) => createIssueMutation.mutate(id)}
+                      onReply={(id) => { setReplyToId(id); textareaRef.current?.focus(); }}
+                      threadReplies={threadMap.get(msg.id)}
+                      companyId={selectedCompanyId!}
+                      channelId={channelId!}
+                    />
+                  </div>
                 ))}
               </>
             )}
@@ -623,6 +755,22 @@ export function ChannelView() {
 
       {/* Input - hidden when viewing analytics */}
       <div className={cn("shrink-0 border-t border-border px-4 py-3", filter === "analytics" && "hidden")}>
+        {/* Reply indicator */}
+        {replyToId && (
+          <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-muted/30 rounded-md text-xs text-muted-foreground">
+            <MessageSquare className="h-3 w-3 shrink-0" />
+            <span className="truncate">
+              Replying to: {replyMap.get(replyToId)?.body?.slice(0, 80) ?? "message"}
+              {(replyMap.get(replyToId)?.body?.length ?? 0) > 80 ? "..." : ""}
+            </span>
+            <button
+              onClick={() => setReplyToId(null)}
+              className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <Textarea
             ref={textareaRef}

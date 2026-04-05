@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ComponentType } from "react";
+import { exportToCSV } from "../lib/exportCSV";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -664,6 +665,34 @@ export function Costs() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const rows = spendData?.byAgent ?? [];
+                  if (rows.length === 0) return;
+                  exportToCSV(
+                    rows.map((r) => ({
+                      agent: r.agentName || r.agentId,
+                      cost: (r.costCents / 100).toFixed(2),
+                      inputTokens: r.inputTokens,
+                      outputTokens: r.outputTokens,
+                      apiRuns: r.apiRunCount,
+                    })),
+                    "costs-export",
+                    [
+                      { key: "agent", label: "Agent" },
+                      { key: "cost", label: "Cost ($)" },
+                      { key: "inputTokens", label: "Input Tokens" },
+                      { key: "outputTokens", label: "Output Tokens" },
+                      { key: "apiRuns", label: "API Runs" },
+                    ],
+                  );
+                }}
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Export CSV
+              </Button>
               {PRESET_KEYS.map((key) => (
                 <Button
                   key={key}

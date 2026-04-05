@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
@@ -41,6 +42,8 @@ import {
   X,
   RotateCcw,
   UserPlus,
+  Clock,
+  Users,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@ironworksai/shared";
@@ -56,6 +59,117 @@ import {
   type InboxTab,
 } from "../lib/inbox";
 import { useDismissedInboxItems, useReadInboxItems } from "../hooks/useInboxBadge";
+
+// ---------------------------------------------------------------------------
+// Severity border colors
+// ---------------------------------------------------------------------------
+
+function getSeverityBorderClass(item: { kind: string; status?: string }): string {
+  if (item.kind === "failed_run") return "border-l-[3px] border-l-red-500";
+  if (item.kind === "join_request") return "border-l-[3px] border-l-blue-500";
+  if (item.kind === "approval") return "border-l-[3px] border-l-amber-500";
+  if (item.kind === "issue") {
+    const status = item.status ?? "";
+    if (status === "blocked") return "border-l-[3px] border-l-red-500";
+    if (status === "in_progress" || status === "in_review") return "border-l-[3px] border-l-amber-500";
+    if (status === "done") return "border-l-[3px] border-l-green-500";
+    return "border-l-[3px] border-l-blue-500";
+  }
+  return "border-l-[3px] border-l-blue-500";
+}
+
+// ---------------------------------------------------------------------------
+// Snooze helpers (localStorage)
+// ---------------------------------------------------------------------------
+
+const SNOOZE_STORAGE_KEY = "ironworks:inbox-snoozed";
+
+interface SnoozeEntry {
+  until: number; // ms epoch
+}
+
+function loadSnoozed(): Record<string, SnoozeEntry> {
+  try {
+    const raw = localStorage.getItem(SNOOZE_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as Record<string, SnoozeEntry>;
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveSnoozed(data: Record<string, SnoozeEntry>) {
+  try {
+    localStorage.setItem(SNOOZE_STORAGE_KEY, JSON.stringify(data));
+  } catch { /* ignore */ }
+}
+
+function isSnoozed(snoozedMap: Record<string, SnoozeEntry>, key: string): boolean {
+  const entry = snoozedMap[key];
+  if (!entry) return false;
+  return Date.now() < entry.until;
+}
+
+function snoozeItem(key: string, durationMs: number) {
+  const data = loadSnoozed();
+  data[key] = { until: Date.now() + durationMs };
+  saveSnoozed(data);
+}
+
+const SNOOZE_OPTIONS = [
+  { label: "1 hour", ms: 60 * 60 * 1000 },
+  { label: "4 hours", ms: 4 * 60 * 60 * 1000 },
+  { label: "Tomorrow", ms: 24 * 60 * 60 * 1000 },
+  { label: "Next week", ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
+function SnoozeButton({ itemKey, onSnooze }: { itemKey: string; onSnooze: (key: string, ms: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}
+        className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+        aria-label="Snooze"
+        title="Snooze"
+      >
+        <Clock className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-border bg-popover p-1 shadow-md">
+          {SNOOZE_OPTIONS.map((opt) => (
+            <button
+              key={opt.label}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onSnooze(itemKey, opt.ms);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs text-left hover:bg-accent transition-colors"
+            >
+              <Clock className="h-3 w-3 text-muted-foreground" />
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 type InboxCategoryFilter =
   | "everything"
@@ -113,6 +227,8 @@ function FailedRunInboxRow({
   onArchive,
   archiveDisabled,
   className,
+  onSnooze,
+  snoozeKey,
 }: {
   run: HeartbeatRun;
   issueById: Map<string, Issue>;
@@ -126,6 +242,8 @@ function FailedRunInboxRow({
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  onSnooze?: (key: string, ms: number) => void;
+  snoozeKey?: string;
 }) {
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
@@ -136,6 +254,7 @@ function FailedRunInboxRow({
   return (
     <div className={cn(
       "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      getSeverityBorderClass({ kind: "failed_run" }),
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -187,7 +306,7 @@ function FailedRunInboxRow({
                   {issue.title}
                 </>
               ) : (
-                <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
+                <>Failed run{linkedAgentName ? ` - ${linkedAgentName}` : ""}</>
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -210,6 +329,9 @@ function FailedRunInboxRow({
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
             {isRetrying ? "Retrying…" : "Retry"}
           </Button>
+          {onSnooze && snoozeKey && (
+            <SnoozeButton itemKey={snoozeKey} onSnooze={onSnooze} />
+          )}
           {!showUnreadSlot && (
             <button
               type="button"
@@ -260,6 +382,8 @@ function ApprovalInboxRow({
   onArchive,
   archiveDisabled,
   className,
+  onSnooze,
+  snoozeKey,
 }: {
   approval: Approval;
   requesterName: string | null;
@@ -271,6 +395,8 @@ function ApprovalInboxRow({
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  onSnooze?: (key: string, ms: number) => void;
+  snoozeKey?: string;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
@@ -283,6 +409,7 @@ function ApprovalInboxRow({
   return (
     <div className={cn(
       "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      getSeverityBorderClass({ kind: "approval" }),
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -335,27 +462,32 @@ function ApprovalInboxRow({
             </span>
           </span>
         </Link>
-        {showResolutionButtons ? (
-          <div className="hidden shrink-0 items-center gap-2 sm:flex">
-            <Button
-              size="sm"
-              className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
-              onClick={onApprove}
-              disabled={isPending}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-8 px-3"
-              onClick={onReject}
-              disabled={isPending}
-            >
-              Reject
-            </Button>
-          </div>
-        ) : null}
+        <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          {showResolutionButtons ? (
+            <>
+              <Button
+                size="sm"
+                className="h-8 bg-green-600 dark:bg-green-700 px-3 text-white hover:bg-green-500 dark:hover:bg-green-600"
+                onClick={onApprove}
+                disabled={isPending}
+              >
+                Approve
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-8 px-3"
+                onClick={onReject}
+                disabled={isPending}
+              >
+                Reject
+              </Button>
+            </>
+          ) : null}
+          {onSnooze && snoozeKey && (
+            <SnoozeButton itemKey={snoozeKey} onSnooze={onSnooze} />
+          )}
+        </div>
       </div>
       {showResolutionButtons ? (
         <div className="mt-3 flex gap-2 sm:hidden">
@@ -392,6 +524,8 @@ function JoinRequestInboxRow({
   onArchive,
   archiveDisabled,
   className,
+  onSnooze,
+  snoozeKey,
 }: {
   joinRequest: JoinRequest;
   onApprove: () => void;
@@ -402,6 +536,8 @@ function JoinRequestInboxRow({
   onArchive?: () => void;
   archiveDisabled?: boolean;
   className?: string;
+  onSnooze?: (key: string, ms: number) => void;
+  snoozeKey?: string;
 }) {
   const label =
     joinRequest.requestType === "human"
@@ -413,6 +549,7 @@ function JoinRequestInboxRow({
   return (
     <div className={cn(
       "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      getSeverityBorderClass({ kind: "join_request" }),
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -505,6 +642,7 @@ function JoinRequestInboxRow({
 }
 
 export function Inbox() {
+  usePageTitle("Inbox");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -513,8 +651,15 @@ export function Inbox() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
+  const [groupByAgent, setGroupByAgent] = useState(false);
+  const [snoozedItems, setSnoozedItems] = useState<Record<string, SnoozeEntry>>(loadSnoozed);
   const { dismissed, dismiss } = useDismissedInboxItems();
   const { readItems, markRead: markItemRead } = useReadInboxItems();
+
+  const handleSnooze = useCallback((key: string, ms: number) => {
+    snoozeItem(key, ms);
+    setSnoozedItems(loadSnoozed());
+  }, []);
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
   const tab: InboxTab =
@@ -685,7 +830,7 @@ export function Inbox() {
     return joinRequests;
   }, [joinRequests, tab, showJoinRequestsCategory, dismissed]);
 
-  const workItemsToRender = useMemo(
+  const workItemsRaw = useMemo(
     () =>
       getInboxWorkItems({
         issues: tab === "all" && !showTouchedCategory ? [] : issuesToRender,
@@ -695,6 +840,34 @@ export function Inbox() {
       }),
     [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
   );
+
+  // Filter out snoozed items
+  const workItemsToRender = useMemo(() => {
+    return workItemsRaw.filter((item) => {
+      let key: string;
+      if (item.kind === "approval") key = `approval:${item.approval.id}`;
+      else if (item.kind === "failed_run") key = `run:${item.run.id}`;
+      else if (item.kind === "join_request") key = `join:${item.joinRequest.id}`;
+      else key = `issue:${item.issue.id}`;
+      return !isSnoozed(snoozedItems, key);
+    });
+  }, [workItemsRaw, snoozedItems]);
+
+  // Group by agent helper
+  const groupedByAgent = useMemo(() => {
+    if (!groupByAgent) return null;
+    const groups = new Map<string, typeof workItemsToRender>();
+    for (const item of workItemsToRender) {
+      let agentId: string | null = null;
+      if (item.kind === "failed_run") agentId = item.run.agentId;
+      else if (item.kind === "issue") agentId = item.issue.assigneeAgentId ?? null;
+      else if (item.kind === "approval") agentId = item.approval.requestedByAgentId ?? null;
+      const groupKey = agentId ?? "__unassigned__";
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey)!.push(item);
+    }
+    return groups;
+  }, [groupByAgent, workItemsToRender]);
 
   const agentName = (id: string | null) => {
     if (!id) return null;
@@ -1076,6 +1249,16 @@ export function Inbox() {
               )}
             </div>
           )}
+
+          <Button
+            variant={groupByAgent ? "default" : "outline"}
+            size="sm"
+            className="h-8 shrink-0"
+            onClick={() => setGroupByAgent(!groupByAgent)}
+          >
+            <Users className="mr-1.5 h-3.5 w-3.5" />
+            Group by agent
+          </Button>
         </div>
 
         {tab === "all" && (
@@ -1143,7 +1326,85 @@ export function Inbox() {
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
             <div className="overflow-hidden rounded-xl border border-border bg-card">
-              {workItemsToRender.map((item) => {
+              {(groupedByAgent && groupedByAgent.size > 0 ? (
+                Array.from(groupedByAgent.entries()).map(([groupKey, groupItems]) => (
+                  <div key={groupKey}>
+                    <div className="bg-muted/40 px-4 py-1.5 text-xs font-medium text-muted-foreground border-b border-border">
+                      {groupKey === "__unassigned__" ? "Unassigned" : agentName(groupKey) ?? groupKey.slice(0, 8)}
+                    </div>
+                    {groupItems.map((item) => renderWorkItem(item))}
+                  </div>
+                ))
+              ) : (
+                workItemsToRender.map((item) => renderWorkItem(item))
+              )) as React.ReactNode}
+            </div>
+          </div>
+        </>
+      )}
+      {showAlertsSection && (
+        <>
+          {showSeparatorBefore("alerts") && <Separator />}
+          <div>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Alerts
+            </h3>
+            <div className="divide-y divide-border border border-border">
+              {showAggregateAgentError && (
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/agents"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+                    <span className="text-sm">
+                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
+                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:agent-errors")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+              {showBudgetAlert && (
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/costs"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
+                    <span className="text-sm">
+                      Budget at{" "}
+                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
+                      utilization this month
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss("alert:budget")}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+    </div>
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function renderWorkItem(item: any) {
                 const isMineTab = tab === "mine";
 
                 if (item.kind === "approval") {
@@ -1161,6 +1422,8 @@ export function Inbox() {
                       onMarkRead={() => handleMarkNonIssueRead(approvalKey)}
                       onArchive={isMineTab ? () => handleArchiveNonIssue(approvalKey) : undefined}
                       archiveDisabled={isArchiving}
+                      onSnooze={handleSnooze}
+                      snoozeKey={approvalKey}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
@@ -1196,6 +1459,8 @@ export function Inbox() {
                       onMarkRead={() => handleMarkNonIssueRead(runKey)}
                       onArchive={isMineTab ? () => handleArchiveNonIssue(runKey) : undefined}
                       archiveDisabled={isArchiving}
+                      onSnooze={handleSnooze}
+                      snoozeKey={runKey}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
@@ -1228,6 +1493,8 @@ export function Inbox() {
                       onMarkRead={() => handleMarkNonIssueRead(joinKey)}
                       onArchive={isMineTab ? () => handleArchiveNonIssue(joinKey) : undefined}
                       archiveDisabled={isArchiving}
+                      onSnooze={handleSnooze}
+                      snoozeKey={joinKey}
                       className={
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
@@ -1247,6 +1514,7 @@ export function Inbox() {
                 }
 
                 const issue = item.issue;
+                const issueSnoozeKey = `issue:${issue.id}`;
                 const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                 const isFading = fadingOutIssues.has(issue.id);
                 const isArchiving = archivingIssueIds.has(issue.id);
@@ -1256,11 +1524,12 @@ export function Inbox() {
                     key={`issue:${issue.id}`}
                     issue={issue}
                     issueLinkState={issueLinkState}
-                    className={
+                    className={cn(
                       isArchiving
                         ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                        : "transition-all duration-200 ease-out"
-                    }
+                        : "transition-all duration-200 ease-out",
+                      getSeverityBorderClass({ kind: "issue", status: issue.status }),
+                    )}
                     desktopMetaLeading={(
                       <>
                         <span className="hidden shrink-0 sm:inline-flex">
@@ -1336,70 +1605,5 @@ export function Inbox() {
                     </button>
                   </div>
                 ) : wrappedRow;
-              })}
-            </div>
-          </div>
-        </>
-      )}
-
-      {showAlertsSection && (
-        <>
-          {showSeparatorBefore("alerts") && <Separator />}
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
-            </h3>
-            <div className="divide-y divide-border border border-border">
-              {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
-                  <Link
-                    to="/agents"
-                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
-                  >
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
-                    <span className="text-sm">
-                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
-                    </span>
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => dismiss("alert:agent-errors")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-              {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
-                  <Link
-                    to="/costs"
-                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
-                  >
-                    <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
-                    <span className="text-sm">
-                      Budget at{" "}
-                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                      utilization this month
-                    </span>
-                  </Link>
-                  <button
-                    type="button"
-                    onClick={() => dismiss("alert:budget")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
-      )}
-
-    </div>
-  );
+  }
 }

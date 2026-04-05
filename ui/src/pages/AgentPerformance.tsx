@@ -16,8 +16,12 @@ import { EmptyState } from "../components/EmptyState";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AlertTriangle, BarChart3, CheckCircle2, Lightbulb, TrendingDown } from "lucide-react";
-import type { Issue } from "@ironworksai/shared";
+import { AlertTriangle, ArrowDown, ArrowUp, Award, BarChart3, Building2, CheckCircle2, Download, Lightbulb, Medal, TrendingDown } from "lucide-react";
+import { DEPARTMENT_LABELS, type Issue } from "@ironworksai/shared";
+import { exportToCSV } from "../lib/exportCSV";
+
+// Prevent lint from removing imports that are used in JSX
+const _usedIcons = { ArrowDown, ArrowUp, Award, Building2, Download, Medal };
 
 /* ── Rating logic ── */
 
@@ -182,6 +186,7 @@ export function AgentPerformance() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [trendAgentId, setTrendAgentId] = useState<string>("");
+  const [showDeptAgg, setShowDeptAgg] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agent Performance" }]);
@@ -268,6 +273,64 @@ export function AgentPerformance() {
     });
   }, [rows, sortField, sortDir]);
 
+  // Previous-period data for trend arrows
+  const prevRows = useMemo(() => {
+    if (range === "all") return [];
+    const days = range === "7d" ? 7 : 30;
+    const now = Date.now();
+    const prevIssues = (issues ?? []).filter((i) => {
+      const t = new Date(i.updatedAt).getTime();
+      return t > now - days * 2 * 24 * 60 * 60 * 1000 && t <= now - days * 24 * 60 * 60 * 1000;
+    });
+    return computeAgentPerformance(agents ?? [], prevIssues, costsByAgent ?? [], "all");
+  }, [agents, issues, costsByAgent, range]);
+
+  const prevScoreMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of prevRows) m.set(r.agentId, r.ratingScore);
+    return m;
+  }, [prevRows]);
+
+  // Department aggregation
+  const deptAggRows = useMemo(() => {
+    if (!showDeptAgg) return [];
+    const deptMap = new Map<string, { dept: string; agents: AgentPerfRow[] }>();
+    for (const row of rows) {
+      const agent = (agents ?? []).find((a) => a.id === row.agentId);
+      const dept = (agent as unknown as Record<string, unknown> | undefined)?.department as string | undefined ?? "unassigned";
+      if (!deptMap.has(dept)) deptMap.set(dept, { dept, agents: [] });
+      deptMap.get(dept)!.agents.push(row);
+    }
+    return Array.from(deptMap.values()).map((g) => {
+      const active = g.agents.filter((r) => r.tasksDone > 0);
+      return {
+        dept: g.dept,
+        agentCount: g.agents.length,
+        avgScore: active.length > 0 ? Math.round(active.reduce((s, r) => s + r.ratingScore, 0) / active.length) : 0,
+        totalDone: g.agents.reduce((s, r) => s + r.tasksDone, 0),
+        avgThroughput: active.length > 0 ? +(active.reduce((s, r) => s + r.throughput, 0) / active.length).toFixed(2) : 0,
+        avgCompletion: active.length > 0 ? Math.round(active.reduce((s, r) => s + r.completionRate, 0) / active.length) : 0,
+        totalSpend: g.agents.reduce((s, r) => s + r.totalSpendCents, 0),
+      };
+    }).sort((a, b) => b.avgScore - a.avgScore);
+  }, [rows, agents, showDeptAgg]);
+
+  // Leaderboard highlights
+  const topPerformer = rows.filter((r) => r.tasksDone > 0)[0] ?? null;
+  const mostImproved = useMemo(() => {
+    if (prevRows.length === 0) return null;
+    let best: AgentPerfRow | null = null;
+    let bestDelta = -Infinity;
+    for (const row of rows) {
+      const prev = prevScoreMap.get(row.agentId);
+      if (prev !== undefined && row.tasksDone > 0) {
+        const delta = row.ratingScore - prev;
+        if (delta > bestDelta) { bestDelta = delta; best = row; }
+      }
+    }
+    return bestDelta > 0 ? best : null;
+  }, [rows, prevRows, prevScoreMap]);
+
   const teamAvgScore = rows.length > 0 ? Math.round(rows.reduce((s, r) => s + r.ratingScore, 0) / rows.length) : 0;
   const teamRating = computeRating(teamAvgScore);
 
@@ -291,29 +354,160 @@ export function AgentPerformance() {
             Evaluate agent efficiency, throughput, and cost effectiveness.
           </p>
         </div>
-        <div
-          className="flex items-center gap-1 border border-border rounded-md overflow-hidden"
-          role="group"
-          aria-label="Time range"
-        >
-          {(["7d", "30d", "all"] as const).map((r) => (
-            <button
-              key={r}
-              className={cn(
-                "px-3 py-1.5 text-xs transition-colors",
-                range === r ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-              )}
-              aria-pressed={range === r}
-              onClick={() => setRange(r)}
-            >
-              {r === "all" ? "All time" : r === "7d" ? "7 days" : "30 days"}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <button
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border transition-colors",
+              showDeptAgg ? "bg-accent text-foreground border-foreground/20" : "border-border text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => setShowDeptAgg(!showDeptAgg)}
+          >
+            <_usedIcons.Building2 className="h-3.5 w-3.5" />
+            Departments
+          </button>
+          <button
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => {
+              exportToCSV(
+                rows.map((r) => ({
+                  name: r.name,
+                  rating: r.rating,
+                  score: r.ratingScore,
+                  tasksDone: r.tasksDone,
+                  tasksInProgress: r.tasksInProgress,
+                  throughput: r.throughput.toFixed(2),
+                  avgCloseH: r.avgCloseH !== null ? r.avgCloseH.toFixed(1) : "",
+                  costPerTask: r.costPerTask !== null ? (r.costPerTask / 100).toFixed(2) : "",
+                  totalSpend: (r.totalSpendCents / 100).toFixed(2),
+                  completionRate: r.completionRate,
+                })),
+                `agent-performance-${range}`,
+                [
+                  { key: "name", label: "Agent" },
+                  { key: "rating", label: "Rating" },
+                  { key: "score", label: "Score" },
+                  { key: "tasksDone", label: "Tasks Done" },
+                  { key: "tasksInProgress", label: "In Progress" },
+                  { key: "throughput", label: "Tasks/Day" },
+                  { key: "avgCloseH", label: "Avg Close (hrs)" },
+                  { key: "costPerTask", label: "Cost/Task ($)" },
+                  { key: "totalSpend", label: "Total Spend ($)" },
+                  { key: "completionRate", label: "Completion %" },
+                ],
+              );
+            }}
+          >
+            <_usedIcons.Download className="h-3.5 w-3.5" />
+            Export CSV
+          </button>
+          <div
+            className="flex items-center gap-1 border border-border rounded-md overflow-hidden"
+            role="group"
+            aria-label="Time range"
+          >
+            {(["7d", "30d", "all"] as const).map((r) => (
+              <button
+                key={r}
+                className={cn(
+                  "px-3 py-1.5 text-xs transition-colors",
+                  range === r ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+                aria-pressed={range === r}
+                onClick={() => setRange(r)}
+              >
+                {r === "all" ? "All time" : r === "7d" ? "7 days" : "30 days"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
+      {/* Leaderboard Highlights */}
+      {(topPerformer || mostImproved) && (
+        <div className="flex flex-wrap gap-3">
+          {topPerformer && (
+            <div className="flex items-center gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
+              <_usedIcons.Award className="h-5 w-5 text-amber-400 shrink-0" />
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-400">Top Performer</div>
+                <div className="text-sm font-medium">{topPerformer.name} <span className="text-muted-foreground">- Score {topPerformer.ratingScore}</span></div>
+              </div>
+            </div>
+          )}
+          {mostImproved && (
+            <div className="flex items-center gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-2.5">
+              <_usedIcons.Medal className="h-5 w-5 text-emerald-400 shrink-0" />
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400">Most Improved</div>
+                <div className="text-sm font-medium">
+                  {mostImproved.name}
+                  <span className="text-muted-foreground ml-1">
+                    - Score {mostImproved.ratingScore}
+                    {prevScoreMap.get(mostImproved.agentId) !== undefined && (
+                      <span className="text-emerald-400 ml-1">
+                        (+{mostImproved.ratingScore - (prevScoreMap.get(mostImproved.agentId) ?? 0)})
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Company-Level Aggregate KPIs */}
       <CompanyKpiCards rows={rows} />
+
+      {/* Department Aggregation */}
+      {showDeptAgg && deptAggRows.length > 0 && (
+        <div className="rounded-xl border border-border overflow-hidden">
+          <div className="px-4 py-3 bg-muted/30 border-b border-border">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
+              <_usedIcons.Building2 className="h-3.5 w-3.5" />
+              Department Averages
+            </h4>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/20">
+                  <th className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground uppercase">Department</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase">Agents</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase">Avg Score</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-medium text-muted-foreground uppercase">Tasks Done</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase">Tasks/Day</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase">Completion</th>
+                  <th className="px-4 py-2.5 text-right text-xs font-medium text-muted-foreground uppercase">Total Spend</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {deptAggRows.map((d) => {
+                  const deptLabel = (DEPARTMENT_LABELS as Record<string, string>)[d.dept] ?? d.dept;
+                  return (
+                    <tr key={d.dept} className="hover:bg-accent/30 transition-colors">
+                      <td className="px-4 py-2.5 font-medium">{deptLabel}</td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">{d.agentCount}</td>
+                      <td className="px-4 py-2.5 text-center">
+                        <span className={cn(
+                          "inline-flex items-center justify-center h-6 w-6 rounded text-xs font-bold",
+                          RATING_COLORS[computeRating(d.avgScore)],
+                        )}>
+                          {computeRating(d.avgScore)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-center tabular-nums">{d.totalDone}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.avgThroughput}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{d.avgCompletion}%</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{formatCents(d.totalSpend)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Velocity Chart */}
       {velocity && velocity.length > 0 && (
@@ -374,6 +568,17 @@ export function AgentPerformance() {
                     <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Score</p>
                     <div className="flex items-center gap-1.5">
                       <p className="text-lg font-bold tabular-nums">{row.ratingScore}</p>
+                      {(() => {
+                        const prev = prevScoreMap.get(row.agentId);
+                        if (prev === undefined) return null;
+                        const delta = row.ratingScore - prev;
+                        if (delta === 0) return null;
+                        return delta > 0 ? (
+                          <_usedIcons.ArrowUp className="h-3 w-3 text-emerald-400" />
+                        ) : (
+                          <_usedIcons.ArrowDown className="h-3 w-3 text-red-400" />
+                        );
+                      })()}
                       <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                         <div
                           className={cn(

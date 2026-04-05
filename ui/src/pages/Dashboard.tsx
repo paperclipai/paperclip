@@ -32,6 +32,8 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { computeAgentPerformance } from "./AgentPerformance";
 import { WelcomeBanner } from "../components/WelcomeBanner";
 import { ApiKeyOnboardingBanner } from "../components/ApiKeyOnboardingBanner";
+import { GettingStartedChecklist } from "../components/GettingStartedChecklist";
+import { usePageTitle } from "../hooks/usePageTitle";
 
 /* ── Live Feed types ── */
 
@@ -233,6 +235,7 @@ function DepartmentMiniChart({ departments }: { departments: Array<{ name: strin
 /* ── Main component ── */
 
 export function Dashboard() {
+  usePageTitle("War Room");
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding, openHireAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -647,6 +650,7 @@ export function Dashboard() {
     <div className="space-y-6">
       <WelcomeBanner />
       <ApiKeyOnboardingBanner />
+      <GettingStartedChecklist />
       {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
 
       {/* ── ANNOUNCEMENTS ── */}

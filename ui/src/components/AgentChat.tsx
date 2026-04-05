@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AgentDetail, IssueComment } from "@ironworksai/shared";
 import { agentsApi } from "../api/agents";
@@ -8,7 +8,17 @@ import { cn, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { AgentIcon } from "./AgentIconPicker";
 import { getRoleLevel } from "../lib/role-icons";
-import { Send, MessageSquare } from "lucide-react";
+import {
+  Send,
+  MessageSquare,
+  Search,
+  FileText,
+  X,
+  ClipboardList,
+  Share2,
+  PlusCircle,
+  ChevronRight,
+} from "lucide-react";
 
 const POLL_INTERVAL_MS = 3_000;
 
@@ -34,6 +44,45 @@ function normalizeComments(comments: IssueComment[]): ChatMessage[] {
     }));
 }
 
+// ---- Chat Templates ----
+const CHAT_TEMPLATES = [
+  { label: "Review this code", prompt: "Review this code and provide feedback on quality, bugs, and improvements." },
+  { label: "Write a report on...", prompt: "Write a report on " },
+  { label: "Analyze project status", prompt: "Analyze the current project status and provide a summary of progress, blockers, and next steps." },
+  { label: "What are you working on?", prompt: "What are you currently working on? Give me a status update." },
+];
+
+// ---- Suggested follow-up actions ----
+function getSuggestedActions(lastAgentMessage: string | null): { label: string; icon: React.ElementType }[] {
+  if (!lastAgentMessage) return [];
+  const actions: { label: string; icon: React.ElementType }[] = [];
+
+  const lower = lastAgentMessage.toLowerCase();
+
+  // Always offer "Create issue from this" if the response is substantive
+  if (lastAgentMessage.length > 80) {
+    actions.push({ label: "Create issue from this", icon: PlusCircle });
+  }
+
+  // If it looks like a report/analysis, offer sharing
+  if (lower.includes("summary") || lower.includes("report") || lower.includes("analysis") || lower.includes("findings")) {
+    actions.push({ label: "Share to channel", icon: Share2 });
+  }
+
+  // If it mentions tasks/issues/items
+  if (lower.includes("task") || lower.includes("issue") || lower.includes("todo") || lower.includes("item")) {
+    actions.push({ label: "View related issues", icon: ClipboardList });
+  }
+
+  // If it mentions code/review
+  if (lower.includes("code") || lower.includes("review") || lower.includes("bug") || lower.includes("fix")) {
+    actions.push({ label: "Request detailed review", icon: FileText });
+  }
+
+  // Cap at 3
+  return actions.slice(0, 3);
+}
+
 interface AgentChatProps {
   agent: AgentDetail;
   companyId: string;
@@ -42,8 +91,12 @@ interface AgentChatProps {
 export function AgentChat({ agent, companyId }: AgentChatProps) {
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Get or create the chat issue
   const {
@@ -71,6 +124,24 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
 
   const messages = commentsRaw ? normalizeComments(commentsRaw) : [];
 
+  // Filter messages by search query
+  const filteredMessages = useMemo(() => {
+    if (!searchQuery.trim()) return messages;
+    const q = searchQuery.toLowerCase();
+    return messages.filter((m) => m.body.toLowerCase().includes(q));
+  }, [messages, searchQuery]);
+
+  // Find last agent message for suggested actions
+  const lastAgentMessage = useMemo(() => {
+    const agentMsgs = messages.filter((m) => !m.fromUser);
+    return agentMsgs.length > 0 ? agentMsgs[agentMsgs.length - 1].body : null;
+  }, [messages]);
+
+  const suggestedActions = useMemo(
+    () => getSuggestedActions(lastAgentMessage),
+    [lastAgentMessage],
+  );
+
   // Detect if agent is actively processing (issue in_progress)
   const isTyping =
     !!chatIssue &&
@@ -78,15 +149,23 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, isTyping]);
+    if (!searchQuery.trim()) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages.length, isTyping, searchQuery]);
+
+  // Focus search input when opened
+  useEffect(() => {
+    if (showSearch) {
+      searchInputRef.current?.focus();
+    }
+  }, [showSearch]);
 
   const sendMutation = useMutation({
     mutationFn: async (message: string) => {
       return agentsApi.sendChat(companyId, agent.id, message);
     },
     onSuccess: ({ issueId: newIssueId }) => {
-      // Invalidate chat issue and comments so they refetch immediately
       queryClient.invalidateQueries({ queryKey: queryKeys.agentChat.issue(companyId, agent.id) });
       if (newIssueId) {
         queryClient.invalidateQueries({
@@ -103,6 +182,7 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
     const trimmed = input.trim();
     if (!trimmed || sendMutation.isPending) return;
     setInput("");
+    setShowTemplates(false);
     sendMutation.mutate(trimmed);
   }, [input, sendMutation]);
 
@@ -116,6 +196,25 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
     [handleSend],
   );
 
+  const handleTemplateSelect = useCallback((prompt: string) => {
+    setInput(prompt);
+    setShowTemplates(false);
+    textareaRef.current?.focus();
+  }, []);
+
+  const handleSuggestedAction = useCallback((label: string) => {
+    // Convert the action label into a follow-up prompt
+    const prompts: Record<string, string> = {
+      "Create issue from this": "Based on your last response, create a new issue with a clear title and description.",
+      "Share to channel": "Format your last response as a brief update that can be shared with the team.",
+      "View related issues": "List any related issues or tasks that are connected to what you just described.",
+      "Request detailed review": "Provide a more detailed code review with specific line-by-line feedback.",
+    };
+    const prompt = prompts[label] ?? label;
+    setInput(prompt);
+    textareaRef.current?.focus();
+  }, []);
+
   const agentRoleLevel = getRoleLevel(agent.role);
   const agentColor =
     agentRoleLevel === "executive"
@@ -126,8 +225,77 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
 
   const isEmpty = !issueLoading && messages.length === 0 && !isTyping;
 
+  const displayMessages = showSearch ? filteredMessages : messages;
+
   return (
     <div className="flex flex-col h-full min-h-[60vh] max-h-[80vh]">
+      {/* Search bar + Templates toolbar */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border">
+        {showSearch ? (
+          <div className="flex items-center gap-2 flex-1">
+            <Search className="h-4 w-4 text-muted-foreground shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search messages..."
+              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            />
+            {searchQuery && (
+              <span className="text-xs text-muted-foreground shrink-0">
+                {filteredMessages.length} {filteredMessages.length === 1 ? "result" : "results"}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => { setShowSearch(false); setSearchQuery(""); }}
+              className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setShowSearch(true)}
+            >
+              <Search className="h-3.5 w-3.5 mr-1" />
+              Search
+            </Button>
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setShowTemplates(!showTemplates)}
+              >
+                <FileText className="h-3.5 w-3.5 mr-1" />
+                Templates
+              </Button>
+              {showTemplates && (
+                <div className="absolute top-full left-0 z-50 mt-1 w-64 rounded-lg border border-border bg-popover p-1 shadow-md">
+                  {CHAT_TEMPLATES.map((tpl) => (
+                    <button
+                      key={tpl.label}
+                      type="button"
+                      onClick={() => handleTemplateSelect(tpl.prompt)}
+                      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-left hover:bg-accent transition-colors"
+                    >
+                      <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />
+                      {tpl.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
       {/* Message list */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {(issueLoading || commentsLoading) && messages.length === 0 && (
@@ -157,7 +325,13 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
           </div>
         )}
 
-        {messages.map((msg) => (
+        {showSearch && searchQuery.trim() && filteredMessages.length === 0 && (
+          <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+            No messages match "{searchQuery}"
+          </div>
+        )}
+
+        {displayMessages.map((msg) => (
           <div
             key={msg.id}
             className={cn(
@@ -222,6 +396,26 @@ export function AgentChat({ agent, companyId }: AgentChatProps) {
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:-0.15s]" />
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground animate-bounce" />
             </div>
+          </div>
+        )}
+
+        {/* Suggested follow-up actions */}
+        {!isTyping && suggestedActions.length > 0 && messages.length > 0 && !showSearch && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {suggestedActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <button
+                  key={action.label}
+                  type="button"
+                  onClick={() => handleSuggestedAction(action.label)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                >
+                  <Icon className="h-3 w-3" />
+                  {action.label}
+                </button>
+              );
+            })}
           </div>
         )}
 

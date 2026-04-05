@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { Agent, Issue, LiveEvent } from "@ironworksai/shared";
 import type { RunForIssue } from "../api/activity";
@@ -8,6 +8,9 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToast } from "./ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+
+const LiveConnectionContext = createContext<{ connected: boolean }>({ connected: true });
+export function useLiveConnectionStatus() { return useContext(LiveConnectionContext); }
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 
@@ -666,6 +669,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
   const pathnameRef = useRef(location.pathname);
+  const [wsConnected, setWsConnected] = useState(true);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -713,6 +717,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
         }
         reconnectAttempt = 0;
+        setWsConnected(true);
       };
 
       socket.onmessage = (message) => {
@@ -735,6 +740,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       socket.onclose = () => {
+        setWsConnected(false);
         if (closed) return;
         scheduleReconnect();
       };
@@ -755,5 +761,5 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [queryClient, selectedCompanyId, pushToast, currentUserId]);
 
-  return <>{children}</>;
+  return <LiveConnectionContext.Provider value={{ connected: wsConnected }}>{children}</LiveConnectionContext.Provider>;
 }

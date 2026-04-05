@@ -58,6 +58,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  Pencil,
   X
 } from "lucide-react";
 
@@ -836,11 +837,24 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder="e.g., Acme Corp"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       autoFocus
                     />
+                    {companyName.trim().length > 0 && (
+                      <p className="mt-1.5 text-xs text-muted-foreground">
+                        Your issues will be{" "}
+                        <span className="font-mono font-medium text-foreground/80">
+                          {companyName.trim().substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, "")}-1
+                        </span>
+                        ,{" "}
+                        <span className="font-mono font-medium text-foreground/80">
+                          {companyName.trim().substring(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, "")}-2
+                        </span>
+                        ...
+                      </p>
+                    )}
                   </div>
                   <div className="group">
                     <label
@@ -901,23 +915,43 @@ export function OnboardingWizard() {
                       <label className="text-sm font-medium">
                         {activeProvider.key === "ollama" ? "Server URL" : "API Key"}
                       </label>
-                      <input
-                        type={activeProvider.key === "ollama" ? "url" : "password"}
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
-                        placeholder={activeProvider.placeholder}
-                        value={llmApiKey}
-                        onChange={(e) => { setLlmApiKey(e.target.value); setError(null); }}
-                        autoComplete="off"
-                      />
+                      <div className="relative">
+                        <input
+                          type={activeProvider.key === "ollama" ? "url" : "password"}
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-muted-foreground/50"
+                          placeholder={activeProvider.placeholder}
+                          value={llmApiKey}
+                          onChange={(e) => { setLlmApiKey(e.target.value); setError(null); }}
+                          autoComplete="off"
+                        />
+                        {/* Inline format validation indicator */}
+                        {llmApiKey.trim().length > 0 && (
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                            {(() => {
+                              const val = llmApiKey.trim();
+                              const prefix = activeProvider.placeholder.split("...")[0] || "";
+                              const valid = val.length > 10 && (prefix === "API key" || prefix === "http" || val.startsWith(prefix));
+                              return valid ? (
+                                <Check className="h-4 w-4 text-green-500" />
+                              ) : (
+                                <X className="h-4 w-4 text-red-400" />
+                              );
+                            })()}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         {activeProvider.hint}
                       </p>
                     </div>
 
                     {llmSaved && (
-                      <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                      <div className="inline-flex items-center gap-2 rounded-full bg-green-500/10 border border-green-500/30 px-3 py-1.5 text-sm text-green-600 dark:text-green-400">
                         <Check className="h-4 w-4" />
-                        {activeProvider.key === "ollama" ? "Server URL saved" : "API key saved"}
+                        <span className="font-medium">Connected</span>
+                        <span className="text-xs text-green-600/70 dark:text-green-400/70">
+                          {activeProvider.key === "ollama" ? "Server URL saved" : "API key saved"}
+                        </span>
                       </div>
                     )}
 
@@ -1529,20 +1563,51 @@ export function OnboardingWizard() {
                       </p>
                     </div>
                   </div>
-                  <div className="border border-border divide-y divide-border">
+                  <div className="rounded-lg border border-border divide-y divide-border">
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Company</p>
                         <p className="text-sm font-medium truncate">
                           {companyName}
                         </p>
-                        <p className="text-xs text-muted-foreground">Company</p>
                       </div>
+                      <button
+                        type="button"
+                        className="p-1 text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        onClick={() => setStep(1)}
+                        title="Edit company"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
+                    </div>
+                    <div className="flex items-center gap-3 px-3 py-2.5">
+                      <Key className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">LLM Provider</p>
+                        <p className="text-sm font-medium truncate">
+                          {LLM_PROVIDERS.find((p) => p.key === llmProvider)?.label ?? "Not set"}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="p-1 text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        onClick={() => setStep(2)}
+                        title="Edit provider"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      {llmSaved ? (
+                        <Check className="h-4 w-4 text-green-500 shrink-0" />
+                      ) : (
+                        <span className="text-[10px] text-amber-500 shrink-0">Skipped</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Agent</p>
                         <p className="text-sm font-medium truncate">
                           {agentName}
                         </p>
@@ -1550,18 +1615,42 @@ export function OnboardingWizard() {
                           {getUIAdapter(adapterType).label}
                         </p>
                       </div>
+                      <button
+                        type="button"
+                        className="p-1 text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        onClick={() => setStep(3)}
+                        title="Edit agent"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">First Task</p>
                         <p className="text-sm font-medium truncate">
                           {taskTitle}
                         </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
                       </div>
+                      <button
+                        type="button"
+                        className="p-1 text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                        onClick={() => setStep(4)}
+                        title="Edit task"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
+                  </div>
+
+                  {/* What happens next explainer */}
+                  <div className="rounded-md border border-border bg-muted/20 px-3 py-2.5">
+                    <p className="text-xs font-medium text-foreground/80">What happens next</p>
+                    <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+                      Your agent will start working on the task. Check the dashboard in a few minutes to see progress, review deliverables, and follow activity.
+                    </p>
                   </div>
                 </div>
               )}
@@ -1605,13 +1694,18 @@ export function OnboardingWizard() {
                   )}
                   {step === 2 && (
                     <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                        onClick={() => setStep(3)}
-                      >
-                        Skip for now
-                      </button>
+                      <div className="flex flex-col items-end gap-0.5">
+                        <button
+                          type="button"
+                          className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setStep(3)}
+                        >
+                          Skip for now
+                        </button>
+                        <span className="text-[10px] text-muted-foreground/70 max-w-[200px] text-right">
+                          You can add this later, but agents can't run without it
+                        </span>
+                      </div>
                       <Button
                         size="sm"
                         disabled={!llmApiKey.trim() || loading}

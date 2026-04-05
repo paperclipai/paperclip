@@ -2,16 +2,18 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { issuesApi } from "../api/issues";
+import { expertiseMapApi, type AgentExpertiseProfile } from "../api/expertiseMap";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { agentUrl } from "../lib/utils";
+import { agentUrl, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { Download, Network, Upload } from "lucide-react";
-import { AGENT_ROLE_LABELS, DEPARTMENT_LABELS, type Agent } from "@ironworksai/shared";
+import { Copy, Download, Network, Upload } from "lucide-react";
+import { AGENT_ROLE_LABELS, DEPARTMENT_LABELS, type Agent, type Issue } from "@ironworksai/shared";
 import { getRoleLevel, getAgentRingClass } from "../lib/role-icons";
 import { cn } from "../lib/utils";
 
@@ -156,6 +158,20 @@ const departmentBorderColor: Record<string, string> = {
   hr: "border-l-violet-500/40",
 };
 
+const departmentSvgColor: Record<string, string> = {
+  executive: "rgba(245,158,11,0.04)",
+  engineering: "rgba(59,130,246,0.04)",
+  design: "rgba(168,85,247,0.04)",
+  operations: "rgba(16,185,129,0.04)",
+  finance: "rgba(34,197,94,0.04)",
+  security: "rgba(239,68,68,0.04)",
+  research: "rgba(6,182,212,0.04)",
+  marketing: "rgba(236,72,153,0.04)",
+  support: "rgba(249,115,22,0.04)",
+  compliance: "rgba(99,102,241,0.04)",
+  hr: "rgba(139,92,246,0.04)",
+};
+
 const departmentLabels = DEPARTMENT_LABELS as Record<string, string>;
 
 // ── Main component ──────────────────────────────────────────────────────
@@ -176,6 +192,27 @@ export function OrgChart() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { data: issues } = useQuery({
+    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryFn: () => issuesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const { data: skillMap } = useQuery({
+    queryKey: ["expertise-map", "skills", selectedCompanyId!] as const,
+    queryFn: () => expertiseMapApi.skills(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 120_000,
+  });
+
+  const skillsByAgent = useMemo(() => {
+    const map = new Map<string, AgentExpertiseProfile>();
+    for (const agent of skillMap?.agents ?? []) {
+      map.set(agent.agentId, agent);
+    }
+    return map;
+  }, [skillMap]);
 
   // Mock data for local dev preview when no agents exist
   const MOCK_ORG: OrgNode[] = [
@@ -220,6 +257,33 @@ export function OrgChart() {
     return m;
   }, [effectiveAgents]);
 
+  // Active task count per agent for workload badges
+  const taskCountByAgent = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const issue of (issues ?? []) as Issue[]) {
+      if (issue.assigneeAgentId && (issue.status === "in_progress" || issue.status === "todo")) {
+        map.set(issue.assigneeAgentId, (map.get(issue.assigneeAgentId) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [issues]);
+
+  // Performance score per agent for hover mini-profiles
+  const perfScoreByAgent = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of effectiveAgents) {
+      const agentIssues = (issues ?? []).filter((i: Issue) => i.assigneeAgentId === a.id);
+      const done = agentIssues.filter((i: Issue) => i.status === "done").length;
+      const total = agentIssues.length;
+      if (total > 0) map.set(a.id, Math.round((done / total) * 100));
+    }
+    return map;
+  }, [issues, effectiveAgents]);
+
+  // Hover card state
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
@@ -228,6 +292,20 @@ export function OrgChart() {
   const layout = useMemo(() => layoutForest(effectiveOrg), [effectiveOrg]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
+
+  // Department grouping for background rects
+  const departmentGroups = useMemo(() => {
+    const groups = new Map<string, { nodes: LayoutNode[]; dept: string }>();
+    for (const node of allNodes) {
+      const agent = agentMap.get(node.id);
+      const dept = (agent as unknown as Record<string, unknown> | undefined)?.department as string | undefined;
+      if (dept) {
+        if (!groups.has(dept)) groups.set(dept, { nodes: [], dept });
+        groups.get(dept)!.nodes.push(node);
+      }
+    }
+    return Array.from(groups.values()).filter((g) => g.nodes.length > 1);
+  }, [allNodes, agentMap]);
 
   // Compute SVG bounds
   const bounds = useMemo(() => {
@@ -340,6 +418,19 @@ export function OrgChart() {
           Export company
         </Button>
       </Link>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          const svgEl = containerRef.current?.querySelector("svg");
+          if (!svgEl) return;
+          const svgData = new XMLSerializer().serializeToString(svgEl);
+          navigator.clipboard.writeText(svgData).catch(() => {});
+        }}
+      >
+        <Copy className="mr-1.5 h-3.5 w-3.5" />
+        Copy SVG
+      </Button>
     </div>
     <div
       ref={containerRef}
@@ -417,17 +508,55 @@ export function OrgChart() {
         }}
       >
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          {/* Department background groupings */}
+          {departmentGroups.map(({ nodes: dNodes, dept }) => {
+            const pad = 20;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const n of dNodes) {
+              minX = Math.min(minX, n.x);
+              minY = Math.min(minY, n.y);
+              maxX = Math.max(maxX, n.x + CARD_W);
+              maxY = Math.max(maxY, n.y + CARD_H);
+            }
+            const deptColor = departmentSvgColor[dept] ?? "rgba(100,100,100,0.04)";
+            return (
+              <g key={`dept-bg-${dept}`}>
+                <rect
+                  x={minX - pad}
+                  y={minY - pad - 16}
+                  width={maxX - minX + pad * 2}
+                  height={maxY - minY + pad * 2 + 16}
+                  rx={12}
+                  fill={deptColor}
+                  stroke="none"
+                />
+                <text
+                  x={minX - pad + 8}
+                  y={minY - pad - 4}
+                  fontSize={10}
+                  fontWeight={600}
+                  fill="var(--muted-foreground)"
+                  opacity={0.6}
+                  style={{ textTransform: "uppercase" as const, letterSpacing: "0.05em" }}
+                >
+                  {departmentLabels[dept] ?? dept}
+                </text>
+              </g>
+            );
+          })}
+          {/* Curved bezier connecting lines */}
           {edges.map(({ parent, child }) => {
             const x1 = parent.x + CARD_W / 2;
             const y1 = parent.y + CARD_H;
             const x2 = child.x + CARD_W / 2;
             const y2 = child.y;
-            const midY = (y1 + y2) / 2;
+            const cy1 = y1 + (y2 - y1) * 0.5;
+            const cy2 = y2 - (y2 - y1) * 0.5;
 
             return (
               <path
                 key={`${parent.id}-${child.id}`}
-                d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
+                d={`M ${x1} ${y1} C ${x1} ${cy1}, ${x2} ${cy2}, ${x2} ${y2}`}
                 fill="none"
                 stroke="var(--border)"
                 strokeWidth={1.5}
@@ -451,6 +580,8 @@ export function OrgChart() {
           const empType = (agent as unknown as Record<string, unknown> | undefined)?.employmentType as string | undefined;
           const dept = (agent as unknown as Record<string, unknown> | undefined)?.department as string | undefined;
           const isContractor = empType === "contractor";
+          const activeTasks = taskCountByAgent.get(node.id) ?? 0;
+          const isHovered = hoveredNode === node.id;
 
           return (
             <div
@@ -468,7 +599,21 @@ export function OrgChart() {
                 minHeight: CARD_H,
               }}
               onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+              onMouseEnter={() => {
+                if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+                hoverTimeout.current = setTimeout(() => setHoveredNode(node.id), 300);
+              }}
+              onMouseLeave={() => {
+                if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
+                setHoveredNode(null);
+              }}
             >
+              {/* Workload badge */}
+              {activeTasks > 0 && (
+                <span className="absolute -top-2 -right-2 flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-blue-500 text-white text-[10px] font-bold shadow-sm z-10">
+                  {activeTasks}
+                </span>
+              )}
               <div className="flex items-start px-4 py-4 gap-3">
                 {/* Agent icon + status dot */}
                 <div className="relative shrink-0">
@@ -526,8 +671,55 @@ export function OrgChart() {
                       </span>
                     );
                   })()}
+                  {/* Skill tags from expertise map */}
+                  {(() => {
+                    const profile = skillsByAgent.get(node.id);
+                    if (!profile || profile.topSkills.length === 0) return null;
+                    return (
+                      <div className="flex flex-wrap gap-0.5 mt-1">
+                        {profile.topSkills.slice(0, 2).map((sk) => (
+                          <span
+                            key={sk.labelId}
+                            className="inline-flex items-center gap-0.5 text-[8px] px-1 py-0 rounded bg-muted/50 text-muted-foreground/70"
+                          >
+                            <span className="w-1 h-1 rounded-full shrink-0" style={{ backgroundColor: sk.labelColor }} />
+                            {sk.labelName}
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
+              {/* Hover mini-profile card */}
+              {isHovered && (
+                <div
+                  className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-20 w-56 bg-popover border border-border rounded-lg shadow-lg p-3 space-y-2 pointer-events-none"
+                  style={{ transformOrigin: "top center" }}
+                >
+                  <div className="text-xs font-semibold">{node.name}</div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div>
+                      <div className="text-[10px] text-muted-foreground">Active</div>
+                      <div className="text-sm font-bold tabular-nums">{activeTasks}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted-foreground">Score</div>
+                      <div className="text-sm font-bold tabular-nums">
+                        {perfScoreByAgent.get(node.id) !== undefined ? `${perfScoreByAgent.get(node.id)}%` : "-"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted-foreground">Tenure</div>
+                      <div className="text-sm font-bold tabular-nums">
+                        {agent && (agent as unknown as Record<string, unknown>).createdAt
+                          ? relativeTime(new Date((agent as unknown as Record<string, unknown>).createdAt as string))
+                          : "-"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}

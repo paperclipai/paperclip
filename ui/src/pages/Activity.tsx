@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { activityApi } from "../api/activity";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -18,8 +19,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronDown, ChevronRight, History } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, History } from "lucide-react";
 import { cn } from "../lib/utils";
+import { exportToCSV } from "../lib/exportCSV";
 import type { Agent, ActivityEvent } from "@ironworksai/shared";
 
 /* ─── Time Grouping ──────────────────────────────────────────── */
@@ -128,6 +130,7 @@ const ACTION_LABELS: Record<string, string> = {
 /* ─── Main Component ─────────────────────────────────────────── */
 
 export function Activity() {
+  usePageTitle("Activity");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [filter, setFilter] = useState("all");
@@ -243,19 +246,50 @@ export function Activity() {
             </p>
           )}
         </div>
-        <Select value={filter} onValueChange={setFilter}>
-          <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {entityTypes.map((type) => (
-              <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <button
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => {
+              if (!filtered || filtered.length === 0) return;
+              exportToCSV(
+                filtered.map((e) => ({
+                  timestamp: new Date(e.createdAt).toISOString(),
+                  action: e.action,
+                  entityType: e.entityType,
+                  entityId: e.entityId,
+                  actorType: e.actorType,
+                  actorId: e.actorId,
+                  actorName: e.actorType === "agent" ? (agentMap.get(e.actorId)?.name ?? e.actorId) : "Board",
+                })),
+                "activity-export",
+                [
+                  { key: "timestamp", label: "Timestamp" },
+                  { key: "action", label: "Action" },
+                  { key: "entityType", label: "Entity Type" },
+                  { key: "entityId", label: "Entity ID" },
+                  { key: "actorType", label: "Actor Type" },
+                  { key: "actorName", label: "Actor" },
+                ],
+              );
+            }}
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export CSV
+          </button>
+          <Select value={filter} onValueChange={setFilter}>
+            <SelectTrigger className="w-[140px] h-8 text-xs">
+              <SelectValue placeholder="Filter by type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All types</SelectItem>
+              {entityTypes.map((type) => (
+                <SelectItem key={type} value={type}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
