@@ -10,6 +10,7 @@ import {
   llmCheck,
   logCheck,
   portCheck,
+  runtimePermissionsCheck,
   secretsCheck,
   storageCheck,
   type CheckResult,
@@ -65,7 +66,16 @@ export async function doctor(opts: {
   results.push(deploymentAuthResult);
   printResult(deploymentAuthResult);
 
-  // 3. Agent JWT check
+  // 3. Runtime filesystem permissions check
+  results.push(
+    await runRepairableCheck({
+      run: () => runtimePermissionsCheck(config, configPath),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 4. Agent JWT check
   results.push(
     await runRepairableCheck({
       run: () => agentJwtSecretCheck(opts.config),
@@ -74,7 +84,7 @@ export async function doctor(opts: {
     }),
   );
 
-  // 4. Secrets adapter check
+  // 5. Secrets adapter check
   results.push(
     await runRepairableCheck({
       run: () => secretsCheck(config, configPath),
@@ -83,7 +93,7 @@ export async function doctor(opts: {
     }),
   );
 
-  // 5. Storage check
+  // 6. Storage check
   results.push(
     await runRepairableCheck({
       run: () => storageCheck(config, configPath),
@@ -92,7 +102,7 @@ export async function doctor(opts: {
     }),
   );
 
-  // 6. Database check
+  // 7. Database check
   results.push(
     await runRepairableCheck({
       run: () => databaseCheck(config, configPath),
@@ -101,12 +111,12 @@ export async function doctor(opts: {
     }),
   );
 
-  // 7. LLM check
+  // 8. LLM check
   const llmResult = await llmCheck(config);
   results.push(llmResult);
   printResult(llmResult);
 
-  // 8. Log directory check
+  // 9. Log directory check
   results.push(
     await runRepairableCheck({
       run: () => logCheck(config, configPath),
@@ -115,7 +125,7 @@ export async function doctor(opts: {
     }),
   );
 
-  // 9. Port check
+  // 10. Port check
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);

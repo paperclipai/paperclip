@@ -2,13 +2,14 @@ import fs from "node:fs";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 export function logCheck(config: PaperclipConfig, configPath?: string): CheckResult {
   const logDir = resolveRuntimeLikePath(config.logging.logDir, configPath);
   const reportedDir = logDir;
 
   if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(reportedDir, { recursive: true });
+    ensureDirectoryMode(reportedDir);
   }
 
   try {

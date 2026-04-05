@@ -4,6 +4,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { applyPathMode, ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 function decodeMasterKey(raw: string): Buffer | null {
   const trimmed = raw.trim();
@@ -95,16 +96,12 @@ export function secretsCheck(config: PaperclipConfig, configPath?: string): Chec
         message: `Secrets key file does not exist yet: ${keyFilePath}`,
         canRepair: true,
         repair: () => {
-          fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
+          ensureDirectoryMode(path.dirname(keyFilePath));
           fs.writeFileSync(keyFilePath, randomBytes(32).toString("base64"), {
             encoding: "utf8",
             mode: 0o600,
           });
-          try {
-            fs.chmodSync(keyFilePath, 0o600);
-          } catch {
-            // best effort
-          }
+          applyPathMode(keyFilePath, 0o600);
         },
         repairHint: "Run with --repair to create a local encrypted secrets key file",
       },

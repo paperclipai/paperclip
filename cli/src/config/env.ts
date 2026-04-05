@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { config as loadDotenv, parse as parseEnvFileContents } from "dotenv";
 import { resolveConfigPath } from "./store.js";
+import { applyPathMode, ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 const JWT_SECRET_ENV_KEY = "PAPERCLIP_AGENT_JWT_SECRET";
 function resolveEnvFilePath(configPath?: string) {
@@ -103,10 +104,11 @@ export function readPaperclipEnvEntries(filePath = resolveEnvFilePath()): Record
 
 export function writePaperclipEnvEntries(entries: Record<string, string>, filePath = resolveEnvFilePath()): void {
   const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDirectoryMode(dir);
   fs.writeFileSync(filePath, renderEnvFile(entries), {
     mode: 0o600,
   });
+  applyPathMode(filePath, 0o600);
 }
 
 export function mergePaperclipEnvEntries(

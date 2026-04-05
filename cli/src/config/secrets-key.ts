@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PaperclipConfig } from "./schema.js";
 import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
+import { applyPathMode, ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 export type EnsureSecretsKeyResult =
   | { status: "created"; path: string }
@@ -34,15 +35,11 @@ export function ensureLocalSecretsKeyFile(
     return { status: "existing", path: keyFilePath };
   }
 
-  fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
+  ensureDirectoryMode(path.dirname(keyFilePath));
   fs.writeFileSync(keyFilePath, randomBytes(32).toString("base64"), {
     encoding: "utf8",
     mode: 0o600,
   });
-  try {
-    fs.chmodSync(keyFilePath, 0o600);
-  } catch {
-    // best effort
-  }
+  applyPathMode(keyFilePath, 0o600);
   return { status: "created", path: keyFilePath };
 }

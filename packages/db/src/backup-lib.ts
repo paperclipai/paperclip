@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import postgres from "postgres";
@@ -143,7 +143,7 @@ function tableKey(schemaName: string, tableName: string): string {
 }
 
 export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const stream = createWriteStream(filePath, { encoding: "utf8" });
+  const stream = createWriteStream(filePath, { encoding: "utf8", mode: 0o600 });
   const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
@@ -246,7 +246,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-  mkdirSync(opts.backupDir, { recursive: true });
+  mkdirSync(opts.backupDir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(opts.backupDir, 0o700);
+  } catch {
+    // best effort
+  }
   const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const writer = createBufferedTextFileWriter(backupFile);
 

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { doctor } from "../commands/doctor.js";
 import { writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import { readPathMode } from "../utils/fs-permissions.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -98,5 +99,47 @@ describe("doctor", () => {
     expect(summary.failed).toBe(0);
     expect(summary.warned).toBe(0);
     expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeTruthy();
+  });
+
+  it("repairs runtime paths that are too permissive", async () => {
+    const configPath = createTempConfig();
+    const runtimeRoot = path.join(path.dirname(path.dirname(configPath)), "runtime");
+    const envPath = path.join(path.dirname(configPath), ".env");
+    const logDir = path.join(runtimeRoot, "logs");
+    const storageDir = path.join(runtimeRoot, "storage");
+    const backupDir = path.join(runtimeRoot, "backups");
+    const secretsDir = path.join(runtimeRoot, "secrets");
+    const secretsKeyPath = path.join(secretsDir, "master.key");
+
+    fs.mkdirSync(logDir, { recursive: true, mode: 0o777 });
+    fs.mkdirSync(storageDir, { recursive: true, mode: 0o777 });
+    fs.mkdirSync(backupDir, { recursive: true, mode: 0o777 });
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o777 });
+    fs.writeFileSync(envPath, "PAPERCLIP_AGENT_JWT_SECRET=test\n", { mode: 0o666 });
+    fs.writeFileSync(secretsKeyPath, "0123456789abcdef0123456789abcdef", { mode: 0o666 });
+    fs.chmodSync(path.dirname(configPath), 0o777);
+    fs.chmodSync(configPath, 0o666);
+    fs.chmodSync(envPath, 0o666);
+    fs.chmodSync(logDir, 0o777);
+    fs.chmodSync(storageDir, 0o777);
+    fs.chmodSync(backupDir, 0o777);
+    fs.chmodSync(secretsDir, 0o777);
+    fs.chmodSync(secretsKeyPath, 0o666);
+
+    const summary = await doctor({
+      config: configPath,
+      repair: true,
+      yes: true,
+    });
+
+    expect(summary.failed).toBe(0);
+    expect(readPathMode(path.dirname(configPath))).toBe(0o700);
+    expect(readPathMode(configPath)).toBe(0o600);
+    expect(readPathMode(envPath)).toBe(0o600);
+    expect(readPathMode(logDir)).toBe(0o700);
+    expect(readPathMode(storageDir)).toBe(0o700);
+    expect(readPathMode(backupDir)).toBe(0o700);
+    expect(readPathMode(secretsDir)).toBe(0o700);
+    expect(readPathMode(secretsKeyPath)).toBe(0o600);
   });
 });

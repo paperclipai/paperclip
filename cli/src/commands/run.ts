@@ -15,6 +15,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 interface RunOptions {
   config?: string;
@@ -35,10 +36,10 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
 
   const homeDir = resolvePaperclipHomeDir();
-  fs.mkdirSync(homeDir, { recursive: true });
+  ensureDirectoryMode(homeDir);
 
   const paths = describeLocalInstancePaths(instanceId);
-  fs.mkdirSync(paths.instanceRoot, { recursive: true });
+  ensureDirectoryMode(paths.instanceRoot);
 
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;

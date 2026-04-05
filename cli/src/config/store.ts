@@ -5,6 +5,7 @@ import {
   resolveDefaultConfigPath,
   resolvePaperclipInstanceId,
 } from "./home.js";
+import { applyPathMode, ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 const DEFAULT_CONFIG_BASENAME = "config.json";
 
@@ -101,18 +102,19 @@ export function writeConfig(
 ): void {
   const filePath = resolveConfigPath(configPath);
   const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDirectoryMode(dir);
 
   // Backup existing config before overwriting
   if (fs.existsSync(filePath)) {
     const backupPath = filePath + ".backup";
     fs.copyFileSync(filePath, backupPath);
-    fs.chmodSync(backupPath, 0o600);
+    applyPathMode(backupPath, 0o600);
   }
 
   fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + "\n", {
     mode: 0o600,
   });
+  applyPathMode(filePath, 0o600);
 }
 
 export function configExists(configPath?: string): boolean {

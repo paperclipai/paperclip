@@ -2,6 +2,7 @@ import fs from "node:fs";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
@@ -39,7 +40,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     const dataDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
     const reportedPath = dataDir;
     if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(reportedPath, { recursive: true });
+      ensureDirectoryMode(reportedPath);
     }
 
     return {

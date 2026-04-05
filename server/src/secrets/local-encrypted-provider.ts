@@ -61,7 +61,12 @@ function loadOrCreateMasterKey(): Buffer {
   }
 
   const dir = path.dirname(keyPath);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    // best effort
+  }
   const generated = randomBytes(32);
   writeFileSync(keyPath, generated.toString("base64"), { encoding: "utf8", mode: 0o600 });
   try {

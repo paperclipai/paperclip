@@ -2,12 +2,13 @@ import fs from "node:fs";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
+import { ensureDirectoryMode } from "../utils/fs-permissions.js";
 
 export function storageCheck(config: PaperclipConfig, configPath?: string): CheckResult {
   if (config.storage.provider === "local_disk") {
     const baseDir = resolveRuntimeLikePath(config.storage.localDisk.baseDir, configPath);
     if (!fs.existsSync(baseDir)) {
-      fs.mkdirSync(baseDir, { recursive: true });
+      ensureDirectoryMode(baseDir);
     }
 
     try {
@@ -48,4 +49,3 @@ export function storageCheck(config: PaperclipConfig, configPath?: string): Chec
     repairHint: "Verify credentials and endpoint in deployment environment",
   };
 }
-
