@@ -1245,30 +1245,53 @@ export function Inbox() {
 
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
-    onMutate: (id) => {
+    onMutate: async (id) => {
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
+
+      // Cancel in-flight refetches so they don't overwrite our optimistic update
+      const queryKeys_ = [
+        queryKeys.issues.listMineByMe(selectedCompanyId!),
+        queryKeys.issues.listTouchedByMe(selectedCompanyId!),
+        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
+      ];
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+
+      // Snapshot previous data for rollback
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+
+      // Optimistically remove the issue from all inbox query caches
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.filter((issue: { id: string }) => issue.id !== id);
+        });
+      }
+
+      return { previousData };
     },
-    onSuccess: () => {
-      invalidateInboxIssueQueries();
-    },
-    onError: (err, id) => {
+    onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to archive issue");
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+      // Restore previous query data on failure
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
     },
     onSettled: (_data, error, id) => {
-      if (error) return;
-      window.setTimeout(() => {
-        setArchivingIssueIds((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      }, 500);
+      // Clean up archiving state and refetch to sync with server
+      setArchivingIssueIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      invalidateInboxIssueQueries();
     },
   });
 
