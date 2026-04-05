@@ -210,6 +210,25 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
   const registry = pluginRegistryService(db);
   const log = logger.child({ service: "plugin-ui-static" });
 
+  // CORS: restrict Access-Control-Allow-Origin to known origins only.
+  // Read comma-separated list from ALLOWED_ORIGINS env var (e.g. "http://localhost:3000,https://app.example.com").
+  // If not set, fall back to empty list (no CORS headers emitted — same-origin only).
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  // Preflight handler for plugin UI routes
+  router.options("/_plugins/:pluginId/ui/*filePath", (req, res) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
+      res.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Content-Type");
+    }
+    res.status(204).end();
+  });
+
   /**
    * GET /_plugins/:pluginId/ui/*
    *
@@ -472,7 +491,11 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 9: Set CORS headers (plugin UI may be loaded from different origin in dev)
-    res.set("Access-Control-Allow-Origin", "*");
+    // Only set if the request origin is in the allowed whitelist.
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
+    }
 
     // Step 10: Send the file
     // The plugin source can live in Git worktrees (e.g. ".worktrees/...").

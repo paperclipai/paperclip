@@ -74,9 +74,10 @@ jobs:
             const description = verdictStatus.description || '';
             console.log(`ai-review/verdict: state=${verdictStatus.state}, description="${description}"`);
 
-            // --- HIGH RISK: log but continue to auto-merge ---
+            // --- HIGH_RISK: block merge, require human review ---
             if (description.includes('HIGH_RISK') || description.includes('HUMAN_REQUIRED')) {
-              console.log('Verdict is HIGH_RISK — auto-merging with elevated visibility.');
+              console.log('Verdict is HIGH_RISK — auto-merge blocked, human review required.');
+              return;
             }
 
             // --- FAIL: blockers found ---
