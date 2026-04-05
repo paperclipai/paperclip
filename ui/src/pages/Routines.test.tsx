@@ -304,7 +304,7 @@ describe("Routines page", () => {
     routinesListMock.mockReset();
     issuesListMock.mockReset();
     issuesListRenderMock.mockClear();
-    localStorage.clear();
+    window.localStorage?.clear?.();
   });
 
   afterEach(() => {

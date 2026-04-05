@@ -577,14 +577,16 @@ function SkillPane({
             ) : (
               <div className="text-sm text-muted-foreground">{detail.editableReason}</div>
             )}
-            <button
-              className="inline-flex items-center gap-2 text-sm text-destructive hover:text-destructive/80"
-              onClick={() => setDeleteConfirmOpen(true)}
-              disabled={deletePending}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Delete skill
-            </button>
+            {detail.editable && (
+              <button
+                className="inline-flex items-center gap-2 text-sm text-destructive hover:text-destructive/80"
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={deletePending}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete skill
+              </button>
+            )}
           </div>
         </div>
 
@@ -762,7 +764,6 @@ function SkillPane({
               variant="destructive"
               onClick={() => {
                 onDelete();
-                setDeleteConfirmOpen(false);
               }}
               disabled={deletePending}
             >

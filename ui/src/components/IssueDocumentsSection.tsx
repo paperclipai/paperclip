@@ -53,7 +53,7 @@ const getFoldedDocumentsStorageKey = (issueId: string) => `paperclip:issue-docum
 function loadFoldedDocumentKeys(issueId: string) {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(getFoldedDocumentsStorageKey(issueId));
+    const raw = window.localStorage?.getItem?.(getFoldedDocumentsStorageKey(issueId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
@@ -64,7 +64,7 @@ function loadFoldedDocumentKeys(issueId: string) {
 
 function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(getFoldedDocumentsStorageKey(issueId), JSON.stringify(keys));
+  window.localStorage?.setItem?.(getFoldedDocumentsStorageKey(issueId), JSON.stringify(keys));
 }
 
 function renderBody(body: string, className?: string) {
