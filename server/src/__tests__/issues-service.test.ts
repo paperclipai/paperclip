@@ -10,6 +10,7 @@ import {
   instanceSettings,
   issueComments,
   issueInboxArchives,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -857,5 +858,117 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService.update closeout guard", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-closeout-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueWorkProducts);
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("blocks closeout when github pull requests exist but none are merged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "PR pending",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "github",
+      title: "PR 123",
+      status: "ready_for_review",
+      reviewState: "none",
+      isPrimary: true,
+      healthStatus: "unknown",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("allows closeout when at least one github pull request is merged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "PR merged",
+      status: "in_review",
+      priority: "medium",
+    });
+
+    await db.insert(issueWorkProducts).values([
+      {
+        companyId,
+        issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "PR 123",
+        status: "ready_for_review",
+        reviewState: "none",
+        isPrimary: true,
+        healthStatus: "unknown",
+      },
+      {
+        companyId,
+        issueId,
+        type: "pull_request",
+        provider: "github",
+        title: "PR 124",
+        status: "merged",
+        reviewState: "none",
+        isPrimary: false,
+        healthStatus: "unknown",
+      },
+    ]);
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
   });
 });

@@ -16,6 +16,7 @@ import {
   issueComments,
   issueDocuments,
   issueReadStates,
+  issueWorkProducts,
   issues,
   labels,
   projectWorkspaces,
@@ -60,6 +61,26 @@ function applyStatusSideEffects(
     patch.cancelledAt = new Date();
   }
   return patch;
+}
+
+async function assertGitHubPrsMergedForCloseout(db: Db, issueId: string, companyId: string) {
+  const prs = await db
+    .select({ status: issueWorkProducts.status })
+    .from(issueWorkProducts)
+    .where(
+      and(
+        eq(issueWorkProducts.issueId, issueId),
+        eq(issueWorkProducts.companyId, companyId),
+        eq(issueWorkProducts.type, "pull_request"),
+        eq(issueWorkProducts.provider, "github"),
+      ),
+    );
+
+  if (prs.length === 0) return;
+  const hasMerged = prs.some((pr) => pr.status === "merged");
+  if (!hasMerged) {
+    throw unprocessable("Cannot mark issue done while GitHub pull requests remain unmerged");
+  }
 }
 
 export interface IssueFilters {
@@ -1269,6 +1290,9 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      if (issueData.status === "done" && existing.status !== "done") {
+        await assertGitHubPrsMergedForCloseout(db, existing.id, existing.companyId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
