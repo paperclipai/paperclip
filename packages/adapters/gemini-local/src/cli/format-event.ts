@@ -13,6 +13,10 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function readMessagePayload(value: Record<string, unknown>): unknown {
+  return value.content ?? value.message;
+}
+
 function stringifyUnknown(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -44,6 +48,11 @@ function printTextMessage(prefix: string, colorize: (text: string) => string, me
   if (typeof messageRaw === "string") {
     const text = messageRaw.trim();
     if (text) console.log(colorize(`${prefix}: ${text}`));
+    return;
+  }
+
+  if (Array.isArray(messageRaw)) {
+    printTextMessage(prefix, colorize, { content: messageRaw });
     return;
   }
 
@@ -147,6 +156,19 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
   if (type === "assistant") {
     printTextMessage("assistant", pc.green, parsed.message);
     return;
+  }
+
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    const payload = readMessagePayload(parsed);
+    if (role === "assistant") {
+      printTextMessage("assistant", pc.green, payload);
+      return;
+    }
+    if (role === "user") {
+      printTextMessage("user", pc.gray, payload);
+      return;
+    }
   }
 
   if (type === "user") {
