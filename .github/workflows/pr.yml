@@ -81,12 +81,25 @@ jobs:
           fi
 
       - name: Validate dependency resolution when manifests change
+        id: resolve
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            echo "manifests_changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Upload resolved lockfile
+        if: steps.resolve.outputs.manifests_changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+
+    outputs:
+      manifests_changed: ${{ steps.resolve.outputs.manifests_changed }}
 
   verify:
     needs: [policy]
@@ -107,6 +120,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Download resolved lockfile
+        if: needs.policy.outputs.manifests_changed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -168,6 +187,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Download resolved lockfile
+        if: needs.policy.outputs.manifests_changed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
