@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send, Crown } from "lucide-react";
+import { Send, Crown, Pin, PinOff, ChevronDown, ChevronRight, BarChart2 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { channelsApi } from "../api/channels";
@@ -77,10 +77,11 @@ function formatTime(iso: string) {
 }
 
 // ---- Filters ----
-type FilterMode = "all" | "decisions";
+type FilterMode = "all" | "decisions" | "analytics";
 
 function matchesFilter(msg: ChannelMessage, mode: FilterMode): boolean {
   if (mode === "all") return true;
+  if (mode === "analytics") return true;
   return msg.messageType === "decision" || msg.messageType === "escalation";
 }
 
@@ -90,9 +91,12 @@ interface MessageRowProps {
   agentMap: Map<string, { name: string; icon: string | null; role: string | null; employmentType?: string }>;
   issueMap: Map<string, { identifier: string; title: string }>;
   replyMap: Map<string, ChannelMessage>;
+  onPin?: (messageId: string) => void;
+  onUnpin?: (messageId: string) => void;
+  isPinned?: boolean;
 }
 
-function MessageRow({ msg, agentMap, issueMap, replyMap }: MessageRowProps) {
+function MessageRow({ msg, agentMap, issueMap, replyMap, onPin, onUnpin, isPinned }: MessageRowProps) {
   const isBoard = !msg.authorAgentId && !msg.authorUserId;
   const agent = msg.authorAgentId ? agentMap.get(msg.authorAgentId) : null;
   const authorName = isBoard ? "Board" : (agent?.name ?? "User");
@@ -104,8 +108,19 @@ function MessageRow({ msg, agentMap, issueMap, replyMap }: MessageRowProps) {
       className={cn(
         "group relative flex gap-3 px-4 py-2 hover:bg-accent/30 transition-colors",
         isBoard && "border-l-2 border-amber-400 bg-amber-50/30 dark:bg-amber-900/10",
+        isPinned && "bg-amber-50/20 dark:bg-amber-900/5",
       )}
     >
+      {/* Pin / unpin button shown on hover */}
+      {(onPin || onUnpin) && (
+        <button
+          onClick={() => isPinned ? onUnpin?.(msg.id) : onPin?.(msg.id)}
+          className="absolute right-3 top-2 hidden group-hover:flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+          title={isPinned ? "Unpin message" : "Pin message"}
+        >
+          {isPinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+        </button>
+      )}
       {/* Author icon */}
       <div className="shrink-0 mt-0.5">
         {isBoard ? (

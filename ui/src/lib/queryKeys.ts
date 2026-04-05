@@ -184,6 +184,12 @@ export const queryKeys = {
     list: (companyId: string) => ["channels", companyId] as const,
     messages: (companyId: string, channelId: string) =>
       ["channels", companyId, channelId, "messages"] as const,
+    decisions: (companyId: string, channelId: string) =>
+      ["channels", companyId, channelId, "decisions"] as const,
+    pinned: (companyId: string, channelId: string) =>
+      ["channels", companyId, channelId, "pinned"] as const,
+    analytics: (companyId: string, channelId: string, periodDays?: number) =>
+      ["channels", companyId, channelId, "analytics", periodDays ?? 30] as const,
   },
   plugins: {
     all: ["plugins"] as const,

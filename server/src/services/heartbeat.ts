@@ -60,7 +60,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { logActivity } from "./activity-log.js";
 import { buildMorningBriefing, detectContextDrift, saveSessionState, getLatestSessionState } from "./session-state.js";
-import { findAgentDepartmentChannel, findCompanyChannel, getRecentMessages, postMessage as postChannelMessage } from "./channels.js";
+import { channelHealth, findAgentDepartmentChannel, findCompanyChannel, getPendingMentions, getRecentMessages, postMessage as postChannelMessage } from "./channels.js";
 import { webSearch, isResearchTask, extractSearchQuery } from "./web-search.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -3061,6 +3061,53 @@ export function heartbeatService(db: Db) {
       }
     } catch (err) {
       logger.debug({ err, agentId: agent.id }, "channel context injection failed, skipping");
+    }
+
+    // Inject pending @mentions as high-priority context so agents respond to
+    // teammates who tagged them. Failures are non-fatal.
+    try {
+      const mentions = await getPendingMentions(db, agent.id, agent.companyId);
+      if (mentions.length > 0) {
+        context.ironworksPendingMentions = mentions.map((m) => ({
+          channel: `#${m.channelName}`,
+          from: m.mentionedByName,
+          body: m.body,
+          at: m.createdAt,
+          instruction: `You were mentioned in #${m.channelName} by ${m.mentionedByName}: "${m.body}". Please respond in that channel.`,
+        }));
+      }
+    } catch (err) {
+      logger.debug({ err, agentId: agent.id }, "pending mentions injection failed, skipping");
+    }
+
+    // Inject channel health status for department heads if the channel is not healthy.
+    // Failures are non-fatal.
+    try {
+      const agentRoleLower = (agent.role ?? "").toLowerCase();
+      const isDeptHead = /\b(head|director|vp|lead|chief|manager)\b/.test(agentRoleLower);
+      if (isDeptHead && agent.department) {
+        const deptChannel = await findAgentDepartmentChannel(db, agent.companyId, agent.department);
+        if (deptChannel) {
+          const health = await channelHealth(db, deptChannel.id);
+          if (health.status !== "healthy") {
+            context.ironworksChannelHealth = {
+              channel: `#${agent.department}`,
+              status: health.status,
+              messagesLast48h: health.messagesLast48h,
+              decisionsLast7d: health.decisionsLast7d,
+              circularTopicScore: health.circularTopicScore,
+              advisory:
+                health.status === "quiet"
+                  ? `Your #${agent.department} channel has been quiet. Consider posting a status update.`
+                  : health.status === "noisy"
+                    ? `Your #${agent.department} channel is very active but has few decisions. Consider driving toward a resolution.`
+                    : `Your #${agent.department} channel appears stalled on the same topics. Consider making a decision to move forward.`,
+            };
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug({ err, agentId: agent.id }, "channel health injection failed, skipping");
     }
 
     // Every 5th run: check for context drift and inject refocus prompt if detected.

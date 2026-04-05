@@ -4,6 +4,7 @@ import {
   activityLog,
   agents,
   approvals,
+  channelMessages,
   companies,
   companySkills,
   costEvents,
@@ -1635,5 +1636,96 @@ export async function councilAnalytics(
     modelWinRates,
     avgQualityImprovement: qualityDeltaCount > 0 ? Math.round(totalQualityDelta / qualityDeltaCount) : 0,
     costMultiplier,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Enhancement 5: Channel Analytics
+// ---------------------------------------------------------------------------
+
+export interface ChannelAnalyticsResult {
+  totalMessages: number;
+  messagesByType: Record<string, number>;
+  topContributors: Array<{ agentId: string; name: string; messageCount: number }>;
+  decisionsCount: number;
+  escalationsCount: number;
+  avgMessagesPerDay: number;
+}
+
+/**
+ * Compute message statistics for a single channel over the last `periodDays`
+ * days (default 30).
+ */
+export async function channelAnalytics(
+  db: Db,
+  channelId: string,
+  periodDays = 30,
+): Promise<ChannelAnalyticsResult> {
+  const since = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000);
+
+  // Total message count and per-type breakdown
+  const allRows = await db
+    .select({
+      messageType: channelMessages.messageType,
+      authorAgentId: channelMessages.authorAgentId,
+    })
+    .from(channelMessages)
+    .where(
+      and(
+        eq(channelMessages.channelId, channelId),
+        gte(channelMessages.createdAt, since),
+      ),
+    );
+
+  const totalMessages = allRows.length;
+  const messagesByType: Record<string, number> = {};
+  const contributorCounts = new Map<string, number>();
+
+  for (const row of allRows) {
+    const t = row.messageType ?? "message";
+    messagesByType[t] = (messagesByType[t] ?? 0) + 1;
+
+    if (row.authorAgentId) {
+      contributorCounts.set(
+        row.authorAgentId,
+        (contributorCounts.get(row.authorAgentId) ?? 0) + 1,
+      );
+    }
+  }
+
+  const decisionsCount = messagesByType["decision"] ?? 0;
+  const escalationsCount = messagesByType["escalation"] ?? 0;
+  const avgMessagesPerDay = periodDays > 0
+    ? Math.round((totalMessages / periodDays) * 100) / 100
+    : 0;
+
+  // Resolve agent names for top contributors (top 5)
+  const sortedContributors = [...contributorCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+
+  const agentIds = sortedContributors.map(([id]) => id);
+  const agentRows =
+    agentIds.length > 0
+      ? await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : [];
+  const agentNameMap = new Map(agentRows.map((a) => [a.id, a.name]));
+
+  const topContributors = sortedContributors.map(([agentId, messageCount]) => ({
+    agentId,
+    name: agentNameMap.get(agentId) ?? agentId,
+    messageCount,
+  }));
+
+  return {
+    totalMessages,
+    messagesByType,
+    topContributors,
+    decisionsCount,
+    escalationsCount,
+    avgMessagesPerDay,
   };
 }
