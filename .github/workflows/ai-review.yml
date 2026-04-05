@@ -277,7 +277,7 @@ jobs:
 
       - name: Post verdict status
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_PAT }}
         run: |
           # Map verdict to GitHub status state
           case "$VERDICT" in
