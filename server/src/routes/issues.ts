@@ -447,13 +447,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const actor = getActorInfo(req);
     const { dueDate: dueDateRaw, ...createBody } = req.body;
-    const issue = await svc.create(companyId, {
-      ...createBody,
-      ...(dueDateRaw !== undefined ? { dueDate: dueDateRaw ? new Date(dueDateRaw) : null } : {}),
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-      assignerPolicyTier,
-    } as any);
+    const extraFields: Record<string, unknown> = {};
+    if (dueDateRaw !== undefined) extraFields.dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+    if (assignerPolicyTier) extraFields.assignerPolicyTier = assignerPolicyTier;
+
+    let issue;
+    try {
+      issue = await svc.create(companyId, {
+        ...createBody,
+        ...extraFields,
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      } as any);
+    } catch (createErr: any) {
+      // If new columns don't exist yet (migration pending), retry without them
+      if (createErr?.code === "42703" || String(createErr?.message).includes("column")) {
+        issue = await svc.create(companyId, {
+          ...createBody,
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        } as any);
+      } else {
+        throw createErr;
+      }
+    }
 
     await logActivity(db, {
       companyId,
