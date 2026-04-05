@@ -547,9 +547,17 @@ export function ExecutionWorkspaceDetail() {
                       id="inherit-runtime-config"
                       type="checkbox"
                       checked={form.inheritRuntime}
-                      onChange={(event) =>
-                        setForm((current) => current ? { ...current, inheritRuntime: event.target.checked } : current)
-                      }
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setForm((current) => {
+                          if (!current) return current;
+                          // When unchecking "inherit" and the field is empty, copy inherited config as a starting point
+                          if (!checked && !current.workspaceRuntime.trim() && inheritedRuntimeConfig) {
+                            return { ...current, inheritRuntime: checked, workspaceRuntime: formatJson(inheritedRuntimeConfig) };
+                          }
+                          return { ...current, inheritRuntime: checked };
+                        });
+                      }}
                     />
                     <label htmlFor="inherit-runtime-config">Inherit project workspace runtime config</label>
                   </div>
