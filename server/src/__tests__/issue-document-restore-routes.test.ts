@@ -42,8 +42,6 @@ vi.mock("../services/index.js", () => ({
     getExperimental: vi.fn(async () => ({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
-
-      enableDependencies: false,
     })),
     getGeneral: vi.fn(async () => ({ feedbackDataSharingPreference: "prompt" })),
   }),

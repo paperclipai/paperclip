@@ -321,11 +321,6 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId!),
     queryFn: () => activityApi.forIssue(issueId!),
@@ -348,7 +343,7 @@ export function IssueDetail() {
   const { data: dependencies } = useQuery({
     queryKey: queryKeys.issues.dependencies(issueId!),
     queryFn: () => issuesApi.listDependencies(issueId!),
-    enabled: !!issueId && experimentalSettings?.enableDependencies === true,
+    enabled: !!issueId,
   });
 
   const { data: dependents } = useQuery({
@@ -1560,8 +1555,8 @@ export function IssueDetail() {
 
       <IssueWorkProductsSection issueId={issue.id} />
 
-      {/* Dependencies (blockers) — gated behind enableDependencies experimental flag */}
-      {experimentalSettings?.enableDependencies === true && (
+      {/* Dependencies (blockers) */}
+      {(
         <Collapsible
           open={secondaryOpen.dependencies}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, dependencies: open }))}
@@ -1665,7 +1660,7 @@ export function IssueDetail() {
       )}
 
       {/* Dependents (issues blocked by this one) — only show when there are dependents */}
-      {experimentalSettings?.enableDependencies === true && dependents && dependents.length > 0 && (
+      {dependents && dependents.length > 0 && (
         <Collapsible
           open={secondaryOpen.dependents}
           onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, dependents: open }))}

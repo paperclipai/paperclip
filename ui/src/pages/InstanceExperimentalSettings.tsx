@@ -24,7 +24,7 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean; enableDependencies?: boolean }) =>
+    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -54,8 +54,6 @@ export function InstanceExperimentalSettings() {
 
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
-  const enableDependencies = experimentalQuery.data?.enableDependencies === true;
-
   return (
     <div className="max-w-4xl space-y-6">
       <div className="space-y-2">
@@ -136,36 +134,6 @@ export function InstanceExperimentalSettings() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Dependencies</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Show the &ldquo;Blocked By&rdquo; section on issue detail pages and enable dependency API endpoints
-              (add, remove, list blockers/dependents). Dependency-resolved wakeups are also gated behind this flag.
-              When off, dependency data is hidden and endpoints return 403.
-            </p>
-          </div>
-          <button
-            type="button"
-            data-slot="toggle"
-            aria-label="Toggle dependencies experimental setting"
-            disabled={toggleMutation.isPending}
-            className={cn(
-              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
-              enableDependencies ? "bg-green-600" : "bg-muted",
-            )}
-            onClick={() => toggleMutation.mutate({ enableDependencies: !enableDependencies })}
-          >
-            <span
-              className={cn(
-                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                enableDependencies ? "translate-x-4.5" : "translate-x-0.5",
-              )}
-            />
-          </button>
-        </div>
-      </section>
     </div>
   );
 }

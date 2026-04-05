@@ -17,7 +17,6 @@ export interface CrashMonitoringSettings {
 export interface InstanceExperimentalSettings {
   enableIsolatedWorkspaces: boolean;
   autoRestartDevServerWhenIdle: boolean;
-  enableDependencies: boolean;
   enforceBlockedOnValidation: boolean;
   autoLabelRulesEngine: boolean;
   crashMonitoring: CrashMonitoringSettings;
