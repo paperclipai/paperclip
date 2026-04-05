@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, copyFileSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -867,6 +867,24 @@ export function pluginLoader(
         throw new Error(
           `Package directory not found after installation: ${resolvedPackagePath}`,
         );
+      }
+
+      // Overlay the monorepo's plugin SDK so installed plugins get Lucitra
+      // extensions (secrets.list, projects.create, labels, etc.) that aren't
+      // in the upstream npm-published @paperclipai/plugin-sdk.
+      if (existsSync(MONOREPO_NODE_MODULES)) {
+        const srcSdk = path.join(MONOREPO_NODE_MODULES, "@paperclipai", "plugin-sdk", "dist");
+        const dstSdk = path.join(targetInstallDir, "node_modules", "@paperclipai", "plugin-sdk", "dist");
+        if (existsSync(srcSdk) && existsSync(dstSdk)) {
+          try {
+            for (const file of readdirSync(srcSdk)) {
+              copyFileSync(path.join(srcSdk, file), path.join(dstSdk, file));
+            }
+            log.info("plugin-loader: overlaid monorepo SDK extensions onto installed plugin");
+          } catch (err) {
+            log.warn({ err }, "plugin-loader: failed to overlay SDK extensions");
+          }
+        }
       }
     }
 
