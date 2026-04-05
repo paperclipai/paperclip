@@ -11,6 +11,7 @@ import {
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -450,20 +451,27 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
-          status: "terminated",
-          pauseReason: null,
-          pausedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
+      await db.transaction(async (tx) => {
+        await tx
+          .update(issues)
+          .set({ assigneeAgentId: null, updatedAt: new Date() })
+          .where(eq(issues.assigneeAgentId, id));
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({
+            status: "terminated",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, id));
+
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: new Date() })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
