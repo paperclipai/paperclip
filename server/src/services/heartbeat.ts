@@ -970,6 +970,56 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+function killRecordedProcess(pid: number | null | undefined, signal: NodeJS.Signals) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH" || code === "EPERM") return false;
+    throw error;
+  }
+}
+
+function terminateRunProcess(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid">,
+  reason: string,
+  graceSec: number,
+) {
+  const running = runningProcesses.get(run.id);
+  if (running) {
+    running.child.kill("SIGTERM");
+    const graceMs = Math.max(1, running.graceSec) * 1000;
+    setTimeout(() => {
+      if (!running.child.killed) {
+        running.child.kill("SIGKILL");
+      }
+    }, graceMs);
+    return;
+  }
+
+  if (!killRecordedProcess(run.processPid, "SIGTERM")) return;
+
+  const graceMs = Math.max(1, graceSec) * 1000;
+  setTimeout(() => {
+    try {
+      if (isProcessAlive(run.processPid)) {
+        killRecordedProcess(run.processPid, "SIGKILL");
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          runId: run.id,
+          processPid: run.processPid,
+          reason,
+        },
+        "failed to force-kill detached heartbeat child process",
+      );
+    }
+  }, graceMs);
+}
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -3941,16 +3991,7 @@ export function heartbeatService(db: Db) {
     if (!run) throw notFound("Heartbeat run not found");
     if (run.status !== "running" && run.status !== "queued") return run;
 
-    const running = runningProcesses.get(run.id);
-    if (running) {
-      running.child.kill("SIGTERM");
-      const graceMs = Math.max(1, running.graceSec) * 1000;
-      setTimeout(() => {
-        if (!running.child.killed) {
-          running.child.kill("SIGKILL");
-        }
-      }, graceMs);
-    }
+    terminateRunProcess(run, reason, 5);
 
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: new Date(),
@@ -3997,11 +4038,8 @@ export function heartbeatService(db: Db) {
         error: reason,
       });
 
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        running.child.kill("SIGTERM");
-        runningProcesses.delete(run.id);
-      }
+      terminateRunProcess(run, reason, 5);
+      runningProcesses.delete(run.id);
       await releaseIssueExecutionAndPromote(run);
     }
 

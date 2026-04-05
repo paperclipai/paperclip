@@ -60,7 +60,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     runningProcesses.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
@@ -284,5 +284,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockTrackAgentFirstHeartbeat).toHaveBeenCalledWith(mockTelemetryClient, {
       agentRole: "engineer",
     });
+  });
+
+  it("still cancels a detached run when SIGTERM returns EPERM", async () => {
+    const pid = 424242;
+    const eperm = Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(((targetPid: number, signal?: number | NodeJS.Signals) => {
+      if (targetPid === pid && signal === "SIGTERM") throw eperm;
+      return true;
+    }) as typeof process.kill);
+
+    const { runId } = await seedRunFixture({
+      includeIssue: false,
+      processPid: pid,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${pid} is still alive`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const cancelled = await heartbeat.cancelRun(runId);
+
+    expect(cancelled?.status).toBe("cancelled");
+    expect(killSpy).toHaveBeenCalledWith(pid, "SIGTERM");
   });
 });
