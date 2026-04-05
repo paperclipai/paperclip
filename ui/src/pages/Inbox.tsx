@@ -59,6 +59,8 @@ import {
   type InboxWorkItem,
 } from "../lib/inbox";
 import { useDismissedInboxItems, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useIsRaava } from "../hooks/useIsRaava";
+import { RaavaInbox } from "./RaavaInbox";
 
 type InboxCategoryFilter =
   | "everything"
@@ -593,6 +595,7 @@ function JoinRequestInboxRow({
 export function Inbox() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isRaava } = useIsRaava();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -1171,6 +1174,9 @@ export function Inbox() {
     const row = rows[selectedIndex];
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
+
+  // Raava-branded inbox replaces the default inbox
+  if (isRaava) return <RaavaInbox />;
 
   if (!selectedCompanyId) {
     return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;

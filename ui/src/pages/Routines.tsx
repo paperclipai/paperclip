@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
-import { ChevronDown, ChevronRight, MoreHorizontal, Play, Plus, Repeat } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, MoreHorizontal, Play, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -61,6 +61,38 @@ function formatLastRunTimestamp(value: Date | string | null | undefined) {
 function nextRoutineStatus(currentStatus: string, enabled: boolean) {
   if (currentStatus === "archived" && enabled) return "active";
   return enabled ? "active" : "paused";
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable schedule from trigger data
+// ---------------------------------------------------------------------------
+
+function humanSchedule(
+  triggers: { kind: string; enabled: boolean; label: string | null; nextRunAt: Date | null }[],
+): string {
+  const cronTrigger = triggers.find((t) => t.kind === "cron" && t.enabled);
+  if (cronTrigger?.label) return cronTrigger.label;
+  if (cronTrigger?.nextRunAt) {
+    const next = new Date(cronTrigger.nextRunAt);
+    return `Next: ${next.toLocaleDateString()} ${next.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  const webhookTrigger = triggers.find((t) => t.kind === "webhook" && t.enabled);
+  if (webhookTrigger) return "Webhook trigger";
+  if (triggers.length === 0) return "No triggers configured";
+  return "Manual trigger";
+}
+
+function formatTimeSince(date: Date | string | null | undefined): string {
+  if (!date) return "Never";
+  const d = new Date(date);
+  const diff = Date.now() - d.getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
 
 export function Routines() {
@@ -225,6 +257,415 @@ export function Routines() {
 
   if (isLoading) {
     return <PageSkeleton variant="issues-list" />;
+  }
+
+  // -------------------------------------------------------------------------
+  // Raava-styled routines view (Figma Screen 23)
+  // -------------------------------------------------------------------------
+  if (isRaava) {
+    return (
+      <div className="space-y-7">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h1 className="font-display text-[26px] text-foreground">Routines</h1>
+          <Button variant="outline" size="sm" onClick={() => setComposerOpen(true)}>
+            <Plus className="h-4 w-4" />
+            New Routine
+          </Button>
+        </div>
+
+        {/* Create dialog (shared with non-Raava) */}
+        <Dialog
+          open={composerOpen}
+          onOpenChange={(open) => {
+            if (!createRoutine.isPending) setComposerOpen(open);
+          }}
+        >
+          <DialogContent
+            showCloseButton={false}
+            className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
+          >
+            <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+                <p className="text-sm text-muted-foreground">
+                  Define the recurring work first. Trigger setup comes next on the detail page.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setComposerOpen(false);
+                  setAdvancedOpen(false);
+                }}
+                disabled={createRoutine.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="px-5 pt-5 pb-3">
+                <textarea
+                  ref={titleInputRef}
+                  className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
+                  placeholder="Routine title"
+                  rows={1}
+                  value={draft.title}
+                  onChange={(event) => {
+                    setDraft((current) => ({ ...current, title: event.target.value }));
+                    autoResizeTextarea(event.target);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      descriptionEditorRef.current?.focus();
+                      return;
+                    }
+                    if (event.key === "Tab" && !event.shiftKey) {
+                      event.preventDefault();
+                      if (draft.assigneeAgentId) {
+                        if (draft.projectId) {
+                          descriptionEditorRef.current?.focus();
+                        } else {
+                          projectSelectorRef.current?.focus();
+                        }
+                      } else {
+                        assigneeSelectorRef.current?.focus();
+                      }
+                    }
+                  }}
+                  autoFocus
+                />
+              </div>
+
+              <div className="px-5 pb-3">
+                <div className="overflow-x-auto overscroll-x-contain">
+                  <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
+                    <span>For</span>
+                    <InlineEntitySelector
+                      ref={assigneeSelectorRef}
+                      value={draft.assigneeAgentId}
+                      options={assigneeOptions}
+                      placeholder="Team member"
+                      noneLabel="No team member"
+                      searchPlaceholder="Search team..."
+                      emptyMessage="No team members found."
+                      onChange={(assigneeAgentId) => {
+                        if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
+                        setDraft((current) => ({ ...current, assigneeAgentId }));
+                      }}
+                      onConfirm={() => {
+                        if (draft.projectId) {
+                          descriptionEditorRef.current?.focus();
+                        } else {
+                          projectSelectorRef.current?.focus();
+                        }
+                      }}
+                      renderTriggerValue={(option) =>
+                        option ? (
+                          currentAssignee ? (
+                            <>
+                              <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{option.label}</span>
+                            </>
+                          ) : (
+                            <span className="truncate">{option.label}</span>
+                          )
+                        ) : (
+                          <span className="text-muted-foreground">Team member</span>
+                        )
+                      }
+                      renderOption={(option) => {
+                        if (!option.id) return <span className="truncate">{option.label}</span>;
+                        const assignee = agentById.get(option.id);
+                        return (
+                          <>
+                            {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                            <span className="truncate">{option.label}</span>
+                          </>
+                        );
+                      }}
+                    />
+                    <span>in</span>
+                    <InlineEntitySelector
+                      ref={projectSelectorRef}
+                      value={draft.projectId}
+                      options={projectOptions}
+                      placeholder="Project"
+                      noneLabel="No project"
+                      searchPlaceholder="Search projects..."
+                      emptyMessage="No projects found."
+                      onChange={(projectId) => setDraft((current) => ({ ...current, projectId }))}
+                      onConfirm={() => descriptionEditorRef.current?.focus()}
+                      renderTriggerValue={(option) =>
+                        option && currentProject ? (
+                          <>
+                            <span
+                              className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                              style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                            />
+                            <span className="truncate">{option.label}</span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">Project</span>
+                        )
+                      }
+                      renderOption={(option) => {
+                        if (!option.id) return <span className="truncate">{option.label}</span>;
+                        const project = projectById.get(option.id);
+                        return (
+                          <>
+                            <span
+                              className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                              style={{ backgroundColor: project?.color ?? "#64748b" }}
+                            />
+                            <span className="truncate">{option.label}</span>
+                          </>
+                        );
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-border/60 px-5 py-4">
+                <MarkdownEditor
+                  ref={descriptionEditorRef}
+                  value={draft.description}
+                  onChange={(description) => setDraft((current) => ({ ...current, description }))}
+                  placeholder="Add instructions..."
+                  bordered={false}
+                  contentClassName="min-h-[160px] text-sm text-muted-foreground"
+                  onSubmit={() => {
+                    if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
+                      createRoutine.mutate();
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="border-t border-border/60 px-5 py-3">
+                <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                  <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+                    <div>
+                      <p className="text-sm font-medium">Advanced delivery settings</p>
+                      <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    </div>
+                    {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="pt-3">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                        <Select
+                          value={draft.concurrencyPolicy}
+                          onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {concurrencyPolicies.map((value) => (
+                              <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                        <Select
+                          value={draft.catchUpPolicy}
+                          onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {catchUpPolicies.map((value) => (
+                              <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[draft.catchUpPolicy]}</p>
+                      </div>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-muted-foreground">
+                After creation, Raava takes you straight to trigger setup for schedules, webhooks, or internal runs.
+              </div>
+              <div className="flex flex-col gap-2 sm:items-end">
+                <Button
+                  onClick={() => createRoutine.mutate()}
+                  disabled={
+                    createRoutine.isPending ||
+                    !draft.title.trim() ||
+                    !draft.projectId ||
+                    !draft.assigneeAgentId
+                  }
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  {createRoutine.isPending ? "Creating..." : "Create routine"}
+                </Button>
+                {createRoutine.isError ? (
+                  <p className="text-sm text-destructive">
+                    {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {error ? (
+          <div className="text-center py-8">
+            <p className="text-sm text-destructive">
+              {error instanceof Error ? error.message : "Failed to load routines"}
+            </p>
+          </div>
+        ) : (routines ?? []).length === 0 ? (
+          <div className="raava-card flex flex-col items-center justify-center gap-3 border-dashed bg-white px-8 py-16 text-center dark:bg-card">
+            <Repeat className="h-10 w-10 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">
+              No routines yet. Create your first routine to automate recurring work.
+            </p>
+            <Button variant="gradient" size="sm" onClick={() => setComposerOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New Routine
+            </Button>
+          </div>
+        ) : (
+          /* Stacked routine cards */
+          <div className="flex flex-col gap-4">
+            {(routines ?? []).map((routine) => {
+              const enabled = routine.status === "active";
+              const isArchived = routine.status === "archived";
+              const assignee = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) : null;
+              const schedule = humanSchedule(routine.triggers ?? []);
+              const lastRunStatus = routine.lastRun?.status?.replaceAll("_", " ") ?? null;
+              // Success stats not available on the list endpoint
+
+              return (
+                <div
+                  key={routine.id}
+                  className="raava-card bg-white px-6 py-5 flex flex-col gap-3 hover:shadow-md transition-shadow cursor-pointer dark:bg-card"
+                  onClick={() => navigate(`/routines/${routine.id}`)}
+                >
+                  {/* Top row: title + status dot */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="font-[Syne] font-semibold text-base text-foreground">
+                        {routine.title}
+                      </h3>
+                      {/* Schedule in human-readable format */}
+                      <div className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
+                        <Clock className="h-3.5 w-3.5 shrink-0" />
+                        <span>{schedule}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full ${
+                          isArchived
+                            ? "bg-muted-foreground/40"
+                            : enabled
+                              ? "bg-emerald-500"
+                              : "bg-amber-400"
+                        }`}
+                        title={isArchived ? "Archived" : enabled ? "Active" : "Paused"}
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        {isArchived ? "Archived" : enabled ? "Active" : "Paused"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Divider */}
+                  <div className="h-px bg-border" />
+
+                  {/* Bottom row: assigned team member, last run, menu */}
+                  <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-4">
+                      {/* Assigned team member */}
+                      {assignee ? (
+                        <div className="flex items-center gap-1.5">
+                          <AgentIcon icon={assignee.icon} className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{assignee.name}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs">Unassigned</span>
+                      )}
+
+                      {/* Last run */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs">Last run:</span>
+                        <span className="text-xs font-medium">
+                          {routine.lastRun
+                            ? `${formatTimeSince(routine.lastRun.triggeredAt)}${lastRunStatus ? ` (${lastRunStatus})` : ""}`
+                            : "Never"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => navigate(`/routines/${routine.id}`)}>
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={runningRoutineId === routine.id || isArchived}
+                            onClick={() => runRoutine.mutate(routine.id)}
+                          >
+                            {runningRoutineId === routine.id ? "Running..." : "Run now"}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() =>
+                              updateRoutineStatus.mutate({
+                                id: routine.id,
+                                status: enabled ? "paused" : "active",
+                              })
+                            }
+                            disabled={statusMutationRoutineId === routine.id || isArchived}
+                          >
+                            {enabled ? "Pause" : "Enable"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() =>
+                              updateRoutineStatus.mutate({
+                                id: routine.id,
+                                status: routine.status === "archived" ? "active" : "archived",
+                              })
+                            }
+                            disabled={statusMutationRoutineId === routine.id}
+                          >
+                            {routine.status === "archived" ? "Restore" : "Archive"}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (

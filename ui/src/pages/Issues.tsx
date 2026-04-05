@@ -13,6 +13,7 @@ import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
 import { useIsRaava } from "../hooks/useIsRaava";
+import { RaavaTasks } from "./RaavaTasks";
 
 export function Issues() {
   const { selectedCompanyId } = useCompany();
@@ -95,8 +96,11 @@ export function Issues() {
     },
   });
 
+  // Raava-branded tasks view replaces the default issues list
+  if (isRaava) return <RaavaTasks />;
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={CircleDot} message={isRaava ? "Select a company to view tasks." : "Select a company to view issues."} />;
+    return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
   }
 
   return (

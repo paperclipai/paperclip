@@ -66,6 +66,7 @@ import {
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, Issue, IssueAttachment, IssueComment } from "@paperclipai/shared";
 import { useIsRaava } from "../hooks/useIsRaava";
+import { RaavaTaskDetail } from "./RaavaTaskDetail";
 
 type CommentReassignment = IssueCommentReassignment;
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
@@ -825,6 +826,9 @@ export function IssueDetail() {
     pushToast({ title: "Copied to clipboard", tone: "success" });
     setTimeout(() => setCopied(false), 2000);
   };
+
+  // Raava-branded task detail replaces the default issue detail
+  if (isRaava) return <RaavaTaskDetail />;
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;

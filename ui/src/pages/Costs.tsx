@@ -538,6 +538,176 @@ export function Costs() {
   const showOverviewLoading = (spendLoading || financeLoading) && customReady;
   const overviewError = spendError ?? financeError;
 
+  // ---------------------------------------------------------------------------
+  // Raava Billing view (Figma Screen 20)
+  // ---------------------------------------------------------------------------
+  if (isRaava) {
+    const totalSpendCents = spendData?.summary.spendCents ?? 0;
+    const budgetCents = spendData?.summary.budgetCents ?? 0;
+    const utilizationPercent = spendData?.summary.utilizationPercent ?? 0;
+    const totalSpendDollars = (totalSpendCents / 100).toFixed(2);
+
+    // TODO: Mock billing data - no real per-member billing API yet
+    // Build per-agent breakdown from real cost data when available
+    const agentRows = (spendData?.byAgent ?? []).map((row) => ({
+      name: row.agentName ?? row.agentId,
+      role: "Team Member",
+      tasks: row.apiRunCount + row.subscriptionRunCount,
+      costCents: row.costCents,
+      avgPerTask:
+        row.apiRunCount + row.subscriptionRunCount > 0
+          ? row.costCents / (row.apiRunCount + row.subscriptionRunCount)
+          : 0,
+    }));
+
+    // TODO: Mock spending limit - use budget data if available
+    const monthlyLimitDollars = budgetCents > 0 ? (budgetCents / 100).toFixed(0) : "750";
+
+    return (
+      <div className="space-y-7">
+        {/* Header */}
+        <h1 className="font-display text-[26px] text-foreground">Billing</h1>
+
+        {(spendLoading || financeLoading) ? (
+          <PageSkeleton variant="costs" />
+        ) : overviewError ? (
+          <p className="text-sm text-destructive">{(overviewError as Error).message}</p>
+        ) : (
+          <>
+            {/* Monthly Overview card */}
+            <div className="raava-card bg-white px-6 py-6 dark:bg-card">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Monthly Overview
+              </h2>
+              <div className="mt-3 flex items-end gap-3">
+                <span className="font-display text-4xl raava-gradient-text">
+                  ${totalSpendDollars}
+                </span>
+                {utilizationPercent > 0 && (
+                  <span
+                    className={cn(
+                      "mb-1 text-sm font-medium",
+                      utilizationPercent > 80 ? "text-red-500" : utilizationPercent > 50 ? "text-amber-500" : "text-emerald-500",
+                    )}
+                  >
+                    {utilizationPercent}% of budget
+                  </span>
+                )}
+              </div>
+
+              {/* Progress bar with gradient fill */}
+              <div className="mt-4 space-y-2">
+                <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full transition-[width] duration-300"
+                    style={{
+                      width: `${Math.min(100, budgetCents > 0 ? utilizationPercent : 65)}%`,
+                      background: "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  ${monthlyLimitDollars} monthly limit
+                </p>
+              </div>
+            </div>
+
+            {/* Per-Team-Member table */}
+            {agentRows.length > 0 && (
+              <div className="raava-card overflow-hidden bg-white dark:bg-card">
+                <div className="px-6 pt-5 pb-3">
+                  <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Per-Team-Member Breakdown
+                  </h2>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                        <th className="px-6 py-2 font-medium">Team Member</th>
+                        <th className="px-4 py-2 font-medium">Role</th>
+                        <th className="px-4 py-2 font-medium text-right">Tasks</th>
+                        <th className="px-4 py-2 font-medium text-right">Cost</th>
+                        <th className="px-6 py-2 font-medium text-right">Avg/Task</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agentRows.map((row, idx) => (
+                        <tr key={idx} className="border-b border-border last:border-b-0">
+                          <td className="px-6 py-3">
+                            <div className="flex items-center gap-2.5">
+                              <div
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full"
+                                style={{
+                                  backgroundColor: ["#EEF0FF", "#E8F7F5", "#FFF3E6", "#FEE2E2", "#F3E8FF"][idx % 5],
+                                }}
+                              >
+                                <span
+                                  className="text-[10px] font-semibold"
+                                  style={{
+                                    color: ["#4A52E0", "#0A9984", "#D97706", "#DC2626", "#7C3AED"][idx % 5],
+                                  }}
+                                >
+                                  {row.name[0]?.toUpperCase() ?? "?"}
+                                </span>
+                              </div>
+                              <span className="font-medium text-foreground">{row.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex rounded-xl bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                              {row.role}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                            {row.tasks}
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-sm tabular-nums text-foreground">
+                            {formatCents(row.costCents)}
+                          </td>
+                          <td className="px-6 py-3 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                            {formatCents(Math.round(row.avgPerTask))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Spending Limit card */}
+            <div className="raava-card bg-white px-6 py-5 dark:bg-card">
+              <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Spending Limit
+              </h2>
+              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-muted-foreground">Monthly limit:</span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-muted-foreground">$</span>
+                    <input
+                      type="text"
+                      readOnly
+                      value={monthlyLimitDollars}
+                      className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-sm font-mono text-foreground outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Alert at 80%</span>
+                  <div className="relative inline-flex h-5 w-9 items-center rounded-full bg-foreground">
+                    <span className="inline-block h-4 w-4 translate-x-4.5 rounded-full bg-background shadow-sm" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="space-y-5">

@@ -3,12 +3,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
+import { useIsRaava } from "../hooks/useIsRaava";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload } from "lucide-react";
+import { ChevronDown, ChevronRight, Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -31,7 +32,9 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
+  const { isRaava } = useIsRaava();
   const queryClient = useQueryClient();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -218,6 +221,282 @@ export function CompanySettings() {
       description: description.trim() || null,
       brandColor: brandColor || null
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Raava Settings view (Figma Screen 21)
+  // ---------------------------------------------------------------------------
+  if (isRaava) {
+    // TODO: Connected services mock data - no real integrations API yet
+    const connectedServices = [
+      { name: "Gmail", status: "connected" as const },
+      { name: "HubSpot", status: "connected" as const },
+      { name: "Google Sheets", status: "not_connected" as const },
+    ];
+
+    return (
+      <div className="max-w-2xl space-y-7">
+        {/* Header */}
+        <h1 className="font-display text-[26px] text-foreground">Settings</h1>
+
+        {/* Company Profile card */}
+        <div className="raava-card bg-white px-6 py-5 space-y-4 dark:bg-card">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Company Profile
+          </h2>
+
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Company name</label>
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:border-ring"
+                type="text"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">Logo</label>
+              <div className="flex items-center gap-4">
+                <CompanyPatternIcon
+                  companyName={companyName || selectedCompany.name}
+                  logoUrl={logoUrl || null}
+                  brandColor={brandColor || null}
+                  className="rounded-[14px]"
+                />
+                <div className="flex-1">
+                  <div className="flex h-20 items-center justify-center rounded-md border-2 border-dashed border-border bg-muted/30">
+                    <label className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                        onChange={handleLogoFileChange}
+                        className="sr-only"
+                      />
+                      Click to upload
+                    </label>
+                  </div>
+                  {logoUploadMutation.isPending && (
+                    <span className="text-xs text-muted-foreground">Uploading...</span>
+                  )}
+                  {(logoUploadMutation.isError || logoUploadError) && (
+                    <span className="text-xs text-destructive">
+                      {logoUploadError ??
+                        (logoUploadMutation.error instanceof Error
+                          ? logoUploadMutation.error.message
+                          : "Upload failed")}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-2">
+            <Button
+              variant="gradient"
+              size="sm"
+              onClick={handleSaveGeneral}
+              disabled={generalMutation.isPending || !companyName.trim()}
+            >
+              {generalMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+            {generalMutation.isSuccess && (
+              <span className="text-xs text-muted-foreground">Saved</span>
+            )}
+            {generalMutation.isError && (
+              <span className="text-xs text-destructive">
+                {generalMutation.error instanceof Error
+                  ? generalMutation.error.message
+                  : "Failed to save"}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Connected Services card */}
+        <div className="raava-card bg-white px-6 py-5 space-y-4 dark:bg-card">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Connected Services
+          </h2>
+
+          <div className="space-y-3">
+            {connectedServices.map((service) => (
+              <div
+                key={service.name}
+                className="flex items-center justify-between rounded-md border border-border px-4 py-3"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-foreground">{service.name}</span>
+                </div>
+                {service.status === "connected" ? (
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      Connected
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                    <span className="text-xs text-muted-foreground mr-2">Not connected</span>
+                    <Button variant="gradient" size="xs">
+                      Connect
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button className="text-sm font-medium raava-gradient-text hover:opacity-80">
+            + Add Integration
+          </button>
+        </div>
+
+        {/* Team Defaults card */}
+        <div className="raava-card bg-white px-6 py-5 space-y-4 dark:bg-card">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Team Defaults
+          </h2>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">
+                Default monthly limit
+              </label>
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-muted-foreground">$</span>
+                <input
+                  type="text"
+                  defaultValue="750"
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:border-ring"
+                  readOnly
+                />
+              </div>
+              {/* TODO: Wire to budget API when available */}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground">
+                Approval threshold
+              </label>
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-muted-foreground">$</span>
+                <input
+                  type="text"
+                  defaultValue="100"
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:border-ring"
+                  readOnly
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Advanced section - collapsed */}
+        <div className="raava-card bg-white dark:bg-card">
+          <button
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            className="flex w-full items-center justify-between px-6 py-4 text-left"
+          >
+            <div>
+              <h2 className="text-sm font-medium text-foreground">Advanced</h2>
+              <p className="text-xs text-muted-foreground">For advanced users</p>
+            </div>
+            {advancedOpen ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
+
+          {advancedOpen && (
+            <div className="border-t border-border px-6 py-4 space-y-4">
+              {/* Hiring toggle */}
+              <div className="rounded-md border border-border px-4 py-3">
+                <ToggleField
+                  label="Require approval for new hires"
+                  hint="New team member hires stay pending until approved."
+                  checked={!!selectedCompany.requireBoardApprovalForNewAgents}
+                  onChange={(v) => settingsMutation.mutate(v)}
+                />
+              </div>
+
+              {/* Import / Export */}
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Company Packages
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" asChild>
+                    <a href="/company/export">
+                      <Download className="mr-1.5 h-3.5 w-3.5" />
+                      Export
+                    </a>
+                  </Button>
+                  <Button size="sm" variant="outline" asChild>
+                    <a href="/company/import">
+                      <Upload className="mr-1.5 h-3.5 w-3.5" />
+                      Import
+                    </a>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Danger Zone */}
+              <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+                <p className="text-xs font-medium text-destructive uppercase tracking-wide">
+                  Danger Zone
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Archive this company to hide it from the sidebar.
+                </p>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={
+                    archiveMutation.isPending ||
+                    selectedCompany.status === "archived"
+                  }
+                  onClick={() => {
+                    if (!selectedCompanyId) return;
+                    const confirmed = window.confirm(
+                      `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
+                    );
+                    if (!confirmed) return;
+                    const nextCompanyId =
+                      companies.find(
+                        (company) =>
+                          company.id !== selectedCompanyId &&
+                          company.status !== "archived"
+                      )?.id ?? null;
+                    archiveMutation.mutate({
+                      companyId: selectedCompanyId,
+                      nextCompanyId
+                    });
+                  }}
+                >
+                  {archiveMutation.isPending
+                    ? "Archiving..."
+                    : selectedCompany.status === "archived"
+                    ? "Already archived"
+                    : "Archive company"}
+                </Button>
+                {archiveMutation.isError && (
+                  <span className="text-xs text-destructive">
+                    {archiveMutation.error instanceof Error
+                      ? archiveMutation.error.message
+                      : "Failed to archive company"}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
