@@ -13,6 +13,7 @@ import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Separator, Button, Popover, Tooltip } from "@heroui/react";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 
@@ -879,26 +880,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </div>
                   </div>
                   {onUpdate || onFieldUpdate ? (
-                    <button
-                      data-slot="toggle"
-                      className={cn(
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        executionWorkspacesEnabled ? "bg-green-600" : "bg-muted",
-                      )}
-                      type="button"
-                      onClick={() =>
+                    <ToggleSwitch
+                      checked={executionWorkspacesEnabled}
+                      onCheckedChange={() =>
                         commitField(
                           "execution_workspace_enabled",
                           updateExecutionWorkspacePolicy({ enabled: !executionWorkspacesEnabled })!,
                         )}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                          executionWorkspacesEnabled ? "translate-x-4.5" : "translate-x-0.5",
-                        )}
-                      />
-                    </button>
+                    />
                   ) : (
                     <span className="text-xs text-muted-foreground">
                       {executionWorkspacesEnabled ? "Enabled" : "Disabled"}
@@ -918,14 +907,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           If disabled, new issues stay on the project's primary checkout unless someone opts in.
                         </div>
                       </div>
-                      <button
-                        data-slot="toggle"
-                        className={cn(
-                          "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                          executionWorkspaceDefaultMode === "isolated_workspace" ? "bg-green-600" : "bg-muted",
-                        )}
-                        type="button"
-                        onClick={() =>
+                      <ToggleSwitch
+                        checked={executionWorkspaceDefaultMode === "isolated_workspace"}
+                        onCheckedChange={() =>
                           commitField(
                             "execution_workspace_default_mode",
                             updateExecutionWorkspacePolicy({
@@ -935,16 +919,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                                   : "isolated_workspace",
                             })!,
                           )}
-                      >
-                        <span
-                          className={cn(
-                            "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                            executionWorkspaceDefaultMode === "isolated_workspace"
-                              ? "translate-x-4.5"
-                              : "translate-x-0.5",
-                          )}
-                        />
-                      </button>
+                      />
                     </div>
 
                     <div className="border-t border-border/60 pt-2">

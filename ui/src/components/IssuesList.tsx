@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
@@ -64,8 +64,6 @@ const quickFilterPresets = [
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
-const ISSUE_SEARCH_COMMIT_DELAY_MS = 150;
-
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
@@ -140,6 +138,18 @@ function countActiveFilters(state: IssueViewState): number {
   return count;
 }
 
+function matchesIssueSearch(issue: Issue, normalizedSearch: string): boolean {
+  if (!normalizedSearch) return true;
+
+  return [
+    issue.identifier,
+    issue.title,
+    issue.description,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .some((value) => value.toLowerCase().includes(normalizedSearch));
+}
+
 /* ── Component ── */
 
 interface Agent {
@@ -170,6 +180,8 @@ interface IssuesListProps {
   onSearchChange?: (search: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
+
+const ISSUE_SEARCH_COMMIT_DELAY_MS = 300;
 
 interface IssuesSearchInputProps {
   initialValue: string;
@@ -294,7 +306,8 @@ export function IssuesList({
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
-  const normalizedIssueSearch = issueSearch.trim();
+  const deferredIssueSearch = useDeferredValue(issueSearch);
+  const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
   useEffect(() => {
     setIssueSearch(initialSearch ?? "");
@@ -311,13 +324,6 @@ export function IssuesList({
     }
   }, [scopedKey, initialAssignees]);
 
-  const handleIssueSearchCommit = useCallback((nextSearch: string) => {
-    startTransition(() => {
-      setIssueSearch(nextSearch);
-    });
-    onSearchChange?.(nextSearch);
-  }, [onSearchChange]);
-
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
       const next = { ...prev, ...patch };
@@ -325,27 +331,18 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
-
-  const { data: searchedIssues = [] } = useQuery({
-    queryKey: [
-      ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
-      searchFilters ?? {},
-    ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { q: normalizedIssueSearch, projectId, ...searchFilters }),
-    enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0,
-    placeholderData: (previousData) => previousData,
-  });
-
   const agentName = useCallback((id: string | null) => {
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   }, [agents]);
 
   const filtered = useMemo(() => {
-    const sourceIssues = normalizedIssueSearch.length > 0 ? searchedIssues : issues;
+    const sourceIssues = normalizedIssueSearch.length > 0
+      ? issues.filter((issue) => matchesIssueSearch(issue, normalizedIssueSearch))
+      : issues;
     const filteredByControls = applyFilters(sourceIssues, viewState, currentUserId);
     return sortIssues(filteredByControls, viewState);
-  }, [issues, searchedIssues, viewState, normalizedIssueSearch, currentUserId]);
+  }, [issues, viewState, normalizedIssueSearch, currentUserId]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -388,7 +385,7 @@ export function IssuesList({
     }));
   }, [filtered, viewState.groupBy, agents, agentName, currentUserId]);
 
-  const newIssueDefaults = (groupKey?: string) => {
+  const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, string> = {};
     if (projectId) defaults.projectId = projectId;
     if (groupKey) {
@@ -400,13 +397,14 @@ export function IssuesList({
       }
     }
     return defaults;
-  };
+  }, [projectId, viewState.groupBy]);
 
-  const assignIssue = (issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
+  const assignIssue = useCallback((issueId: string, assigneeAgentId: string | null, assigneeUserId: string | null = null) => {
     onUpdateIssue(issueId, { assigneeAgentId, assigneeUserId });
     setAssigneePickerIssueId(null);
     setAssigneeSearch("");
-  };
+  }, [onUpdateIssue]);
+
 
   return (
     <div className="space-y-4">
@@ -417,10 +415,19 @@ export function IssuesList({
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Issue
           </Button>
-          <IssuesSearchInput
-            initialValue={initialSearch ?? ""}
-            onValueCommitted={handleIssueSearchCommit}
-          />
+          <div className="relative w-48 sm:w-64 md:w-80">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={issueSearch}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setIssueSearch(e.target.value);
+                onSearchChange?.(e.target.value);
+              }}
+              placeholder="Search issues..."
+              className="w-full rounded-md border border-border bg-background pl-7 pr-3 py-1.5 text-xs sm:text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring"
+              aria-label="Search issues"
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">

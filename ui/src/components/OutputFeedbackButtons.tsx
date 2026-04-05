@@ -133,7 +133,7 @@ export function OutputFeedbackButtons({
             onChange={(event) => setDownvoteReason(event.target.value)}
             placeholder="Add a short note"
             className="min-h-20 resize-y bg-background"
-            isDisabled={disabled || isSaving}
+            disabled={disabled || isSaving}
           />
           <div className="mt-3 flex items-center justify-end gap-2">
             <Button

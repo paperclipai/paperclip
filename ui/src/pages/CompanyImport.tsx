@@ -31,6 +31,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -514,7 +515,7 @@ function ConflictResolutionList({
 
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
   value: adapter.type,
-  label: adapterLabels[adapter.type] ?? adapter.label,
+  label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
 }));
 
 // ── Adapter picker for imported agents ───────────────────────────────

@@ -30,6 +30,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { artifactRoutes } from "./routes/artifacts.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -236,6 +237,7 @@ export async function createApp(
       { workerManager },
     ),
   );
+  api.use(adapterRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

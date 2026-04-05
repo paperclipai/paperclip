@@ -106,7 +106,9 @@ export function MarkdownBody({ children, className, resolveImageSrc }: MarkdownB
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
-          : `/agents/${parsed.agentId}`;
+          : parsed.kind === "skill"
+            ? `/skills/${parsed.skillId}`
+            : `/agents/${parsed.agentId}`;
         return (
           <a
             href={targetHref}

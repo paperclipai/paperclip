@@ -610,8 +610,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("issues.listComments", { issueId, companyId });
         },
 
-        async createComment(issueId: string, body: string, companyId: string) {
-          return callHost("issues.createComment", { issueId, body, companyId });
+        async createComment(issueId: string, body: string, companyId: string, options?: { authorAgentId?: string }) {
+          return callHost("issues.createComment", { issueId, body, companyId, authorAgentId: options?.authorAgentId });
         },
 
         documents: {
