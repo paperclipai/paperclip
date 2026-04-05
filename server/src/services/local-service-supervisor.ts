@@ -223,6 +223,11 @@ export async function findAdoptableLocalService(input: {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }
+  const childPid = typeof record.metadata?.childPid === "number" ? record.metadata.childPid : null;
+  if (childPid !== null && !isPidAlive(childPid)) {
+    await removeLocalServiceRegistryRecord(input.serviceKey);
+    return null;
+  }
   if (!(await isLikelyMatchingCommand(record))) {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;

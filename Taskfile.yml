@@ -1,0 +1,9 @@
+version: '3'
+
+tasks:
+  run:
+    desc: Run paperclip (UI and Backend are started and accessible via localhost:3100)
+    cmds:
+      - pnpm install
+      - pnpm dev:stop
+      - pnpm dev

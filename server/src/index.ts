@@ -212,6 +212,7 @@ export async function startServer(): Promise<StartedServer> {
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
+        clerkId: "local-board-clerk-id",
         name: LOCAL_BOARD_USER_NAME,
         email: LOCAL_BOARD_USER_EMAIL,
         emailVerified: true,
@@ -514,8 +515,9 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  if (listenPort !== requestedListenPort) {
     config.port = listenPort;
   }
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -549,8 +551,8 @@ export async function startServer(): Promise<StartedServer> {
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
