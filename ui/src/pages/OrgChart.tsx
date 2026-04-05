@@ -16,13 +16,13 @@ import { getRoleLevel, getAgentRingClass } from "../lib/role-icons";
 import { cn } from "../lib/utils";
 
 // Layout constants
-const CARD_MIN_W = 180;
-const CARD_MAX_W = 260;
-const CARD_W = 220;
-const CARD_H = 100;
-const GAP_X = 32;
-const GAP_Y = 80;
-const PADDING = 60;
+const CARD_MIN_W = 220;
+const CARD_MAX_W = 300;
+const CARD_W = 260;
+const CARD_H = 110;
+const GAP_X = 48;
+const GAP_Y = 100;
+const PADDING = 80;
 
 // ── Tree layout types ───────────────────────────────────────────────────
 
@@ -177,18 +177,55 @@ export function OrgChart() {
     enabled: !!selectedCompanyId,
   });
 
+  // Mock data for local dev preview when no agents exist
+  const MOCK_ORG: OrgNode[] = [
+    { id: "m-ceo", name: "CEO", role: "ceo", status: "active", reports: [
+      { id: "m-cto", name: "CTO", role: "cto", status: "active", reports: [
+        { id: "m-eng", name: "SeniorEngineer", role: "engineer", status: "active", reports: [] },
+        { id: "m-devops", name: "DevOpsEngineer", role: "engineer", status: "active", reports: [] },
+        { id: "m-sec", name: "SecurityEngineer", role: "engineer", status: "active", reports: [] },
+      ]},
+      { id: "m-cfo", name: "CFO", role: "cfo", status: "active", reports: [] },
+      { id: "m-cmo", name: "CMO", role: "cmo", status: "active", reports: [
+        { id: "m-content", name: "ContentMarketer", role: "marketer", status: "active", reports: [] },
+      ]},
+      { id: "m-vphr", name: "VPofHR", role: "director", status: "active", reports: [] },
+      { id: "m-legal", name: "LegalCounsel", role: "director", status: "active", reports: [] },
+      { id: "m-comp", name: "ComplianceDirector", role: "director", status: "active", reports: [] },
+      { id: "m-ux", name: "UXDesigner", role: "designer", status: "idle", reports: [] },
+    ]},
+  ];
+  const MOCK_AGENTS: Agent[] = [
+    { id: "m-ceo", name: "CEO", role: "ceo", title: "Chief Executive Officer", status: "active", icon: "crown", adapterType: "ollama_cloud", adapterConfig: { model: "kimi-k2.5:cloud" } },
+    { id: "m-cto", name: "CTO", role: "cto", title: "Chief Technology Officer", status: "active", icon: "code", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-cfo", name: "CFO", role: "cfo", title: "Chief Financial Officer", status: "active", icon: "dollar-sign", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-cmo", name: "CMO", role: "cmo", title: "Chief Marketing Officer", status: "active", icon: "megaphone", adapterType: "ollama_cloud", adapterConfig: { model: "kimi-k2.5:cloud" } },
+    { id: "m-vphr", name: "VPofHR", role: "director", title: "VP of Human Resources", status: "active", icon: "users", adapterType: "ollama_cloud", adapterConfig: { model: "qwen3.5:27b-cloud" } },
+    { id: "m-legal", name: "LegalCounsel", role: "director", title: "Legal Counsel", status: "active", icon: "gavel", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-comp", name: "ComplianceDirector", role: "director", title: "Compliance Director", status: "active", icon: "scale", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-eng", name: "SeniorEngineer", role: "engineer", title: "Senior Full-Stack Engineer", status: "active", icon: "terminal", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-devops", name: "DevOpsEngineer", role: "engineer", title: "DevOps & Infrastructure Engineer", status: "active", icon: "server", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-sec", name: "SecurityEngineer", role: "engineer", title: "Application Security Engineer", status: "active", icon: "shield", adapterType: "ollama_cloud", adapterConfig: { model: "deepseek-v3.2:cloud" } },
+    { id: "m-ux", name: "UXDesigner", role: "designer", title: "UX Designer", status: "idle", icon: "palette", adapterType: "ollama_cloud", adapterConfig: { model: "kimi-k2.5:cloud" } },
+    { id: "m-content", name: "ContentMarketer", role: "marketer", title: "Content Marketer", status: "active", icon: "pen-line", adapterType: "ollama_cloud", adapterConfig: { model: "qwen3.5:27b-cloud" } },
+  ] as unknown as Agent[];
+
+  const useMockData = !orgTree || orgTree.length === 0;
+  const effectiveOrg = useMockData ? MOCK_ORG : orgTree ?? [];
+  const effectiveAgents = useMockData ? MOCK_AGENTS : agents ?? [];
+
   const agentMap = useMemo(() => {
     const m = new Map<string, Agent>();
-    for (const a of agents ?? []) m.set(a.id, a);
+    for (const a of effectiveAgents) m.set(a.id, a);
     return m;
-  }, [agents]);
+  }, [effectiveAgents]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
 
   // Layout computation
-  const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
+  const layout = useMemo(() => layoutForest(effectiveOrg), [effectiveOrg]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
 
@@ -420,25 +457,23 @@ export function OrgChart() {
               key={node.id}
               data-org-card
               className={cn(
-                "absolute bg-card rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none border-l-[3px]",
+                "absolute bg-card rounded-xl shadow-sm shadow-black/5 hover:shadow-lg hover:border-foreground/20 transition-all duration-200 cursor-pointer select-none border-l-[3px]",
                 isContractor ? "border border-dashed border-amber-400/50" : "border border-border",
                 dept && departmentBorderColor[dept] ? departmentBorderColor[dept] : "border-l-border",
               )}
               style={{
                 left: node.x,
                 top: node.y,
-                minWidth: CARD_MIN_W,
-                maxWidth: CARD_MAX_W,
-                width: "max-content",
+                width: CARD_W,
                 minHeight: CARD_H,
               }}
               onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
             >
-              <div className="flex items-center px-4 py-3 gap-3">
+              <div className="flex items-start px-4 py-4 gap-3">
                 {/* Agent icon + status dot */}
                 <div className="relative shrink-0">
                   <div className={cn(
-                    "w-9 h-9 rounded-full flex items-center justify-center",
+                    "w-10 h-10 rounded-full flex items-center justify-center mt-0.5",
                     getRoleLevel(node.role) === "executive"
                       ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                       : getRoleLevel(node.role) === "management"
@@ -446,7 +481,7 @@ export function OrgChart() {
                         : "bg-muted text-foreground/70",
                     getAgentRingClass(node.role, empType),
                   )}>
-                    <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5" />
+                    <AgentIcon icon={agent?.icon} className="h-5 w-5" />
                   </div>
                   <span
                     className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
@@ -486,7 +521,7 @@ export function OrgChart() {
                     const modelName = modelRaw ? modelRaw.replace(/:cloud$/, "") : null;
                     const provider = adapterLabels[agent.adapterType] ?? agent.adapterType;
                     return (
-                      <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1 truncate max-w-full">
+                      <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1.5">
                         {provider}{modelName ? ` - ${modelName}` : ""}
                       </span>
                     );
