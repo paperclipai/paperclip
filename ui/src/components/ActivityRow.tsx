@@ -42,6 +42,13 @@ const ACTION_VERBS: Record<string, string> = {
   "company.updated": "updated company",
   "company.archived": "archived",
   "company.budget_updated": "updated budget for",
+  // Linear sync events
+  "issue.synced_from_linear": "synced from Linear",
+  "issue.comment.synced_from_linear": "synced comment from Linear on",
+  "project.synced_from_linear": "synced from Linear",
+  "project.pushed_to_linear": "pushed to Linear",
+  "linear.connected": "connected Linear",
+  "linear.full_sync": "synced all issues from Linear",
 };
 
 function humanizeValue(value: unknown): string {

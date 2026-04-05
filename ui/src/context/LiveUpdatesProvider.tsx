@@ -292,6 +292,59 @@ function buildActivityToast(
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
+  // Handle Linear sync activity from plugin (ctx.activity.log messages)
+  const source = readString(details?.source);
+  if ((source === "linear" || source === "paperclip") && action) {
+    const syncAction = readString(details?.action);
+    const identifier = readString(details?.identifier);
+    const projectName = readString(details?.projectName);
+    const issueTitle = readString(details?.title);
+    const author = readString(details?.author);
+    const bodySnippet = readString(details?.bodySnippet);
+
+    if (action === "issue.synced_from_linear" || (entityType === "issue" && syncAction === "created")) {
+      return {
+        title: `Linear synced ${identifier ?? "issue"}`,
+        body: issueTitle ? truncate(issueTitle, 96) : undefined,
+        tone: "success",
+        action: entityId ? { label: `View ${identifier ?? "issue"}`, href: `/issues/${entityId}` } : undefined,
+        dedupeKey: `linear-sync:issue:${entityId}`,
+      };
+    }
+
+    if (action === "issue.comment.synced_from_linear" || syncAction === "comment.synced") {
+      return {
+        title: `Linear comment on ${identifier ?? "issue"}`,
+        body: bodySnippet
+          ? `${author ?? "Linear user"}: ${truncate(bodySnippet.replace(/\n/g, " "), 80)}`
+          : author ? `from ${author}` : undefined,
+        tone: "info",
+        action: entityId ? { label: `View ${identifier ?? "issue"}`, href: `/issues/${entityId}` } : undefined,
+        dedupeKey: `linear-sync:comment:${entityId}`,
+      };
+    }
+
+    if (action === "project.synced_from_linear" || (entityType === "project" && syncAction === "created" && source === "linear")) {
+      return {
+        title: "Project synced from Linear",
+        body: projectName ? truncate(projectName, 96) : undefined,
+        tone: "success",
+        dedupeKey: `linear-sync:project:${entityId}`,
+      };
+    }
+
+    if (action === "project.pushed_to_linear" || (entityType === "project" && syncAction === "pushed")) {
+      return {
+        title: "Project pushed to Linear",
+        body: projectName ? truncate(projectName, 96) : undefined,
+        tone: "success",
+        dedupeKey: `linear-sync:project-push:${entityId}`,
+      };
+    }
+
+    return null;
+  }
+
   if (entityType !== "issue" || !entityId || !action || !ISSUE_TOAST_ACTIONS.has(action)) {
     return null;
   }
