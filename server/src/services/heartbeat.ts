@@ -352,6 +352,94 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+const SYSTEMIC_ERROR_CODES = new Set([
+  "auth_failed",
+  "claude_auth_required",
+  "adapter_failed",
+  "timeout",
+]);
+
+// Circuit breaker thresholds
+const CIRCUIT_BREAKER_COOLDOWN_THRESHOLD = 3; // consecutive failures → skip non-manual wakes
+const CIRCUIT_BREAKER_PAUSE_THRESHOLD = 5;    // consecutive failures → auto-pause agent
+const CIRCUIT_BREAKER_WINDOW_MS = 30 * 60_000; // only count failures within last 30 min
+
+/**
+ * Counts consecutive failed runs for an agent (most recent first).
+ * Only considers runs that finished within the circuit breaker window.
+ */
+async function getConsecutiveFailureCount(db: Db, agentId: string): Promise<number> {
+  const windowStart = new Date(Date.now() - CIRCUIT_BREAKER_WINDOW_MS);
+  const recentRuns = await db
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.agentId, agentId),
+        gt(heartbeatRuns.finishedAt, windowStart),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.finishedAt))
+    .limit(10);
+
+  let count = 0;
+  for (const run of recentRuns) {
+    if (run.status === "failed" || run.status === "timed_out") count++;
+    else break;
+  }
+  return count;
+}
+
+/**
+ * Determines whether an agent should self-wake to process remaining inbox
+ * items after a heartbeat run completes.
+ */
+export function shouldSelfWake(
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+  errorCode: string | null | undefined,
+): boolean {
+  if (outcome === "succeeded") return true;
+  if (outcome === "failed" && !SYSTEMIC_ERROR_CODES.has(errorCode ?? "")) return true;
+  return false;
+}
+
+/**
+ * Computes a 0-100 quality score for a completed heartbeat run.
+ */
+export function computeRunQualityScore(opts: {
+  outcome: string;
+  startedAt: Date | null;
+  finishedAt: Date;
+  exitCode: number | null;
+  invocationSource: string;
+  issueId: string | null | undefined;
+}): number {
+  let score = 0;
+
+  // Outcome: succeeded = 50pts
+  if (opts.outcome === "succeeded") score += 50;
+
+  // Had a task assigned: 15pts
+  if (opts.issueId) score += 15;
+
+  // Duration scoring: 15pts max
+  if (opts.startedAt) {
+    const durationMs = opts.finishedAt.getTime() - opts.startedAt.getTime();
+    const durationMin = durationMs / 60000;
+    if (durationMin < 2) score += 15;
+    else if (durationMin < 5) score += 10;
+    else if (durationMin < 10) score += 5;
+  }
+
+  // Clean exit: 10pts
+  if (opts.exitCode === 0) score += 10;
+
+  // Not a timer wake (actual triggered work): 10pts
+  if (opts.invocationSource !== "timer") score += 10;
+
+  return score;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -3087,6 +3175,58 @@ export function heartbeatService(db: Db) {
         }
       }
       await finalizeAgentStatus(agent.id, outcome);
+
+      // Self-wake if agent has remaining actionable inbox items.
+      // Skip for timer-only heartbeats to avoid converting idle polls into tight loops.
+      if (shouldSelfWake(outcome, adapterResult.errorCode) && run.invocationSource !== "timer") {
+        void (async () => {
+          try {
+            logger.info({ agentId: agent.id, runId: run.id }, "Enqueueing self-wake for remaining inbox items");
+            await enqueueWakeup(agent.id, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "inbox_remaining",
+              payload: { completedRunId: run.id },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: { source: "heartbeat.inbox_remaining" },
+            });
+          } catch (err) {
+            const level = err instanceof Error && "statusCode" in err && (err as { statusCode?: number }).statusCode === 409 ? "debug" : "warn";
+            logger[level]({ err, agentId: agent.id, runId: run.id }, "failed to self-wake for remaining inbox");
+          }
+        })();
+      }
+
+      // Post quality summary comment on the issue for audit trail.
+      const runIssueId = readNonEmptyString(run.contextSnapshot?.issueId);
+      if (runIssueId && run.invocationSource !== "timer") {
+        // Use the run's actual finishedAt (set by setRunStatus) to avoid
+        // inflating duration with async post-processing time.
+        const actualFinishedAt = finalizedRun?.finishedAt
+          ? new Date(finalizedRun.finishedAt)
+          : new Date();
+        const qualityScore = computeRunQualityScore({
+          outcome,
+          startedAt: run.startedAt ? new Date(run.startedAt) : null,
+          finishedAt: actualFinishedAt,
+          exitCode: adapterResult.exitCode,
+          invocationSource: run.invocationSource,
+          issueId: runIssueId,
+        });
+        const durationMs = run.startedAt ? actualFinishedAt.getTime() - new Date(run.startedAt).getTime() : 0;
+        const durationStr = durationMs > 0 ? `${(durationMs / 60000).toFixed(1)} min` : "unknown";
+        const statusEmoji = outcome === "succeeded" ? "\u2705" : outcome === "failed" ? "\u274c" : "\u26a0\ufe0f";
+        void db.insert(issueComments).values({
+          companyId: agent.companyId,
+          issueId: runIssueId,
+          authorAgentId: agent.id,
+          authorUserId: null,
+          body: `<!-- quality-gate -->\n${statusEmoji} **Run ${outcome}** \u2014 quality score: **${qualityScore}/100**, duration: ${durationStr}${outcome !== "succeeded" ? `, error: ${adapterResult.errorCode ?? "unknown"}` : ""}`,
+        }).catch((err: unknown) => {
+          logger.debug({ err, agentId: agent.id, runId: run.id }, "failed to post quality comment");
+        });
+      }
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -3439,6 +3579,48 @@ export function heartbeatService(db: Db) {
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Circuit breaker: prevent retry storms by checking consecutive failures.
+    // Manual triggers always bypass (human explicitly wants to wake the agent).
+    if (triggerDetail !== "manual") {
+      const consecutiveFailures = await getConsecutiveFailureCount(db, agentId);
+
+      if (consecutiveFailures >= CIRCUIT_BREAKER_PAUSE_THRESHOLD) {
+        logger.warn(
+          { agentId, consecutiveFailures },
+          "Circuit breaker OPEN — auto-pausing agent after %d consecutive failures",
+          consecutiveFailures,
+        );
+        await db.update(agents).set({ status: "paused", updatedAt: new Date() }).where(eq(agents.id, agentId));
+        publishLiveEvent({ companyId: agent.companyId, type: "agent.status", payload: { agentId, status: "paused" } });
+        await writeSkippedRequest("circuit_breaker_open");
+        // Post a durable comment on the active issue so the operator knows why
+        // the agent was paused — avoids silent failures invisible in the UI.
+        const issueIdForCircuitBreaker = readNonEmptyString(enrichedContextSnapshot.issueId);
+        if (issueIdForCircuitBreaker) {
+          void db.insert(issueComments).values({
+            companyId: agent.companyId,
+            issueId: issueIdForCircuitBreaker,
+            authorAgentId: agent.id,
+            authorUserId: null,
+            body: `\u26a0\ufe0f **Agent auto-paused** — circuit breaker tripped after ${consecutiveFailures} consecutive failures. Resolve the underlying issue and manually resume the agent.`,
+          }).catch(() => undefined);
+        }
+        return null;
+      }
+
+      if (consecutiveFailures >= CIRCUIT_BREAKER_COOLDOWN_THRESHOLD) {
+        // Allow timer wakes through (natural 60s backoff) but block rapid automation/on-demand retries
+        if (source !== "timer") {
+          logger.warn(
+            { agentId, consecutiveFailures },
+            "Circuit breaker HALF-OPEN — skipping non-timer wakeup, next timer poll will retry",
+          );
+          await writeSkippedRequest("circuit_breaker_cooldown");
+          return null;
+        }
+      }
     }
 
     const bypassIssueExecutionLock =
