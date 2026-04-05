@@ -606,14 +606,14 @@ export function CommentThread({
       run,
     }));
     return [...commentItems, ...eventItems, ...runItems].sort((a, b) => {
-      if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
-      if (a.kind === b.kind) return a.id.localeCompare(b.id);
+      if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+      if (a.kind === b.kind) return b.id.localeCompare(a.id);
       const kindOrder = {
         event: 0,
         comment: 1,
         run: 2,
       } as const;
-      return kindOrder[a.kind] - kindOrder[b.kind];
+      return kindOrder[b.kind] - kindOrder[a.kind];
     });
   }, [comments, timelineEvents, linkedRuns]);
 
