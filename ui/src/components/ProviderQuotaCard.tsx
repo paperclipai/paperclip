@@ -205,6 +205,11 @@ export function ProviderQuotaCard({
                       </div>
                       <div className="h-2 w-full border border-border overflow-hidden">
                         <div
+                          role="progressbar"
+                          aria-valuenow={Math.round(barPct)}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={`${w} window: ${Math.round(barPct)}% of peak`}
                           className="h-full bg-primary/60 transition-[width] duration-150"
                           style={{ width: `${barPct}%` }}
                         />
@@ -242,6 +247,11 @@ export function ProviderQuotaCard({
                 <>
                   <div className="h-1.5 w-full border border-border overflow-hidden">
                     <div
+                      role="progressbar"
+                      aria-valuenow={Math.round(subSharePct)}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-label={`Subscription share: ${Math.round(subSharePct)}%`}
                       className="h-full bg-primary/60 transition-[width] duration-150"
                       style={{ width: `${subSharePct}%` }}
                     />
@@ -284,13 +294,13 @@ export function ProviderQuotaCard({
                       </div>
                     </div>
                     {/* token share bar */}
-                    <div className="relative h-2 w-full border border-border overflow-hidden">
+                    <div className="relative h-2 w-full border border-border overflow-hidden" role="img" aria-label={`${row.model}: ${Math.round(tokenPct)}% of tokens, ${Math.round(costPct)}% of cost`}>
                       <div
                         className="absolute inset-y-0 left-0 bg-primary/60 transition-[width] duration-150"
                         style={{ width: `${tokenPct}%` }}
                         title={`${Math.round(tokenPct)}% of provider tokens`}
                       />
-                      {/* cost share overlay — narrower, opaque, shows relative cost weight */}
+                      {/* cost share overlay - narrower, opaque, shows relative cost weight */}
                       <div
                         className="absolute inset-y-0 left-0 bg-primary/85 transition-[width] duration-150"
                         style={{ width: `${costPct}%` }}
@@ -356,6 +366,11 @@ export function ProviderQuotaCard({
                           {qw.usedPercent != null && fillColor != null && (
                             <div className="h-2 w-full border border-border overflow-hidden">
                               <div
+                                role="progressbar"
+                                aria-valuenow={Math.round(qw.usedPercent)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-label={`Quota usage: ${qw.usedPercent}% used`}
                                 className={`h-full transition-[width] duration-150 ${fillColor}`}
                                 style={{ width: `${qw.usedPercent}%` }}
                               />
