@@ -7,6 +7,7 @@ import {
   MouseSensor,
   useSensor,
   useSensors,
+  TouchSensor,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
@@ -94,6 +95,7 @@ function SortableCompanyItem({
     transition,
     zIndex: isDragging ? 10 : undefined,
     opacity: isDragging ? 0.8 : 1,
+    touchAction: 'none' // stops scrolling from taking precedence over dnd
   };
 
   return (
@@ -247,7 +249,8 @@ export function CompanyRail() {
     // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
     useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
-    })
+    }),
+    useSensor(TouchSensor)
   );
 
   const handleDragEnd = useCallback(
