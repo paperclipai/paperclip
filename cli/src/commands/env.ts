@@ -223,6 +223,13 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       note: "Canonical public URL for auth/callback/invite origin wiring",
     },
     {
+      key: "PAPERCLIP_TRUST_PROXY",
+      value: process.env.PAPERCLIP_TRUST_PROXY ?? "",
+      source: process.env.PAPERCLIP_TRUST_PROXY ? "env" : "default",
+      required: false,
+      note: "Set to 1 behind nginx/Caddy so X-Forwarded-* is trusted (see doc/NGINX-HTTPS.md)",
+    },
+    {
       key: "BETTER_AUTH_TRUSTED_ORIGINS",
       value: process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? trustedOriginsDefault,
       source: process.env.BETTER_AUTH_TRUSTED_ORIGINS

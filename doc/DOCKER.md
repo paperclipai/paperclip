@@ -14,10 +14,12 @@ The Dockerfile installs common agent tools (`git`, `gh`, `curl`, `wget`, `ripgre
 
 Build arguments:
 
-| Arg | Default | Purpose |
-|-----|---------|---------|
-| `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
-| `USER_GID` | `1000` | GID for the container `node` group |
+
+| Arg        | Default | Purpose                                                                                           |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `USER_UID` | `1000`  | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
+| `USER_GID` | `1000`  | GID for the container `node` group                                                                |
+
 
 ```sh
 docker build -t paperclip-local \
@@ -121,6 +123,8 @@ Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`,
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
 
+For TLS termination with nginx on a bare-metal host (Let’s Encrypt, reverse proxy headers, WebSockets), see [NGINX-HTTPS.md](./NGINX-HTTPS.md).
+
 ## Claude + Codex Local Adapters in Docker
 
 The image pre-installs:
@@ -150,19 +154,19 @@ Notes:
 
 The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQL as systemd services via Podman Quadlet.
 
-| File | Purpose |
-|------|---------|
-| `docker/quadlet/paperclip.pod` | Pod definition — groups containers into a shared network namespace |
-| `docker/quadlet/paperclip.container` | Paperclip server — joins the pod, connects to Postgres at `127.0.0.1` |
-| `docker/quadlet/paperclip-db.container` | PostgreSQL 17 — joins the pod, health-checked |
+
+| File                                    | Purpose                                                               |
+| --------------------------------------- | --------------------------------------------------------------------- |
+| `docker/quadlet/paperclip.pod`          | Pod definition — groups containers into a shared network namespace    |
+| `docker/quadlet/paperclip.container`    | Paperclip server — joins the pod, connects to Postgres at `127.0.0.1` |
+| `docker/quadlet/paperclip-db.container` | PostgreSQL 17 — joins the pod, health-checked                         |
+
 
 ### Setup
 
 1. Build the image (see above).
-
 2. Copy quadlet files to your systemd directory:
-
-   ```sh
+  ```sh
    # Rootless (recommended)
    cp docker/quadlet/*.pod docker/quadlet/*.container \
      ~/.config/containers/systemd/
@@ -170,11 +174,9 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    # Or rootful
    sudo cp docker/quadlet/*.pod docker/quadlet/*.container \
      /etc/containers/systemd/
-   ```
-
+  ```
 3. Create a secrets env file (keep out of version control):
-
-   ```sh
+  ```sh
    cat > ~/.config/containers/systemd/paperclip.env <<EOL
    BETTER_AUTH_SECRET=$(openssl rand -hex 32)
    POSTGRES_USER=paperclip
@@ -184,15 +186,13 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    # OPENAI_API_KEY=sk-...
    # ANTHROPIC_API_KEY=sk-...
    EOL
-   ```
-
+  ```
 4. Create the data directory and start:
-
-   ```sh
+  ```sh
    mkdir -p ~/.local/share/paperclip
    systemctl --user daemon-reload
    systemctl --user start paperclip-pod
-   ```
+  ```
 
 ### Quadlet management
 
@@ -252,3 +252,4 @@ Notes:
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+

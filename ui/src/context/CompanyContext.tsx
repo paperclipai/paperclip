@@ -46,7 +46,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       try {
         return await companiesApi.list();
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           return [];
         }
         throw err;

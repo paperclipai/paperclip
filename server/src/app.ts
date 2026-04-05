@@ -1,4 +1,4 @@
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, { Router, type Application, type Request as ExpressRequest } from "express";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,22 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 
+/** When Paperclip sits behind nginx/Caddy, set PAPERCLIP_TRUST_PROXY=1 (see doc/NGINX-HTTPS.md). */
+function applyTrustProxyFromEnv(app: Application): void {
+  const raw = process.env.PAPERCLIP_TRUST_PROXY?.trim().toLowerCase();
+  if (!raw || raw === "0" || raw === "false" || raw === "no" || raw === "off") {
+    return;
+  }
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+    app.set("trust proxy", 1);
+    return;
+  }
+  const n = Number.parseInt(raw, 10);
+  if (Number.isFinite(n) && n >= 0) {
+    app.set("trust proxy", n);
+  }
+}
+
 export function resolveViteHmrPort(serverPort: number): number {
   if (serverPort <= 55_535) {
     return serverPort + 10_000;
@@ -87,6 +103,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  applyTrustProxyFromEnv(app);
 
   app.use(express.json({
     // Company import/export payloads can inline full portable packages.

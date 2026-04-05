@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { adaptersApi } from "@/api/adapters";
+import { ApiError } from "@/api/client";
 import { setDisabledAdapterTypes } from "@/adapters/disabled-store";
 import { syncExternalAdapters } from "@/adapters/registry";
 import { queryKeys } from "@/lib/queryKeys";
@@ -19,7 +20,16 @@ import { queryKeys } from "@/lib/queryKeys";
 export function useDisabledAdaptersSync(): Set<string> {
   const { data: adapters } = useQuery({
     queryKey: queryKeys.adapters.all,
-    queryFn: () => adaptersApi.list(),
+    queryFn: async () => {
+      try {
+        return await adaptersApi.list();
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          return [];
+        }
+        throw err;
+      }
+    },
     staleTime: 5 * 60 * 1000,
   });
 

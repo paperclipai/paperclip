@@ -31,6 +31,8 @@ server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
+# Собранный UI для статической раздачи сервером (prepare-server-ui-dist.sh)
+server/ui-dist/
 feedback-export-*
 
 # Editor / tool temp files

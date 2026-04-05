@@ -70,8 +70,14 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "paperclip-dev-secret";
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const publicUrlRaw = (process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl)?.trim();
+  const forceDisableSecureCookies =
+    process.env.PAPERCLIP_AUTH_USE_SECURE_COOKIES === "false" ||
+    process.env.PAPERCLIP_AUTH_INSECURE_COOKIES === "true";
+  // Without an explicit https:// public URL, session cookies must not be Secure — otherwise
+  // plain-HTTP deployments (common self-hosted) never persist the session after sign-in.
+  const useSecureCookies =
+    !forceDisableSecureCookies && publicUrlRaw?.startsWith("https://") === true;
 
   const authConfig = {
     baseURL: baseUrl,
@@ -91,7 +97,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
-    ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
+    ...(!useSecureCookies ? { advanced: { useSecureCookies: false } } : {}),
   };
 
   if (!baseUrl) {
