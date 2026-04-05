@@ -381,6 +381,18 @@ export async function execute(
         };
       }
 
+      // OpenCode returns 200 with empty body when the session doesn't exist.
+      // Treat this as an error so the retry logic can create a fresh session.
+      if (!msgRes.raw.trim()) {
+        return {
+          sessionId,
+          response: null,
+          error: `Empty response from OpenCode (session may not exist)`,
+          timedOut: false,
+          raw: "",
+        };
+      }
+
       return {
         sessionId,
         response: msgRes.data,
@@ -479,13 +491,14 @@ export async function execute(
   const sessionIdToResume = canResume ? runtimeSessionId : null;
   const initial = await runAttempt(sessionIdToResume);
 
-  // If session resume failed with "not found", retry with fresh session
-  if (
+  // If session resume failed with "not found" or empty response, retry with fresh session.
+  // OpenCode may return 200 with empty body for non-existent sessions.
+  const shouldRetryWithFreshSession =
     sessionIdToResume &&
     initial.error &&
     !initial.timedOut &&
-    isOpenCodeSessionNotFound(initial.raw)
-  ) {
+    (isOpenCodeSessionNotFound(initial.raw) || !initial.raw.trim());
+  if (shouldRetryWithFreshSession) {
     await onLog(
       "stderr",
       `[paperclip] OpenCode session "${sessionIdToResume}" not found; retrying with a fresh session.\n`,
