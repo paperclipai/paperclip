@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
+import { pluginsApi } from "../api/plugins";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -23,6 +24,7 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { PluginDiscoveryCard } from "../components/PluginDiscoveryCard";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -78,6 +80,16 @@ export function Dashboard() {
     queryKey: queryKeys.heartbeats(selectedCompanyId!),
     queryFn: () => heartbeatsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  const { data: plugins } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
+
+  const { data: pluginExamples } = useQuery({
+    queryKey: queryKeys.plugins.examples,
+    queryFn: () => pluginsApi.listExamples(),
   });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
@@ -303,6 +315,11 @@ export function Dashboard() {
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+          />
+
+          <PluginDiscoveryCard
+            installedCount={plugins?.length}
+            exampleCount={pluginExamples?.length}
           />
 
           <div className="grid md:grid-cols-2 gap-4">
