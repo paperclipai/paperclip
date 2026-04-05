@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -857,5 +858,179 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.executionWorkspaceSettings).toEqual({
       mode: "operator_branch",
     });
+  });
+});
+
+describeEmbeddedPostgres("issueService.update assignee change releases execution lock", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-assignee-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("clears executionRunId and related lock fields when the agent assignee changes", async () => {
+    const companyId = randomUUID();
+    const outgoingAgentId = randomUUID();
+    const incomingAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const lockedAt = new Date("2026-04-05T19:30:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: outgoingAgentId,
+        companyId,
+        name: "TechLead",
+        role: "tech_lead",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: incomingAgentId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: outgoingAgentId,
+      invocationSource: "heartbeat",
+      status: "running",
+      startedAt: lockedAt,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cross-partition Cosmos query fix",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: outgoingAgentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "tech_lead",
+      executionLockedAt: lockedAt,
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "in_review",
+      assigneeAgentId: incomingAgentId,
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.assigneeAgentId).toBe(incomingAgentId);
+    expect(updated!.status).toBe("in_review");
+    expect(updated!.checkoutRunId).toBeNull();
+    expect(updated!.executionRunId).toBeNull();
+    expect(updated!.executionAgentNameKey).toBeNull();
+    expect(updated!.executionLockedAt).toBeNull();
+
+    // The outgoing run itself must stay intact — only the issue-level lock is released.
+    const persistedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(persistedRun?.status).toBe("running");
+  });
+
+  it("keeps the execution lock intact when assignee fields are untouched", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const lockedAt = new Date("2026-04-05T19:30:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TechLead",
+      role: "tech_lead",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "heartbeat",
+      status: "running",
+      startedAt: lockedAt,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Still mine",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "tech_lead",
+      executionLockedAt: lockedAt,
+    });
+
+    const updated = await svc.update(issueId, {
+      title: "Still mine, updated title",
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated!.assigneeAgentId).toBe(agentId);
+    expect(updated!.checkoutRunId).toBe(runId);
+    expect(updated!.executionRunId).toBe(runId);
+    expect(updated!.executionAgentNameKey).toBe("tech_lead");
+    expect(updated!.executionLockedAt).toEqual(lockedAt);
   });
 });
