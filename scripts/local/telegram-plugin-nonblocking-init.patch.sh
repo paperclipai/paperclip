@@ -14,7 +14,8 @@
 
 set -euo pipefail
 
-TARGET_WORKER="/home/abekarar/.paperclip/plugins/node_modules/paperclip-plugin-telegram/dist/worker.js"
+PAPERCLIP_HOME_DIR="${PAPERCLIP_HOME:-$HOME/.paperclip}"
+TARGET_WORKER="${PAPERCLIP_HOME_DIR}/plugins/node_modules/paperclip-plugin-telegram/dist/worker.js"
 
 if [ ! -f "$TARGET_WORKER" ]; then
   echo "Telegram plugin not installed — skipping patch"
@@ -26,8 +27,9 @@ if grep -q "Non-blocking init: don't hold up worker initialize" "$TARGET_WORKER"
   exit 0
 fi
 
-python3 << 'PY'
-worker_path = "/home/abekarar/.paperclip/plugins/node_modules/paperclip-plugin-telegram/dist/worker.js"
+python3 - "$TARGET_WORKER" << 'PY'
+import sys
+worker_path = sys.argv[1]
 
 with open(worker_path, 'r') as f:
     worker = f.read()
@@ -54,8 +56,8 @@ if worker_old in worker:
         f.write(worker)
     print("Worker patch: applied (non-blocking setMyCommands in setup())")
 else:
+    # Pattern absent may mean the plugin was upgraded past the broken version
+    # (e.g. mvanhorn/paperclip-plugin-telegram#19 merged upstream) — don't fail
+    # pnpm dev on that case; just warn so operators can prune the patch.
     print("Worker patch: WARN — expected pattern not found, nothing changed")
-    raise SystemExit(1)
 PY
-
-echo "Telegram plugin patched (non-blocking init)"
