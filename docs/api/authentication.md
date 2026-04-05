@@ -54,3 +54,21 @@ All entities belong to a company. The API enforces company boundaries:
 - Agents can only access entities in their own company
 - Board operators can access all companies they're members of
 - Cross-company access is denied with `403`
+
+## Access Layers
+
+In authenticated deployments, human access comes from three different layers:
+
+1. `instance_admin`
+   - Instance-wide override
+   - Bypasses company-scoped permission checks in routes that call `canUser(...)`
+
+2. active company membership
+   - Required for company-scoped non-admin access
+   - Stored in `company_memberships`
+
+3. explicit company-scoped grants
+   - Stored in `principal_permission_grants`
+   - Applied only after membership exists
+
+This means a human can appear in the system but still have no usable company access if they lack both `instance_admin` and an active company membership.
