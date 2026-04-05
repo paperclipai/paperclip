@@ -86,7 +86,7 @@ type GatewayClientRequestOptions = {
 };
 
 const PROTOCOL_VERSION = 3;
-const DEFAULT_SCOPES = ["operator.admin"];
+const DEFAULT_SCOPES = ["operator.admin", "operator.pairing", "operator.read", "operator.write"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
