@@ -1,5 +1,5 @@
 /// <reference path="./types/express.d.ts" />
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, renameSync, mkdirSync, readdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -319,7 +319,26 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const clusterVersionFile = resolve(dataDir, "PG_VERSION");
-    const clusterAlreadyInitialized = existsSync(clusterVersionFile);
+    let clusterAlreadyInitialized = existsSync(clusterVersionFile);
+
+    if (!clusterAlreadyInitialized && existsSync(dataDir) && readdirSync(dataDir).length > 0) {
+      const backupDir = `${dataDir}_corrupted_${Date.now()}`;
+      logger.warn(
+        { dataDir, backupDir },
+        "Database directory is not empty but missing PG_VERSION. Backing up and starting fresh.",
+      );
+      try {
+        renameSync(dataDir, backupDir);
+        mkdirSync(dataDir, { recursive: true });
+        logger.warn({ dataDir, backupDir }, "Backup complete; proceeding with fresh initialisation.");
+      } catch (backupErr) {
+        logger.error(
+          { dataDir, backupDir, err: backupErr },
+          "Failed to back up corrupted database directory; manual intervention may be required.",
+        );
+        throw backupErr;
+      }
+    }
     const postmasterPidFile = resolve(dataDir, "postmaster.pid");
     const isPidRunning = (pid: number): boolean => {
       try {
@@ -373,7 +392,7 @@ export async function startServer(): Promise<StartedServer> {
           password: "paperclip",
           port,
           persistent: true,
-          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          initdbFlags: ["--encoding=UTF8", "--locale=C.UTF-8", "--username=paperclip"],
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
         });

@@ -140,9 +140,9 @@ async function ensureEmbeddedPostgresConnection(
     password: "paperclip",
     port: selectedPort,
     persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: logBuffer.append,
-    onError: logBuffer.append,
+    initdbFlags: ["--encoding=UTF8", "--locale=C.UTF-8", "--username=paperclip"],
+    onLog: () => {},
+    onError: () => {},
   });
 
   if (!existsSync(path.resolve(dataDir, "PG_VERSION"))) {
