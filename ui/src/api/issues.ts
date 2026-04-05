@@ -8,6 +8,7 @@ import type {
   IssueAttachment,
   IssueComment,
   IssueDocument,
+  IssueDocumentSummary,
   IssueLabel,
   IssueWorkProduct,
   UpsertIssueDocument,
@@ -108,6 +109,8 @@ export const issuesApi = {
         ...(interrupt === undefined ? {} : { interrupt }),
       },
     ),
+  listCompanyDocuments: (companyId: string) =>
+    api.get<IssueDocumentSummary[]>(`/companies/${companyId}/documents`),
   listDocuments: (id: string) => api.get<IssueDocument[]>(`/issues/${id}/documents`),
   getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>

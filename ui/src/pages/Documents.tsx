@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueries } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -43,19 +43,23 @@ export function Documents() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: allDocs, isLoading: docsLoading } = useQuery({
+    queryKey: queryKeys.documents.list(selectedCompanyId!),
+    queryFn: () => issuesApi.listCompanyDocuments(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const documentQueries = useQueries({
-    queries: (issues ?? []).map((issue) => ({
-      queryKey: queryKeys.issues.documents(issue.id),
-      queryFn: () => issuesApi.listDocuments(issue.id),
-      staleTime: 30_000,
-    })),
-  });
+  const issueMap = useMemo(() => {
+    const map = new Map<string, Issue>();
+    for (const issue of issues ?? []) map.set(issue.id, issue);
+    return map;
+  }, [issues]);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -63,38 +67,34 @@ export function Documents() {
     return map;
   }, [agents]);
 
-  const allDocuments = useMemo((): DocumentEntry[] => {
-    if (!issues) return [];
+  const documentEntries = useMemo((): DocumentEntry[] => {
+    if (!allDocs) return [];
     const entries: DocumentEntry[] = [];
-    for (let i = 0; i < issues.length; i++) {
-      const docs = documentQueries[i]?.data ?? [];
-      for (const doc of docs) {
-        entries.push({ document: doc, issue: issues[i] });
-      }
+    for (const doc of allDocs) {
+      const issue = issueMap.get(doc.issueId);
+      if (issue) entries.push({ document: doc, issue });
     }
-    return entries.sort(
-      (a, b) => new Date(b.document.updatedAt).getTime() - new Date(a.document.updatedAt).getTime(),
-    );
-  }, [issues, documentQueries]);
+    return entries;
+  }, [allDocs, issueMap]);
 
   const uniqueKeys = useMemo(() => {
     const keys = new Set<string>();
-    for (const entry of allDocuments) keys.add(entry.document.key);
+    for (const entry of documentEntries) keys.add(entry.document.key);
     return Array.from(keys).sort();
-  }, [allDocuments]);
+  }, [documentEntries]);
 
   const agentsWithDocuments = useMemo(() => {
     const ids = new Set<string>();
-    for (const entry of allDocuments) {
+    for (const entry of documentEntries) {
       if (entry.document.updatedByAgentId) ids.add(entry.document.updatedByAgentId);
     }
     return Array.from(ids)
       .map((id) => agentMap.get(id))
       .filter((a): a is Agent => !!a);
-  }, [allDocuments, agentMap]);
+  }, [documentEntries, agentMap]);
 
   const filteredDocuments = useMemo(() => {
-    return allDocuments.filter((entry) => {
+    return documentEntries.filter((entry) => {
       if (keyFilter !== "all" && entry.document.key !== keyFilter) return false;
       if (agentFilter !== "all" && entry.document.updatedByAgentId !== agentFilter) return false;
       if (search) {
@@ -106,9 +106,8 @@ export function Documents() {
       }
       return true;
     });
-  }, [allDocuments, keyFilter, agentFilter, search]);
+  }, [documentEntries, keyFilter, agentFilter, search]);
 
-  const documentsLoading = documentQueries.some((q) => q.isLoading);
   const hasActiveFilter = search !== "" || keyFilter !== "all" || agentFilter !== "all";
 
   function clearFilters() {
@@ -117,7 +116,7 @@ export function Documents() {
     setAgentFilter("all");
   }
 
-  if (issuesLoading) {
+  if (issuesLoading || docsLoading) {
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -142,11 +141,11 @@ export function Documents() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold">Documents</h1>
-          {!documentsLoading && allDocuments.length > 0 && (
+          {documentEntries.length > 0 && (
             <span className="text-sm text-muted-foreground">
-              {filteredDocuments.length === allDocuments.length
-                ? allDocuments.length
-                : `${filteredDocuments.length} of ${allDocuments.length}`}
+              {filteredDocuments.length === documentEntries.length
+                ? documentEntries.length
+                : `${filteredDocuments.length} of ${documentEntries.length}`}
             </span>
           )}
         </div>
@@ -206,13 +205,7 @@ export function Documents() {
         </div>
       </div>
 
-      {documentsLoading && allDocuments.length === 0 ? (
-        <div className="space-y-1">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-11 w-full rounded-none" />
-          ))}
-        </div>
-      ) : filteredDocuments.length === 0 ? (
+      {filteredDocuments.length === 0 ? (
         <EmptyState
           icon={FileText}
           message={
