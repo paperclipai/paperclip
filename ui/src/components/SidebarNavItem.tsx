@@ -39,16 +39,16 @@ export function SidebarNavItem({
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
-          "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
+          "group/nav flex items-center gap-2.5 px-3 py-2 text-[11px] font-semibold font-[var(--font-display)] uppercase tracking-[0.06em] transition-colors rounded-[2px]",
           isActive
-            ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            ? "bg-[var(--sidebar-accent)] text-foreground border-l-2 border-l-[var(--primary)]"
+            : "text-foreground/80 hover:bg-[var(--sidebar-accent)]/50 hover:text-foreground",
           className,
         )
       }
     >
       <span className="relative shrink-0">
-        <Icon className="h-4 w-4" />
+        <Icon className="h-4 w-4 group-[.border-l-2]/nav:text-[var(--primary)] group-[.border-l-2]/nav:drop-shadow-[0_0_4px_var(--primary)]" />
         {alert && (
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-[0_0_0_2px_hsl(var(--background))]" />
         )}
@@ -57,7 +57,7 @@ export function SidebarNavItem({
       {textBadge && (
         <span
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none",
+            "ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-medium font-[var(--font-mono)] leading-none",
             textBadgeTone === "amber"
               ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
               : "bg-muted text-muted-foreground",
@@ -69,16 +69,16 @@ export function SidebarNavItem({
       {liveCount != null && liveCount > 0 && (
         <span className="ml-auto flex items-center gap-1.5">
           <span className="relative flex h-2 w-2">
-            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+            <span className="absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] hud-glow" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-info)]" />
           </span>
-          <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+          <span className="text-[11px] font-medium font-[var(--font-mono)] text-[var(--status-info)]">{liveCount} live</span>
         </span>
       )}
       {badge != null && badge > 0 && (
         <span
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-xs leading-none",
+            "ml-auto rounded-full px-1.5 py-0.5 text-xs font-[var(--font-mono)] leading-none",
             badgeTone === "danger"
               ? "bg-red-600/90 text-red-50"
               : "bg-primary text-primary-foreground",

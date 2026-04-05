@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
+import { Clock3, FlaskConical, Key, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
@@ -12,10 +12,10 @@ export function InstanceSidebar() {
   });
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside className="w-60 h-full min-h-0 border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] flex flex-col">
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
-        <span className="flex-1 text-sm font-bold text-foreground truncate">
+        <span className="flex-1 text-sm font-bold text-foreground truncate font-[var(--font-display)] uppercase tracking-[0.04em]">
           Instance Settings
         </span>
       </div>
@@ -24,6 +24,7 @@ export function InstanceSidebar() {
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/instance/settings/general" label="General" icon={SlidersHorizontal} end />
           <SidebarNavItem to="/instance/settings/heartbeats" label="Heartbeats" icon={Clock3} end />
+          <SidebarNavItem to="/instance/settings/api-keys" label="API Keys" icon={Key} end />
           <SidebarNavItem to="/instance/settings/experimental" label="Experimental" icon={FlaskConical} />
           <SidebarNavItem to="/instance/settings/plugins" label="Plugins" icon={Puzzle} />
           {(plugins ?? []).length > 0 ? (
@@ -34,10 +35,10 @@ export function InstanceSidebar() {
                   to={`/instance/settings/plugins/${plugin.id}`}
                   className={({ isActive }) =>
                     [
-                      "rounded-md px-2 py-1.5 text-xs transition-colors",
+                      "rounded-[2px] px-2 py-1.5 text-[10px] font-medium font-[var(--font-mono)] uppercase tracking-[0.04em] transition-colors",
                       isActive
-                        ? "bg-accent text-foreground"
-                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                        ? "bg-[var(--sidebar-accent)] text-foreground"
+                        : "text-muted-foreground hover:bg-[var(--sidebar-accent)]/50 hover:text-foreground",
                     ].join(" ")
                   }
                 >

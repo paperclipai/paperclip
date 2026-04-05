@@ -80,7 +80,7 @@ export function SidebarAgents() {
                 open && "rotate-90"
               )}
             />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            <span className="text-[9px] font-medium uppercase tracking-[0.08em] font-[var(--font-mono)] text-muted-foreground/60">
               Agents
             </span>
           </CollapsibleTrigger>
@@ -109,10 +109,10 @@ export function SidebarAgents() {
                   if (isMobile) setSidebarOpen(false);
                 }}
                 className={cn(
-                  "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+                  "flex items-center gap-2.5 px-3 py-1.5 text-[11px] font-medium font-[var(--font-display)] uppercase tracking-[0.04em] transition-colors rounded-[2px]",
                   activeAgentId === agentRouteRef(agent)
-                    ? "bg-accent text-foreground"
-                    : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
+                    ? "bg-[var(--sidebar-accent)] text-foreground"
+                    : "text-foreground/80 hover:bg-[var(--sidebar-accent)]/50 hover:text-foreground"
                 )}
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
@@ -124,12 +124,12 @@ export function SidebarAgents() {
                     ) : null}
                     {runCount > 0 ? (
                       <span className="relative flex h-2 w-2">
-                        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                        <span className="absolute inline-flex h-full w-full rounded-full bg-[var(--status-info)] hud-glow" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--status-info)]" />
                       </span>
                     ) : null}
                     {runCount > 0 ? (
-                      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                      <span className="text-[11px] font-medium font-[var(--font-mono)] text-[var(--status-info)]">
                         {runCount} live
                       </span>
                     ) : null}

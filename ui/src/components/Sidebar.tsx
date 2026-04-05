@@ -11,6 +11,16 @@ import {
   Boxes,
   Repeat,
   Settings,
+  Users,
+  MessageSquare,
+  FileBox,
+  Rocket,
+  Container,
+  Cloud,
+  PackageCheck,
+  ShieldCheck,
+  Mail,
+  Lock,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -47,7 +57,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+    <aside className="w-60 h-full min-h-0 border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] flex flex-col">
       {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         {selectedCompany?.brandColor && (
@@ -56,7 +66,7 @@ export function Sidebar() {
             style={{ backgroundColor: selectedCompany.brandColor }}
           />
         )}
-        <span className="flex-1 text-sm font-bold text-foreground truncate pl-1">
+        <span className="flex-1 text-sm font-bold truncate pl-1 font-[var(--font-display)] uppercase tracking-[0.04em]">
           {selectedCompany?.name ?? "Select company"}
         </span>
         <Button
@@ -88,6 +98,7 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/chat" label="CEO Chat" icon={MessageSquare} />
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}
@@ -101,6 +112,12 @@ export function Sidebar() {
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} textBadge="Beta" textBadgeTone="amber" />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/deliverables" label="Deliverables" icon={PackageCheck} />
+          <SidebarNavItem to="/approvals" label="Approvals" icon={ShieldCheck} />
+          <SidebarNavItem to="/artifacts" label="Artifacts" icon={FileBox} />
+          <SidebarNavItem to="/deployments" label="Deployments" icon={Rocket} />
+          <SidebarNavItem to="/cloud-deploy" label="Cloud Deploy" icon={Cloud} />
+          <SidebarNavItem to="/sandboxes" label="Sandboxes" icon={Container} />
         </SidebarSection>
 
         <SidebarProjects />
@@ -111,7 +128,10 @@ export function Sidebar() {
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/communication" label="Communication" icon={Mail} />
+          <SidebarNavItem to="/vault" label="Vault" icon={Lock} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/company/members" label="Members" icon={Users} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

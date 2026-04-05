@@ -78,10 +78,10 @@ function SortableProjectItem({
             if (isMobile) setSidebarOpen(false);
           }}
           className={cn(
-            "flex items-center gap-2.5 px-3 py-1.5 text-[13px] font-medium transition-colors",
+            "flex items-center gap-2.5 px-3 py-1.5 text-[11px] font-medium font-[var(--font-display)] uppercase tracking-[0.04em] transition-colors rounded-[2px]",
             activeProjectRef === routeRef || activeProjectRef === project.id
-              ? "bg-accent text-foreground"
-              : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+              ? "bg-[var(--sidebar-accent)] text-foreground"
+              : "text-foreground/80 hover:bg-[var(--sidebar-accent)]/50 hover:text-foreground",
           )}
         >
           <span
@@ -185,7 +185,7 @@ export function SidebarProjects() {
                 open && "rotate-90"
               )}
             />
-            <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
+            <span className="text-[9px] font-medium uppercase tracking-[0.08em] font-[var(--font-mono)] text-muted-foreground/60">
               Projects
             </span>
           </CollapsibleTrigger>
