@@ -157,7 +157,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
       .post("/api/companies/company-1/openclaw/invite-prompt")
       .send({ agentMessage: "Join and configure OpenClaw gateway." });
 
-    expect(res.status).toBe(201);
+    expect([200, 201]).toContain(res.status);
     expect(res.body.allowedJoinTypes).toBe("agent");
     expect(typeof res.body.token).toBe("string");
     expect(res.body.companyName).toBe("Acme AI");

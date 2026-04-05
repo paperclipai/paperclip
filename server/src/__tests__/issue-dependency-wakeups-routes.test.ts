@@ -5,8 +5,12 @@ import { issueRoutes } from "../routes/issues.js";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
+  getAncestors: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
+  getComment: vi.fn(),
+  getCommentCursor: vi.fn(),
+  getRelationSummaries: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -27,6 +31,7 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: () => ({
     getById: vi.fn(),
   }),
+  feedbackService: () => ({}),
   goalService: () => ({
     getById: vi.fn(),
     getDefaultCompanyGoal: vi.fn(),
@@ -34,6 +39,10 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
+  }),
+  instanceSettingsService: () => ({
+    get: vi.fn(),
+    listCompanyIds: vi.fn(),
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
@@ -73,6 +82,14 @@ function createApp() {
 describe("issue dependency wakeups in issue routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.getCommentCursor.mockResolvedValue({
+      totalComments: 0,
+      latestCommentId: null,
+      latestCommentAt: null,
+    });
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
