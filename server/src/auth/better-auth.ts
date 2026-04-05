@@ -59,6 +59,10 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
       if (!trimmed) continue;
       trustedOrigins.add(`https://${trimmed}`);
       trustedOrigins.add(`http://${trimmed}`);
+      // Also add with the configured port so non-standard ports match the
+      // browser Origin header (e.g. http://192.168.1.1:3100).
+      if (config.port !== 443) trustedOrigins.add(`https://${trimmed}:${config.port}`);
+      if (config.port !== 80) trustedOrigins.add(`http://${trimmed}:${config.port}`);
     }
   }
 
@@ -71,7 +75,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
-  const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
+  const isHttpOnly = publicUrl
+    ? publicUrl.startsWith("http://")
+    : effectiveTrustedOrigins.some((o) => o.startsWith("http://"));
 
   const authConfig = {
     baseURL: baseUrl,
