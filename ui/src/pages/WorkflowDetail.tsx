@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams, useNavigate } from "@/lib/router";
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from "lucide-react";
+import { useParams, useNavigate, Link } from "@/lib/router";
+import { ChevronDown, ChevronRight, ExternalLink, Pencil, Trash2 } from "lucide-react";
 import { workflowsApi } from "../api/workflows";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -41,13 +41,16 @@ function runStatusBadge(status: string) {
   );
 }
 
-function ExpandableRun({ run }: { run: WorkflowRunSummary }) {
+function ExpandableRun({ run, workflowId }: { run: WorkflowRunSummary; workflowId: string }) {
   const [open, setOpen] = useState(false);
   const { data: steps } = useQuery({
     queryKey: queryKeys.workflows.runSteps(run.id),
     queryFn: () => workflowsApi.getRunSteps(run.id),
     enabled: open,
   });
+
+  const completedSteps = steps?.filter((s) => s.status === "accepted" || s.status === "submitted").length ?? 0;
+  const totalSteps = steps?.length ?? 0;
 
   return (
     <div className="border-b last:border-b-0">
@@ -59,12 +62,22 @@ function ExpandableRun({ run }: { run: WorkflowRunSummary }) {
         <span className="flex-1 font-medium">
           Run {run.id.slice(0, 8)}
         </span>
+        {open && totalSteps > 0 && (
+          <span className="text-xs text-muted-foreground">{completedSteps}/{totalSteps} steps</span>
+        )}
         {runStatusBadge(run.status)}
         <span className="text-xs text-muted-foreground">{timeAgo(run.createdAt)}</span>
       </button>
       {open && steps && (
         <div className="px-4 pb-4 pl-10">
           <WorkflowStepTimeline steps={steps} currentStepKey={run.currentStepKey} />
+          <Link
+            to={`/workflows/${workflowId}/runs/${run.id}`}
+            className="mt-3 inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-600 transition-colors"
+          >
+            View full details
+            <ExternalLink className="h-3 w-3" />
+          </Link>
         </div>
       )}
     </div>
@@ -391,7 +404,7 @@ export function WorkflowDetail() {
               <h3 className="mb-2 text-sm font-semibold">Recent Runs</h3>
               <div className="rounded-lg border">
                 {runs.slice(0, 5).map((run: WorkflowRunSummary) => (
-                  <ExpandableRun key={run.id} run={run} />
+                  <ExpandableRun key={run.id} run={run} workflowId={workflowId!} />
                 ))}
               </div>
             </div>
@@ -424,7 +437,7 @@ export function WorkflowDetail() {
           ) : (
             <div className="rounded-lg border">
               {runs.map((run: WorkflowRunSummary) => (
-                <ExpandableRun key={run.id} run={run} />
+                <ExpandableRun key={run.id} run={run} workflowId={workflowId!} />
               ))}
             </div>
           )}

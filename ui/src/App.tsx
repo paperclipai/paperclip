@@ -19,6 +19,7 @@ import { Routines } from "./pages/Routines";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { Workflows } from "./pages/Workflows";
 import { WorkflowDetail } from "./pages/WorkflowDetail";
+import { WorkflowRunDetail } from "./pages/WorkflowRunDetail";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
 import { Goals } from "./pages/Goals";
 import { GoalDetail } from "./pages/GoalDetail";
@@ -166,6 +167,7 @@ function boardRoutes() {
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="workflows" element={<Workflows />} />
       <Route path="workflows/:workflowId" element={<WorkflowDetail />} />
+      <Route path="workflows/:workflowId/runs/:runId" element={<WorkflowRunDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />

@@ -32,9 +32,11 @@ interface WorkflowStepTimelineProps {
   steps: WorkflowRunStep[];
   currentStepKey?: string | null;
   className?: string;
+  /** Show expanded details (validation errors, input data) in run detail view */
+  showDetails?: boolean;
 }
 
-export function WorkflowStepTimeline({ steps, currentStepKey, className }: WorkflowStepTimelineProps) {
+export function WorkflowStepTimeline({ steps, currentStepKey, className, showDetails }: WorkflowStepTimelineProps) {
   const sorted = [...steps].sort((a, b) => a.stepIndex - b.stepIndex);
 
   return (
@@ -66,6 +68,24 @@ export function WorkflowStepTimeline({ steps, currentStepKey, className }: Workf
                 <pre className="mt-1 max-h-24 overflow-auto rounded bg-muted/30 p-2 text-xs">
                   {JSON.stringify(step.submissionJson, null, 2)}
                 </pre>
+              )}
+              {showDetails && step.validationResult && Object.keys(step.validationResult).length > 0 && (
+                <div className="mt-1.5 rounded border border-red-500/20 bg-red-500/5 p-2">
+                  <p className="text-xs font-medium text-red-600">Validation error</p>
+                  <pre className="mt-0.5 max-h-24 overflow-auto text-xs text-red-500/90">
+                    {JSON.stringify(step.validationResult, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {showDetails && step.inputJson && Object.keys(step.inputJson).length > 0 && (
+                <details className="mt-1.5">
+                  <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                    Input data
+                  </summary>
+                  <pre className="mt-0.5 max-h-24 overflow-auto rounded bg-muted/30 p-2 text-xs">
+                    {JSON.stringify(step.inputJson, null, 2)}
+                  </pre>
+                </details>
               )}
             </div>
           </div>
