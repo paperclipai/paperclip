@@ -425,7 +425,7 @@ Board users bypass all URL validation.
 |---|---|
 | Ownership | Agent must be current assignee (control-plane roles bypass) |
 | Dispatchability | Target agent must not be paused/error/terminated/pending_approval |
-| Role matrix | `engineer→[qa]`, `devops→[qa]`, `qa→[engineer,devops]`, control-plane→any |
+| Role matrix | `engineer→[qa,devops]`, `devops→[qa]`, `qa→[engineer,devops]`, control-plane→any |
 | Status consistency | Engineer→QA expects `in_review`; QA→engineer expects `in_progress` (logged, not blocked) |
 | Same-role lateral | Blocked for non-control-plane actors |
 

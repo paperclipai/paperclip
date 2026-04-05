@@ -281,7 +281,7 @@ export function issueRoutes(
   // Narrow handoff matrix: only the minimum needed to solve real workflow handoffs.
   // Widen as new use cases emerge.
   const ALLOWED_HANDOFFS: Record<string, readonly string[]> = {
-    engineer: ["qa"],
+    engineer: ["qa", "devops"],
     devops: ["qa"],
     qa: ["engineer", "devops"],
   };
@@ -1811,6 +1811,40 @@ export function issueRoutes(
             issueId: issue.id,
             source: "issue.status_change",
             ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+        });
+      }
+
+      // Same-assignee re-trigger: when a comment is posted on an issue that
+      // already has an assignee but the assignee didn't change, fire a
+      // task-specific wakeup so the agent wakes with paperclipTaskId set.
+      // This handles the "CEO re-triggers SCCE via comment" pattern.
+      const isTerminal = issue.status === "done" || issue.status === "cancelled";
+      if (
+        commentBody &&
+        comment &&
+        !assigneeChanged &&
+        issue.assigneeAgentId &&
+        issue.status !== "backlog" &&
+        !isTerminal &&
+        !wakeups.has(issue.assigneeAgentId) &&
+        // Don't self-wake: if the commenting agent IS the assignee, skip
+        !(actor.actorType === "agent" && actor.actorId === issue.assigneeAgentId)
+      ) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_comment_retrigger",
+          payload: { issueId: issue.id, commentId: comment.id },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_comment_retrigger",
+            source: "comment.retrigger",
           },
         });
       }

@@ -53,6 +53,7 @@ If you are not the next owner who can execute the next action, do not retain the
 
 - You may only reassign issues you currently own
 - Engineers hand off to QA when moving to `in_review`
+- Engineers may hand off to devops (Senior Platform Engineer) for infrastructure tasks requiring VPS/SSH/CI access
 - QA returns to engineering when moving to `in_progress`, or passes to release
 - Never assign to agents you haven't confirmed are active
 - CEO/CTO may reassign broadly for recovery and stranded-lane cleanup

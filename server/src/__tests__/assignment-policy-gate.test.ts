@@ -27,7 +27,8 @@ const CEO_1       = "aaaa0003-0003-4003-8003-000000000003";
 const PAUSED_1    = "aaaa0004-0004-4004-8004-000000000004";
 const CMO_1       = "aaaa0005-0005-4005-8005-000000000005";
 const ENGINEER_2  = "aaaa0006-0006-4006-8006-000000000006";
-const CROSS_1     = "aaaa0007-0007-4007-8007-000000000007";
+const DEVOPS_1    = "aaaa0007-0007-4007-8007-000000000007";
+const CROSS_1     = "aaaa0008-0008-4008-8008-000000000008";
 const NONEXISTENT = "aaaa0099-0099-4099-8099-000000000099";
 
 const engineerAgent = {
@@ -90,6 +91,16 @@ const otherEngineer = {
   permissions: { canCreateAgents: false },
 };
 
+const devopsAgent = {
+  id: DEVOPS_1,
+  companyId: "company-1",
+  name: "Sr Platform Engineer",
+  role: "devops",
+  status: "active",
+  pauseReason: null,
+  permissions: { canCreateAgents: false },
+};
+
 const crossCompanyAgent = {
   id: CROSS_1,
   companyId: "other-company",
@@ -107,6 +118,7 @@ const agentMap: Record<string, typeof engineerAgent> = {
   [PAUSED_1]: pausedAgent,
   [CMO_1]: cmoAgent,
   [ENGINEER_2]: otherEngineer,
+  [DEVOPS_1]: devopsAgent,
   [CROSS_1]: crossCompanyAgent,
 };
 
@@ -271,6 +283,21 @@ describe("assignment policy gate", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.gate).toBe("assignment_role_not_allowed");
+  });
+
+  it("engineer can assign to devops (SPE) for infrastructure tasks", async () => {
+    const issue = makeIssue({ assigneeAgentId: ENGINEER_1, status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({
+      ...issue,
+      assigneeAgentId: DEVOPS_1,
+    });
+
+    const res = await request(createAgentApp(ENGINEER_1))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ assigneeAgentId: DEVOPS_1, comment: "Needs SPE for VPS access" });
+
+    expect(res.status).toBe(200);
   });
 
   it("QA can return issue to engineer", async () => {
