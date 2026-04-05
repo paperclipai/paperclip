@@ -15,6 +15,7 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import { acquireRunLock, waitForReadiness, type ReadinessMode, type RunLockHandle } from "./run-runtime-guard.js";
 
 interface RunOptions {
   config?: string;
@@ -40,6 +41,30 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   const paths = describeLocalInstancePaths(instanceId);
   fs.mkdirSync(paths.instanceRoot, { recursive: true });
 
+  let lock: RunLockHandle;
+  try {
+    lock = acquireRunLock(paths.instanceRoot, instanceId);
+  } catch (err) {
+    p.log.error(formatError(err));
+    p.log.message("If this is stale, stop the old process or remove the stale run lock and retry.");
+    process.exit(1);
+  }
+
+  const cleanup = () => lock.release();
+  const onSigint = () => {
+    cleanup();
+    process.removeListener("SIGINT", onSigint);
+    process.kill(process.pid, "SIGINT");
+  };
+  const onSigterm = () => {
+    cleanup();
+    process.removeListener("SIGTERM", onSigterm);
+    process.kill(process.pid, "SIGTERM");
+  };
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  process.once("exit", cleanup);
+
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
@@ -48,6 +73,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));
   p.log.message(pc.dim(`Instance: ${paths.instanceId}`));
   p.log.message(pc.dim(`Config: ${configPath}`));
+  p.log.message(pc.dim(`Lock: ${lock.lockPath} (pid ${lock.state.pid})`));
 
   if (!configExists(configPath)) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -80,6 +106,23 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
+
+  const openHost = startedServer.host === "0.0.0.0" || startedServer.host === "::" ? "127.0.0.1" : startedServer.host;
+  const baseUrl = `http://${openHost}:${startedServer.listenPort}`;
+  const readinessMode: ReadinessMode = config.server.serveUi || process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true"
+    ? "full"
+    : "api-only";
+
+  p.log.step(`Waiting for readiness (${readinessMode})...`);
+  const readiness = await waitForReadiness({ baseUrl, mode: readinessMode, timeoutMs: 90_000, intervalMs: 1_500 });
+  if (!readiness.ok) {
+    p.log.error(
+      `Startup readiness failed after ${readiness.checks} checks (apiOk=${readiness.apiOk}, uiOk=${readiness.uiOk}, mode=${readiness.mode}).`,
+    );
+    p.log.message(`Check logs and status at ${pc.cyan(baseUrl)} and ${pc.cyan(`${baseUrl}/api/health`)}`);
+    process.exit(1);
+  }
+  p.log.success(`Readiness passed (apiOk=${readiness.apiOk}, uiOk=${readiness.uiOk}, mode=${readiness.mode})`);
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
