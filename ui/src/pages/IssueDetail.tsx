@@ -33,6 +33,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { getIssueVisibilityAction } from "../lib/issue-visibility";
 import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
@@ -61,6 +62,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Eye,
   EyeOff,
   Hexagon,
   ListTree,
@@ -1083,6 +1085,7 @@ export function IssueDetail() {
 
   // Ancestors are returned oldest-first from the server (root at end, immediate parent at start)
   const ancestors = issue.ancestors ?? [];
+  const visibilityAction = getIssueVisibilityAction(issue.hiddenAt);
   const handleFilePicked = async (evt: ChangeEvent<HTMLInputElement>) => {
     const files = evt.target.files;
     if (!files || files.length === 0) return;
@@ -1288,23 +1291,34 @@ export function IssueDetail() {
 
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
+                <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label="Issue actions">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="end">
               <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                className={cn(
+                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                  visibilityAction.isHidden ? "text-foreground" : "text-destructive",
+                )}
                 onClick={() => {
                   updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
+                    { hiddenAt: visibilityAction.isHidden ? null : new Date().toISOString() },
+                    {
+                      onSuccess: () => {
+                        if (!visibilityAction.isHidden) navigate("/issues/all");
+                      },
+                    },
                   );
                   setMoreOpen(false);
                 }}
               >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                {visibilityAction.isHidden ? (
+                  <Eye className="h-3 w-3" />
+                ) : (
+                  <EyeOff className="h-3 w-3" />
+                )}
+                {visibilityAction.label}
               </button>
             </PopoverContent>
             </Popover>
