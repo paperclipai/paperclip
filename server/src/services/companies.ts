@@ -35,6 +35,7 @@ export function companyService(db: Db) {
     id: companies.id,
     name: companies.name,
     description: companies.description,
+    organizationMode: companies.organizationMode,
     status: companies.status,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,

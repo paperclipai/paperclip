@@ -29,6 +29,7 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { getOrganizationTerms } from "../lib/organization-mode";
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -50,7 +51,7 @@ function createValuesForAdapterType(
 }
 
 export function NewAgent() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -65,6 +66,7 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const terms = getOrganizationTerms(selectedCompany);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -97,16 +99,16 @@ export function NewAgent() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Agents", href: "/agents" },
-      { label: "New Agent" },
+      { label: terms.newAgentTitle },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, terms.newAgentTitle]);
 
   useEffect(() => {
     if (isFirstAgent) {
-      if (!name) setName("CEO");
-      if (!title) setTitle("CEO");
+      if (!name) setName(terms.leadRole);
+      if (!title) setTitle(terms.leadRole);
     }
-  }, [isFirstAgent]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isFirstAgent, terms.leadRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const requested = presetAdapterType;
@@ -202,7 +204,7 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
+        <h1 className="text-lg font-semibold">{terms.newAgentTitle}</h1>
         <p className="text-sm text-muted-foreground mt-1">
           Advanced agent configuration
         </p>
@@ -287,7 +289,7 @@ export function NewAgent() {
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
+                {`No optional ${terms.singular} skills installed yet.`}
               </p>
             ) : (
               <div className="space-y-3">
@@ -318,7 +320,7 @@ export function NewAgent() {
         {/* Footer */}
         <div className="border-t border-border px-4 py-3">
           {isFirstAgent && (
-            <p className="text-xs text-muted-foreground mb-2">This will be the CEO</p>
+            <p className="text-xs text-muted-foreground mb-2">{`This will be the ${terms.leadRole}`}</p>
           )}
           {formError && (
             <p className="text-xs text-destructive mb-2">{formError}</p>
@@ -332,7 +334,7 @@ export function NewAgent() {
               disabled={!name.trim() || createAgent.isPending}
               onClick={handleSubmit}
             >
-              {createAgent.isPending ? "Creating…" : "Create agent"}
+              {createAgent.isPending ? "Creating…" : terms.addAgent}
             </Button>
           </div>
         </div>

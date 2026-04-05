@@ -16,10 +16,81 @@ import {
   Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
+import { HermesIcon } from "./HermesIcon";
+import { getOrganizationTerms } from "../lib/organization-mode";
 import { listUIAdapters } from "../adapters";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
+type AdvancedAdapterType =
+  | "claude_local"
+  | "codex_local"
+  | "gemini_local"
+  | "opencode_local"
+  | "pi_local"
+  | "cursor"
+  | "openclaw_gateway"
+  | "hermes_local";
+
+const ADVANCED_ADAPTER_OPTIONS: Array<{
+  value: AdvancedAdapterType;
+  label: string;
+  desc: string;
+  icon: ComponentType<{ className?: string }>;
+  recommended?: boolean;
+}> = [
+  {
+    value: "claude_local",
+    label: "Claude Code",
+    icon: Sparkles,
+    desc: "Local Claude agent",
+    recommended: true,
+  },
+  {
+    value: "codex_local",
+    label: "Codex",
+    icon: Code,
+    desc: "Local Codex agent",
+    recommended: true,
+  },
+  {
+    value: "gemini_local",
+    label: "Gemini CLI",
+    icon: Gem,
+    desc: "Local Gemini agent",
+  },
+  {
+    value: "opencode_local",
+    label: "OpenCode",
+    icon: OpenCodeLogoIcon,
+    desc: "Local multi-provider agent",
+  },
+  {
+    value: "hermes_local",
+    label: "Hermes Agent",
+    icon: HermesIcon,
+    desc: "Local multi-provider agent",
+  },
+  {
+    value: "pi_local",
+    label: "Pi",
+    icon: Terminal,
+    desc: "Local Pi agent",
+  },
+  {
+    value: "cursor",
+    label: "Cursor",
+    icon: MousePointer2,
+    desc: "Local Cursor agent",
+  },
+  {
+    value: "openclaw_gateway",
+    label: "OpenClaw Gateway",
+    icon: Bot,
+    desc: "Invoke OpenClaw via gateway protocol",
+  },
+];
 /**
  * Adapter types that are suitable for agent creation (excludes internal
  * system adapters like "process" and "http").
@@ -32,9 +103,10 @@ function isAgentAdapterType(type: string): boolean {
 
 export function NewAgentDialog() {
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const navigate = useNavigate();
   const [showAdvancedCards, setShowAdvancedCards] = useState(false);
+  const terms = getOrganizationTerms(selectedCompany);
   const disabledTypes = useDisabledAdaptersSync();
 
   // Fetch registered adapters from server (syncs disabled store + provides data)
@@ -115,7 +187,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{terms.addAgent}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -138,7 +210,8 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We recommend letting your CEO handle agent setup — they know the
+                  {`We recommend letting your ${terms.leadRole} handle agent setup — they know the`}
+                  {" "}
                   org structure and can configure reporting, permissions, and
                   adapters.
                 </p>
@@ -146,7 +219,7 @@ export function NewAgentDialog() {
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
                 <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
+                {`Ask the ${terms.leadRole} to create a new agent`}
               </Button>
 
               {/* Advanced link */}
