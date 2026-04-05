@@ -3204,9 +3204,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             {run.error && (
-              <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+              <div className="group/err flex items-start gap-1.5 text-xs">
+                <div className="min-w-0">
+                  <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                  {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+                </div>
+                <CopyText text={`${run.error}${run.errorCode ? ` (${run.errorCode})` : ""}`} className="shrink-0 opacity-0 group-hover/err:opacity-100 transition-opacity text-muted-foreground">
+                  <Copy className="h-3 w-3" />
+                </CopyText>
               </div>
             )}
             {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
