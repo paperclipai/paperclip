@@ -60,6 +60,25 @@ rm -rf data/pglite
 pnpm dev
 ```
 
+## 4a. Enabling Prometheus Metrics
+
+The server exposes a `/metrics` endpoint for Prometheus scraping when metrics are enabled.
+
+**Enable via environment variable (set one of):**
+
+```sh
+PAPERCLIP_METRICS_ENABLED=true    # explicit enable
+PAPERCLIP_OTEL_ENDPOINT=...       # also enables metrics as a side effect
+```
+
+When enabled:
+- `GET /metrics` returns Prometheus exposition format (no auth required)
+- Default Node.js process metrics are collected (CPU, memory, event loop lag)
+- HTTP request metrics: `paperclip_http_request_duration_seconds`, `paperclip_http_requests_total`
+- Domain metrics: `paperclip_heartbeat_runs_total`, `paperclip_tokens_used_total`, `paperclip_agent_budget_used_percent`, etc.
+
+Implementation: `server/src/observability/metrics.ts` (registry + metrics), `server/src/routes/metrics.ts` (endpoint).
+
 ## 5. Git and Code Review Protocol (Agents)
 
 All agent commits to this repo must follow `doc/AGENT-GIT-WORKFLOW.md`. Key rules:
