@@ -1297,6 +1297,15 @@ export function issueService(db: Db) {
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
+        // Voluntary handoff: the outgoing assignee's run (if any) no longer owns this
+        // issue's execution lock. Releasing these fields lets the new assignee's wakeup
+        // proceed instead of being deferred behind a run that will never reach a
+        // terminal state (e.g. agent naturally exhausted its turn without signalling
+        // completion). The outgoing run keeps running; its eventual
+        // releaseIssueExecutionAndPromote no-ops when the lock is already released.
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
 
       return db.transaction(async (tx) => {
