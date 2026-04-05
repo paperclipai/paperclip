@@ -73,6 +73,8 @@ import {
   FolderOpen,
 } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { BudgetWindowKind } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
@@ -626,6 +628,7 @@ export function AgentDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [budgetWindowKind, setBudgetWindowKind] = useState<BudgetWindowKind>("calendar_month_utc");
   const [moreOpen, setMoreOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
@@ -707,7 +710,7 @@ export function AgentDetail() {
       scopeId: agent?.id ?? routeAgentRef,
       scopeName: agent?.name ?? "Agent",
       metric: "billed_cents",
-      windowKind: "calendar_month_utc",
+      windowKind: budgetWindowKind,
       amount: budgetMonthlyCents,
       observedAmount: spentMonthlyCents,
       remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
@@ -797,7 +800,7 @@ export function AgentDetail() {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
         amount,
-        windowKind: "calendar_month_utc",
+        windowKind: budgetWindowKind,
       }),
     onSuccess: () => {
       if (!resolvedCompanyId) return;
@@ -1137,7 +1140,20 @@ export function AgentDetail() {
       )}
 
       {activeView === "budget" && resolvedCompanyId ? (
-        <div className="max-w-3xl">
+        <div className="max-w-3xl space-y-6">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Window</span>
+            <Select value={budgetWindowKind} onValueChange={(v) => setBudgetWindowKind(v as BudgetWindowKind)}>
+              <SelectTrigger className="w-44 h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="calendar_day_utc">Daily (UTC)</SelectItem>
+                <SelectItem value="calendar_month_utc">Monthly (UTC)</SelectItem>
+                <SelectItem value="lifetime">Lifetime</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <BudgetPolicyCard
             summary={agentBudgetSummary}
             isSaving={budgetMutation.isPending}
@@ -1455,7 +1471,6 @@ function AgentConfigurePage({
         updatePermissions={updatePermissions}
         companyId={companyId}
         hidePromptTemplate
-        hideInstructionsFile
       />
       <div>
         <h3 className="text-sm font-medium mb-3">API Keys</h3>

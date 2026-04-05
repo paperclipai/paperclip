@@ -14,7 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
+import { AlertCircle, Archive, ArchiveRestore, Check, Copy, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
@@ -587,6 +587,17 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         </PropertyRow>
         <PropertyRow label={<FieldLabel label="Updated" state="idle" />}>
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
+        </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Project ID" state="idle" />}>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 text-sm font-mono text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => navigator.clipboard.writeText(project.id)}
+            title="Click to copy project ID"
+          >
+            <span>{project.id.slice(0, 8)}…</span>
+            <Copy className="h-3 w-3" />
+          </button>
         </PropertyRow>
         {project.targetDate && (
           <PropertyRow label={<FieldLabel label="Target Date" state="idle" />}>
