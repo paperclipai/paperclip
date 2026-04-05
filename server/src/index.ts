@@ -784,7 +784,13 @@ export async function startServer(): Promise<StartedServer> {
         });
     }, config.heartbeatSchedulerIntervalMs);
   }
-  
+
+  // Start Telegram bot for human interaction
+  {
+    const { startTelegramBot } = await import("./services/telegram-bot.js");
+    startTelegramBot(db as any);
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
