@@ -95,6 +95,8 @@ POST /api/approvals/{approvalId}/comments
 { "body": "Discussion comment..." }
 ```
 
+`body` is the canonical write field. For compatibility with agent-generated requests, the server also accepts `content` and `comments` and normalizes them to `body`.
+
 ## Approval Lifecycle
 
 ```

@@ -73,7 +73,10 @@ import {
   sessionCodec as hermesSessionCodec,
   listSkills as hermesListSkills,
   syncSkills as hermesSyncSkills,
+  listHermesModels,
   detectModel as detectModelFromHermes,
+  getConfigSchema as getHermesConfigSchema,
+  onHireApproved as hermesOnHireApproved,
 } from "hermes-paperclip-adapter/server";
 import {
   agentConfigurationDoc as hermesAgentConfigurationDoc,
@@ -183,12 +186,16 @@ const hermesLocalAdapter: ServerAdapterModule = {
   execute: hermesExecute,
   testEnvironment: hermesTestEnvironment,
   sessionCodec: hermesSessionCodec,
+  sessionManagement: getAdapterSessionManagement("hermes_local") ?? undefined,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,
   models: hermesModels,
+  listModels: listHermesModels,
   supportsLocalAgentJwt: true,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
+  getConfigSchema: getHermesConfigSchema,
   detectModel: () => detectModelFromHermes(),
+  onHireApproved: hermesOnHireApproved,
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();

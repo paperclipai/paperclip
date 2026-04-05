@@ -48,7 +48,10 @@ import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  buildIssueWakeContextSnapshot,
+  queueIssueAssignmentWakeup,
+} from "../services/issue-assignment-wakeup.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -93,6 +96,17 @@ export function issueRoutes(
     return {
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
+    };
+  }
+
+  function normalizeIssueCreatePayload(input: Record<string, unknown>) {
+    const { body, description, ...rest } = input;
+    return {
+      ...rest,
+      description:
+        typeof description === "string" || description === null
+          ? description
+          : (typeof body === "string" || body === null ? body : null),
     };
   }
 
@@ -378,6 +392,12 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
     });
     res.json(result);
+  });
+
+  router.post("/issues", (_req, res) => {
+    res.status(404).json({
+      error: "Issue creation requires /api/companies/{companyId}/issues.",
+    });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -1034,8 +1054,11 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const normalizedPayload = normalizeIssueCreatePayload(
+      req.body as Record<string, unknown>,
+    ) as Parameters<typeof svc.create>[1];
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...normalizedPayload,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -1265,6 +1288,10 @@ export function issueRoutes(
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const childIssueCompleted =
+      issue.status === "done" &&
+      existing.status !== "done" &&
+      Boolean(issue.parentId ?? existing.parentId);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -1282,11 +1309,9 @@ export function issueRoutes(
           },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.update",
+          contextSnapshot: buildIssueWakeContextSnapshot(issue, "issue.update", {
             ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          }),
         });
       }
 
@@ -1302,12 +1327,41 @@ export function issueRoutes(
           },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.status_change",
+          contextSnapshot: buildIssueWakeContextSnapshot(issue, "issue.status_change", {
             ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
+          }),
         });
+      }
+
+      if (childIssueCompleted) {
+        const parentIssueId = issue.parentId ?? existing.parentId ?? null;
+        const parentIssue = parentIssueId ? await svc.getById(parentIssueId) : null;
+        if (
+          parentIssue?.assigneeAgentId &&
+          parentIssue.status !== "done" &&
+          parentIssue.status !== "cancelled" &&
+          !wakeups.has(parentIssue.assigneeAgentId)
+        ) {
+          wakeups.set(parentIssue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "child_issue_completed",
+            payload: {
+              issueId: parentIssue.id,
+              childIssueId: issue.id,
+              childIssueStatus: issue.status,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: buildIssueWakeContextSnapshot(parentIssue, "issue.child_completed", {
+              childIssueId: issue.id,
+              childIssueIdentifier: issue.identifier ?? null,
+              childIssueTitle: issue.title,
+              childIssueStatus: issue.status,
+              wakeReason: "child_issue_completed",
+            }),
+          });
+        }
       }
 
       if (commentBody && comment) {
@@ -1328,14 +1382,11 @@ export function issueRoutes(
             payload: { issueId: id, commentId: comment.id },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
+            contextSnapshot: buildIssueWakeContextSnapshot(issue, "comment.mention", {
               commentId: comment.id,
               wakeCommentId: comment.id,
               wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
+            }),
           });
         }
       }
@@ -1455,7 +1506,7 @@ export function issueRoutes(
           payload: { issueId: issue.id, mutation: "checkout" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+          contextSnapshot: buildIssueWakeContextSnapshot(issue, "issue.checkout"),
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
@@ -1762,15 +1813,12 @@ export function issueRoutes(
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
+            contextSnapshot: buildIssueWakeContextSnapshot(currentIssue, "issue.comment.reopen", {
               commentId: comment.id,
-              source: "issue.comment.reopen",
               wakeReason: "issue_reopened_via_comment",
               reopenedFrom: reopenFromStatus,
               ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+            }),
           });
         } else {
           wakeups.set(assigneeId, {
@@ -1785,14 +1833,11 @@ export function issueRoutes(
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: currentIssue.id,
-              taskId: currentIssue.id,
+            contextSnapshot: buildIssueWakeContextSnapshot(currentIssue, "issue.comment", {
               commentId: comment.id,
-              source: "issue.comment",
               wakeReason: "issue_commented",
               ...(interruptedRunId ? { interruptedRunId } : {}),
-            },
+            }),
           });
         }
       }
@@ -1814,14 +1859,11 @@ export function issueRoutes(
           payload: { issueId: id, commentId: comment.id },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: id,
-            taskId: id,
+          contextSnapshot: buildIssueWakeContextSnapshot(currentIssue, "comment.mention", {
             commentId: comment.id,
             wakeCommentId: comment.id,
             wakeReason: "issue_comment_mentioned",
-            source: "comment.mention",
-          },
+          }),
         });
       }
 

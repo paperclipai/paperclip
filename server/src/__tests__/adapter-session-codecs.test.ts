@@ -13,6 +13,7 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import { sessionCodec as hermesSessionCodec } from "hermes-paperclip-adapter/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -103,6 +104,33 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("normalizes Hermes session params with workspace metadata", () => {
+    const parsed = hermesSessionCodec.deserialize({
+      session_id: "hermes-session-1",
+      cwd: "/tmp/hermes",
+      workspace_id: "ws-1",
+      repo_url: "https://example.com/repo.git",
+      repo_ref: "main",
+    });
+    expect(parsed).toEqual({
+      sessionId: "hermes-session-1",
+      cwd: "/tmp/hermes",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+    });
+
+    const serialized = hermesSessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "hermes-session-1",
+      cwd: "/tmp/hermes",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+    });
+    expect(hermesSessionCodec.getDisplayId?.(serialized ?? null)).toBe("hermes-session-1");
   });
 });
 

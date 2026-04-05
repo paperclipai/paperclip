@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySkills } from "@paperclipai/db";
@@ -54,6 +57,7 @@ type ImportedSkill = {
 };
 
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
+const execFileAsync = promisify(execFile);
 
 export type ImportPackageSkillResult = {
   skill: CompanySkill;
@@ -538,8 +542,63 @@ function parseGitHubSourceUrl(rawUrl: string) {
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
 }
 
-async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
-  const apiBase = gitHubApiBase(parsed.hostname);
+function buildGitRemoteUrl(hostname: string, owner: string, repo: string) {
+  return `https://${hostname}/${owner}/${repo}.git`;
+}
+
+async function runGit(args: string[], cwd?: string) {
+  try {
+    return await execFileAsync("git", args, {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) {
+    const stderr = typeof error === "object" && error !== null && "stderr" in error
+      ? String((error as { stderr?: unknown }).stderr ?? "").trim()
+      : "";
+    const message = stderr || (error instanceof Error ? error.message : String(error));
+    throw unprocessable(`Git fallback failed while running "git ${args.join(" ")}": ${message}`);
+  }
+}
+
+function parseGitDefaultBranch(stdout: string) {
+  const match = stdout.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/m);
+  return asString(match?.[1] ?? null);
+}
+
+function parseGitCommitSha(stdout: string) {
+  for (const line of stdout.split(/\r?\n/)) {
+    const [sha] = line.trim().split(/\s+/);
+    if (/^[0-9a-f]{40}$/i.test(sha ?? "")) {
+      return sha;
+    }
+  }
+  return null;
+}
+
+async function resolveGitRemoteDefaultBranch(remoteUrl: string) {
+  const { stdout } = await runGit(["ls-remote", "--symref", remoteUrl, "HEAD"]);
+  return parseGitDefaultBranch(stdout) ?? "main";
+}
+
+async function resolveGitRemoteCommitSha(remoteUrl: string, ref: string) {
+  const { stdout } = await runGit([
+    "ls-remote",
+    remoteUrl,
+    ref,
+    `refs/heads/${ref}`,
+    `refs/tags/${ref}`,
+    `refs/tags/${ref}^{}`,
+  ]);
+  const sha = parseGitCommitSha(stdout);
+  if (!sha) {
+    throw unprocessable(`Failed to resolve GitHub ref ${ref}`);
+  }
+  return sha;
+}
+
+async function resolveGitHubPinnedRefViaGit(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+  const remoteUrl = buildGitRemoteUrl(parsed.hostname, parsed.owner, parsed.repo);
   if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
     return {
       pinnedRef: parsed.ref,
@@ -549,9 +608,29 @@ async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourc
 
   const trackingRef = parsed.explicitRef
     ? parsed.ref
-    : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase);
-  const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase);
+    : await resolveGitRemoteDefaultBranch(remoteUrl);
+  const pinnedRef = await resolveGitRemoteCommitSha(remoteUrl, trackingRef);
   return { pinnedRef, trackingRef };
+}
+
+async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
+  if (/^[0-9a-f]{40}$/i.test(parsed.ref.trim())) {
+    return {
+      pinnedRef: parsed.ref,
+      trackingRef: parsed.explicitRef ? parsed.ref : null,
+    };
+  }
+
+  const apiBase = gitHubApiBase(parsed.hostname);
+  try {
+    const trackingRef = parsed.explicitRef
+      ? parsed.ref
+      : await resolveGitHubDefaultBranch(parsed.owner, parsed.repo, apiBase);
+    const pinnedRef = await resolveGitHubCommitSha(parsed.owner, parsed.repo, trackingRef, apiBase);
+    return { pinnedRef, trackingRef };
+  } catch {
+    return await resolveGitHubPinnedRefViaGit(parsed);
+  }
 }
 
 
@@ -977,6 +1056,146 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
   return imports;
 }
 
+async function buildGitHubSkillImports(
+  companyId: string,
+  sourceUrl: string,
+  requestedSkillSlug: string | null,
+  parsed: ReturnType<typeof parseGitHubSourceUrl>,
+  ref: string,
+  trackingRef: string | null,
+  allPaths: string[],
+  readRepoFile: (repoPath: string) => Promise<string>,
+) {
+  const basePrefix = parsed.basePath ? `${parsed.basePath.replace(/^\/+|\/+$/g, "")}/` : "";
+  const scopedPaths = basePrefix
+    ? allPaths.filter((entry) => entry.startsWith(basePrefix))
+    : allPaths;
+  const relativePaths = scopedPaths.map((entry) => basePrefix ? entry.slice(basePrefix.length) : entry);
+  const parsedFilePath = parsed.filePath;
+  const filteredPaths = parsedFilePath
+    ? relativePaths.filter((entry) => entry === path.posix.relative(parsed.basePath || ".", parsedFilePath))
+    : relativePaths;
+  const skillPaths = filteredPaths.filter(
+    (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
+  );
+  if (skillPaths.length === 0) {
+    throw unprocessable(
+      "No SKILL.md files were found in the provided GitHub source.",
+    );
+  }
+
+  const skills: ImportedSkill[] = [];
+  for (const relativeSkillPath of skillPaths) {
+    const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
+    const markdown = await readRepoFile(repoSkillPath);
+    const parsedMarkdown = parseFrontmatterMarkdown(markdown);
+    const skillDir = path.posix.dirname(relativeSkillPath);
+    const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
+    const skillKey = readCanonicalSkillKey(
+      parsedMarkdown.frontmatter,
+      isPlainRecord(parsedMarkdown.frontmatter.metadata) ? parsedMarkdown.frontmatter.metadata : null,
+    );
+    if (requestedSkillSlug && !matchesRequestedSkill(relativeSkillPath, requestedSkillSlug) && slug !== requestedSkillSlug) {
+      continue;
+    }
+    const metadata = {
+      ...(skillKey ? { skillKey } : {}),
+      sourceKind: "github",
+      ...(parsed.hostname !== "github.com" ? { hostname: parsed.hostname } : {}),
+      owner: parsed.owner,
+      repo: parsed.repo,
+      ref,
+      trackingRef,
+      repoSkillDir: normalizeGitHubSkillDirectory(
+        basePrefix ? `${basePrefix}${skillDir}` : skillDir,
+        slug,
+      ),
+    };
+    const inventory = filteredPaths
+      .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
+      .map((entry) => ({
+        path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
+        kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+    skills.push({
+      key: deriveCanonicalSkillKey(companyId, {
+        slug,
+        sourceType: "github",
+        sourceLocator: sourceUrl,
+        metadata,
+      }),
+      slug,
+      name: asString(parsedMarkdown.frontmatter.name) ?? slug,
+      description: asString(parsedMarkdown.frontmatter.description),
+      markdown,
+      sourceType: "github",
+      sourceLocator: sourceUrl,
+      sourceRef: ref,
+      trustLevel: deriveTrustLevel(inventory),
+      compatibility: "compatible",
+      fileInventory: inventory,
+      metadata,
+    });
+  }
+
+  if (skills.length === 0) {
+    throw unprocessable(
+      requestedSkillSlug
+        ? `Skill ${requestedSkillSlug} was not found in the provided GitHub source.`
+        : "No SKILL.md files were found in the provided GitHub source.",
+    );
+  }
+
+  return skills;
+}
+
+async function readGitHubSkillImportsFromGitSnapshot(
+  companyId: string,
+  sourceUrl: string,
+  requestedSkillSlug: string | null,
+  parsed: ReturnType<typeof parseGitHubSourceUrl>,
+  ref: string,
+  trackingRef: string | null,
+) {
+  const remoteUrl = buildGitRemoteUrl(parsed.hostname, parsed.owner, parsed.repo);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-company-skill-git-"));
+  try {
+    const cloneRef =
+      trackingRef && !/^[0-9a-f]{40}$/i.test(trackingRef)
+        ? trackingRef
+        : (!/^[0-9a-f]{40}$/i.test(parsed.ref.trim()) ? parsed.ref : null);
+    const cloneArgs = ["clone", "--depth", "1"];
+    if (cloneRef) {
+      cloneArgs.push("--branch", cloneRef);
+    }
+    cloneArgs.push(remoteUrl, tempDir);
+    await runGit(cloneArgs);
+
+    const { stdout: headStdout } = await runGit(["rev-parse", "HEAD"], tempDir);
+    const headSha = headStdout.trim();
+    if (ref && headSha !== ref) {
+      await runGit(["fetch", "--depth", "1", "origin", ref], tempDir);
+      await runGit(["checkout", "--detach", ref], tempDir);
+    }
+
+    const allPaths: string[] = [];
+    await walkLocalFiles(tempDir, tempDir, allPaths);
+    return await buildGitHubSkillImports(
+      companyId,
+      sourceUrl,
+      requestedSkillSlug,
+      parsed,
+      ref,
+      trackingRef,
+      allPaths,
+      async (repoPath) => await fs.readFile(path.join(tempDir, ...repoPath.split("/")), "utf8"),
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function readUrlSkillImports(
   companyId: string,
   sourceUrl: string,
@@ -994,96 +1213,45 @@ async function readUrlSkillImports(
   } catch { return false; } })();
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
-    const apiBase = gitHubApiBase(parsed.hostname);
     const { pinnedRef, trackingRef } = await resolveGitHubPinnedRef(parsed);
     let ref = pinnedRef;
-    const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
-      `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
-    ).catch(() => {
-      throw unprocessable(`Failed to read GitHub tree for ${url}`);
-    });
-    const allPaths = (tree.tree ?? [])
-      .filter((entry) => entry.type === "blob")
-      .map((entry) => entry.path)
-      .filter((entry): entry is string => typeof entry === "string");
-    const basePrefix = parsed.basePath ? `${parsed.basePath.replace(/^\/+|\/+$/g, "")}/` : "";
-    const scopedPaths = basePrefix
-      ? allPaths.filter((entry) => entry.startsWith(basePrefix))
-      : allPaths;
-    const relativePaths = scopedPaths.map((entry) => basePrefix ? entry.slice(basePrefix.length) : entry);
-    const filteredPaths = parsed.filePath
-      ? relativePaths.filter((entry) => entry === path.posix.relative(parsed.basePath || ".", parsed.filePath!))
-      : relativePaths;
-    const skillPaths = filteredPaths.filter(
-      (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
-    );
-    if (skillPaths.length === 0) {
-      throw unprocessable(
-        "No SKILL.md files were found in the provided GitHub source.",
+    const apiBase = gitHubApiBase(parsed.hostname);
+    try {
+      const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
+        `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
       );
-    }
-    const skills: ImportedSkill[] = [];
-    for (const relativeSkillPath of skillPaths) {
-      const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
-      const markdown = await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath));
-      const parsedMarkdown = parseFrontmatterMarkdown(markdown);
-      const skillDir = path.posix.dirname(relativeSkillPath);
-      const slug = deriveImportedSkillSlug(parsedMarkdown.frontmatter, path.posix.basename(skillDir));
-      const skillKey = readCanonicalSkillKey(
-        parsedMarkdown.frontmatter,
-        isPlainRecord(parsedMarkdown.frontmatter.metadata) ? parsedMarkdown.frontmatter.metadata : null,
-      );
-      if (requestedSkillSlug && !matchesRequestedSkill(relativeSkillPath, requestedSkillSlug) && slug !== requestedSkillSlug) {
-        continue;
-      }
-      const metadata = {
-        ...(skillKey ? { skillKey } : {}),
-        sourceKind: "github",
-        ...(parsed.hostname !== "github.com" ? { hostname: parsed.hostname } : {}),
-        owner: parsed.owner,
-        repo: parsed.repo,
+      const allPaths = (tree.tree ?? [])
+        .filter((entry) => entry.type === "blob")
+        .map((entry) => entry.path)
+        .filter((entry): entry is string => typeof entry === "string");
+      const skills = await buildGitHubSkillImports(
+        companyId,
+        sourceUrl,
+        requestedSkillSlug,
+        parsed,
         ref,
         trackingRef,
-        repoSkillDir: normalizeGitHubSkillDirectory(
-          basePrefix ? `${basePrefix}${skillDir}` : skillDir,
-          slug,
-        ),
-      };
-      const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
-        .sort((left, right) => left.path.localeCompare(right.path));
-      skills.push({
-        key: deriveCanonicalSkillKey(companyId, {
-          slug,
-          sourceType: "github",
-          sourceLocator: sourceUrl,
-          metadata,
-        }),
-        slug,
-        name: asString(parsedMarkdown.frontmatter.name) ?? slug,
-        description: asString(parsedMarkdown.frontmatter.description),
-        markdown,
-        sourceType: "github",
-        sourceLocator: sourceUrl,
-        sourceRef: ref,
-        trustLevel: deriveTrustLevel(inventory),
-        compatibility: "compatible",
-        fileInventory: inventory,
-        metadata,
-      });
-    }
-    if (skills.length === 0) {
-      throw unprocessable(
-        requestedSkillSlug
-          ? `Skill ${requestedSkillSlug} was not found in the provided GitHub source.`
-          : "No SKILL.md files were found in the provided GitHub source.",
+        allPaths,
+        async (repoSkillPath) =>
+          await fetchText(resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, repoSkillPath)),
       );
+      return { skills, warnings };
+    } catch (error) {
+      const skills = await readGitHubSkillImportsFromGitSnapshot(
+        companyId,
+        sourceUrl,
+        requestedSkillSlug,
+        parsed,
+        ref,
+        trackingRef,
+      ).catch(() => {
+        throw error;
+      });
+      warnings.push(
+        `GitHub API unavailable for ${parsed.owner}/${parsed.repo}; imported skill(s) through a shallow git snapshot instead.`,
+      );
+      return { skills, warnings };
     }
-    return { skills, warnings };
   }
 
   if (url.startsWith("http://") || url.startsWith("https://")) {

@@ -140,4 +140,13 @@ describe("server adapter registry", () => {
     expect(await detectAdapterModel("claude_local")).toBeNull();
     expect(detectModel).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes Hermes adapter hooks needed by the schema UI and approval flow", () => {
+    const hermes = requireServerAdapter("hermes_local");
+
+    expect(hermes.sessionManagement).toBeDefined();
+    expect(hermes.listModels).toBeTypeOf("function");
+    expect(hermes.getConfigSchema).toBeTypeOf("function");
+    expect(hermes.onHireApproved).toBeTypeOf("function");
+  });
 });

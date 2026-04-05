@@ -4,11 +4,29 @@ description: >
   Create new agents in Paperclip with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
   draft a new agent prompt/config, and submit a hire request.
+required_environment_variables:
+  - PAPERCLIP_API_URL
+  - PAPERCLIP_COMPANY_ID
+  - PAPERCLIP_AGENT_ID
+  - PAPERCLIP_API_KEY
+  - PAPERCLIP_RUN_ID
 ---
 
 # Paperclip Create Agent Skill
 
 Use this skill when you are asked to hire/create an agent.
+
+## Core Rules
+
+- Use the terminal tool with `curl` for Paperclip API calls.
+- `PAPERCLIP_API_URL` already includes `/api`. Append paths directly, for example `$PAPERCLIP_API_URL/agents/me`.
+- Prefer `$PAPERCLIP_*` env vars over copying UUIDs by hand.
+- For JSON writes, prefer a temporary payload file plus `--data @file`.
+- For env-backed heredocs, use an unquoted delimiter like `<<JSON`, not `<<'JSON'`.
+- Before `POST`ing an env-backed payload file, inspect it and confirm no literal `$PAPERCLIP_*` strings remain.
+- Do not use `execute_code` for Paperclip hire, approval, issue-comment, or issue-status API calls. In Hermes tool sandboxes, `PAPERCLIP_*` vars can resolve as missing or `None`.
+- Do not use `write_file` for env-backed Paperclip payloads unless you are certain the required `PAPERCLIP_*` vars are available inside that execution environment.
+- Include `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on `POST` and `PATCH` requests.
 
 ## Preconditions
 
@@ -24,7 +42,7 @@ If you do not have this permission, escalate to your CEO or board.
 1. Confirm identity and company context.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
+curl -sS "$PAPERCLIP_API_URL/agents/me" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
@@ -45,7 +63,7 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt" \
 4. Compare existing agent configurations in your company.
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
+curl -sS "$PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/agent-configurations" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
@@ -70,44 +88,56 @@ curl -sS "$PAPERCLIP_API_URL/llms/agent-icons.txt" \
 7. Submit hire request.
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+cat > /tmp/paperclip-agent-hire.json <<JSON
+{
+  "name": "CTO",
+  "role": "cto",
+  "title": "Chief Technology Officer",
+  "icon": "crown",
+  "reportsTo": "$PAPERCLIP_AGENT_ID",
+  "capabilities": "Owns technical roadmap, architecture, staffing, execution",
+  "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
+  "adapterType": "codex_local",
+  "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
+  "runtimeConfig": {"heartbeat": {"enabled": true, "intervalSec": 300, "wakeOnDemand": true}},
+  "sourceIssueId": "$PAPERCLIP_TASK_ID"
+}
+JSON
+curl -sS -X POST "$PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "CTO",
-    "role": "cto",
-    "title": "Chief Technology Officer",
-    "icon": "crown",
-    "reportsTo": "<ceo-agent-id>",
-    "capabilities": "Owns technical roadmap, architecture, staffing, execution",
-    "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
-    "adapterType": "codex_local",
-    "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
-    "runtimeConfig": {"heartbeat": {"enabled": true, "intervalSec": 300, "wakeOnDemand": true}},
-    "sourceIssueId": "<issue-id>"
-  }'
+  --data @/tmp/paperclip-agent-hire.json
+
+grep -n '\$PAPERCLIP_' /tmp/paperclip-agent-hire.json && echo "fix payload expansion first" || cat /tmp/paperclip-agent-hire.json
 ```
 
 8. Handle governance state:
 - if response has `approval`, hire is `pending_approval`
 - monitor and discuss on approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
+- if the current issue explicitly says to wait for board approval after submitting the hire request, leave the issue open after your progress comment and stop there; do not mark it done until the approval wake arrives
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/approvals/<approval-id>" \
+curl -sS "$PAPERCLIP_API_URL/approvals/<approval-id>" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 
-curl -sS -X POST "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
+cat > /tmp/paperclip-approval-comment.json <<'JSON'
+{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}
+JSON
+curl -sS -X POST "$PAPERCLIP_API_URL/approvals/<approval-id>/comments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
-  -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
+  --data @/tmp/paperclip-approval-comment.json
 ```
 
 If the approval already exists and needs manual linking to the issue:
 
 ```sh
-curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
+curl -sS -X POST "$PAPERCLIP_API_URL/issues/<issue-id>/approvals" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   -d '{"approvalId":"<approval-id>"}'
 ```
@@ -115,10 +145,10 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
 After approval is granted, run this follow-up loop:
 
 ```sh
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID" \
+curl -sS "$PAPERCLIP_API_URL/approvals/$PAPERCLIP_APPROVAL_ID" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 
-curl -sS "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
+curl -sS "$PAPERCLIP_API_URL/approvals/$PAPERCLIP_APPROVAL_ID/issues" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
@@ -136,6 +166,7 @@ Before sending a hire request:
 - Avoid secrets in plain text unless required by adapter behavior.
 - Ensure reporting line is correct and in-company.
 - Ensure prompt is role-specific and operationally scoped.
+- If `PAPERCLIP_TASK_ID` is not set for this run, omit `sourceIssueId` instead of inventing one.
 - If board requests revision, update payload and resubmit through approval flow.
 
 For endpoint payload shapes and full examples, read:

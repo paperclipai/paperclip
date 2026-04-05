@@ -52,6 +52,7 @@
     "dotenv": "^17.0.1",
     "commander": "^13.1.0",
     "embedded-postgres": "^18.1.0-beta.16",
+    "hermes-paperclip-adapter": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

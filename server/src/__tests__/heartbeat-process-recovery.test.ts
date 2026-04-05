@@ -195,8 +195,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("returns an empty initializing log payload before a run log store is attached", async () => {
+    const { runId } = await seedRunFixture({
+      includeIssue: false,
+      runStatus: "running",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.readLog(runId);
+
+    expect(result).toMatchObject({
+      runId,
+      store: null,
+      logRef: null,
+      content: "",
+      nextOffset: 0,
+      initializing: true,
+    });
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("queues a retry for hermes_local when the recorded pid is dead", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "hermes_local",
       processPid: 999_999_999,
     });
     const heartbeat = heartbeatService(db);

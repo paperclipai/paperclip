@@ -40,7 +40,14 @@ export const heartbeatsApi = {
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ),
   log: (runId: string, offset = 0, limitBytes = 256000) =>
-    api.get<{ runId: string; store: string; logRef: string; content: string; nextOffset?: number }>(
+    api.get<{
+      runId: string;
+      store: string | null;
+      logRef: string | null;
+      content: string;
+      nextOffset?: number;
+      initializing?: boolean;
+    }>(
       `/heartbeat-runs/${runId}/log?offset=${encodeURIComponent(String(offset))}&limitBytes=${encodeURIComponent(String(limitBytes))}`,
     ),
   workspaceOperations: (runId: string) =>

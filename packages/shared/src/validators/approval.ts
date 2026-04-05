@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { APPROVAL_TYPES } from "../constants.js";
 
+const approvalCommentBodyField = z.string().trim().min(1);
+
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
   requestedByAgentId: z.string().uuid().optional().nullable(),
@@ -30,8 +32,24 @@ export const resubmitApprovalSchema = z.object({
 
 export type ResubmitApproval = z.infer<typeof resubmitApprovalSchema>;
 
-export const addApprovalCommentSchema = z.object({
-  body: z.string().min(1),
-});
+export const addApprovalCommentSchema = z
+  .object({
+    body: approvalCommentBodyField.optional(),
+    content: approvalCommentBodyField.optional(),
+    comments: approvalCommentBodyField.optional(),
+  })
+  .transform((input, ctx) => {
+    const body = input.body ?? input.content ?? input.comments;
+    if (body) {
+      return { body };
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Expected approval comment body in body, content, or comments",
+      path: ["body"],
+    });
+    return z.NEVER;
+  });
 
 export type AddApprovalComment = z.infer<typeof addApprovalCommentSchema>;

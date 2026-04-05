@@ -272,6 +272,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assigned" })).toBe(true);
   });
 
+  it("resets session context when delegated child work completes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "child_issue_completed" })).toBe(true);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
@@ -356,6 +360,12 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 
   it("returns null for empty context", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+
+  it("ignores placeholder task and issue ids", () => {
+    expect(
+      deriveTaskKeyWithHeartbeatFallback({ taskKey: "None", taskId: "undefined", issueId: "null" }, null),
+    ).toBeNull();
   });
 });
 

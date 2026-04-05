@@ -1,0 +1,66 @@
+{
+  "name": "hermes-paperclip-adapter",
+  "version": "1.0.0",
+  "description": "Production-grade Hermes Agent adapter for Paperclip with model discovery, approval-aware wake handling, skills sync, tests, and operations docs.",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/hermes-local"
+  },
+  "type": "module",
+  "license": "MIT",
+  "author": "OpenAI for Adam M.",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./server": {
+      "types": "./server.d.ts",
+      "import": "./src/server/index.js"
+    },
+    "./ui": {
+      "types": "./ui.d.ts",
+      "import": "./src/ui/index.js"
+    },
+    "./cli": {
+      "types": "./cli.d.ts",
+      "import": "./src/cli/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src",
+    "skills",
+    "docs",
+    "index.d.ts",
+    "server.d.ts",
+    "ui.d.ts",
+    "cli.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:verbose": "node --test --test-reporter=spec tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "paperclip",
+    "hermes",
+    "hermes-agent",
+    "adapter",
+    "agent-runtime",
+    "approvals",
+    "model-discovery"
+  ]
+}

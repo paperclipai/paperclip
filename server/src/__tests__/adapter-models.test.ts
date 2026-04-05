@@ -1,21 +1,43 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { resetHermesModelsCacheForTests } from "hermes-paperclip-adapter/server";
 import { listAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
 describe("adapter model listing", () => {
+  let originalHermesHome: string | undefined;
+  let tempHermesHome: string | null = null;
+
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    originalHermesHome = process.env.HERMES_HOME;
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
+    resetHermesModelsCacheForTests();
     vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    if (originalHermesHome === undefined) {
+      delete process.env.HERMES_HOME;
+    } else {
+      process.env.HERMES_HOME = originalHermesHome;
+    }
+    resetHermesModelsCacheForTests();
+    if (tempHermesHome) {
+      await fs.rm(tempHermesHome, { recursive: true, force: true });
+      tempHermesHome = null;
+    }
   });
 
   it("returns an empty list for unknown adapters", async () => {
@@ -83,6 +105,29 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+  });
+
+  it("loads Hermes models dynamically from the configured Hermes home", async () => {
+    const hermesHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-models-"));
+    tempHermesHome = hermesHome;
+    process.env.HERMES_HOME = hermesHome;
+    await fs.writeFile(
+      path.join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: gpt-4o",
+        "  provider: copilot",
+        "fallback_providers:",
+        "  - model: gpt-4.1",
+        "    provider: openai",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const models = await listAdapterModels("hermes_local");
+
+    expect(models.some((model) => model.id === "gpt-4o")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-4.1")).toBe(true);
   });
 
   it("loads cursor models dynamically and caches them", async () => {

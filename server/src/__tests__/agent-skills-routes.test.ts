@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -22,11 +23,13 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockApprovalService = vi.hoisted(() => ({
   create: vi.fn(),
+  list: vi.fn(),
 }));
 const mockBudgetService = vi.hoisted(() => ({}));
 const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
+  listApprovalsForIssue: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -91,22 +94,45 @@ vi.mock("../adapters/index.js", () => ({
   detectAdapterModel: vi.fn(),
 }));
 
-function createDb(requireBoardApprovalForNewAgents = false) {
+function createDb(
+  input:
+    | boolean
+    | {
+        requireBoardApprovalForNewAgents?: boolean;
+        companyRows?: Array<Record<string, unknown>>;
+        heartbeatRunRows?: Array<Record<string, unknown>>;
+        issueRows?: Array<Record<string, unknown>>;
+      } = false,
+) {
+  const options =
+    typeof input === "boolean" ? { requireBoardApprovalForNewAgents: input } : input;
+  const rowsByTable = new Map<unknown, Array<Record<string, unknown>>>([
+    [
+      companies,
+      options.companyRows ?? [
+        {
+          id: "company-1",
+          requireBoardApprovalForNewAgents: options.requireBoardApprovalForNewAgents ?? false,
+        },
+      ],
+    ],
+    [heartbeatRuns, options.heartbeatRunRows ?? []],
+    [issuesTable, options.issueRows ?? []],
+  ]);
+
   return {
     select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(async () => [
-          {
-            id: "company-1",
-            requireBoardApprovalForNewAgents,
-          },
-        ]),
+      from: vi.fn((table: unknown) => ({
+        where: vi.fn(async () => rowsByTable.get(table) ?? []),
       })),
     })),
   };
 }
 
-function createApp(db: Record<string, unknown> = createDb()) {
+function createApp(
+  db: Record<string, unknown> = createDb(),
+  actorOverride?: Record<string, unknown>,
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -116,6 +142,7 @@ function createApp(db: Record<string, unknown> = createDb()) {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...(actorOverride ?? {}),
     };
     next();
   });
@@ -184,6 +211,8 @@ describe("agent skill routes", () => {
       entries: [],
       warnings: [],
     });
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockApprovalService.list.mockResolvedValue([]);
     mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeAgent("claude_local"),
       adapterConfig: patch.adapterConfig ?? {},
@@ -269,6 +298,26 @@ describe("agent skill routes", () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("cursor"));
     mockAdapter.listSkills.mockResolvedValue({
       adapterType: "cursor",
+      supported: true,
+      mode: "persistent",
+      desiredSkills: ["paperclipai/paperclip/paperclip"],
+      entries: [],
+      warnings: [],
+    });
+
+    const res = await request(createApp())
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.listRuntimeSkillEntries).toHaveBeenCalledWith("company-1", {
+      materializeMissing: true,
+    });
+  });
+
+  it("materializes runtime skills when listing Hermes skills", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("hermes_local"));
+    mockAdapter.listSkills.mockResolvedValue({
+      adapterType: "hermes_local",
       supported: true,
       mode: "persistent",
       desiredSkills: ["paperclipai/paperclip/paperclip"],
@@ -495,5 +544,272 @@ describe("agent skill routes", () => {
       | { payload?: { adapterConfig?: Record<string, unknown> } }
       | undefined;
     expect(approvalInput?.payload?.adapterConfig?.promptTemplate).toBeUndefined();
+  });
+
+  it("reuses an existing hire approval for the same requesting agent and source issue", async () => {
+    const managerId = "22222222-2222-4222-8222-222222222222";
+    const workerId = "33333333-3333-4333-8333-333333333333";
+    const issueId = "44444444-4444-4444-8444-444444444444";
+
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === managerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: managerId,
+          companyId: "company-1",
+          permissions: { canCreateAgents: true },
+        };
+      }
+      if (id === workerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: workerId,
+          name: "Worker",
+          companyId: "company-1",
+          status: "idle",
+        };
+      }
+      return null;
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      {
+        id: "approval-existing",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        requestedByAgentId: managerId,
+        requestedByUserId: null,
+        payload: {
+          name: "Worker",
+          reportsTo: managerId,
+          adapterType: "hermes_local",
+          agentId: workerId,
+        },
+      },
+    ]);
+
+    const res = await request(
+      createApp(createDb(true), {
+        type: "agent",
+        agentId: managerId,
+        companyId: "company-1",
+        runId: "run-1",
+      }),
+    )
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Worker",
+        role: "engineer",
+        reportsTo: managerId,
+        adapterType: "hermes_local",
+        sourceIssueId: issueId,
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.reused).toBe(true);
+    expect(res.body.approval.id).toBe("approval-existing");
+    expect(res.body.agent.id).toBe(workerId);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-existing",
+      [issueId],
+      { agentId: managerId, userId: null },
+    );
+  });
+
+  it("reuses an existing hire approval for the same requesting agent even without source issue linkage", async () => {
+    const managerId = "55555555-5555-4555-8555-555555555555";
+    const workerId = "66666666-6666-4666-8666-666666666666";
+
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === managerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: managerId,
+          companyId: "company-1",
+          permissions: { canCreateAgents: true },
+        };
+      }
+      if (id === workerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: workerId,
+          name: "Worker",
+          companyId: "company-1",
+          status: "idle",
+        };
+      }
+      return null;
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockApprovalService.list.mockResolvedValue([
+      {
+        id: "approval-reused-global",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        requestedByAgentId: managerId,
+        requestedByUserId: null,
+        payload: {
+          name: "Worker",
+          reportsTo: managerId,
+          adapterType: "hermes_local",
+          agentId: workerId,
+        },
+      },
+    ]);
+
+    const res = await request(
+      createApp(createDb(true), {
+        type: "agent",
+        agentId: managerId,
+        companyId: "company-1",
+        runId: "run-2",
+      }),
+    )
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Worker",
+        role: "engineer",
+        reportsTo: managerId,
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.reused).toBe(true);
+    expect(res.body.approval.id).toBe("approval-reused-global");
+    expect(res.body.agent.id).toBe(workerId);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+  });
+
+  it("infers source issue linkage from the requesting agent run when the hire payload omits it", async () => {
+    const managerId = "77777777-7777-4777-8777-777777777777";
+    const issueId = "88888888-8888-4888-8888-888888888888";
+
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === managerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: managerId,
+          companyId: "company-1",
+          permissions: { canCreateAgents: true },
+        };
+      }
+      return null;
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(
+      createApp(
+        createDb({
+          requireBoardApprovalForNewAgents: true,
+          heartbeatRunRows: [
+            {
+              id: "run-ctx",
+              companyId: "company-1",
+              agentId: managerId,
+              contextSnapshot: { issueId },
+            },
+          ],
+          issueRows: [{ id: issueId, companyId: "company-1" }],
+        }),
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          runId: "run-ctx",
+        },
+      ),
+    )
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Worker",
+        role: "engineer",
+        reportsTo: managerId,
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-1",
+      [issueId],
+      { agentId: managerId, userId: null },
+    );
+  });
+
+  it("normalizes Paperclip placeholder refs in agent-hires payloads before persisting", async () => {
+    const managerId = "99999999-9999-4999-8999-999999999999";
+    const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === managerId) {
+        return {
+          ...makeAgent("hermes_local"),
+          id: managerId,
+          companyId: "company-1",
+          permissions: { canCreateAgents: true },
+        };
+      }
+      return null;
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(
+      createApp(
+        createDb({
+          requireBoardApprovalForNewAgents: true,
+          heartbeatRunRows: [
+            {
+              id: "run-placeholder",
+              companyId: "company-1",
+              agentId: managerId,
+              contextSnapshot: { issueId },
+            },
+          ],
+          issueRows: [{ id: issueId, companyId: "company-1" }],
+        }),
+        {
+          type: "agent",
+          agentId: managerId,
+          companyId: "company-1",
+          runId: "run-placeholder",
+        },
+      ),
+    )
+      .post("/api/companies/company-1/agent-hires")
+      .send({
+        name: "Worker",
+        role: "engineer",
+        reportsTo: "$PAPERCLIP_AGENT_ID",
+        adapterType: "hermes_local",
+        sourceIssueId: "$PAPERCLIP_TASK_ID",
+        adapterConfig: {},
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        reportsTo: managerId,
+      }),
+    );
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          reportsTo: managerId,
+        }),
+      }),
+    );
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledWith(
+      "approval-1",
+      [issueId],
+      { agentId: managerId, userId: null },
+    );
   });
 });

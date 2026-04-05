@@ -7,6 +7,12 @@ description: >
   routines (recurring scheduled tasks), or call any Paperclip API endpoint. Do NOT
   use for the actual domain work itself (writing code, research, etc.) — only for
   Paperclip coordination.
+required_environment_variables:
+  - PAPERCLIP_API_URL
+  - PAPERCLIP_COMPANY_ID
+  - PAPERCLIP_AGENT_ID
+  - PAPERCLIP_API_KEY
+  - PAPERCLIP_RUN_ID
 ---
 
 # Paperclip Skill
@@ -15,13 +21,21 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 ## Authentication
 
-Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
+Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated), and delegated child-issue fields such as `PAPERCLIP_CHILD_ISSUE_ID` and `PAPERCLIP_CHILD_ISSUE_STATUS`. For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. `PAPERCLIP_API_URL` already includes `/api`, so append paths directly and do not add another `/api` segment.
+
+Use the terminal tool with `curl` for Paperclip API work. Prefer `$PAPERCLIP_*` env vars over hand-copying IDs. For env-backed JSON payloads, prefer a temporary file plus `--data @file` instead of `write_file` or `execute_code`.
+Paperclip API mutations are terminal-only. Never use `execute_code` to `POST` or `PATCH` Paperclip issues, approvals, routines, or hire requests because Hermes tool sandboxes can resolve `PAPERCLIP_*` vars as missing or `None`.
+If the task says a comment, file, payload, or token must be exact or verbatim, treat that as a byte-for-byte requirement. Verify the exact output before marking work done, and let the task's explicit wording override generic skill examples or default phrasing.
+Loaded skills can help execute the work, but they do not replace Paperclip's required issue-comment and status-update workflow.
+If a loaded skill tells you to "report", "wait", ask for feedback, or say "Ready for feedback", translate that into the required Paperclip issue comment and continue unless the assigned issue explicitly tells you to stop or you hit a real blocker.
+If the assigned issue explicitly says to wait for board approval, revision feedback, or another reviewer decision after submitting a request, post the required progress comment but do not mark the issue done until that follow-up wake arrives.
+Do not claim that you posted a Paperclip issue comment or marked an issue done until the corresponding API call actually succeeded and you verified the updated issue state.
 
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL mutating Paperclip API requests. This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure
 

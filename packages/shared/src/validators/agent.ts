@@ -8,6 +8,34 @@ import {
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 
+const PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_AGENT_ID\}?$/;
+const PAPERCLIP_TASK_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_TASK_ID\}?$/;
+
+function isUuidOrPlaceholder(
+  value: string,
+  placeholderRegex: RegExp,
+): boolean {
+  return z.string().uuid().safeParse(value).success || placeholderRegex.test(value);
+}
+
+const agentHireReportsToSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (value) => isUuidOrPlaceholder(value, PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX),
+    { message: "reportsTo must be a UUID or $PAPERCLIP_AGENT_ID" },
+  );
+
+const agentHireSourceIssueSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (value) => isUuidOrPlaceholder(value, PAPERCLIP_TASK_ID_PLACEHOLDER_REGEX),
+    { message: "sourceIssueId must be a UUID or $PAPERCLIP_TASK_ID" },
+  );
+
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
 });
@@ -63,8 +91,9 @@ export const createAgentSchema = z.object({
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const createAgentHireSchema = createAgentSchema.extend({
-  sourceIssueId: z.string().uuid().optional().nullable(),
-  sourceIssueIds: z.array(z.string().uuid()).optional(),
+  reportsTo: agentHireReportsToSchema.optional().nullable(),
+  sourceIssueId: agentHireSourceIssueSchema.optional().nullable(),
+  sourceIssueIds: z.array(agentHireSourceIssueSchema).optional(),
 });
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
