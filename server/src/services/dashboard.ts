@@ -41,7 +41,8 @@ export function dashboardService(db: Db) {
         error: 0,
       };
       for (const row of agentRows) {
-        const count = Number(row.count);
+        if (!row?.status) continue;
+        const count = Number(row.count ?? 0);
         // "idle" agents are operational — count them as active
         const bucket = row.status === "idle" ? "active" : row.status;
         agentCounts[bucket] = (agentCounts[bucket] ?? 0) + count;
@@ -54,7 +55,8 @@ export function dashboardService(db: Db) {
         done: 0,
       };
       for (const row of taskRows) {
-        const count = Number(row.count);
+        if (!row?.status) continue;
+        const count = Number(row.count ?? 0);
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
         if (row.status === "done") taskCounts.done += count;
