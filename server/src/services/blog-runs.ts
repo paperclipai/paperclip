@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -6,9 +7,29 @@ import {
   blogRunStepAttempts,
   blogRuns,
 } from "@paperclipai/db";
+import { buildPublishIdempotencyKey } from "@paperclipai/blog-pipeline-policy";
 import { conflict, notFound } from "../errors.js";
 import { blogArtifactMirrorService } from "./blog-artifact-mirror.js";
 import { resolveBlogIncidentRoute } from "./blog-incident-routing.js";
+
+const require = createRequire(import.meta.url);
+const { buildWritingBoardApprovalSnapshot } = require("/Users/daehan/ec2-migration/home-ubuntu/board-app/lib/approval-hash.js") as {
+  buildWritingBoardApprovalSnapshot: (input: {
+    title?: string;
+    body?: string;
+    summary?: string;
+    targetSlug?: string;
+    siteId?: string;
+    policyVersion?: string;
+  }) => {
+    artifactHash: string;
+    normalizedDomHash: string;
+    approvalKeyHash: string;
+    targetSlug: string;
+    siteId: string;
+    policyVersion: string;
+  };
+};
 
 const STEP_SEQUENCE = [
   "research",
@@ -157,6 +178,10 @@ type RequestPublishApprovalInput = {
   publishIdempotencyKey: string;
 };
 
+type RequestPublishApprovalFromRunInput = {
+  approvedByUserId?: string | null;
+};
+
 function normalizeLane(value: string | null | undefined) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "report") return "report";
@@ -250,6 +275,12 @@ function normalizeArticleLoopContext(value: unknown): ArticleLoopContext {
   };
 }
 
+function requireStringValue(value: unknown, message: string) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) throw conflict(message);
+  return normalized;
+}
+
 function parseFailedGateNames(message: string) {
   const raw = String(message || "");
   const prefix = "blog_run_publish_ready_failed:";
@@ -288,6 +319,19 @@ function derivePublicVerifyState(run: typeof blogRuns.$inferSelect) {
   if (run.status === "published") return "pending";
   if (run.failedReason && run.currentStep === "public_verify") return "failed";
   return "idle";
+}
+
+function deriveLatestVerifySummary(latestAttempt?: typeof blogRunStepAttempts.$inferSelect | null) {
+  if (!latestAttempt || latestAttempt.stepKey !== "public_verify") return null;
+  const result = toRecord(latestAttempt.resultJson);
+  const publicObservation = toRecord(result.publicObservation);
+  return {
+    verdict: typeof result.verdict === "string" ? result.verdict : null,
+    failureNames: Array.isArray(result.failureNames)
+      ? result.failureNames.map((entry) => String(entry ?? "").trim()).filter(Boolean)
+      : [],
+    summary: typeof publicObservation.summary === "string" ? publicObservation.summary : null,
+  };
 }
 
 function toRunListItem(
@@ -338,6 +382,7 @@ function toRunListItem(
           revokedAt: latestApproval.revokedAt,
         }
       : null,
+    latestVerify: deriveLatestVerifySummary(latestAttempt),
     publishedUrl: run.publishedUrl,
     failedReason: run.failedReason,
     createdAt: run.createdAt,
@@ -708,15 +753,16 @@ export function blogRunService(
     async getDetail(id: string) {
       const run = await getRunById(id);
       if (!run) return null;
-      const [attempts, artifacts, approvals] = await Promise.all([
+      const [attempts, artifacts, approvals, stopReason] = await Promise.all([
         db.select().from(blogRunStepAttempts).where(eq(blogRunStepAttempts.blogRunId, id)).orderBy(
           asc(blogRunStepAttempts.createdAt),
           asc(blogRunStepAttempts.attemptNumber),
         ),
         db.select().from(blogArtifacts).where(eq(blogArtifacts.blogRunId, id)).orderBy(asc(blogArtifacts.createdAt)),
         db.select().from(blogPublishApprovals).where(eq(blogPublishApprovals.blogRunId, id)).orderBy(desc(blogPublishApprovals.createdAt)),
+        artifactMirror.readStopReason ? artifactMirror.readStopReason(id).then((value) => toRecord(value)) : Promise.resolve({}),
       ]);
-      return { run, attempts, artifacts, approvals };
+      return { run, attempts, artifacts, approvals, stopReason };
     },
 
     async listArtifacts(id: string) {
@@ -1153,6 +1199,50 @@ export function blogRunService(
         run: await getRunById(runId),
         approval,
       };
+    },
+
+    async requestPublishApprovalFromRun(runId: string, input: RequestPublishApprovalFromRunInput = {}) {
+      const run = await getRunById(runId);
+      if (!run) throw notFound("Blog run not found");
+      if (run.status !== "publish_approval_pending") {
+        throw conflict("Publish approval from run requires publish_approval_pending status");
+      }
+
+      const context = toRecord(run.contextJson);
+      const title = requireStringValue(context.title ?? context.topic ?? run.topic, "publish_approval_title_missing");
+      const body = requireStringValue(context.article_html ?? context.content, "publish_approval_body_missing");
+      const summary = String(context.summary ?? context.dek ?? context.lede ?? "").trim();
+      const targetSite = String(run.targetSite ?? "fluxaivory.com").trim() || "fluxaivory.com";
+      const snapshot = buildWritingBoardApprovalSnapshot({
+        title,
+        body,
+        summary,
+        targetSlug: String((context.targetSlug ?? context.target_slug ?? "")).trim() || undefined,
+        siteId: targetSite,
+        policyVersion: "publish-gateway-v1",
+      });
+      const publishIdempotencyKey = buildPublishIdempotencyKey({
+        entityType: "blog_run",
+        entityId: run.id,
+        approvalKeyHash: snapshot.approvalKeyHash,
+        targetSlug: snapshot.targetSlug,
+        siteId: snapshot.siteId,
+      });
+
+      return this.requestPublishApproval(runId, {
+        targetSlug: snapshot.targetSlug,
+        siteId: snapshot.siteId,
+        artifactHash: snapshot.artifactHash,
+        normalizedDomHash: snapshot.normalizedDomHash,
+        policyVersion: snapshot.policyVersion,
+        approvalKeyHash: snapshot.approvalKeyHash,
+        approvalPayload: {
+          title,
+          summary,
+        },
+        approvedByUserId: input.approvedByUserId ?? null,
+        publishIdempotencyKey,
+      });
     },
   };
 }

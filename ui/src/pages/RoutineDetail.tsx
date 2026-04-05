@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { routinesApi, type RoutineTriggerResponse, type RotateRoutineTriggerResponse } from "../api/routines";
 import { heartbeatsApi } from "../api/heartbeats";
+import { blogRunsApi } from "../api/blogRuns";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -310,6 +311,11 @@ export function RoutineDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: activeBlogRuns = [] } = useQuery({
+    queryKey: queryKeys.blogRuns.list(selectedCompanyId!, "active", 20),
+    queryFn: () => blogRunsApi.listForCompany(selectedCompanyId!, { mode: "active", limit: 20 }),
+    enabled: !!selectedCompanyId,
+  });
 
   const routineDefaults = useMemo(
     () =>
@@ -326,6 +332,11 @@ export function RoutineDetail() {
         : null,
     [routine],
   );
+  const activeBlogRunsById = useMemo(() => {
+    const map = new Map<string, (typeof activeBlogRuns)[number]>();
+    for (const run of activeBlogRuns) map.set(run.id, run);
+    return map;
+  }, [activeBlogRuns]);
   const isEditDirty = useMemo(() => {
     if (!routineDefaults) return false;
     return (
@@ -978,7 +989,8 @@ export function RoutineDetail() {
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (
                 <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 min-w-0">
                     <Badge variant="outline" className="shrink-0">{run.source}</Badge>
                     <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
                       {run.status.replaceAll("_", " ")}
@@ -991,6 +1003,33 @@ export function RoutineDetail() {
                         {run.linkedIssue.identifier ?? run.linkedIssue.id.slice(0, 8)}
                       </Link>
                     )}
+                    {(() => {
+                      const triggerPayload = (run as { triggerPayload?: Record<string, unknown> | null }).triggerPayload;
+                      const blogRunId = typeof triggerPayload?.blogRunId === "string" ? triggerPayload.blogRunId : null;
+                      if (!blogRunId) return null;
+                      return (
+                        <Link to={`/blog-runs/${blogRunId}`} className="text-muted-foreground hover:underline truncate">
+                          blog run
+                        </Link>
+                      );
+                    })()}
+                    </div>
+                    {(() => {
+                      const triggerPayload = (run as { triggerPayload?: Record<string, unknown> | null }).triggerPayload;
+                      const blogRunId = typeof triggerPayload?.blogRunId === "string" ? triggerPayload.blogRunId : null;
+                      if (!blogRunId) return null;
+                      const blogRun = activeBlogRunsById.get(blogRunId);
+                      if (!blogRun) return null;
+                      const blocker = blogRun.failedReason
+                        ?? blogRun.latestAttempt?.errorMessage
+                        ?? (blogRun.latestApproval?.targetSlug ? `approval target: ${blogRun.latestApproval.targetSlug}` : null);
+                      if (!blocker) return null;
+                      return (
+                        <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                          {blocker}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
                 </div>
@@ -1019,6 +1058,16 @@ export function RoutineDetail() {
                         ))}
                       </span>
                     )}
+                    {(() => {
+                      const details = event.details as Record<string, unknown> | null | undefined;
+                      const blogRunId = typeof details?.blogRunId === "string" ? details.blogRunId : null;
+                      if (!blogRunId) return null;
+                      return (
+                        <Link to={`/blog-runs/${blogRunId}`} className="shrink-0 text-muted-foreground hover:underline">
+                          blog run
+                        </Link>
+                      );
+                    })()}
                   </div>
                   <span className="text-muted-foreground/60 shrink-0">{timeAgo(event.createdAt)}</span>
                 </div>

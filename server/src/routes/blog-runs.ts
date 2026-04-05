@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
-import { blogRunService, projectService } from "../services/index.js";
+import { blogRunService, blogRunWorkerService, projectService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 
 const createBlogRunSchema = z.object({
@@ -54,6 +54,10 @@ const requestResumeReviewSchema = z.object({
   notes: z.array(z.string().trim().min(1)).optional(),
 });
 
+const requestPublishApprovalFromRunSchema = z.object({
+  approvedByUserId: z.string().trim().optional(),
+});
+
 const markResumableSchema = z.object({
   specialistAcknowledgedBy: z.string().trim().min(1),
   operatorReviewedBy: z.string().trim().min(1),
@@ -65,6 +69,7 @@ const markResumableSchema = z.object({
 export function blogRunRoutes(db: Db) {
   const router = Router();
   const svc = blogRunService(db);
+  const worker = blogRunWorkerService(db);
   const projectsSvc = projectService(db);
 
   router.get("/companies/:companyId/blog-runs", async (req, res) => {
@@ -121,6 +126,18 @@ export function blogRunRoutes(db: Db) {
     res.json(claimed);
   });
 
+  router.post("/blog-runs/:id/run-next", async (req, res) => {
+    const runId = req.params.id as string;
+    const run = await svc.getById(runId);
+    if (!run) {
+      res.status(404).json({ error: "Blog run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+    const result = await worker.runNext(run.id);
+    res.json(result);
+  });
+
   router.post("/blog-runs/:id/steps/:stepKey/complete", validate(completeStepSchema), async (req, res) => {
     const runId = req.params.id as string;
     const stepKey = req.params.stepKey as string;
@@ -156,6 +173,18 @@ export function blogRunRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     const result = await svc.requestPublishApproval(run.id, req.body);
+    res.json(result);
+  });
+
+  router.post("/blog-runs/:id/request-publish-approval-from-run", validate(requestPublishApprovalFromRunSchema), async (req, res) => {
+    const runId = req.params.id as string;
+    const run = await svc.getById(runId);
+    if (!run) {
+      res.status(404).json({ error: "Blog run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+    const result = await svc.requestPublishApprovalFromRun(run.id, req.body);
     res.json(result);
   });
 

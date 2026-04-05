@@ -47,6 +47,10 @@ function summaryChip(label: string, value: string) {
 }
 
 function blockerText(run: BlogRunListItem) {
+  if (run.latestVerify?.failureNames && run.latestVerify.failureNames.length > 0) {
+    return `verify failures: ${run.latestVerify.failureNames.join(", ")}`;
+  }
+  if (run.latestVerify?.summary) return run.latestVerify.summary;
   if (run.failedReason) return run.failedReason;
   if (run.latestAttempt?.errorMessage) return run.latestAttempt.errorMessage;
   if (run.status === "publish_approval_pending" && run.latestApproval?.targetSlug) {
@@ -91,7 +95,7 @@ export function IssueBlogRunSummaryCard({ companyId, issueId }: IssueBlogRunSumm
             </a>
           ) : null}
           <Link
-            to={`/issues/${issueId}`}
+            to={`/blog-runs/${run.id}`}
             className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
           >
             <FileStack className="h-2.5 w-2.5" />

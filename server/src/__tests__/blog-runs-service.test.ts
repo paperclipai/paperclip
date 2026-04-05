@@ -391,6 +391,38 @@ describeEmbeddedPostgres("blog run service", () => {
     expect(approved.approval?.approvalKeyHash).toBe("approval-hash");
   });
 
+  it("derives publish approval fields from run context", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const created = await svc.create({
+      companyId,
+      projectId,
+      topic: "Validation topic",
+      lane: "publish",
+      publishMode: "publish",
+      contextJson: {
+        title: "Validation title",
+        article_html: "<p>Body paragraph</p>",
+        summary: "Short summary",
+      },
+    });
+
+    await db.update(blogRuns).set({
+      currentStep: "publish",
+      status: "publish_approval_pending",
+    }).where(eq(blogRuns.id, created!.id));
+
+    const approved = await svc.requestPublishApprovalFromRun(created!.id, {
+      approvedByUserId: "operator-user",
+    });
+
+    expect(approved.run?.status).toBe("publish_approved");
+    expect(approved.approval?.targetSlug).toBe("validation-title");
+    expect(approved.approval?.approvalKeyHash).toHaveLength(64);
+    expect(approved.run?.publishIdempotencyKey).toHaveLength(64);
+  });
+
   it("records failure on a step attempt and marks the run failed", async () => {
     const { companyId, projectId } = await seedProject();
     const svc = blogRunService(db);

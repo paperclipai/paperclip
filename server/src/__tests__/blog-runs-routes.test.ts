@@ -41,6 +41,7 @@ const mockBlogRunService = vi.hoisted(() => ({
   completeStep: vi.fn(),
   failStep: vi.fn(),
   requestPublishApproval: vi.fn(),
+  requestPublishApprovalFromRun: vi.fn(),
   requestResumeReview: vi.fn(),
   markResumable: vi.fn(),
 }));
@@ -49,8 +50,13 @@ const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockBlogRunWorkerService = vi.hoisted(() => ({
+  runNext: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   blogRunService: () => mockBlogRunService,
+  blogRunWorkerService: () => mockBlogRunWorkerService,
   projectService: () => mockProjectService,
 }));
 
@@ -101,6 +107,16 @@ describe("blog run routes", () => {
     mockBlogRunService.requestPublishApproval.mockResolvedValue({
       run: { ...run, status: "publish_approved", currentStep: "publish" },
       approval: { id: "approval-1", approvalKeyHash: "approval-hash" },
+    });
+    mockBlogRunService.requestPublishApprovalFromRun.mockResolvedValue({
+      run: { ...run, status: "publish_approved", currentStep: "publish", publishIdempotencyKey: "publish-key" },
+      approval: { id: "approval-1", approvalKeyHash: "approval-hash", targetSlug: "test-topic" },
+    });
+    mockBlogRunWorkerService.runNext.mockResolvedValue({
+      run: { ...run, status: "publish_running", currentStep: "publish" },
+      attempts: [],
+      artifacts: [],
+      approvals: [],
     });
     mockBlogRunService.requestResumeReview.mockResolvedValue({
       run: { ...run, status: "review_required", currentStep: "publish" },
@@ -227,6 +243,40 @@ describe("blog run routes", () => {
       targetSlug: "test-slug",
       approvalKeyHash: "approval-hash",
     }));
+  });
+
+  it("requests publish approval from run context", async () => {
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/blog-runs/${runId}/request-publish-approval-from-run`)
+      .send({ approvedByUserId: "operator-user" });
+
+    expect(res.status).toBe(200);
+    expect(mockBlogRunService.requestPublishApprovalFromRun).toHaveBeenCalledWith(runId, expect.objectContaining({
+      approvedByUserId: "operator-user",
+    }));
+  });
+
+  it("runs the next blog run step", async () => {
+    const app = createApp({
+      type: "board",
+      source: "local_implicit",
+      userId: "board-user",
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/blog-runs/${runId}/run-next`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockBlogRunWorkerService.runNext).toHaveBeenCalledWith(runId);
   });
 
   it("requests resume review for a stopped run", async () => {
