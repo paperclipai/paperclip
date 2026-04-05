@@ -748,20 +748,6 @@ export function CommentThread({
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        currentUserId={currentUserId}
-        companyId={companyId}
-        projectId={projectId}
-        feedbackVoteByTargetId={feedbackVoteByTargetId}
-        feedbackDataSharingPreference={feedbackDataSharingPreference}
-        onVote={onVote ? handleFeedbackVote : undefined}
-        votingTargetId={votingTargetId}
-        highlightCommentId={highlightCommentId}
-        feedbackTermsUrl={feedbackTermsUrl}
-      />
-
       {liveRunSlot}
 
       {queuedComments.length > 0 && (
@@ -797,6 +783,20 @@ export function CommentThread({
           </div>
         </div>
       )}
+
+      <TimelineList
+        timeline={timeline}
+        agentMap={agentMap}
+        currentUserId={currentUserId}
+        companyId={companyId}
+        projectId={projectId}
+        feedbackVoteByTargetId={feedbackVoteByTargetId}
+        feedbackDataSharingPreference={feedbackDataSharingPreference}
+        onVote={onVote ? handleFeedbackVote : undefined}
+        votingTargetId={votingTargetId}
+        highlightCommentId={highlightCommentId}
+        feedbackTermsUrl={feedbackTermsUrl}
+      />
 
       {composerDisabledReason ? (
         <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
