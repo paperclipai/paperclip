@@ -718,11 +718,25 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown table {
   width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.paperclip-markdown th,
+.paperclip-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.65rem;
+  text-align: left;
 }
 
 .paperclip-markdown th {
   font-weight: 600;
-  text-align: left;
+  background-color: color-mix(in oklab, var(--accent) 50%, transparent);
+}
+
+.paperclip-markdown tr:nth-child(even) td {
+  background-color: color-mix(in oklab, var(--accent) 20%, transparent);
 }
 
 .paperclip-mermaid {
