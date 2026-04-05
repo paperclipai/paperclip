@@ -127,6 +127,7 @@ const adapterLabels: Record<string, string> = {
   openclaw_gateway: "OpenClaw Gateway",
   process: "Process",
   http: "HTTP",
+  ollama_cloud: "Ollama Cloud",
 };
 
 const statusDotColor: Record<string, string> = {
@@ -448,11 +449,26 @@ export function OrgChart() {
                     style={{ backgroundColor: dotColor }}
                   />
                 </div>
-                {/* Name + role + department + adapter type */}
+                {/* Name + role + badges + model */}
                 <div className="flex flex-col items-start min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-foreground leading-tight">
-                    {node.name}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-semibold text-foreground leading-tight">
+                      {node.name}
+                    </span>
+                    {/* Role level badge */}
+                    {getRoleLevel(node.role) === "executive" && (
+                      <span className="text-[8px] font-semibold px-1 py-0 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 leading-tight">C</span>
+                    )}
+                    {getRoleLevel(node.role) === "management" && (
+                      <span className="text-[8px] font-semibold px-1 py-0 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400 leading-tight">M</span>
+                    )}
+                    {getRoleLevel(node.role) === "staff" && !isContractor && (
+                      <span className="text-[8px] font-semibold px-1 py-0 rounded-full bg-green-500/15 text-green-600 dark:text-green-400 leading-tight">FTE</span>
+                    )}
+                    {isContractor && (
+                      <span className="text-[8px] font-semibold px-1 py-0 rounded-full border border-dashed border-amber-400/60 text-amber-500 leading-tight">CTR</span>
+                    )}
+                  </div>
                   <span className="text-[11px] text-muted-foreground leading-tight mt-0.5">
                     {agent?.title ?? roleLabel(node.role)}
                   </span>
@@ -464,6 +480,7 @@ export function OrgChart() {
                   {agent && (
                     <span className="text-[10px] text-muted-foreground/60 font-mono leading-tight mt-1">
                       {adapterLabels[agent.adapterType] ?? agent.adapterType}
+                      {(agent as unknown as Record<string, unknown>).model ? ` - ${String((agent as unknown as Record<string, unknown>).model).replace(/:cloud$/, "")}` : ""}
                     </span>
                   )}
                 </div>
