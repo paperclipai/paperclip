@@ -1,7 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { issues } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -82,6 +84,17 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
   const feedbackExportService = opts?.feedbackExportService;
+
+  async function incrementGateBlockCount(issueId: string) {
+    try {
+      await db.update(issues).set({
+        gateBlockCount: sql`${issues.gateBlockCount} + 1`,
+      }).where(eq(issues.id, issueId));
+    } catch (err) {
+      logger.error({ err, issueId }, "failed to increment gate block count");
+    }
+  }
+
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1424,6 +1437,7 @@ export function issueRoutes(
           currentAssigneeAgentId: existing.assigneeAgentId,
         },
       });
+      await incrementGateBlockCount(existing.id);
       res.status(422).json({
         error: "Transitioning to in_review requires assigning to a different agent (e.g. QA). Set assigneeAgentId or @mention the reviewer in your comment.",
         gate: "review_handoff_required",
@@ -1476,6 +1490,7 @@ export function issueRoutes(
                 targetStatus: req.body.status ?? existing.status,
               },
             });
+            await incrementGateBlockCount(existing.id);
             res.status(422).json({ error: policyResult.reason, gate: policyResult.gate });
             return;
           }
@@ -1501,6 +1516,7 @@ export function issueRoutes(
           entityId: existing.id,
           details: { gate: transitionResult.gate, reason: transitionResult.reason, fromStatus: existing.status, targetStatus: req.body.status },
         });
+        await incrementGateBlockCount(existing.id);
         res.status(422).json({ error: transitionResult.reason, gate: transitionResult.gate });
         return;
       }
@@ -1520,6 +1536,7 @@ export function issueRoutes(
           entityId: existing.id,
           details: { gate: gateResult.gate, reason: gateResult.reason, targetStatus: req.body.status },
         });
+        await incrementGateBlockCount(existing.id);
         res.status(422).json({ error: gateResult.reason, gate: gateResult.gate });
         return;
       }
@@ -1539,6 +1556,7 @@ export function issueRoutes(
           entityId: existing.id,
           details: { gate: qaGateResult.gate, reason: qaGateResult.reason, targetStatus: req.body.status },
         });
+        await incrementGateBlockCount(existing.id);
         res.status(422).json({ error: qaGateResult.reason, gate: qaGateResult.gate });
         return;
       }
@@ -1642,14 +1660,21 @@ export function issueRoutes(
           targetAssigneeUserId: req.body.assigneeUserId,
         },
       });
+      await incrementGateBlockCount(existing.id);
       res.status(422).json({ error: commentGateResult.reason, gate: commentGateResult.gate });
       return;
     }
 
-    // Reset activation retrigger counter when assignee changes so the new
-    // assignee gets a fresh SLA window for pickup.
+    // Reset counters when assignee changes so the new assignee gets a fresh
+    // SLA window and gate-block budget.
     if (assigneeWillChange) {
       (updateFields as Record<string, unknown>).activationRetriggerCount = 0;
+      (updateFields as Record<string, unknown>).gateBlockCount = 0;
+    }
+
+    // Reset gate-block counter on any status change — the issue has progressed.
+    if (req.body.status && req.body.status !== existing.status) {
+      (updateFields as Record<string, unknown>).gateBlockCount = 0;
     }
 
     let issue;
@@ -2175,6 +2200,29 @@ export function issueRoutes(
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);
+
+    // Cross-issue comment detection (fire-and-forget, observe-only).
+    // Logs a warning when an agent run comments on an issue it was not dispatched for.
+    if (actor.runId && actor.agentId) {
+      void (async () => {
+        try {
+          const commentRun = await heartbeat.getRun(actor.runId!);
+          if (commentRun) {
+            const runContext = commentRun.contextSnapshot as Record<string, unknown> | null;
+            const dispatchedIssueId = typeof runContext?.issueId === "string" ? runContext.issueId : undefined;
+            if (dispatchedIssueId && dispatchedIssueId !== id) {
+              logger.warn({
+                runId: actor.runId,
+                agentId: actor.agentId,
+                dispatchedIssueId,
+                commentedIssueId: id,
+              }, "cross-issue comment: agent run commenting on non-dispatched issue");
+            }
+          }
+        } catch { /* swallow — observability only */ }
+      })();
+    }
+
     const reopenRequested = req.body.reopen === true;
     const interruptRequested = req.body.interrupt === true;
     const isClosed = issue.status === "done" || issue.status === "cancelled";

@@ -358,6 +358,20 @@
       "when": 1774396800000,
       "tag": "0050_process_lost_retry_at",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1774483200000,
+      "tag": "0051_consecutive_noop_count",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1774483201000,
+      "tag": "0052_gate_block_count",
+      "breakpoints": true
     }
   ]
 }

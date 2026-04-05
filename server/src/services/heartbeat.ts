@@ -3120,6 +3120,41 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      // ── consecutive no-op tracker ──
+      // Track timer-wake runs that produce minimal output (<200 tokens).
+      // After 3 consecutive no-ops, tickTimers() applies exponential backoff.
+      // Any productive timer run resets the counter to 0.
+      if (outcome === "succeeded" && run.invocationSource === "timer") {
+        const NOOP_OUTPUT_THRESHOLD = 200;
+        const rawOutputTokens = (usageJson as Record<string, unknown> | null)?.outputTokens
+          ?? (usageJson as Record<string, unknown> | null)?.rawOutputTokens
+          ?? null;
+        const outputTokens = typeof rawOutputTokens === "number" ? rawOutputTokens : null;
+        const isNoop = outputTokens !== null && outputTokens < NOOP_OUTPUT_THRESHOLD;
+
+        try {
+          if (isNoop) {
+            await db
+              .update(agents)
+              .set({
+                consecutiveNoopCount: sql`${agents.consecutiveNoopCount} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(eq(agents.id, agent.id));
+          } else {
+            // Productive timer run — reset counter if it was elevated
+            await db
+              .update(agents)
+              .set({ consecutiveNoopCount: 0, updatedAt: new Date() })
+              .where(
+                and(eq(agents.id, agent.id), gt(agents.consecutiveNoopCount, 0)),
+              );
+          }
+        } catch (noopErr) {
+          logger.error({ err: noopErr, agentId: agent.id }, "consecutive noop tracker failed");
+        }
+      }
+
       // Release large adapter result to allow GC before the run scope ends.
       // resultJson can be multi-MB (raw stdout/stderr from CLI adapters).
       (adapterResult as unknown as Record<string, unknown>).resultJson = null;
@@ -3495,6 +3530,7 @@ export function heartbeatService(db: Db) {
             companyId: issues.companyId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            gateBlockCount: issues.gateBlockCount,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -3507,6 +3543,27 @@ export function heartbeatService(db: Db) {
             source,
             triggerDetail,
             reason: "issue_execution_issue_not_found",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        // Gate-block backoff: skip dispatch to issues that keep hitting gate blocks.
+        // Counter is incremented by the PATCH /issues/:id gate handlers and resets
+        // on status or assignee changes.
+        const GATE_BLOCK_THRESHOLD = 3;
+        if (issue.gateBlockCount >= GATE_BLOCK_THRESHOLD) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: `gate_block_backoff: ${issue.gateBlockCount} consecutive blocks`,
             payload,
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -4225,6 +4282,19 @@ export function heartbeatService(db: Db) {
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Exponential backoff for agents with consecutive no-op timer runs.
+        // After 3+ consecutive no-ops, multiply the interval by 2^(count-2),
+        // capped at 8x. Resets when a productive timer run completes.
+        const CONSECUTIVE_NOOP_THRESHOLD = 3;
+        if (agent.consecutiveNoopCount >= CONSECUTIVE_NOOP_THRESHOLD) {
+          const backoffMultiplier = Math.pow(2, Math.min(agent.consecutiveNoopCount - 2, 3));
+          const effectiveIntervalMs = policy.intervalSec * 1000 * backoffMultiplier;
+          if (elapsedMs < effectiveIntervalMs) {
+            skipped += 1;
+            continue;
+          }
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
