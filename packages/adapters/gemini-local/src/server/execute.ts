@@ -25,6 +25,7 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  filterDangerousEnvKeys,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
@@ -211,8 +212,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (agentHome) env.AGENT_HOME = agentHome;
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
+  const safeEnvConfig = filterDangerousEnvKeys(
+    Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  );
+  for (const [key, value] of Object.entries(safeEnvConfig)) {
+    env[key] = value;
   }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
