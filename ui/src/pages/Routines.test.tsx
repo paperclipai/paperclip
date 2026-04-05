@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LanguageProvider } from "../context/LanguageContext";
 import { Routines, buildRoutineGroups } from "./Routines";
 
 let currentSearch = "";
@@ -351,9 +352,11 @@ describe("Routines page", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <Routines />
-        </QueryClientProvider>,
+        <LanguageProvider>
+          <QueryClientProvider client={queryClient}>
+            <Routines />
+          </QueryClientProvider>
+        </LanguageProvider>,
       );
       await flush();
     });

@@ -5,6 +5,7 @@ import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LanguageProvider } from "../context/LanguageContext";
 import { FailedRunInboxRow, InboxIssueMetaLeading, InboxIssueTrailingColumns } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
@@ -113,16 +114,18 @@ describe("FailedRunInboxRow", () => {
 
     act(() => {
       root.render(
-        <FailedRunInboxRow
-          run={run}
-          issueById={new Map()}
-          agentName="Agent"
-          issueLinkState={null}
-          onDismiss={() => {}}
-          onRetry={() => {}}
-          isRetrying={false}
-          selected
-        />,
+        <LanguageProvider>
+          <FailedRunInboxRow
+            run={run}
+            issueById={new Map()}
+            agentName="Agent"
+            issueLinkState={null}
+            onDismiss={() => {}}
+            onRetry={() => {}}
+            isRetrying={false}
+            selected
+          />
+        </LanguageProvider>,
       );
     });
 
