@@ -398,6 +398,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
 
   const timeoutSec = asNumber(config.timeoutSec, 0);
+  const idleTimeoutSec = asNumber(config.idleTimeoutSec, 600);
   const graceSec = asNumber(config.graceSec, 20);
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
@@ -535,6 +536,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       stdin: prompt,
       timeoutSec,
+      idleTimeoutSec,
       graceSec,
       onSpawn,
       onLog: async (stream, chunk) => {
@@ -559,7 +561,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; idleTimedOut?: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl> },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     if (attempt.proc.timedOut) {
@@ -568,6 +570,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
+        clearSession: clearSessionOnMissingSession,
+      };
+    }
+    if (attempt.proc.idleTimedOut) {
+      return {
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        timedOut: true,
+        errorMessage: `Idle timeout: no output for ${idleTimeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -619,6 +630,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (
     sessionId &&
     !initial.proc.timedOut &&
+    !initial.proc.idleTimedOut &&
     (initial.proc.exitCode ?? 0) !== 0 &&
     isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
   ) {
