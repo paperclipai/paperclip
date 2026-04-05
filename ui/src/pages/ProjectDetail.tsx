@@ -73,6 +73,7 @@ function OverviewContent({
       <InlineEditor
         value={project.description ?? ""}
         onSave={(description) => onUpdate({ description })}
+        nullable
         as="p"
         className="text-sm text-muted-foreground"
         placeholder="Add a description..."
