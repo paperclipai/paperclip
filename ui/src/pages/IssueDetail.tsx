@@ -211,11 +211,17 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 }
 
 export function IssueDetail() {
+  const { isRaava } = useIsRaava();
+  if (isRaava) return <RaavaTaskDetail />;
+  return <IssueDetailLegacy />;
+}
+
+function IssueDetailLegacy() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { isRaava } = useIsRaava();
+  const isRaava = false;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -826,9 +832,6 @@ export function IssueDetail() {
     pushToast({ title: "Copied to clipboard", tone: "success" });
     setTimeout(() => setCopied(false), 2000);
   };
-
-  // Raava-branded task detail replaces the default issue detail
-  if (isRaava) return <RaavaTaskDetail />;
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;

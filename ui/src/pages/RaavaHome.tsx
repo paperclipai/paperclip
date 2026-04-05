@@ -226,18 +226,16 @@ export function RaavaHome() {
     );
   }
 
-  // Use real active containers if available, otherwise mock data
+  // Use real active containers; show idle message when genuinely empty
   const activeWorkItems =
-    activeContainers.length > 0
-      ? activeContainers.map((c) => ({
-          name: displayName(c),
-          task: `Working on: ${c.name}`,
-          time:
-            c.health?.uptime_seconds != null
-              ? formatElapsed(c.health.uptime_seconds)
-              : "--",
-        }))
-      : MOCK_ACTIVE_WORK;
+    activeContainers.map((c) => ({
+      name: displayName(c),
+      task: `Working on: ${c.name}`,
+      time:
+        c.health?.uptime_seconds != null
+          ? formatElapsed(c.health.uptime_seconds)
+          : "--",
+    }));
 
   return (
     <div className="space-y-6">

@@ -64,6 +64,7 @@ function FleetosApiKeyForm({
           mutation.mutate();
         }}
       >
+        <label htmlFor="apiKey" className="sr-only">API Key</label>
         <input
           id="apiKey"
           name="apiKey"
@@ -74,8 +75,9 @@ function FleetosApiKeyForm({
           onChange={(event) => setApiKey(event.target.value)}
           autoComplete="off"
           autoFocus
+          aria-describedby={error ? "apiKeyError" : undefined}
         />
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        {error && <p id="apiKeyError" className="text-xs text-destructive">{error}</p>}
         <Button
           type="submit"
           variant="gradient"

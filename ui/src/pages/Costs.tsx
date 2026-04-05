@@ -560,18 +560,18 @@ export function Costs() {
           : 0,
     }));
 
-    // TODO: Mock spending limit - use budget data if available
-    const monthlyLimitDollars = budgetCents > 0 ? (budgetCents / 100).toFixed(0) : "750";
+    const hasBudget = budgetCents > 0;
+    const monthlyLimitDollars = hasBudget ? (budgetCents / 100).toFixed(0) : null;
 
     return (
       <div className="space-y-7">
         {/* Header */}
         <h1 className="font-display text-[26px] text-foreground">Billing</h1>
 
-        {(spendLoading || financeLoading) ? (
+        {spendLoading ? (
           <PageSkeleton variant="costs" />
-        ) : overviewError ? (
-          <p className="text-sm text-destructive">{(overviewError as Error).message}</p>
+        ) : spendError ? (
+          <p className="text-sm text-destructive">{(spendError as Error).message}</p>
         ) : (
           <>
             {/* Monthly Overview card */}
@@ -596,20 +596,26 @@ export function Costs() {
               </div>
 
               {/* Progress bar with gradient fill */}
-              <div className="mt-4 space-y-2">
-                <div className="h-2.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full transition-[width] duration-300"
-                    style={{
-                      width: `${Math.min(100, budgetCents > 0 ? utilizationPercent : 65)}%`,
-                      background: "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
-                    }}
-                  />
+              {hasBudget ? (
+                <div className="mt-4 space-y-2">
+                  <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full transition-[width] duration-300"
+                      style={{
+                        width: `${Math.min(100, utilizationPercent)}%`,
+                        background: "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    ${monthlyLimitDollars} monthly limit
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  ${monthlyLimitDollars} monthly limit
+              ) : (
+                <p className="mt-4 text-xs text-muted-foreground">
+                  No budget set
                 </p>
-              </div>
+              )}
             </div>
 
             {/* Per-Team-Member table */}
@@ -681,26 +687,32 @@ export function Costs() {
               <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Spending Limit
               </h2>
-              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-muted-foreground">Monthly limit:</span>
-                  <div className="flex items-center gap-1">
-                    <span className="text-sm text-muted-foreground">$</span>
-                    <input
-                      type="text"
-                      readOnly
-                      value={monthlyLimitDollars}
-                      className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-sm font-mono text-foreground outline-none"
-                    />
+              {hasBudget ? (
+                <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-muted-foreground">Monthly limit:</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-muted-foreground">$</span>
+                      <input
+                        type="text"
+                        readOnly
+                        value={monthlyLimitDollars!}
+                        className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-sm font-mono text-foreground outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Alert at 80%</span>
+                    <div className="relative inline-flex h-5 w-9 items-center rounded-full bg-foreground">
+                      <span className="inline-block h-4 w-4 translate-x-4.5 rounded-full bg-background shadow-sm" />
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">Alert at 80%</span>
-                  <div className="relative inline-flex h-5 w-9 items-center rounded-full bg-foreground">
-                    <span className="inline-block h-4 w-4 translate-x-4.5 rounded-full bg-background shadow-sm" />
-                  </div>
-                </div>
-              </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  No budget set
+                </p>
+              )}
             </div>
           </>
         )}

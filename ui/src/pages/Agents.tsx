@@ -162,13 +162,13 @@ function RaavaMyTeamPage({
         role: roleLabels[a.role] ?? a.role,
         raavaStatus: mapAgentStatusToRaava(a.status),
         activity: a.title ?? `${roleLabels[a.role] ?? a.role}`,
-        cost: `$${(a.spentMonthlyCents / 100).toFixed(2)}/wk`,
+        cost: `$${(a.spentMonthlyCents / 100).toFixed(2)}/mo`,
         colorIndex: i,
         agent: a,
       }));
   }, [agents]);
 
-  const useMock = teamMembers.length === 0 && !loading;
+  const useMock = teamMembers.length === 0 && !loading && agents === undefined;
 
   // Count by status for tab badges
   const counts = useMemo(() => {
