@@ -40,11 +40,11 @@ export function DashScopeLocalConfigFields({
 
       <Field label="Environment Variables" hint="KEY=VALUE format, one per line (e.g., DASHSCOPE_API_KEY=sk-xxx)">
         <textarea
-          value={
+          defaultValue={
             isCreate
-              ? values?.envVars ?? ""
+              ? ""
               : (() => {
-                  const env = eff("adapterConfig", "env", config.env as Record<string, unknown>);
+                  const env = config.env as Record<string, unknown>;
                   if (!env || typeof env !== "object") return "";
                   return Object.entries(env)
                     .filter(([_, v]) => typeof v === "object" && v !== null && "value" in v)
@@ -52,11 +52,28 @@ export function DashScopeLocalConfigFields({
                     .join("\n");
                 })()
           }
-          onChange={(e) =>
-            isCreate
-              ? set!({ envVars: e.target.value })
-              : mark("adapterConfig", "env", e.target.value)
-          }
+          onChange={(e) => {
+            const text = e.target.value;
+            if (isCreate) {
+              set!({ envVars: text });
+            } else {
+              // Parse text into env object format for edit mode
+              const env: Record<string, { type: "plain"; value: string }> = {};
+              text.split(/\r?\n/).forEach((line) => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith("#")) return;
+                const eq = trimmed.indexOf("=");
+                if (eq > 0) {
+                  const key = trimmed.slice(0, eq).trim();
+                  const value = trimmed.slice(eq + 1).trim();
+                  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value) {
+                    env[key] = { type: "plain", value };
+                  }
+                }
+              });
+              mark("adapterConfig", "env", env);
+            }
+          }}
           className={textareaClass}
           placeholder="DASHSCOPE_API_KEY=sk-xxxxxxxxx"
         />
