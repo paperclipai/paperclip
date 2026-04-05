@@ -228,6 +228,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       outputText = JSON.stringify(response);
     }
 
+    // Output the actual response content to transcript
+    if (outputText) {
+      await onLog("stdout", `${outputText}\n`);
+    }
+
     return {
       exitCode: 0,
       signal: null,
