@@ -1,9 +1,11 @@
 // UI components for DashScope adapter
 import { models } from "../index.js";
 import { buildDashScopeLocalConfig } from "./build-config.js";
+import { parseDashScopeStdoutLine } from "./parse-stdout.js";
 
 export { models };
 export { buildDashScopeLocalConfig };
+export { parseDashScopeStdoutLine };
 
 export const configFields = [
   { 
