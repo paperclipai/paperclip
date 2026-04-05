@@ -10,12 +10,11 @@ import {
   parseObject,
   buildPaperclipEnv,
   joinPromptSections,
-  buildInvocationEnvForLogs,
+  redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
-  resolveCommandForLogs,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
@@ -36,6 +35,20 @@ function firstNonEmptyLine(text: string): string {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .find(Boolean) ?? ""
+  );
+}
+
+function isEmptySuccessfulResumeRun(input: {
+  sessionId: string | null;
+  timedOut: boolean;
+  exitCode: number | null;
+  stdout: string;
+}): boolean {
+  return Boolean(
+    input.sessionId &&
+      !input.timedOut &&
+      (input.exitCode ?? 0) === 0 &&
+      input.stdout.trim().length === 0,
   );
 }
 
@@ -191,12 +204,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     await ensureCommandResolvable(command, cwd, runtimeEnv);
-    const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
-    const loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
-      runtimeEnv,
-      includeRuntimeKeys: ["HOME"],
-      resolvedCommand,
-    });
 
     await ensureOpenCodeModelConfiguredAndAvailable({
       model,
@@ -312,11 +319,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (onMeta) {
         await onMeta({
           adapterType: "opencode_local",
-          command: resolvedCommand,
+          command,
           cwd,
           commandNotes,
           commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
-          env: loggedEnv,
+          env: redactEnvForLogs(preparedRuntimeConfig.env),
           prompt,
           promptMetrics,
           context,
@@ -410,14 +417,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const initial = await runAttempt(sessionId);
     const initialFailed =
       !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+    const initialSucceededWithoutOutput = isEmptySuccessfulResumeRun({
+      sessionId,
+      timedOut: initial.proc.timedOut,
+      exitCode: initial.proc.exitCode,
+      stdout: initial.proc.stdout,
+    });
     if (
       sessionId &&
-      initialFailed &&
-      isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+      (
+        initialSucceededWithoutOutput ||
+        (initialFailed && isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr))
+      )
     ) {
       await onLog(
         "stdout",
-        `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] OpenCode session "${sessionId}" is unavailable or produced no output; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
       return toResult(retry, true);
