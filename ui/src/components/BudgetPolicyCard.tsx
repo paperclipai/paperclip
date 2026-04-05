@@ -101,6 +101,11 @@ export function BudgetPolicyCard({
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
+          role="progressbar"
+          aria-valuenow={Math.round(progress)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`Budget utilization: ${Math.round(progress)}% used`}
           className={cn(
             "h-full rounded-full transition-[width,background-color] duration-200",
             summary.status === "hard_stop"
@@ -133,10 +138,12 @@ export function BudgetPolicyCard({
           Budget (USD)
         </label>
         <Input
+          type="number"
+          min={0}
+          step="0.01"
           value={draftBudget}
           onChange={(event) => setDraftBudget(event.target.value)}
           className="mt-2"
-          inputMode="decimal"
           placeholder="0.00"
         />
       </div>
