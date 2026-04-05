@@ -170,6 +170,13 @@ async function importServerEntry(): Promise<StartedServer> {
           `${formatError(err)}`,
       );
     }
+    if (isModuleNotFoundError(err) && missingSpecifier?.startsWith("@embedded-postgres/")) {
+      throw new Error(
+        `Missing embedded-postgres platform binary: ${missingSpecifier}\n` +
+          `This is a known issue with npm not installing optional platform-specific dependencies.\n` +
+          `Fix: npm install -g ${missingSpecifier}`,
+      );
+    }
     throw new Error(
       `Paperclip server failed to start.\n` +
         `${formatError(err)}`,
