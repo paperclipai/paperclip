@@ -108,9 +108,16 @@ interface MentionMenuViewport {
   height: number;
 }
 
+interface MentionMenuSize {
+  width: number;
+  height: number;
+}
+
 const MENTION_MENU_WIDTH = 188;
 const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
+const MENTION_MENU_ROW_HEIGHT = 34;
+const MENTION_MENU_CHROME_HEIGHT = 8;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -140,19 +147,10 @@ const FALLBACK_CODE_BLOCK_DESCRIPTOR: CodeBlockEditorDescriptor = {
   Editor: CodeMirrorEditor,
 };
 
-function detectMention(container: HTMLElement): MentionState | null {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
-
-  const range = sel.getRangeAt(0);
-  const textNode = range.startContainer;
-  if (textNode.nodeType !== Node.TEXT_NODE) return null;
-  if (!container.contains(textNode)) return null;
-
-  const text = textNode.textContent ?? "";
-  const offset = range.startOffset;
-
-  // Walk backwards from cursor to find an autocomplete trigger.
+export function findMentionMatch(
+  text: string,
+  offset: number,
+): Pick<MentionState, "trigger" | "marker" | "query" | "atPos" | "endPos"> | null {
   let atPos = -1;
   let trigger: MentionState["trigger"] | null = null;
   let marker: MentionState["marker"] | null = null;
@@ -166,31 +164,54 @@ function detectMention(container: HTMLElement): MentionState | null {
       }
       break;
     }
-    if (/\s/.test(ch)) break;
+    if (ch === "\n" || ch === "\r") break;
   }
 
   if (atPos === -1) return null;
-
   const query = text.slice(atPos + 1, offset);
-
-  // Get position relative to container
-  const tempRange = document.createRange();
-  tempRange.setStart(textNode, atPos);
-  tempRange.setEnd(textNode, atPos + 1);
-  const rect = tempRange.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
+  if (trigger === "skill" && /\s/.test(query)) return null;
 
   return {
     trigger: trigger ?? "mention",
     marker: marker ?? "@",
     query,
+    atPos,
+    endPos: offset,
+  };
+}
+
+function detectMention(container: HTMLElement): MentionState | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
+
+  const range = sel.getRangeAt(0);
+  const textNode = range.startContainer;
+  if (textNode.nodeType !== Node.TEXT_NODE) return null;
+  if (!container.contains(textNode)) return null;
+
+  const text = textNode.textContent ?? "";
+  const offset = range.startOffset;
+  const match = findMentionMatch(text, offset);
+  if (!match) return null;
+
+  // Get position relative to container
+  const tempRange = document.createRange();
+  tempRange.setStart(textNode, match.atPos);
+  tempRange.setEnd(textNode, match.atPos + 1);
+  const rect = tempRange.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+
+  return {
+    trigger: match.trigger,
+    marker: match.marker,
+    query: match.query,
     top: rect.bottom - containerRect.top,
     left: rect.left - containerRect.left,
     viewportTop: rect.bottom,
     viewportLeft: rect.left,
     textNode: textNode as Text,
-    atPos,
-    endPos: offset,
+    atPos: match.atPos,
+    endPos: match.endPos,
   };
 }
 
@@ -216,15 +237,27 @@ function getMentionMenuViewport(): MentionMenuViewport {
 export function computeMentionMenuPosition(
   anchor: Pick<MentionState, "viewportTop" | "viewportLeft">,
   viewport: MentionMenuViewport,
+  menuSize: MentionMenuSize = { width: MENTION_MENU_WIDTH, height: MENTION_MENU_HEIGHT },
 ) {
   const minLeft = viewport.offsetLeft + MENTION_MENU_PADDING;
-  const maxLeft = viewport.offsetLeft + viewport.width - MENTION_MENU_WIDTH;
+  const maxLeft = viewport.offsetLeft + viewport.width - menuSize.width;
   const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
-  const maxTop = viewport.offsetTop + viewport.height - MENTION_MENU_HEIGHT;
+  const maxTop = viewport.offsetTop + viewport.height - menuSize.height;
 
   return {
     top: Math.max(minTop, Math.min(viewport.offsetTop + anchor.viewportTop + 4, maxTop)),
     left: Math.max(minLeft, Math.min(viewport.offsetLeft + anchor.viewportLeft, maxLeft)),
+  };
+}
+
+function getMentionMenuSize(optionCount: number): MentionMenuSize {
+  const visibleRows = Math.max(1, Math.min(optionCount, 8));
+  return {
+    width: MENTION_MENU_WIDTH,
+    height: Math.min(
+      MENTION_MENU_HEIGHT,
+      visibleRows * MENTION_MENU_ROW_HEIGHT + MENTION_MENU_CHROME_HEIGHT,
+    ),
   };
 }
 
@@ -650,7 +683,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, []);
 
   const mentionMenuPosition = mentionState
-    ? computeMentionMenuPosition(mentionState, getMentionMenuViewport())
+    ? computeMentionMenuPosition(
+        mentionState,
+        getMentionMenuViewport(),
+        getMentionMenuSize(filteredMentions.length),
+      )
     : null;
 
   return (
@@ -673,8 +710,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
         // Mention keyboard handling
         if (mentionActive) {
-          // Space dismisses the popup (let the character be typed normally)
-          if (e.key === " ") {
+          if (e.key === " " && mentionStateRef.current?.trigger === "skill") {
             mentionStateRef.current = null;
             setMentionState(null);
             return;
