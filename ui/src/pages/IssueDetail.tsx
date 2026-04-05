@@ -32,6 +32,7 @@ import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { ReleaseResponsibilityCard } from "../components/ReleaseResponsibilityCard";
+import { IssueBlogRunSummaryCard } from "../components/IssueBlogRunSummaryCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -1219,6 +1220,8 @@ export function IssueDetail() {
       {showReleaseResponsibility ? (
         <ReleaseResponsibilityCard approvalSummary={releaseApprovalSummary} />
       ) : null}
+
+      <IssueBlogRunSummaryCard companyId={issue.companyId} issueId={issue.id} />
 
       <IssueWorkspaceCard
         issue={issue}
