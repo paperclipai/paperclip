@@ -6,6 +6,7 @@ import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -28,6 +29,7 @@ export function GoalDetail() {
   const { openPanel, closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const {
     data: goal,
@@ -69,7 +71,10 @@ export function GoalDetail() {
           queryKey: queryKeys.goals.list(resolvedCompanyId)
         });
       }
-    }
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to update goal", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
+    },
   });
 
   const uploadImage = useMutation({
@@ -80,7 +85,10 @@ export function GoalDetail() {
         file,
         `goals/${goalId ?? "draft"}`
       );
-    }
+    },
+    onError: (err) => {
+      pushToast({ title: "Image upload failed", body: err instanceof Error ? err.message : "Could not upload image.", tone: "error" });
+    },
   });
 
   const childGoals = (allGoals ?? []).filter((g) => g.parentId === goalId);
