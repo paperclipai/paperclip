@@ -40,8 +40,21 @@ import { getTelemetryClient } from "../telemetry.js";
 // SSRF protection for plugin HTTP fetch
 // ---------------------------------------------------------------------------
 
-/** Maximum time (ms) a plugin fetch request may take before being aborted. */
-const PLUGIN_FETCH_TIMEOUT_MS = 30_000;
+/**
+ * Maximum **end-to-end** time (ms) for the entire `http.fetch` handler,
+ * including DNS resolution, SSRF validation, and the HTTP request itself.
+ *
+ * This MUST be strictly less than the worker→host RPC timeout (30 000 ms
+ * in `worker-rpc-host.ts`). If the two values are equal or close, slow
+ * HTTP requests race against the RPC timeout — the worker receives an
+ * opaque "RPC timed out" error instead of a clean fetch-abort error,
+ * and the server-side fetch keeps running after the worker has already
+ * given up.
+ *
+ * 25 s leaves a 5 s margin for DNS resolution overhead (up to
+ * `DNS_LOOKUP_TIMEOUT_MS`) plus RPC serialization round-trip.
+ */
+const PLUGIN_FETCH_TIMEOUT_MS = 25_000;
 
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 const DNS_LOOKUP_TIMEOUT_MS = 5_000;
@@ -576,14 +589,18 @@ export function buildHostServices(
 
     http: {
       async fetch(params) {
-        // SSRF protection: validate protocol whitelist + block private IPs.
-        // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
-
+        // End-to-end deadline covering DNS resolution + SSRF validation +
+        // the HTTP request itself.  This fires before the worker-side RPC
+        // timeout (30 s) so the plugin receives a clean abort error rather
+        // than an opaque "RPC timed out".
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
 
         try {
+          // SSRF protection: validate protocol whitelist + block private IPs.
+          // Resolve once, then connect directly to that IP to prevent DNS rebinding.
+          const target = await validateAndResolveFetchUrl(params.url);
+
           const init = params.init as RequestInit | undefined;
           return await executePinnedHttpRequest(target, init, controller.signal);
         } finally {
