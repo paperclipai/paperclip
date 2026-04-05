@@ -750,6 +750,35 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
         : undefined;
 
+      // Skip issue creation — fire heartbeat directly
+      if (input.routine.skipIssueCreation) {
+        await heartbeat.wakeup(input.routine.assigneeAgentId!, {
+          source: "timer",
+          triggerDetail: "system",
+          reason: "routine_heartbeat",
+          payload: { routineId: input.routine.id, routineTitle: input.routine.title },
+          requestedByActorType: "system",
+          contextSnapshot: {
+            source: "routine.dispatch",
+            wakeReason: "routine_heartbeat",
+            routineId: input.routine.id,
+            routineTitle: input.routine.title,
+          },
+        });
+        const updated = await finalizeRun(createdRun.id, {
+          status: "completed",
+          completedAt: new Date(),
+        }, txDb);
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt,
+          status: "completed",
+          nextRunAt,
+        }, txDb);
+        return updated ?? createdRun;
+      }
+
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
