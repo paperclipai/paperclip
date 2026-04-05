@@ -574,8 +574,9 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
+  const heartbeat = heartbeatService(db as any);
+
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -620,6 +621,40 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
+  if (config.heartbeatCleanupEnabled) {
+    const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+    let cleanupInFlight = false;
+
+    const runScheduledCleanup = async () => {
+      if (cleanupInFlight) return;
+      cleanupInFlight = true;
+      try {
+        const result = await heartbeat.pruneStaleHeartbeatData({
+          pruneAfterHours: config.heartbeatCleanupPruneAfterHours,
+        });
+        if (result.pruned > 0) {
+          logger.info(
+            { pruned: result.pruned, pruneAfterHours: config.heartbeatCleanupPruneAfterHours },
+            `Heartbeat cleanup pruned ${result.pruned} stale run(s)`,
+          );
+        }
+      } catch (err) {
+        logger.error({ err }, "Heartbeat cleanup failed");
+      } finally {
+        cleanupInFlight = false;
+      }
+    };
+
+    logger.info(
+      { pruneAfterHours: config.heartbeatCleanupPruneAfterHours },
+      "Automatic heartbeat data cleanup enabled",
+    );
+    void runScheduledCleanup();
+    setInterval(() => {
+      void runScheduledCleanup();
+    }, CLEANUP_INTERVAL_MS);
+  }
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     let backupInFlight = false;

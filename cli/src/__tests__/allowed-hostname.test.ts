@@ -27,6 +27,10 @@ function writeBaseConfig(configPath: string) {
         retentionDays: 30,
         dir: "/tmp/paperclip-backups",
       },
+      heartbeatCleanup: {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: "file",

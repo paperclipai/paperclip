@@ -57,6 +57,10 @@ function buildSourceConfig(): PaperclipConfig {
         retentionDays: 30,
         dir: "/tmp/main/backups",
       },
+      heartbeatCleanup: {
+        enabled: true,
+        pruneAfterHours: 48,
+      },
     },
     logging: {
       mode: "file",

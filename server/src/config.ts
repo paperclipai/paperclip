@@ -74,6 +74,8 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  heartbeatCleanupEnabled: boolean;
+  heartbeatCleanupPruneAfterHours: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -88,6 +90,7 @@ export function loadConfig(): Config {
       ? fileConfig?.database.connectionString
       : undefined;
   const fileDatabaseBackup = fileConfig?.database.backup;
+  const fileHeartbeatCleanup = fileConfig?.database.heartbeatCleanup;
   const fileSecrets = fileConfig?.secrets;
   const fileStorage = fileConfig?.storage;
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
@@ -267,6 +270,16 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    heartbeatCleanupEnabled:
+      process.env.PAPERCLIP_HEARTBEAT_CLEANUP_ENABLED !== undefined
+        ? process.env.PAPERCLIP_HEARTBEAT_CLEANUP_ENABLED === "true"
+        : (fileHeartbeatCleanup?.enabled ?? true),
+    heartbeatCleanupPruneAfterHours: Math.max(
+      1,
+      Number(process.env.PAPERCLIP_HEARTBEAT_PRUNE_HOURS) ||
+        fileHeartbeatCleanup?.pruneAfterHours ||
+        48,
+    ),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

@@ -25,6 +25,11 @@ export const databaseBackupConfigSchema = z.object({
   dir: z.string().default("~/.paperclip/instances/default/data/backups"),
 });
 
+export const heartbeatCleanupConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  pruneAfterHours: z.number().int().min(1).max(8760).default(48),
+});
+
 export const databaseConfigSchema = z.object({
   mode: z.enum(["embedded-postgres", "postgres"]).default("embedded-postgres"),
   connectionString: z.string().optional(),
@@ -35,6 +40,10 @@ export const databaseConfigSchema = z.object({
     intervalMinutes: 60,
     retentionDays: 30,
     dir: "~/.paperclip/instances/default/data/backups",
+  }),
+  heartbeatCleanup: heartbeatCleanupConfigSchema.default({
+    enabled: true,
+    pruneAfterHours: 48,
   }),
 });
 
@@ -182,3 +191,4 @@ export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type ConfigMeta = z.infer<typeof configMetaSchema>;
 export type DatabaseBackupConfig = z.infer<typeof databaseBackupConfigSchema>;
+export type HeartbeatCleanupConfig = z.infer<typeof heartbeatCleanupConfigSchema>;

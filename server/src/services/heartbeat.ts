@@ -4036,6 +4036,44 @@ export function heartbeatService(db: Db) {
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  const PRUNE_BATCH_SIZE = 1000;
+
+  async function pruneStaleHeartbeatData(opts: { pruneAfterHours: number }): Promise<{ pruned: number }> {
+    const cutoff = new Date(Date.now() - opts.pruneAfterHours * 60 * 60 * 1000);
+    let totalPruned = 0;
+
+    // Nullify bulky columns on terminal runs older than the cutoff, in batches
+    // to avoid long-running locks on large tables. Preserves the row and all
+    // metadata (status, timestamps, error, exit_code, usage_json, session IDs)
+    // so FK references and history remain intact.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const batch = await db.execute<{ id: string }>(sql`
+        UPDATE ${heartbeatRuns}
+        SET result_json = NULL,
+            stdout_excerpt = NULL,
+            stderr_excerpt = NULL,
+            context_snapshot = NULL
+        WHERE id IN (
+          SELECT id FROM ${heartbeatRuns}
+          WHERE status IN ('succeeded', 'failed', 'cancelled', 'timed_out')
+            AND finished_at < ${cutoff}
+            AND (result_json IS NOT NULL
+              OR stdout_excerpt IS NOT NULL
+              OR stderr_excerpt IS NOT NULL
+              OR context_snapshot IS NOT NULL)
+          LIMIT ${PRUNE_BATCH_SIZE}
+        )
+        RETURNING id
+      `);
+
+      totalPruned += batch.length;
+      if (batch.length < PRUNE_BATCH_SIZE) break;
+    }
+
+    return { pruned: totalPruned };
+  }
+
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const query = db
@@ -4174,6 +4212,8 @@ export function heartbeatService(db: Db) {
     reapOrphanedRuns,
 
     resumeQueuedRuns,
+
+    pruneStaleHeartbeatData,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);
