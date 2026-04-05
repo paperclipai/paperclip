@@ -12,6 +12,32 @@ import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 
+/**
+ * Suppress routine-execution events from reaching the plugin bus (e.g. Slack)
+ * so that heartbeat runs don't spam notifications every few minutes.
+ *
+ * Suppressed:
+ *  - issue.created  where originKind === "routine_execution"
+ *  - issue.updated  where originKind === "routine_execution" AND new status is "done"
+ *
+ * NOT suppressed (operator needs visibility):
+ *  - routine issues that end in cancelled / blocked / error
+ *  - all non-routine events
+ */
+function shouldSuppressRoutinePluginEvent(input: LogActivityInput): boolean {
+  const details = input.details as Record<string, unknown> | null | undefined;
+  if (!details || details.originKind !== "routine_execution") return false;
+
+  if (input.action === "issue.created") return true;
+
+  if (input.action === "issue.updated") {
+    const newStatus = details.status as string | undefined;
+    if (newStatus === "done") return true;
+  }
+
+  return false;
+}
+
 let _pluginEventBus: PluginEventBus | null = null;
 
 /** Wire the plugin event bus so domain events are forwarded to plugins. */
@@ -69,7 +95,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     },
   });
 
-  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action)) {
+  if (_pluginEventBus && PLUGIN_EVENT_SET.has(input.action) && !shouldSuppressRoutinePluginEvent(input)) {
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: input.action as PluginEventType,
