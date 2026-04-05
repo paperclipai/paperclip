@@ -580,8 +580,12 @@ export async function startServer(): Promise<StartedServer> {
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
+    // Also sweep any issues whose executionRunId points to a dead run — these can
+    // accumulate when the server is killed mid-run and would otherwise block all future
+    // checkouts on those issues indefinitely.
     void heartbeat
       .reapOrphanedRuns()
+      .then(() => heartbeat.sweepStaleExecutionLocks())
       .then(() => heartbeat.resumeQueuedRuns())
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
@@ -609,10 +613,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "routine scheduler tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Periodically reap orphaned runs (5-min staleness threshold), sweep any stale
+      // execution lock fields left by dead runs, and make sure persisted queued work is
+      // still being driven forward.
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .then(() => heartbeat.sweepStaleExecutionLocks())
         .then(() => heartbeat.resumeQueuedRuns())
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");

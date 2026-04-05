@@ -4216,6 +4216,54 @@ export function heartbeatService(db: Db) {
 
     cancelBudgetScopeWork,
 
+    /**
+     * Sweep all issues whose executionRunId points to a terminal or missing run and clear
+     * the stale execution lock fields.  Should be called once on server startup and
+     * periodically (e.g. every 5 minutes) via the scheduler so that issues stuck by a
+     * crashed run are automatically unblocked without requiring manual intervention.
+     *
+     * This complements reapOrphanedRuns() (which handles in-memory running processes) by
+     * catching the persistence-level case where the DB row was never cleaned up — e.g.
+     * when the server was killed mid-run, when a run was cancelled while the issue lock
+     * was already set, or when the release() call was skipped due to a code path bug.
+     */
+    sweepStaleExecutionLocks: async () => {
+      const TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelled", "process_lost"];
+
+      // Find issues with an executionRunId that is either missing or terminal.
+      const staleIssues = await db.execute(sql`
+        SELECT i.id, i.identifier, i.execution_run_id
+        FROM issues i
+        WHERE i.execution_run_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM heartbeat_runs hr
+            WHERE hr.id = i.execution_run_id
+              AND hr.status NOT IN (${sql.join(TERMINAL_STATUSES.map((s) => sql`${s}`), sql`, `)})
+          )
+      `);
+
+      if (staleIssues.rows.length === 0) return { cleared: 0 };
+
+      const staleIds = staleIssues.rows.map((r: Record<string, unknown>) => r.id as string);
+
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(inArray(issues.id, staleIds));
+
+      logger.info(
+        { count: staleIds.length, issueIds: staleIds },
+        "swept stale execution locks from issues pointing to terminal/missing runs",
+      );
+
+      return { cleared: staleIds.length };
+    },
+
     getActiveRunForAgent: async (agentId: string) => {
       const [run] = await db
         .select()

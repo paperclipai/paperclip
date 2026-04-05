@@ -1291,12 +1291,21 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
+        // Clear the full execution lock when leaving in_progress — otherwise the issue
+        // gets a permanent 409 on any future checkout attempt even though no run owns it.
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
+        // Reassigning to a different agent also means the current execution lock is stale.
+        patch.executionRunId = null;
+        patch.executionAgentNameKey = null;
+        patch.executionLockedAt = null;
       }
 
       return db.transaction(async (tx) => {
@@ -1579,8 +1588,12 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           status: "todo",
-          assigneeAgentId: null,
+          // Preserve assigneeAgentId so the issue stays assigned after a lock-release.
+          // Callers that genuinely want to unassign should PATCH assigneeAgentId separately.
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))
