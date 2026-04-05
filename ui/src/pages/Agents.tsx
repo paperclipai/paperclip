@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
@@ -19,7 +20,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, Plus, List, LayoutGrid, GitBranch, Search, SlidersHorizontal, UserPlus, Layers } from "lucide-react";
+import { Bot, Plus, List, LayoutGrid, GitBranch, Search, SlidersHorizontal, UserPlus, Layers, Play, X, BarChart3 } from "lucide-react";
 import { AGENT_ROLE_LABELS, AGENT_LIFECYCLE_STAGES, AGENT_LIFECYCLE_LABELS, DEPARTMENTS, DEPARTMENT_LABELS, type Agent, type Department, type AgentLifecycleStage } from "@ironworksai/shared";
 import { EmploymentBadge } from "../components/EmploymentBadge";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -67,7 +68,111 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, showTerminated: boolean
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/* ------------------------------------------------------------------ */
+/*  Agent Comparison Modal                                             */
+/* ------------------------------------------------------------------ */
+
+function AgentCompareModal({
+  agents,
+  liveRunByAgent,
+  onClose,
+}: {
+  agents: Agent[];
+  liveRunByAgent: Map<string, { runId: string; liveCount: number }>;
+  onClose: () => void;
+}) {
+  if (agents.length === 0) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="relative w-full max-w-3xl mx-4 bg-background border border-border rounded-lg shadow-lg max-h-[80vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+          <h2 className="text-sm font-semibold">Agent Comparison</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border bg-muted/30">
+                <th className="text-left px-4 py-2 font-medium text-muted-foreground">Property</th>
+                {agents.map((a) => (
+                  <th key={a.id} className="text-left px-4 py-2 font-medium">{a.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Role</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2">{(AGENT_ROLE_LABELS as Record<string, string>)[a.role] ?? a.role}</td>
+                ))}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Title</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2">{a.title || "-"}</td>
+                ))}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Status</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2"><StatusBadge status={a.status} /></td>
+                ))}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Adapter</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2 font-mono">{adapterLabels[a.adapterType] ?? a.adapterType}</td>
+                ))}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Department</td>
+                {agents.map((a) => {
+                  const dept = (a as unknown as Record<string, unknown>).department as string | undefined;
+                  return <td key={a.id} className="px-4 py-2">{dept ? ((DEPARTMENT_LABELS as Record<string, string>)[dept] ?? dept) : "-"}</td>;
+                })}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Employment</td>
+                {agents.map((a) => {
+                  const emp = ((a as unknown as Record<string, unknown>).employmentType as string) ?? "full_time";
+                  return <td key={a.id} className="px-4 py-2">{emp === "contractor" ? "Contractor" : "Full-Time"}</td>;
+                })}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Monthly Cost</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2 tabular-nums">{a.spentMonthlyCents > 0 ? formatCents(a.spentMonthlyCents) : "-"}</td>
+                ))}
+              </tr>
+              <tr className="border-b border-border/50">
+                <td className="px-4 py-2 text-muted-foreground">Live Runs</td>
+                {agents.map((a) => {
+                  const live = liveRunByAgent.get(a.id);
+                  return <td key={a.id} className="px-4 py-2">{live ? `${live.liveCount} running` : "None"}</td>;
+                })}
+              </tr>
+              <tr>
+                <td className="px-4 py-2 text-muted-foreground">Last Heartbeat</td>
+                {agents.map((a) => (
+                  <td key={a.id} className="px-4 py-2">{a.lastHeartbeatAt ? relativeTime(a.lastHeartbeatAt) : "Never"}</td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Agents() {
+  usePageTitle("Agents");
   const { selectedCompanyId } = useCompany();
   const { openNewAgent, openHireAgent } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -84,6 +189,24 @@ export function Agents() {
   const [agentSearch, setAgentSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [employmentFilter, setEmploymentFilter] = useState<string>("all");
+  const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
+  const [showCompare, setShowCompare] = useState(false);
+
+  const toggleCompare = useCallback((id: string) => {
+    setCompareIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (next.size < 3) {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const invokeMutation = useMutation({
+    mutationFn: (agentId: string) => agentsApi.invoke(agentId, selectedCompanyId!),
+  });
 
   const { data: agents, isLoading, error } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -304,6 +427,12 @@ export function Agents() {
               </button>
             </div>
           )}
+          {compareIds.size > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setShowCompare(true)}>
+              <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
+              Compare ({compareIds.size})
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={openHireAgent}>
             <UserPlus className="h-3.5 w-3.5 mr-1.5" />
             Hire Agent
@@ -336,13 +465,25 @@ export function Agents() {
           {filtered.map((agent) => {
             const isTerminated = agent.status === "terminated";
             return (
-              <div key={agent.id} className={cn(isTerminated && "opacity-50")}>
+              <div key={agent.id} className={cn("group/row relative", isTerminated && "opacity-50")}>
               <EntityRow
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
                 leading={
                   <span className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleCompare(agent.id); }}
+                      className={cn(
+                        "flex items-center justify-center h-4 w-4 border rounded-sm text-[10px] shrink-0 transition-colors",
+                        compareIds.has(agent.id)
+                          ? "bg-foreground border-foreground text-background"
+                          : "border-border opacity-0 group-hover/row:opacity-100",
+                      )}
+                      title="Add to comparison"
+                    >
+                      {compareIds.has(agent.id) && <span>&#10003;</span>}
+                    </button>
                     <span
                       className={cn(
                         "flex items-center justify-center h-6 w-6 rounded-md",
@@ -365,6 +506,17 @@ export function Agents() {
                 }
                 trailing={
                   <div className="flex items-center gap-3">
+                    {/* Quick-invoke button on hover */}
+                    {!isTerminated && (
+                      <button
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); invokeMutation.mutate(agent.id); }}
+                        className="hidden group-hover/row:flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-500/20 transition-colors"
+                        title="Trigger heartbeat run"
+                      >
+                        <Play className="h-3 w-3" />
+                        Run
+                      </button>
+                    )}
                     <span className="sm:hidden">
                       {liveRunByAgent.has(agent.id) ? (
                         <LiveRunIndicator
@@ -389,7 +541,7 @@ export function Agents() {
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
                       <span className="text-xs text-muted-foreground w-16 text-right">
-                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
+                        {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "Never"}
                       </span>
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
@@ -516,6 +668,15 @@ export function Agents() {
         <p className="text-sm text-muted-foreground text-center py-8">
           No organizational hierarchy defined.
         </p>
+      )}
+
+      {/* Comparison modal */}
+      {showCompare && compareIds.size > 0 && (
+        <AgentCompareModal
+          agents={(agents ?? []).filter((a) => compareIds.has(a.id))}
+          liveRunByAgent={liveRunByAgent}
+          onClose={() => setShowCompare(false)}
+        />
       )}
 
       {/* Pipeline view */}

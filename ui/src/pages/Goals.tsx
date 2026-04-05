@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import {
+  AlertTriangle,
   ArrowUpDown,
   CheckCircle2,
   ChevronDown,
@@ -15,6 +17,7 @@ import {
   Search,
   ShieldAlert,
   Target,
+  TrendingUp,
   Users,
 } from "lucide-react";
 import type { Goal } from "@ironworksai/shared";
@@ -60,6 +63,153 @@ function ProgressBar({ percent, size = "md" }: { percent: number; size?: "sm" | 
 }
 
 /* ------------------------------------------------------------------ */
+/*  Goal Health Scoring                                                */
+/* ------------------------------------------------------------------ */
+
+type GoalHealth = "on_track" | "at_risk" | "off_track" | "no_data";
+
+function computeGoalHealth(
+  goal: Goal & { targetDate?: string | null },
+  progress?: GoalProgressItem | null,
+): GoalHealth {
+  if (!progress || progress.totalIssues === 0) return "no_data";
+  if (!goal.targetDate) {
+    // No deadline - use completion percent heuristics
+    if (progress.progressPercent >= 70) return "on_track";
+    if (progress.blockedIssues > 0) return "at_risk";
+    return "on_track";
+  }
+
+  const now = new Date();
+  const created = new Date(goal.createdAt);
+  const target = new Date(goal.targetDate);
+  const totalDuration = target.getTime() - created.getTime();
+  const elapsed = now.getTime() - created.getTime();
+
+  // Past deadline and not done
+  if (now > target && progress.progressPercent < 100) return "off_track";
+
+  // No meaningful duration to measure against
+  if (totalDuration <= 0) return progress.progressPercent >= 50 ? "on_track" : "at_risk";
+
+  const timePercent = Math.min(100, (elapsed / totalDuration) * 100);
+  const progressPercent = progress.progressPercent;
+  const pace = progressPercent - timePercent;
+
+  // Blocked issues are a risk signal
+  if (progress.blockedIssues > 0 && pace < 10) return "at_risk";
+
+  if (pace >= -10) return "on_track";
+  if (pace >= -30) return "at_risk";
+  return "off_track";
+}
+
+function forecastCompletion(
+  goal: Goal & { targetDate?: string | null },
+  progress?: GoalProgressItem | null,
+): string | null {
+  if (!progress || progress.totalIssues === 0 || progress.completedIssues === 0) return null;
+
+  const created = new Date(goal.createdAt);
+  const now = new Date();
+  const elapsed = now.getTime() - created.getTime();
+  if (elapsed <= 0) return null;
+
+  // Velocity: completed issues per ms
+  const velocity = progress.completedIssues / elapsed;
+  if (velocity <= 0) return null;
+
+  const remaining = progress.totalIssues - progress.completedIssues;
+  const msToComplete = remaining / velocity;
+  const forecast = new Date(now.getTime() + msToComplete);
+
+  return forecast.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+const HEALTH_CONFIG: Record<GoalHealth, { label: string; className: string }> = {
+  on_track: { label: "On Track", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  at_risk: { label: "At Risk", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+  off_track: { label: "Off Track", className: "bg-red-500/10 text-red-600 dark:text-red-400" },
+  no_data: { label: "", className: "" },
+};
+
+function HealthBadge({ health }: { health: GoalHealth }) {
+  if (health === "no_data") return null;
+  const cfg = HEALTH_CONFIG[health];
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0", cfg.className)}>
+      {cfg.label}
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Cascade Summary Banner                                             */
+/* ------------------------------------------------------------------ */
+
+function CascadeSummaryBanner({
+  goals,
+  progressMap,
+}: {
+  goals: Goal[];
+  progressMap: Map<string, GoalProgressItem>;
+}) {
+  const counts = useMemo(() => {
+    let onTrack = 0;
+    let atRisk = 0;
+    let offTrack = 0;
+    let total = 0;
+
+    for (const goal of goals) {
+      const progress = progressMap.get(goal.id);
+      const health = computeGoalHealth(goal as Goal & { targetDate?: string | null }, progress);
+      if (health === "no_data") continue;
+      total++;
+      if (health === "on_track") onTrack++;
+      else if (health === "at_risk") atRisk++;
+      else if (health === "off_track") offTrack++;
+    }
+
+    if (total === 0) return null;
+    return {
+      onTrack: Math.round((onTrack / total) * 100),
+      atRisk: Math.round((atRisk / total) * 100),
+      offTrack: Math.round((offTrack / total) * 100),
+      total,
+    };
+  }, [goals, progressMap]);
+
+  if (!counts) return null;
+
+  return (
+    <div className="flex items-center gap-4 px-4 py-2.5 rounded-lg border border-border bg-muted/30">
+      <div className="flex items-center gap-1.5 text-xs">
+        <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-muted-foreground font-medium">Goal Health</span>
+      </div>
+      <div className="flex items-center gap-3 text-xs">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span className="font-medium text-emerald-600 dark:text-emerald-400">{counts.onTrack}%</span>
+          <span className="text-muted-foreground">on track</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-amber-500" />
+          <span className="font-medium text-amber-600 dark:text-amber-400">{counts.atRisk}%</span>
+          <span className="text-muted-foreground">at risk</span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-red-500" />
+          <span className="font-medium text-red-600 dark:text-red-400">{counts.offTrack}%</span>
+          <span className="text-muted-foreground">off track</span>
+        </span>
+      </div>
+      <span className="text-[11px] text-muted-foreground ml-auto">{counts.total} goals scored</span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Goal Card                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -77,6 +227,9 @@ function GoalCard({
   const inProgress = progress?.inProgressIssues ?? 0;
   const blocked = progress?.blockedIssues ?? 0;
   const percent = progress?.progressPercent ?? 0;
+  const typedGoal = goal as Goal & { targetDate?: string | null };
+  const health = computeGoalHealth(typedGoal, progress);
+  const forecast = forecastCompletion(typedGoal, progress);
 
   return (
     <Link
@@ -88,19 +241,26 @@ function GoalCard({
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold truncate">{goal.title}</h3>
             <StatusBadge status={goal.status} />
-            {(goal as Goal & { targetDate?: string | null }).targetDate && (
+            <HealthBadge health={health} />
+            {typedGoal.targetDate && (
               <span className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
-                new Date((goal as Goal & { targetDate?: string | null }).targetDate!) < new Date()
+                new Date(typedGoal.targetDate) < new Date()
                   ? "bg-red-500/10 text-red-600 dark:text-red-400"
                   : "bg-muted text-muted-foreground",
               )}>
-                {new Date((goal as Goal & { targetDate?: string | null }).targetDate!).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                {new Date(typedGoal.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
               </span>
             )}
           </div>
           {goal.description && (
             <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{goal.description}</p>
+          )}
+          {forecast && (
+            <p className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              Forecasted completion: {forecast}
+            </p>
           )}
         </div>
         {totalIssues > 0 && (
@@ -146,7 +306,7 @@ function GoalCard({
 
       {totalIssues === 0 && (
         <div className="mt-2 text-xs text-muted-foreground italic">
-          No tasks yet — click to add issues or run a playbook
+          No tasks yet - click to add issues or run a playbook
         </div>
       )}
 
@@ -191,6 +351,7 @@ function GoalTreeNode({ goal, progress, childGoals, allGoals, progressMap, issue
   const percent = progress?.progressPercent ?? 0;
   const issues = issuesByGoal.get(goal.id) ?? [];
   const hasChildren = childGoals.length > 0 || issues.length > 0;
+  const health = computeGoalHealth(goal as Goal & { targetDate?: string | null }, progress);
 
   const issueStatusIcon = (status: string) => {
     if (status === "done") return <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />;
@@ -226,6 +387,7 @@ function GoalTreeNode({ goal, progress, childGoals, allGoals, progressMap, issue
               {goal.title}
             </Link>
             <StatusBadge status={goal.status} />
+            <HealthBadge health={health} />
             <span className="text-xs text-muted-foreground shrink-0">{goal.level}</span>
           </div>
           {progress && progress.totalIssues > 0 && (
@@ -301,6 +463,7 @@ type GoalStatusFilter = "all" | "planned" | "active" | "achieved" | "cancelled";
 type ViewMode = "list" | "tree";
 
 export function Goals() {
+  usePageTitle("Goals");
   const { selectedCompanyId } = useCompany();
   const { openNewGoal } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -428,6 +591,11 @@ export function Goals() {
           Create Goal
         </Button>
       </div>
+
+      {/* Cascade summary banner */}
+      {totalGoals > 0 && progressData && (
+        <CascadeSummaryBanner goals={goals ?? []} progressMap={progressMap} />
+      )}
 
       {/* Toolbar */}
       {totalGoals > 0 && (

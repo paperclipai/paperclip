@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
@@ -45,9 +45,17 @@ import {
 } from "lucide-react";
 import type { Agent } from "@ironworksai/shared";
 
+type BriefingPeriod = "7d" | "30d" | "this_month";
+const PERIOD_LABELS: Record<BriefingPeriod, string> = {
+  "7d": "This Week",
+  "30d": "Last 30 Days",
+  "this_month": "This Month",
+};
+
 export function BoardBriefing() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const [period, setPeriod] = useState<BriefingPeriod>("30d");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Board Briefing" }]);
@@ -327,10 +335,50 @@ export function BoardBriefing() {
     <div className="space-y-6 max-w-4xl mx-auto">
       {/* Header */}
       <div className="border-b border-border pb-4">
-        <h1 className="text-2xl font-semibold tracking-tight">Board Briefing</h1>
-        <p className="text-sm text-muted-foreground mt-1">{dateStr}</p>
-        <p className="text-sm text-muted-foreground">
-          Generated for <span className="font-medium text-foreground">{selectedCompany?.name ?? "Company"}</span>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Board Briefing</h1>
+            <p className="text-sm text-muted-foreground mt-1">{dateStr}</p>
+            <p className="text-sm text-muted-foreground">
+              Generated for <span className="font-medium text-foreground">{selectedCompany?.name ?? "Company"}</span>
+            </p>
+          </div>
+          <div
+            className="flex items-center gap-1 border border-border rounded-md overflow-hidden shrink-0"
+            role="group"
+            aria-label="Briefing period"
+          >
+            {(["7d", "30d", "this_month"] as const).map((p) => (
+              <button
+                key={p}
+                className={cn(
+                  "px-3 py-1.5 text-xs transition-colors",
+                  period === p ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setPeriod(p)}
+              >
+                {PERIOD_LABELS[p]}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Executive Summary */}
+      <div className="rounded-xl border border-border p-5 bg-muted/10">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Executive Summary</h3>
+        <p className="text-sm text-foreground leading-relaxed">
+          {selectedCompany?.name ?? "The company"} currently operates with{" "}
+          <Link to="/org" className="text-blue-400 hover:underline font-medium">{headcount ? headcount.fte + headcount.contractor : 0} agents</Link>{" "}
+          ({headcount?.fte ?? 0} full-time, {headcount?.contractor ?? 0} contractors).
+          {" "}Over the selected period, the team completed{" "}
+          <Link to="/issues" className="text-blue-400 hover:underline font-medium">{perfRows.reduce((s, r) => s + r.tasksDone, 0)} tasks</Link>{" "}
+          at a total cost of{" "}
+          <Link to="/costs" className="text-blue-400 hover:underline font-medium">{formatCents(weekSpendCents)}</Link> this week
+          ({spendTrend > 0 ? "up" : "down"} {formatCents(Math.abs(spendTrend))} from last week).
+          {goalStats.atRisk > 0 && ` There ${goalStats.atRisk === 1 ? "is" : "are"} ${goalStats.atRisk} goal${goalStats.atRisk === 1 ? "" : "s"} at risk requiring attention.`}
+          {pendingHiring.length > 0 && ` ${pendingHiring.length} hiring request${pendingHiring.length === 1 ? " is" : "s are"} pending review.`}
+          {pendingApprovals.length > 0 && ` ${pendingApprovals.length} approval${pendingApprovals.length === 1 ? " awaits" : "s await"} decision.`}
         </p>
       </div>
 
@@ -366,8 +414,9 @@ export function BoardBriefing() {
 
       {/* 1. Headcount + 2. Cost Summary */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Headcount Card */}
-        <div className="rounded-xl border border-border p-5 space-y-3">
+        {/* Headcount Card - drill-down to Org Chart */}
+        <Link to="/org" className="no-underline text-inherit block">
+        <div className="rounded-xl border border-border p-5 space-y-3 hover:border-foreground/20 transition-colors cursor-pointer">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
             <Users className="h-3.5 w-3.5" />
             Headcount
@@ -393,9 +442,11 @@ export function BoardBriefing() {
             <p className="text-sm text-muted-foreground">No headcount data.</p>
           )}
         </div>
+        </Link>
 
-        {/* Cost Summary Card */}
-        <div className="rounded-xl border border-border p-5 space-y-3">
+        {/* Cost Summary Card - drill-down to Costs page */}
+        <Link to="/costs" className="no-underline text-inherit block">
+        <div className="rounded-xl border border-border p-5 space-y-3 hover:border-foreground/20 transition-colors cursor-pointer">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
             <DollarSign className="h-3.5 w-3.5" />
             Cost Summary
@@ -431,12 +482,14 @@ export function BoardBriefing() {
             </div>
           </div>
         </div>
+        </Link>
       </div>
 
       {/* 3. Goal Progress + 4. Pending Decisions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Goal Progress Card */}
-        <div className="rounded-xl border border-border p-5 space-y-3">
+        {/* Goal Progress Card - drill-down to Goals */}
+        <Link to="/goals" className="no-underline text-inherit block">
+        <div className="rounded-xl border border-border p-5 space-y-3 hover:border-foreground/20 transition-colors cursor-pointer">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
             <Target className="h-3.5 w-3.5" />
             Goal Progress
@@ -448,6 +501,7 @@ export function BoardBriefing() {
             <StatBlock label="At Risk" value={goalStats.atRisk} color={goalStats.atRisk > 0 ? "text-red-400" : undefined} />
           </div>
         </div>
+        </Link>
 
         {/* Pending Decisions Card */}
         <div className="rounded-xl border border-border p-5 space-y-3">

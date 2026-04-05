@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -15,6 +16,7 @@ import { Archive, Hexagon, Plus } from "lucide-react";
 import { cn } from "../lib/utils";
 
 export function Projects() {
+  usePageTitle("Projects");
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();

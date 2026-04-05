@@ -165,6 +165,29 @@
   }
 }
 
+/* Feature discovery dot - small blue pulsing dot for unused features */
+.feature-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: oklch(0.55 0.22 260);
+  animation: feature-dot-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes feature-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* Password strength meter */
+.password-strength-bar {
+  height: 4px;
+  border-radius: 2px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+
 /* Dark mode scrollbars */
 .dark {
   color-scheme: dark;
@@ -817,6 +840,32 @@ a.ironworks-project-mention-chip {
   text-decoration: none;
   vertical-align: middle;
   white-space: nowrap;
+}
+
+/* ---- Drag & Drop Patterns ---- */
+
+.drop-zone-active {
+  border: 2px dashed var(--ring);
+  background: color-mix(in oklab, var(--ring) 5%, transparent);
+}
+
+.drag-ghost {
+  opacity: 0.7;
+  transform: rotate(2deg);
+}
+
+.drag-handle {
+  cursor: grab;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drag-ghost {
+    transform: none;
+  }
 }
 
 /* Keep MDXEditor popups above app dialogs, even when they portal to <body>. */

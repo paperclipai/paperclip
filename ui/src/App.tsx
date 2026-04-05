@@ -40,6 +40,7 @@ const CompanyImport = lazy(() => import("./pages/CompanyImport").then(m => ({ de
 const SetupPage = lazy(() => import("./pages/Setup").then(m => ({ default: m.SetupPage })));
 const DesignGuide = lazy(() => import("./pages/DesignGuide").then(m => ({ default: m.DesignGuide })));
 const OrgChart = lazy(() => import("./pages/OrgChart").then(m => ({ default: m.OrgChart })));
+const Hiring = lazy(() => import("./pages/Hiring").then(m => ({ default: m.Hiring })));
 const NewAgent = lazy(() => import("./pages/NewAgent").then(m => ({ default: m.NewAgent })));
 const RunTranscriptUxLab = lazy(() => import("./pages/RunTranscriptUxLab").then(m => ({ default: m.RunTranscriptUxLab })));
 const PluginManager = lazy(() => import("./pages/PluginManager").then(m => ({ default: m.PluginManager })));
@@ -50,6 +51,11 @@ const InstanceGeneralSettings = lazy(() => import("./pages/InstanceGeneralSettin
 const InstanceSettings = lazy(() => import("./pages/InstanceSettings").then(m => ({ default: m.InstanceSettings })));
 const InstanceExperimentalSettings = lazy(() => import("./pages/InstanceExperimentalSettings").then(m => ({ default: m.InstanceExperimentalSettings })));
 const PrivacySettings = lazy(() => import("./pages/PrivacySettings").then(m => ({ default: m.PrivacySettings })));
+const AutomationRules = lazy(() => import("./pages/AutomationRules").then(m => ({ default: m.AutomationRules })));
+const AuditLog = lazy(() => import("./pages/AuditLog").then(m => ({ default: m.AuditLog })));
+const ProfileSettings = lazy(() => import("./pages/ProfileSettings").then(m => ({ default: m.ProfileSettings })));
+const NotificationSettings = lazy(() => import("./pages/NotificationSettings").then(m => ({ default: m.NotificationSettings })));
+const BillingSettingsPage = lazy(() => import("./pages/BillingSettings").then(m => ({ default: m.BillingSettings })));
 // Admin panel — lazy loaded, instance admin only
 const AdminLayout = lazy(() => import("./pages/admin/AdminLayout"));
 const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard"));
@@ -164,10 +170,15 @@ function boardRoutes() {
       <Route path="library" element={<LazyPage variant="list"><Library /></LazyPage>} />
       <Route path="playbooks" element={<LazyPage variant="list"><Playbooks /></LazyPage>} />
       <Route path="privacy-settings" element={<LazyPage><PrivacySettings /></LazyPage>} />
+      <Route path="automation" element={<LazyPage variant="list"><AutomationRules /></LazyPage>} />
+      <Route path="profile" element={<LazyPage><ProfileSettings /></LazyPage>} />
+      <Route path="notifications" element={<LazyPage><NotificationSettings /></LazyPage>} />
+      <Route path="billing" element={<LazyPage><BillingSettingsPage /></LazyPage>} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<LazyPage><PluginPage /></LazyPage>} />
       <Route path="org" element={<LazyPage><OrgChart /></LazyPage>} />
+      <Route path="hiring" element={<LazyPage variant="list"><Hiring /></LazyPage>} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents/all" element={<Agents />} />
       <Route path="agents/active" element={<Agents />} />
@@ -206,6 +217,7 @@ function boardRoutes() {
       <Route path="deliverables" element={<LazyPage variant="list"><Deliverables /></LazyPage>} />
       <Route path="knowledge" element={<LazyPage variant="list"><KnowledgeBase /></LazyPage>} />
       <Route path="activity" element={<Activity />} />
+      <Route path="audit-log" element={<LazyPage variant="list"><AuditLog /></LazyPage>} />
       <Route path="channels/:channelId" element={<LazyPage><ChannelView /></LazyPage>} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
@@ -402,6 +414,7 @@ export function App() {
           <Route path="playbooks" element={<UnprefixedBoardRedirect />} />
           <Route path="performance" element={<UnprefixedBoardRedirect />} />
           <Route path="knowledge" element={<UnprefixedBoardRedirect />} />
+          <Route path="audit-log" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
           <Route path=":companyPrefix" element={<Layout />}>
             {boardRoutes()}

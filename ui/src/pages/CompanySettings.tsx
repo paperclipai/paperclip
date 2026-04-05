@@ -14,7 +14,7 @@ import { memberApi } from "../api/userInvites";
 import { queryKeys } from "../lib/queryKeys";
 import { useMeAccess } from "../hooks/useMeAccess";
 import { Button } from "@/components/ui/button";
-import { Settings, Check, Download, Upload, UserPlus, Key, Shield, Trash2, AlertTriangle, Database, Users, Plus, Pencil, X, SlidersHorizontal, Building2 } from "lucide-react";
+import { Settings, Check, Download, Upload, UserPlus, Key, Shield, Trash2, AlertTriangle, Database, Users, Plus, Pencil, X, SlidersHorizontal, Building2, Monitor, RotateCcw, ShieldCheck, Eye, EyeOff } from "lucide-react";
 import { MessagingSetup } from "../components/MessagingSetup";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import { InviteUserDialog } from "../components/InviteUserDialog";
@@ -44,6 +44,20 @@ type AgentSnippetInput = {
   connectionCandidates?: string[] | null;
   testResolutionUrl?: string | null;
 };
+
+const SETTINGS_SECTIONS = [
+  { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "hiring", label: "Hiring" },
+  { id: "invites", label: "Invites" },
+  { id: "messaging", label: "Messaging" },
+  { id: "security", label: "Security" },
+  { id: "api-keys", label: "API Keys" },
+  { id: "autonomy", label: "Autonomy" },
+  { id: "model-routing", label: "Model Routing" },
+  { id: "data-privacy", label: "Data & Privacy" },
+  { id: "danger-zone", label: "Danger Zone" },
+];
 
 export function CompanySettings() {
   const {
@@ -318,15 +332,57 @@ export function CompanySettings() {
     });
   }
 
+  const [activeSection, setActiveSection] = useState("general");
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveSection(entry.target.id);
+          }
+        }
+      },
+      { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
+    );
+    for (const section of SETTINGS_SECTIONS) {
+      const el = document.getElementById(section.id);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="flex gap-8 max-w-4xl">
+      {/* Sticky sidebar navigation */}
+      <nav className="hidden lg:block w-44 shrink-0 sticky top-4 self-start space-y-0.5 pt-10">
+        {SETTINGS_SECTIONS.map((s) => (
+          <a
+            key={s.id}
+            href={`#${s.id}`}
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            className={`block px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              activeSection === s.id
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+            }`}
+          >
+            {s.label}
+          </a>
+        ))}
+      </nav>
+
+      <div className="flex-1 min-w-0 max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Company Settings</h1>
       </div>
 
       {/* General */}
-      <div className="space-y-4">
+      <div id="general" className="space-y-4 scroll-mt-6">
         <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           General
         </h2>
@@ -355,7 +411,7 @@ export function CompanySettings() {
       </div>
 
       {/* Appearance */}
-      <div className="space-y-4">
+      <div id="appearance" className="space-y-4 scroll-mt-6">
         <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Appearance
         </h2>
@@ -475,7 +531,7 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4">
+      <div id="hiring" className="space-y-4 scroll-mt-6">
         <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Hiring
         </h2>
@@ -490,7 +546,7 @@ export function CompanySettings() {
       </div>
 
       {/* Invites */}
-      <div className="space-y-4">
+      <div id="invites" className="space-y-4 scroll-mt-6">
         <h2 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Invites
         </h2>
@@ -562,7 +618,12 @@ export function CompanySettings() {
       </div>
 
       {/* Messaging Bridges */}
-      <MessagingSetup companyId={selectedCompanyId!} />
+      <div id="messaging" className="scroll-mt-6">
+        <MessagingSetup companyId={selectedCompanyId!} />
+      </div>
+
+      {/* Security & Trust */}
+      <SecuritySection companyId={selectedCompanyId!} />
 
       {/* Import / Export */}
       <div className="space-y-4">
@@ -592,7 +653,7 @@ export function CompanySettings() {
       </div>
 
       {/* Danger Zone */}
-      <div className="space-y-4">
+      <div id="danger-zone" className="space-y-4 scroll-mt-6">
         <h2 className="text-xs font-medium text-destructive uppercase tracking-wide">
           Danger Zone
         </h2>
@@ -667,7 +728,7 @@ export function CompanySettings() {
       )}
 
       {/* API Keys */}
-      <div className="space-y-4">
+      <div id="api-keys" className="space-y-4 scroll-mt-6">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
           <Key className="h-3.5 w-3.5" />
           LLM API Keys
@@ -720,7 +781,7 @@ export function CompanySettings() {
       </div>
 
       {/* Data & Privacy */}
-      <div className="space-y-4">
+      <div id="data-privacy" className="space-y-4 scroll-mt-6">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
           <Shield className="h-3.5 w-3.5" />
           Data &amp; Privacy
@@ -828,7 +889,7 @@ export function CompanySettings() {
       </div>
 
       {/* Default Autonomy Level */}
-      <div className="space-y-4">
+      <div id="autonomy" className="space-y-4 scroll-mt-6">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
           <SlidersHorizontal className="h-3.5 w-3.5" />
           Default Autonomy Level
@@ -871,7 +932,9 @@ export function CompanySettings() {
       </div>
 
       {/* Model Routing */}
-      <ModelRoutingSection companyId={selectedCompanyId!} />
+      <div id="model-routing" className="scroll-mt-6">
+        <ModelRoutingSection companyId={selectedCompanyId!} />
+      </div>
 
       {/* Department Templates */}
       <DepartmentTemplatesSection companyId={selectedCompanyId!} />
@@ -883,6 +946,218 @@ export function CompanySettings() {
       <TalentPoolSection companyId={selectedCompanyId!} />
 
       <InviteUserDialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen} />
+    </div>
+    </div>
+  );
+}
+
+/* ── Security & Trust Section ── */
+
+const API_KEYS_STORAGE_KEY = "ironworks:api-keys";
+const SESSIONS_STORAGE_KEY = "ironworks:sessions";
+
+interface ApiKeyEntry {
+  id: string;
+  name: string;
+  lastFour: string;
+  createdAt: string;
+}
+
+interface SessionEntry {
+  id: string;
+  device: string;
+  ip: string;
+  lastActive: string;
+  current: boolean;
+}
+
+function loadApiKeys(): ApiKeyEntry[] {
+  try {
+    const raw = localStorage.getItem(API_KEYS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  const seed: ApiKeyEntry[] = [
+    { id: "key_1", name: "Production API Key", lastFour: "x8k2", createdAt: new Date(Date.now() - 30 * 86400000).toISOString() },
+    { id: "key_2", name: "Development API Key", lastFour: "m4n9", createdAt: new Date(Date.now() - 7 * 86400000).toISOString() },
+  ];
+  localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(seed));
+  return seed;
+}
+
+function loadSessions(): SessionEntry[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  const seed: SessionEntry[] = [
+    { id: "sess_1", device: "Chrome on macOS", ip: "192.168.1.42", lastActive: new Date().toISOString(), current: true },
+    { id: "sess_2", device: "Firefox on Linux", ip: "10.0.0.15", lastActive: new Date(Date.now() - 3600000).toISOString(), current: false },
+    { id: "sess_3", device: "Safari on iPhone", ip: "172.16.0.8", lastActive: new Date(Date.now() - 86400000).toISOString(), current: false },
+  ];
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(seed));
+  return seed;
+}
+
+function SecuritySection({ companyId }: { companyId: string }) {
+  const { pushToast } = useToast();
+  const [apiKeys, setApiKeys] = useState<ApiKeyEntry[]>(loadApiKeys);
+  const [sessions, setSessions] = useState<SessionEntry[]>(loadSessions);
+  const [revealedKeyId, setRevealedKeyId] = useState<string | null>(null);
+
+  function handleRotateKey(keyId: string) {
+    const newLastFour = Math.random().toString(36).slice(2, 6);
+    const updated = apiKeys.map((k) =>
+      k.id === keyId ? { ...k, lastFour: newLastFour, createdAt: new Date().toISOString() } : k,
+    );
+    setApiKeys(updated);
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(updated));
+    pushToast({ title: "API key rotated", tone: "success" });
+  }
+
+  function handleRevokeKey(keyId: string) {
+    const updated = apiKeys.filter((k) => k.id !== keyId);
+    setApiKeys(updated);
+    localStorage.setItem(API_KEYS_STORAGE_KEY, JSON.stringify(updated));
+    pushToast({ title: "API key revoked", tone: "success" });
+  }
+
+  function handleRevokeSession(sessionId: string) {
+    const updated = sessions.filter((s) => s.id !== sessionId);
+    setSessions(updated);
+    localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(updated));
+    pushToast({ title: "Session revoked", tone: "success" });
+  }
+
+  function formatRelative(iso: string): string {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
+  return (
+    <div id="security" className="space-y-4 scroll-mt-6">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+        <ShieldCheck className="h-3.5 w-3.5" />
+        Security & Trust
+      </div>
+
+      {/* API Key Management */}
+      <div className="rounded-md border border-border px-4 py-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Key className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">API Key Management</span>
+        </div>
+        {apiKeys.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No API keys configured.</p>
+        ) : (
+          <div className="space-y-2">
+            {apiKeys.map((key) => (
+              <div
+                key={key.id}
+                className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">{key.name}</div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                    <span className="font-mono">
+                      {revealedKeyId === key.id
+                        ? `sk-...${key.lastFour}`
+                        : `sk-****${key.lastFour}`}
+                    </span>
+                    <button
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() =>
+                        setRevealedKeyId(
+                          revealedKeyId === key.id ? null : key.id,
+                        )
+                      }
+                    >
+                      {revealedKeyId === key.id ? (
+                        <EyeOff className="h-3 w-3" />
+                      ) : (
+                        <Eye className="h-3 w-3" />
+                      )}
+                    </button>
+                    <span className="text-border">|</span>
+                    <span>Created {formatRelative(key.createdAt)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0 ml-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleRotateKey(key.id)}
+                  >
+                    <RotateCcw className="h-3 w-3 mr-1" />
+                    Rotate
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive border-destructive/40 hover:bg-destructive/5"
+                    onClick={() => handleRevokeKey(key.id)}
+                  >
+                    Revoke
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Active Sessions */}
+      <div className="rounded-md border border-border px-4 py-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Monitor className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Active Sessions</span>
+        </div>
+        {sessions.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No active sessions.</p>
+        ) : (
+          <div className="space-y-2">
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">
+                      {session.device}
+                    </span>
+                    {session.current && (
+                      <span className="text-[10px] font-medium bg-green-500/10 text-green-600 dark:text-green-400 px-1.5 py-0.5 rounded">
+                        Current
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                    <span className="font-mono">{session.ip}</span>
+                    <span className="text-border">|</span>
+                    <span>Active {formatRelative(session.lastActive)}</span>
+                  </div>
+                </div>
+                {!session.current && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive border-destructive/40 hover:bg-destructive/5 shrink-0 ml-3"
+                    onClick={() => handleRevokeSession(session.id)}
+                  >
+                    Revoke
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

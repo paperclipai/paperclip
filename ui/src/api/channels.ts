@@ -80,7 +80,7 @@ export const channelsApi = {
   postMessage: (
     companyId: string,
     channelId: string,
-    body: { body: string; messageType?: string; reasoning?: string },
+    body: { body: string; messageType?: string; reasoning?: string; replyToId?: string },
   ) =>
     api.post<ChannelMessage>(
       `/companies/${companyId}/channels/${channelId}/messages`,

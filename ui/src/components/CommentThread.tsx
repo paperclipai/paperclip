@@ -1,8 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent } from "@ironworksai/shared";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, Paperclip } from "lucide-react";
+import { Check, Copy, Paperclip, SmilePlus } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -11,6 +11,131 @@ import { StatusBadge } from "./StatusBadge";
 import { AgentIcon } from "./AgentIconPicker";
 import { formatDateTime } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
+
+// ---------------------------------------------------------------------------
+// Emoji Reactions
+// ---------------------------------------------------------------------------
+
+const REACTION_EMOJIS = [
+  { emoji: "\uD83D\uDC4D", label: "thumbsup" },
+  { emoji: "\uD83D\uDC4E", label: "thumbsdown" },
+  { emoji: "\u2764\uFE0F", label: "heart" },
+  { emoji: "\uD83D\uDE80", label: "rocket" },
+  { emoji: "\uD83D\uDC40", label: "eyes" },
+  { emoji: "\u2705", label: "check" },
+] as const;
+
+type ReactionMap = Record<string, Record<string, number>>;
+
+const REACTIONS_STORAGE_KEY = "ironworks:comment-reactions";
+
+function loadReactions(): ReactionMap {
+  try {
+    const raw = localStorage.getItem(REACTIONS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as ReactionMap;
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveReactions(reactions: ReactionMap) {
+  try {
+    localStorage.setItem(REACTIONS_STORAGE_KEY, JSON.stringify(reactions));
+  } catch { /* ignore */ }
+}
+
+function useCommentReactions() {
+  const [reactions, setReactions] = useState<ReactionMap>(loadReactions);
+
+  const toggleReaction = useCallback((commentId: string, emoji: string) => {
+    setReactions((prev) => {
+      const next = { ...prev };
+      if (!next[commentId]) next[commentId] = {};
+      const current = next[commentId][emoji] ?? 0;
+      if (current > 0) {
+        next[commentId][emoji] = 0;
+      } else {
+        next[commentId][emoji] = 1;
+      }
+      // Clean up zeros
+      if (next[commentId][emoji] === 0) delete next[commentId][emoji];
+      if (Object.keys(next[commentId]).length === 0) delete next[commentId];
+      saveReactions(next);
+      return next;
+    });
+  }, []);
+
+  return { reactions, toggleReaction };
+}
+
+function ReactionBar({
+  commentId,
+  reactions,
+  onToggle,
+}: {
+  commentId: string;
+  reactions: Record<string, number> | undefined;
+  onToggle: (commentId: string, emoji: string) => void;
+}) {
+  const [showPicker, setShowPicker] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showPicker) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setShowPicker(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showPicker]);
+
+  const activeReactions = reactions
+    ? REACTION_EMOJIS.filter((r) => (reactions[r.emoji] ?? 0) > 0)
+    : [];
+
+  return (
+    <div className="flex items-center gap-1 mt-1">
+      {activeReactions.map((r) => (
+        <button
+          key={r.label}
+          type="button"
+          onClick={() => onToggle(commentId, r.emoji)}
+          className="inline-flex items-center gap-0.5 rounded-full border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-xs hover:bg-primary/10 transition-colors"
+          title={`Remove ${r.label} reaction`}
+        >
+          <span>{r.emoji}</span>
+          <span className="text-[10px] text-muted-foreground">{reactions![r.emoji]}</span>
+        </button>
+      ))}
+      <div className="relative" ref={pickerRef}>
+        <button
+          type="button"
+          onClick={() => setShowPicker(!showPicker)}
+          className="inline-flex items-center justify-center h-5 w-5 rounded-full text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          title="Add reaction"
+        >
+          <SmilePlus className="h-3 w-3" />
+        </button>
+        {showPicker && (
+          <div className="absolute bottom-full left-0 mb-1 z-50 flex gap-0.5 rounded-lg border border-border bg-popover p-1 shadow-md">
+            {REACTION_EMOJIS.map((r) => (
+              <button
+                key={r.label}
+                type="button"
+                onClick={() => { onToggle(commentId, r.emoji); setShowPicker(false); }}
+                className="h-7 w-7 rounded-md flex items-center justify-center hover:bg-accent transition-colors text-base"
+                title={r.label}
+              >
+                {r.emoji}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -124,12 +249,16 @@ const TimelineList = memo(function TimelineList({
   companyId,
   projectId,
   highlightCommentId,
+  reactions,
+  onToggleReaction,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
   highlightCommentId?: string | null;
+  reactions: ReactionMap;
+  onToggleReaction: (commentId: string, emoji: string) => void;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No comments or runs yet.</p>;
@@ -213,6 +342,11 @@ const TimelineList = memo(function TimelineList({
               </span>
             </div>
             <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>
+            <ReactionBar
+              commentId={comment.id}
+              reactions={reactions[comment.id]}
+              onToggle={onToggleReaction}
+            />
             {companyId ? (
               <div className="mt-2 space-y-2">
                 <PluginSlotOutlet
@@ -271,6 +405,7 @@ export function CommentThread({
   suggestedAssigneeValue,
   mentions: providedMentions,
 }: CommentThreadProps) {
+  const { reactions, toggleReaction } = useCommentReactions();
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -409,6 +544,8 @@ export function CommentThread({
         companyId={companyId}
         projectId={projectId}
         highlightCommentId={highlightCommentId}
+        reactions={reactions}
+        onToggleReaction={toggleReaction}
       />
 
       {liveRunSlot}
