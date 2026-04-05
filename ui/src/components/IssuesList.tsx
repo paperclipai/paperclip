@@ -864,9 +864,15 @@ export function IssuesList({
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message={
+            activeFilterCount > 0 || normalizedIssueSearch.length > 0
+              ? "No issues match the current filters or search."
+              : "No issues yet."
+          }
           action="Create Issue"
           onAction={() => openNewIssue(newIssueDefaults())}
+          secondaryAction={activeFilterCount > 0 ? "Clear Filters" : undefined}
+          onSecondaryAction={activeFilterCount > 0 ? () => updateView({ statuses: [], priorities: [], assignees: [], labels: [] }) : undefined}
         />
       )}
 
