@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useBootAnimation } from "../hooks/useBootAnimation";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
@@ -47,6 +48,7 @@ function readRememberedInstanceSettingsPath(): string {
 }
 
 export function Layout() {
+  const bootRef = useBootAnimation<HTMLDivElement>();
   const { sidebarOpen, setSidebarOpen, toggleSidebar, isMobile } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialog();
   const { togglePanelVisible } = usePanel();
@@ -261,7 +263,7 @@ export function Layout() {
   return (
     <div
       className={cn(
-        "bg-background text-foreground pt-[env(safe-area-inset-top)]",
+        "bg-background text-foreground hud-grid-bg pt-[env(safe-area-inset-top)]",
         isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
       )}
     >
@@ -297,13 +299,13 @@ export function Layout() {
             <div className="border-t border-r border-border px-3 py-2 bg-background">
               <div className="flex items-center gap-1">
                 <a
-                  href="https://docs.paperclip.ing/"
+                  href="https://www.linkedin.com/groups/18235015/"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <span className="truncate">LinkedIn Community</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -355,13 +357,13 @@ export function Layout() {
             <div className="border-t border-r border-border px-3 py-2">
               <div className="flex items-center gap-1">
                 <a
-                  href="https://docs.paperclip.ing/"
+                  href="https://www.linkedin.com/groups/18235015/"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors text-foreground/80 hover:bg-accent/50 hover:text-foreground flex-1 min-w-0"
                 >
                   <BookOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">Documentation</span>
+                  <span className="truncate">LinkedIn Community</span>
                 </a>
                 {health?.version && (
                   <Tooltip>
@@ -409,6 +411,7 @@ export function Layout() {
           </div>
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main
+              ref={bootRef}
               id="main-content"
               tabIndex={-1}
               className={cn(
