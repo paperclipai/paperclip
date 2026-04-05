@@ -384,14 +384,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+  // Don't resume sessions on manual invocations (user wants a fresh start) or
+  // event-triggered wakes (comment mentions open a new task context).
+  const isManualInvoke = asString(context.wakeTriggerDetail, "") === "manual";
+  // Match the wakeCommentId resolution at lines 155-158: check both fields
+  const isEventTriggered =
+    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0) ||
+    (typeof context.commentId === "string" && context.commentId.trim().length > 0);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
+    !isManualInvoke &&
+    !isEventTriggered &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(cwd));
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (runtimeSessionId && !canResumeSession) {
+    const reason = isManualInvoke
+      ? "manual invoke"
+      : isEventTriggered
+        ? "new event trigger (comment mention)"
+        : `cwd mismatch ("${runtimeSessionCwd}" vs "${cwd}")`;
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${cwd}".\n`,
+      `[paperclip] Skipping saved session resume (session "${runtimeSessionId}"): ${reason}.\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
