@@ -32,6 +32,9 @@ server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
 
+# Local agent/debug stderr captures (ad-hoc runs; do not commit)
+.agent-*.err
+
 # Editor / tool temp files
 *.tmp
 .vscode/
@@ -42,6 +45,9 @@ tmp/
 
 # Doc maintenance cursor
 .doc-review-cursor
+
+# Playwright CLI ad-hoc snapshots (local; do not commit)
+.playwright-cli/
 
 # Playwright
 tests/e2e/test-results/
