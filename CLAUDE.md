@@ -56,7 +56,7 @@ pnpm db:migrate       # Run pending migrations
 ## Tech Stack
 
 - **Backend:** Express 5, PostgreSQL, Drizzle ORM, Better Auth, Pino logging, WebSockets
-- **Frontend:** React 19, Vite 6, Tailwind CSS 4, Radix UI, TanStack Query, React Router
+- **Frontend:** React 19, Vite 6, Tailwind CSS 4, HeroUI v3, Framer Motion, TanStack Query, React Router
 - **Desktop:** Electron, electron-builder, electron-updater
 - **CLI:** Commander, esbuild bundling
 - **Testing:** Vitest, Playwright, Supertest

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { artifactsApi } from "@/api/artifacts";
 import { Loader2, Download, ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 
 interface ArtifactPreviewProps {
   artifactId: string;
@@ -31,15 +31,15 @@ export function ArtifactPreview({ artifactId, mimeType, title }: ArtifactPreview
     <div className="flex flex-col gap-2">
       {/* Action bar */}
       <div className="flex items-center justify-end gap-1.5">
-        <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
-          <a href={contentUrl} download={title}>
+        <Button variant="ghost" size="sm" className="h-7 text-xs">
+          <a href={contentUrl} download={title} className="flex items-center gap-1">
             <Download className="w-3.5 h-3.5 mr-1" />
             Download
           </a>
         </Button>
         {!isHtml && (
-          <Button variant="ghost" size="sm" className="h-7 text-xs" asChild>
-            <a href={contentUrl} target="_blank" rel="noreferrer">
+          <Button variant="ghost" size="sm" className="h-7 text-xs">
+            <a href={contentUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1">
               <ExternalLink className="w-3.5 h-3.5 mr-1" />
               Open
             </a>

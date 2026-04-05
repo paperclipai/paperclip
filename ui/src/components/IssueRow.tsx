@@ -45,7 +45,7 @@ export function IssueRow({
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
-  const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
+  const selectedStatusClass = selected ? "!text-foreground/40 !border-muted-foreground" : undefined;
 
   return (
     <Link
@@ -53,8 +53,8 @@ export function IssueRow({
       state={issueLinkState}
       data-inbox-issue-link
       className={cn(
-        "group flex items-start gap-2 border-b border-border py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
-        selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+        "group flex items-start gap-2 border-b border-default-200/30 py-2.5 pl-2 pr-3 text-sm no-underline text-inherit transition-colors last:border-0 first:rounded-t-2xl last:rounded-b-2xl sm:items-center sm:py-2 sm:pl-1",
+        selected ? "hover:bg-transparent" : "hover:bg-accent/[0.03]",
         className,
       )}
     >
@@ -74,17 +74,17 @@ export function IssueRow({
               <span className="hidden shrink-0 sm:inline-flex">
                 <StatusIcon status={issue.status} className={selectedStatusClass} />
               </span>
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              <span className="shrink-0 font-mono text-xs text-foreground/40">
                 {identifier}
               </span>
             </>
           )}
           {mobileMeta ? (
             <>
-              <span className="text-xs text-muted-foreground sm:hidden" aria-hidden="true">
+              <span className="text-xs text-foreground/40 sm:hidden" aria-hidden="true">
                 &middot;
               </span>
-              <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
+              <span className="text-xs text-foreground/40 sm:hidden">{mobileMeta}</span>
             </>
           ) : null}
         </span>
@@ -93,7 +93,7 @@ export function IssueRow({
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
           {desktopTrailing}
           {trailingMeta ? (
-            <span className="text-xs text-muted-foreground">{trailingMeta}</span>
+            <span className="text-xs text-foreground/40">{trailingMeta}</span>
           ) : null}
         </span>
       ) : null}
@@ -143,7 +143,7 @@ export function IssueRow({
                 onArchive();
               }}
               disabled={archiveDisabled}
-              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+              className="inline-flex h-4 w-4 items-center justify-center rounded-md text-foreground/40 opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
               aria-label="Dismiss from inbox"
             >
               <X className="h-3.5 w-3.5" />

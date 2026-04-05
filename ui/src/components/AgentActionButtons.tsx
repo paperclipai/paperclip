@@ -1,19 +1,19 @@
 import { Pause, Play } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 
 export function RunButton({
-  onClick,
-  disabled,
+  onPress,
+  isDisabled,
   label = "Run now",
   size = "sm",
 }: {
-  onClick: () => void;
-  disabled?: boolean;
+  onPress: () => void;
+  isDisabled?: boolean;
   label?: string;
-  size?: "sm" | "default";
+  size?: "sm" | "md";
 }) {
   return (
-    <Button variant="outline" size={size} onClick={onClick} disabled={disabled}>
+    <Button variant="outline" size={size} onPress={onPress} isDisabled={isDisabled}>
       <Play className="h-3.5 w-3.5 sm:mr-1" />
       <span className="hidden sm:inline">{label}</span>
     </Button>
@@ -24,18 +24,18 @@ export function PauseResumeButton({
   isPaused,
   onPause,
   onResume,
-  disabled,
+  isDisabled,
   size = "sm",
 }: {
   isPaused: boolean;
   onPause: () => void;
   onResume: () => void;
-  disabled?: boolean;
-  size?: "sm" | "default";
+  isDisabled?: boolean;
+  size?: "sm" | "md";
 }) {
   if (isPaused) {
     return (
-      <Button variant="outline" size={size} onClick={onResume} disabled={disabled}>
+      <Button variant="outline" size={size} onPress={onResume} isDisabled={isDisabled}>
         <Play className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">Resume</span>
       </Button>
@@ -43,7 +43,7 @@ export function PauseResumeButton({
   }
 
   return (
-    <Button variant="outline" size={size} onClick={onPause} disabled={disabled}>
+    <Button variant="outline" size={size} onPress={onPause} isDisabled={isDisabled}>
       <Pause className="h-3.5 w-3.5 sm:mr-1" />
       <span className="hidden sm:inline">Pause</span>
     </Button>

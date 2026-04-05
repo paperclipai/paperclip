@@ -1,18 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Tooltip, Button, Modal } from "@heroui/react";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
@@ -76,14 +63,14 @@ export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 export function HintIcon({ text }: { text: string }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
+      <Tooltip.Trigger>
         <button type="button" className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
           <HelpCircle className="h-3 w-3" />
         </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs">
+      </Tooltip.Trigger>
+      <Tooltip.Content placement="top" className="max-w-xs">
         {text}
-      </TooltipContent>
+      </Tooltip.Content>
     </Tooltip>
   );
 }
@@ -396,7 +383,7 @@ export function DraftNumberInput({
 }
 
 /**
- * "Choose" button that opens a dialog explaining the user must manually
+ * "Choose" button that opens a modal explaining the user must manually
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
@@ -410,56 +397,58 @@ export function ChoosePathButton() {
       >
         Choose
       </button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
-            <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 text-sm">
-            <section className="space-y-1.5">
-              <p className="font-medium">macOS (Finder)</p>
-              <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
-              </ol>
-              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                /Users/yourname/Documents/project
+      <Modal.Backdrop isOpen={open} onOpenChange={setOpen}>
+        <Modal.Container size="sm">
+          <Modal.Dialog>
+            <div className="px-6 pt-6 pb-2">
+              <h2 className="text-base font-semibold">Specify path manually</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                Browser security blocks apps from reading full local paths via a file picker.
+                Copy the absolute path and paste it into the input.
               </p>
-            </section>
-            <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
-              <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
-              </ol>
-              <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
-                C:\Users\yourname\Documents\project
-              </p>
-            </section>
-            <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
-              <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
-              </ol>
-            </section>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </div>
+            <div className="px-6 pb-6 space-y-4 text-sm">
+              <section className="space-y-1.5">
+                <p className="font-medium">macOS (Finder)</p>
+                <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+                  <li>Find the folder in Finder.</li>
+                  <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
+                  <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
+                  <li>Paste the result into the path input.</li>
+                </ol>
+                <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
+                  /Users/yourname/Documents/project
+                </p>
+              </section>
+              <section className="space-y-1.5">
+                <p className="font-medium">Windows (File Explorer)</p>
+                <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+                  <li>Find the folder in File Explorer.</li>
+                  <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
+                  <li>Click "Copy as path".</li>
+                  <li>Paste the result into the path input.</li>
+                </ol>
+                <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
+                  C:\Users\yourname\Documents\project
+                </p>
+              </section>
+              <section className="space-y-1.5">
+                <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+                <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+                  <li>Run <code>cd /path/to/folder</code>.</li>
+                  <li>Run <code>pwd</code>.</li>
+                  <li>Copy the output and paste it into the path input.</li>
+                </ol>
+              </section>
+              <div className="flex justify-end">
+                <Button variant="outline" onPress={() => setOpen(false)}>
+                  OK
+                </Button>
+              </div>
+            </div>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
     </>
   );
 }

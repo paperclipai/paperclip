@@ -8,9 +8,8 @@ import type {
   IssueAttachment,
   IssueComment,
 } from "@paperclipai/shared";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { ArrowRight, Check, Copy, Download, FolderOpen, Paperclip } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -439,9 +438,9 @@ function TimelineEventCard({
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
-      <Avatar size="sm" className="mt-0.5">
-        <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-      </Avatar>
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium">
+        {initialsForName(actorName)}
+      </div>
 
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
@@ -545,9 +544,9 @@ const TimelineList = memo(function TimelineList({
           const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
           return (
             <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
-              <Avatar size="sm">
-                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-              </Avatar>
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium">
+                {initialsForName(actorName)}
+              </div>
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
@@ -835,8 +834,8 @@ export function CommentThread({
                 size="sm"
                 variant="outline"
                 className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
-                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
+                isDisabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
+                onPress={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
                 {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
               </Button>
@@ -886,10 +885,11 @@ export function CommentThread({
               />
               <Button
                 variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach image"
+                size="sm"
+                isIconOnly
+                onPress={() => attachInputRef.current?.click()}
+                isDisabled={attaching}
+                aria-label="Attach image"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -942,7 +942,7 @@ export function CommentThread({
               }}
             />
           )}
-          <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
+          <Button size="sm" isDisabled={!canSubmit} onPress={() => void handleSubmit()}>
             {submitting ? "Posting..." : "Comment"}
           </Button>
         </div>

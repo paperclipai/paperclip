@@ -6,7 +6,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { agentUrl } from "../lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -271,18 +271,14 @@ export function OrgChart() {
   return (
     <div className="flex flex-col h-full">
     <div className="mb-2 flex items-center justify-start gap-2 shrink-0">
-      <Link to="/company/import">
-        <Button variant="outline" size="sm">
-          <Upload className="mr-1.5 h-3.5 w-3.5" />
-          Import company
-        </Button>
-      </Link>
-      <Link to="/company/export">
-        <Button variant="outline" size="sm">
-          <Download className="mr-1.5 h-3.5 w-3.5" />
-          Export company
-        </Button>
-      </Link>
+      <Button variant="outline" size="sm" onPress={() => navigate("/company/import")}>
+        <Upload className="mr-1.5 h-3.5 w-3.5" />
+        Import company
+      </Button>
+      <Button variant="outline" size="sm" onPress={() => navigate("/company/export")}>
+        <Download className="mr-1.5 h-3.5 w-3.5" />
+        Export company
+      </Button>
     </div>
     <div
       ref={containerRef}

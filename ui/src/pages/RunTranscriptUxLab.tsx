@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button, Badge } from "@heroui/react";
 import { cn, formatDateTime } from "../lib/utils";
 import { Identity } from "../components/Identity";
 import { StatusBadge } from "../components/StatusBadge";
@@ -63,7 +62,7 @@ function RunDetailPreview({
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
       <div className="border-b border-border/60 bg-background/90 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline" className="uppercase tracking-[0.18em] text-[10px]">
+          <Badge className="uppercase tracking-[0.18em] text-[10px]">
             Run Detail
           </Badge>
           <StatusBadge status={streaming ? "running" : "succeeded"} />
@@ -262,10 +261,10 @@ export function RunTranscriptUxLab() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+                <Badge className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
                   Source run {runTranscriptFixtureMeta.sourceRunId.slice(0, 8)}
                 </Badge>
-                <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+                <Badge className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
                   {runTranscriptFixtureMeta.issueIdentifier}
                 </Badge>
               </div>
@@ -309,7 +308,7 @@ export function RunTranscriptUxLab() {
                 variant="outline"
                 size="sm"
                 className="rounded-full"
-                onClick={() => setStreaming((value) => !value)}
+                onPress={() => setStreaming((value) => !value)}
               >
                 {streaming ? "Show settled state" : "Show streaming state"}
               </Button>

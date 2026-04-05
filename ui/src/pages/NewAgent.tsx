@@ -7,13 +7,7 @@ import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { queryKeys } from "../lib/queryKeys";
 import { AGENT_ROLES } from "@paperclipai/shared";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Button, Checkbox, Popover } from "@heroui/react";
 import { Shield } from "lucide-react";
 import { cn, agentUrl } from "../lib/utils";
 import { roleLabels } from "../components/agent-config-primitives";
@@ -243,9 +237,10 @@ export function NewAgent() {
 
         {/* Property chips: Role + Reports To */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
-          <Popover open={roleOpen} onOpenChange={setRoleOpen}>
-            <PopoverTrigger asChild>
+          <Popover isOpen={roleOpen} onOpenChange={setRoleOpen}>
+            <Popover.Trigger>
               <button
+                type="button"
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
                   isFirstAgent && "opacity-60 cursor-not-allowed"
@@ -255,11 +250,12 @@ export function NewAgent() {
                 <Shield className="h-3 w-3 text-muted-foreground" />
                 {roleLabels[effectiveRole] ?? effectiveRole}
               </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
+            </Popover.Trigger>
+            <Popover.Content className="w-36 p-1">
               {AGENT_ROLES.map((r) => (
                 <button
                   key={r}
+                  type="button"
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
                     r === role && "bg-accent"
@@ -269,7 +265,7 @@ export function NewAgent() {
                   {roleLabels[r] ?? r}
                 </button>
               ))}
-            </PopoverContent>
+            </Popover.Content>
           </Popover>
 
           <ReportsToPicker
@@ -309,8 +305,8 @@ export function NewAgent() {
                     <div key={skill.id} className="flex items-start gap-3">
                       <Checkbox
                         id={inputId}
-                        checked={checked}
-                        onCheckedChange={(next) => toggleSkill(skill.key, next === true)}
+                        isSelected={checked}
+                        onChange={(next) => toggleSkill(skill.key, next)}
                       />
                       <label htmlFor={inputId} className="grid gap-1 leading-none">
                         <span className="text-sm font-medium">{skill.name}</span>
@@ -335,13 +331,13 @@ export function NewAgent() {
             <p className="text-xs text-destructive mb-2">{formError}</p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={() => navigate("/agents")}>
+            <Button variant="outline" size="sm" onPress={() => navigate("/agents")}>
               Cancel
             </Button>
             <Button
               size="sm"
-              disabled={!name.trim() || createAgent.isPending}
-              onClick={handleSubmit}
+              isDisabled={!name.trim() || createAgent.isPending}
+              onPress={handleSubmit}
             >
               {createAgent.isPending ? "Creating…" : "Create agent"}
             </Button>

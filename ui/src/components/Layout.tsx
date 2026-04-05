@@ -34,8 +34,7 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Button, Tooltip } from "@heroui/react";
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
 
@@ -60,7 +59,7 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, cycleTheme: toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -315,32 +314,30 @@ export function Layout() {
                 </a>
                 {health?.version && (
                   <Tooltip>
-                    <TooltipTrigger asChild>
+                    <Tooltip.Trigger>
                       <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
-                    </TooltipTrigger>
-                    <TooltipContent>v{health.version}</TooltipContent>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>v{health.version}</Tooltip.Content>
                   </Tooltip>
                 )}
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                  <Link
-                    to={instanceSettingsTarget}
-                    aria-label="Instance settings"
-                    title="Instance settings"
-                    onClick={() => {
-                      if (isMobile) setSidebarOpen(false);
-                    }}
-                  >
-                    <Settings className="h-4 w-4" />
-                  </Link>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground shrink-0"
+                  aria-label="Instance settings"
+                  onPress={() => {
+                    if (isMobile) setSidebarOpen(false);
+                    navigate(instanceSettingsTarget);
+                  }}
+                >
+                  <Settings className="h-4 w-4" />
                 </Button>
                 <Button
-                  type="button"
                   variant="ghost"
-                  size="icon-sm"
+                  size="sm"
                   className="text-muted-foreground shrink-0"
-                  onClick={toggleTheme}
+                  onPress={toggleTheme}
                   aria-label={`Switch to ${nextTheme} mode`}
-                  title={`Switch to ${nextTheme} mode`}
                 >
                   {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </Button>
@@ -372,29 +369,27 @@ export function Layout() {
                   </a>
                   {health?.version && (
                     <Tooltip>
-                      <TooltipTrigger asChild>
+                      <Tooltip.Trigger>
                         <span className="px-2 text-xs text-muted-foreground shrink-0 cursor-default">v</span>
-                      </TooltipTrigger>
-                      <TooltipContent>v{health.version}</TooltipContent>
+                      </Tooltip.Trigger>
+                      <Tooltip.Content>v{health.version}</Tooltip.Content>
                     </Tooltip>
                   )}
-                  <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                    <Link
-                      to={instanceSettingsTarget}
-                      aria-label="Instance settings"
-                      title="Instance settings"
-                    >
-                      <Settings className="h-4 w-4" />
-                    </Link>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground shrink-0"
+                    aria-label="Instance settings"
+                    onPress={() => navigate(instanceSettingsTarget)}
+                  >
+                    <Settings className="h-4 w-4" />
                   </Button>
                   <Button
-                    type="button"
                     variant="ghost"
-                    size="icon-sm"
+                    size="sm"
                     className="text-muted-foreground shrink-0"
-                    onClick={toggleTheme}
+                    onPress={toggleTheme}
                     aria-label={`Switch to ${nextTheme} mode`}
-                    title={`Switch to ${nextTheme} mode`}
                   >
                     {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                   </Button>

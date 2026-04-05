@@ -15,13 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Dropdown, Separator } from "@heroui/react";
 import { artifactsApi } from "@/api/artifacts";
 import { ArtifactPreview } from "./ArtifactPreview";
 import { cn } from "@/lib/utils";
@@ -189,30 +183,29 @@ function ArtifactRow({
         </td>
         <td className="px-3 py-2 text-muted-foreground">{formatDate(artifact.createdAt)}</td>
         <td className="px-3 py-2 text-right">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <Dropdown>
+            <Dropdown.Trigger>
               <button
                 className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-muted"
                 onClick={(e) => e.stopPropagation()}
               >
                 <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
               </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem asChild>
-                <a href={contentUrl} download={artifact.title}>
-                  <Download className="w-4 h-4 mr-2" />
-                  Download
-                </a>
-              </DropdownMenuItem>
+            </Dropdown.Trigger>
+            <Dropdown.Popover>
+              <Dropdown.Menu>
+              <Dropdown.Item onPress={() => window.open(contentUrl, "_blank")}>
+                <Download className="w-4 h-4 mr-2" />
+                <a href={contentUrl} download={artifact.title}>Download</a>
+              </Dropdown.Item>
               {storageProvider === "local_disk" && (
-                <DropdownMenuItem onClick={() => onOpenInFinder(artifact)}>
+                <Dropdown.Item onPress={() => onOpenInFinder(artifact)}>
                   <ExternalLink className="w-4 h-4 mr-2" />
                   Open in Finder
-                </DropdownMenuItem>
+                </Dropdown.Item>
               )}
-              <DropdownMenuItem
-                onClick={() => {
+              <Dropdown.Item
+                onPress={() => {
                   navigator.clipboard.writeText(
                     `${window.location.origin}${contentUrl}`,
                   );
@@ -220,26 +213,27 @@ function ArtifactRow({
               >
                 <Link className="w-4 h-4 mr-2" />
                 Copy link
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onRename(artifact)}>
+              </Dropdown.Item>
+              <Separator />
+              <Dropdown.Item onPress={() => onRename(artifact)}>
                 <Pencil className="w-4 h-4 mr-2" />
                 Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onMove(artifact)}>
+              </Dropdown.Item>
+              <Dropdown.Item onPress={() => onMove(artifact)}>
                 <FolderInput className="w-4 h-4 mr-2" />
                 Move to...
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
+              </Dropdown.Item>
+              <Separator />
+              <Dropdown.Item
                 className="text-destructive"
-                onClick={() => onDelete(artifact)}
+                onPress={() => onDelete(artifact)}
               >
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
         </td>
       </tr>
       {isExpanded && (

@@ -27,8 +27,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
-import { Button } from "@/components/ui/button";
-import { Tabs } from "@/components/ui/tabs";
+import { Button } from "@heroui/react";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
@@ -304,8 +303,8 @@ function ProjectWorkspacesContent({
                 variant="ghost"
                 size="sm"
                 className="h-7 gap-1.5 px-2 text-xs"
-                disabled={controlWorkspaceRuntime.isPending}
-                onClick={() =>
+                isDisabled={controlWorkspaceRuntime.isPending}
+                onPress={() =>
                   controlWorkspaceRuntime.mutate({
                     key: summary.key,
                     kind: summary.kind,
@@ -329,7 +328,7 @@ function ProjectWorkspacesContent({
                 variant="ghost"
                 size="sm"
                 className="h-7 px-2 text-xs text-muted-foreground"
-                onClick={() => setClosingWorkspace({
+                onPress={() => setClosingWorkspace({
                   id: summary.executionWorkspaceId!,
                   name: summary.workspaceName,
                   status: summary.executionWorkspaceStatus!,
@@ -847,7 +846,7 @@ export function ProjectDetail() {
         itemClassName="inline-flex"
       />
 
-      <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
+      <div>
         <PageTabBar
           items={[
             { value: "list", label: "Issues" },
@@ -864,7 +863,7 @@ export function ProjectDetail() {
           value={activeTab ?? "list"}
           onValueChange={(value) => handleTabChange(value as ProjectTab)}
         />
-      </Tabs>
+      </div>
 
       {activeTab === "overview" && (
         <OverviewContent

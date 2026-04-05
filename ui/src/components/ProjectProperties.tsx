@@ -10,10 +10,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
-import { Separator } from "@/components/ui/separator";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Separator, Button, Popover, Tooltip } from "@heroui/react";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { DraftInput } from "./agent-config-primitives";
@@ -119,8 +116,8 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
   const colorClass = statusBadge[status] ?? statusBadgeDefault;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
         <button
           className={cn(
             "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity",
@@ -129,23 +126,21 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
         >
           {status.replace("_", " ")}
         </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-40 p-1" align="start">
+      </Popover.Trigger>
+      <Popover.Content className="w-40 p-1">
         {PROJECT_STATUSES.map((s) => (
-          <Button
+          <button
             key={s.value}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s.value === status && "bg-accent")}
+            className={cn("flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50", s.value === status && "bg-accent")}
             onClick={() => {
               onChange(s.value);
               setOpen(false);
             }}
           >
             {s.label}
-          </Button>
+          </button>
         ))}
-      </PopoverContent>
+      </Popover.Content>
     </Popover>
   );
 }
@@ -171,7 +166,7 @@ function ArchiveDangerZone({
           : "Unarchive this project to restore it in the sidebar and project selectors."}
       </p>
       {archivePending ? (
-        <Button size="sm" variant="destructive" disabled>
+        <Button size="sm" variant="danger" isDisabled>
           <Loader2 className="h-3 w-3 animate-spin mr-1" />
           {isArchive ? "Archiving..." : "Unarchiving..."}
         </Button>
@@ -182,8 +177,8 @@ function ArchiveDangerZone({
           </span>
           <Button
             size="sm"
-            variant="destructive"
-            onClick={() => {
+            variant="danger"
+            onPress={() => {
               setConfirming(false);
               onArchive(isArchive);
             }}
@@ -193,7 +188,7 @@ function ArchiveDangerZone({
           <Button
             size="sm"
             variant="outline"
-            onClick={() => setConfirming(false)}
+            onPress={() => setConfirming(false)}
           >
             Cancel
           </Button>
@@ -201,8 +196,8 @@ function ArchiveDangerZone({
       ) : (
         <Button
           size="sm"
-          variant="destructive"
-          onClick={() => setConfirming(true)}
+          variant="danger"
+          onPress={() => setConfirming(true)}
         >
           {isArchive ? (
             <><Archive className="h-3 w-3 mr-1" />{action} project</>
@@ -549,19 +544,17 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </div>
           )}
           {(onUpdate || onFieldUpdate) && (
-            <Popover open={goalOpen} onOpenChange={setGoalOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className={cn("h-6 w-fit px-2", linkedGoals.length > 0 && "ml-1")}
+            <Popover isOpen={goalOpen} onOpenChange={setGoalOpen}>
+              <Popover.Trigger>
+                <button
+                  className={cn("inline-flex items-center rounded border border-border h-6 px-2 text-xs hover:bg-accent/50 transition-colors disabled:opacity-50 disabled:pointer-events-none", linkedGoals.length > 0 && "ml-1")}
                   disabled={availableGoals.length === 0}
                 >
                   <Plus className="h-3 w-3 mr-1" />
                   Goal
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-56 p-1" align="start">
+                </button>
+              </Popover.Trigger>
+              <Popover.Content className="w-56 p-1">
                 {availableGoals.length === 0 ? (
                   <div className="px-2 py-1.5 text-xs text-muted-foreground">
                     All goals linked.
@@ -577,7 +570,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </button>
                   ))
                 )}
-              </PopoverContent>
+              </Popover.Content>
             </Popover>
           )}
         </PropertyRow>
@@ -601,7 +594,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Codebase</span>
             <Tooltip>
-              <TooltipTrigger asChild>
+              <Tooltip.Trigger>
                 <button
                   type="button"
                   className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
@@ -609,10 +602,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 >
                   ?
                 </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
+              </Tooltip.Trigger>
+              <Tooltip.Content placement="top">
                 Repo identifies the source of truth. Local folder is the default place agents write code.
-              </TooltipContent>
+              </Tooltip.Content>
             </Tooltip>
           </div>
           <div className="space-y-2 rounded-md border border-border/70 p-3">
@@ -640,9 +633,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="flex items-center gap-1">
                     <Button
                       variant="outline"
-                      size="xs"
+                      size="sm"
                       className="h-6 px-2"
-                      onClick={() => {
+                      onPress={() => {
                         setWorkspaceMode("repo");
                         setWorkspaceRepoUrl(codebase.repoUrl ?? "");
                         setWorkspaceError(null);
@@ -652,8 +645,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </Button>
                     <Button
                       variant="ghost"
-                      size="icon-xs"
-                      onClick={clearRepoWorkspace}
+                      size="sm" isIconOnly
+                      onPress={clearRepoWorkspace}
                       aria-label="Clear repo"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -665,9 +658,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   <div className="text-xs text-muted-foreground">Not set.</div>
                   <Button
                     variant="outline"
-                    size="xs"
+                    size="sm"
                     className="h-6 px-2"
-                    onClick={() => {
+                    onPress={() => {
                       setWorkspaceMode("repo");
                       setWorkspaceRepoUrl(codebase.repoUrl ?? "");
                       setWorkspaceError(null);
@@ -693,9 +686,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 <div className="flex items-center gap-1">
                   <Button
                     variant="outline"
-                    size="xs"
+                    size="sm"
                     className="h-6 px-2"
-                    onClick={() => {
+                    onPress={() => {
                       setWorkspaceMode("local");
                       setWorkspaceCwd(codebase.localFolder ?? "");
                       setWorkspaceError(null);
@@ -706,8 +699,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                   {codebase.localFolder ? (
                     <Button
                       variant="ghost"
-                      size="icon-xs"
-                      onClick={clearLocalWorkspace}
+                      size="sm" isIconOnly
+                      onPress={clearLocalWorkspace}
                       aria-label="Clear local folder"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -783,18 +776,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
-                  size="xs"
+                  size="sm"
                   className="h-6 px-2"
-                  disabled={(!workspaceCwd.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitLocalWorkspace}
+                  isDisabled={(!workspaceCwd.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
+                  onPress={submitLocalWorkspace}
                 >
                   Save
                 </Button>
                 <Button
                   variant="ghost"
-                  size="xs"
+                  size="sm"
                   className="h-6 px-2"
-                  onClick={() => {
+                  onPress={() => {
                     setWorkspaceMode(null);
                     setWorkspaceCwd("");
                     setWorkspaceError(null);
@@ -816,18 +809,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
-                  size="xs"
+                  size="sm"
                   className="h-6 px-2"
-                  disabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
-                  onClick={submitRepoWorkspace}
+                  isDisabled={(!workspaceRepoUrl.trim() && !primaryCodebaseWorkspace) || createWorkspace.isPending || updateWorkspace.isPending}
+                  onPress={submitRepoWorkspace}
                 >
                   Save
                 </Button>
                 <Button
                   variant="ghost"
-                  size="xs"
+                  size="sm"
                   className="h-6 px-2"
-                  onClick={() => {
+                  onPress={() => {
                     setWorkspaceMode(null);
                     setWorkspaceRepoUrl("");
                     setWorkspaceError(null);
@@ -860,7 +853,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span>Execution Workspaces</span>
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <Tooltip.Trigger>
                     <button
                       type="button"
                       className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] text-muted-foreground hover:text-foreground"
@@ -868,10 +861,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     >
                       ?
                     </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
+                  </Tooltip.Trigger>
+                  <Tooltip.Content placement="top">
                     Project-owned defaults for isolated issue checkouts and execution workspace behavior.
-                  </TooltipContent>
+                  </Tooltip.Content>
                 </Tooltip>
               </div>
               <div className="space-y-3">

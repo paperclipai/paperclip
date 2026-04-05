@@ -3,12 +3,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AGENT_ICON_NAMES, type AgentIconName } from "@paperclipai/shared";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Input } from "@/components/ui/input";
+import { Popover, Input } from "@heroui/react";
 import { cn } from "@/lib/utils";
 import { AGENT_ICONS, getAgentIcon } from "../lib/agent-icons";
 
@@ -42,9 +37,9 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
   }, [search]);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
-      <PopoverContent className="w-72 p-3" align="start">
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Popover.Trigger>{children}</Popover.Trigger>
+      <Popover.Content className="w-72 p-3">
         <Input
           placeholder="Search icons..."
           value={search}
@@ -74,7 +69,7 @@ export function AgentIconPicker({ value, onChange, children }: AgentIconPickerPr
             <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
           )}
         </div>
-      </PopoverContent>
+      </Popover.Content>
     </Popover>
   );
 }

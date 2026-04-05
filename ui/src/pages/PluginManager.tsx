@@ -7,26 +7,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
-import { Link } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { Button, Input, Card, Badge, Modal } from "@heroui/react";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 
@@ -65,6 +52,7 @@ export function PluginManager() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const navigate = useNavigate();
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -166,42 +154,48 @@ export function PluginManager() {
           <h1 className="text-xl font-semibold">Plugin Manager</h1>
         </div>
         
-        <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
-          <DialogTrigger asChild>
-            <Button size="sm" className="gap-2">
-              <Plus className="h-4 w-4" />
-              Install Plugin
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Install Plugin</DialogTitle>
-              <DialogDescription>
-                Enter the npm package name of the plugin you wish to install.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
-                <Input
-                  id="packageName"
-                  placeholder="@paperclipai/plugin-example"
-                  value={installPackage}
-                  onChange={(e) => setInstallPackage(e.target.value)}
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
-              <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
-                disabled={!installPackage || installMutation.isPending}
-              >
-                {installMutation.isPending ? "Installing..." : "Install"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <Button size="sm" className="gap-2" onPress={() => setInstallDialogOpen(true)}>
+          <Plus className="h-4 w-4" />
+          Install Plugin
+        </Button>
+        <Modal.Backdrop isOpen={installDialogOpen} onOpenChange={setInstallDialogOpen}>
+          <Modal.Container>
+            <Modal.Dialog>
+              {({ close }) => (
+                <>
+                  <Modal.Header>
+                    <h2 className="text-lg font-semibold">Install Plugin</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Enter the npm package name of the plugin you wish to install.
+                    </p>
+                  </Modal.Header>
+                  <Modal.Body>
+                    <div className="grid gap-4">
+                      <div className="grid gap-2">
+                        <label htmlFor="packageName" className="text-sm font-medium">npm Package Name</label>
+                        <Input
+                          id="packageName"
+                          placeholder="@paperclipai/plugin-example"
+                          value={installPackage}
+                          onChange={(e) => setInstallPackage(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </Modal.Body>
+                  <Modal.Footer>
+                    <Button variant="outline" onPress={close}>Cancel</Button>
+                    <Button
+                      onPress={() => installMutation.mutate({ packageName: installPackage })}
+                      isDisabled={!installPackage || installMutation.isPending}
+                    >
+                      {installMutation.isPending ? "Installing..." : "Install"}
+                    </Button>
+                  </Modal.Footer>
+                </>
+              )}
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
       </div>
 
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
@@ -220,7 +214,7 @@ export function PluginManager() {
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge variant="outline">Examples</Badge>
+          <Badge>Examples</Badge>
         </div>
 
         {examplesQuery.isLoading ? (
@@ -246,16 +240,15 @@ export function PluginManager() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{example.displayName}</span>
-                        <Badge variant="outline">Example</Badge>
+                        <Badge>Example</Badge>
                         {installedPlugin ? (
                           <Badge
-                            variant={installedPlugin.status === "ready" ? "default" : "secondary"}
                             className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
                           >
                             {installedPlugin.status}
                           </Badge>
                         ) : (
-                          <Badge variant="secondary">Not installed</Badge>
+                          <Badge>Not installed</Badge>
                         )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
@@ -268,23 +261,21 @@ export function PluginManager() {
                             <Button
                               variant="outline"
                               size="sm"
-                              disabled={enableMutation.isPending}
-                              onClick={() => enableMutation.mutate(installedPlugin.id)}
+                              isDisabled={enableMutation.isPending}
+                              onPress={() => enableMutation.mutate(installedPlugin.id)}
                             >
                               Enable
                             </Button>
                           )}
-                          <Button variant="outline" size="sm" asChild>
-                            <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
-                              {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
-                            </Link>
+                          <Button variant="outline" size="sm" onPress={() => navigate(`/instance/settings/plugins/${installedPlugin.id}`)}>
+                            {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
                           </Button>
                         </>
                       ) : (
                         <Button
                           size="sm"
-                          disabled={installPending || installMutation.isPending}
-                          onClick={() =>
+                          isDisabled={installPending || installMutation.isPending}
+                          onPress={() =>
                             installMutation.mutate({
                               packageName: example.localPath,
                               isLocalPath: true,
@@ -311,13 +302,13 @@ export function PluginManager() {
 
         {!installedPlugins.length ? (
           <Card className="bg-muted/30">
-            <CardContent className="flex flex-col items-center justify-center py-10">
+            <Card.Content className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
               <p className="text-sm font-medium">No plugins installed</p>
               <p className="text-xs text-muted-foreground mt-1">
                 Install a plugin to extend functionality.
               </p>
-            </CardContent>
+            </Card.Content>
           </Card>
         ) : (
           <ul className="divide-y rounded-md border bg-card">
@@ -334,7 +325,7 @@ export function PluginManager() {
                         {plugin.manifestJson.displayName ?? plugin.packageName}
                       </Link>
                       {examplePackageNames.has(plugin.packageName) && (
-                        <Badge variant="outline">Example</Badge>
+                        <Badge>Example</Badge>
                       )}
                     </div>
                     <div>
@@ -364,7 +355,7 @@ export function PluginManager() {
                             variant="outline"
                             size="sm"
                             className="border-red-500/30 bg-background/60 text-red-700 hover:bg-red-500/10 hover:text-red-800 dark:text-red-200 dark:hover:text-red-100"
-                            onClick={() => setErrorDetailsPlugin(plugin)}
+                            onPress={() => setErrorDetailsPlugin(plugin)}
                           >
                             View full error
                           </Button>
@@ -376,13 +367,6 @@ export function PluginManager() {
                     <div className="flex flex-col items-end gap-2">
                       <div className="flex items-center gap-2">
                         <Badge
-                          variant={
-                            plugin.status === "ready"
-                              ? "default"
-                              : plugin.status === "error"
-                                ? "destructive"
-                              : "secondary"
-                          }
                           className={cn(
                             "shrink-0",
                             plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
@@ -392,39 +376,37 @@ export function PluginManager() {
                         </Badge>
                         <Button
                           variant="outline"
-                          size="icon-sm"
+                          size="sm"
                           className="h-8 w-8"
-                          title={plugin.status === "ready" ? "Disable" : "Enable"}
-                          onClick={() => {
+                          aria-label={plugin.status === "ready" ? "Disable" : "Enable"}
+                          onPress={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
                             } else {
                               enableMutation.mutate(plugin.id);
                             }
                           }}
-                          disabled={enableMutation.isPending || disableMutation.isPending}
+                          isDisabled={enableMutation.isPending || disableMutation.isPending}
                         >
                           <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
                         </Button>
                         <Button
                           variant="outline"
-                          size="icon-sm"
+                          size="sm"
                           className="h-8 w-8 text-destructive hover:text-destructive"
-                          title="Uninstall"
-                          onClick={() => {
+                          aria-label="Uninstall"
+                          onPress={() => {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
                           }}
-                          disabled={uninstallMutation.isPending}
+                          isDisabled={uninstallMutation.isPending}
                         >
                           <Trash className="h-4 w-4" />
                         </Button>
                       </div>
-                      <Button variant="outline" size="sm" className="mt-2 h-8" asChild>
-                        <Link to={`/instance/settings/plugins/${plugin.id}`}>
-                          <Settings className="h-4 w-4" />
-                          Configure
-                        </Link>
+                      <Button variant="outline" size="sm" className="mt-2 h-8" onPress={() => navigate(`/instance/settings/plugins/${plugin.id}`)}>
+                        <Settings className="h-4 w-4" />
+                        Configure
                       </Button>
                     </div>
                   </div>
@@ -435,75 +417,89 @@ export function PluginManager() {
         )}
       </section>
 
-      <Dialog
-        open={uninstallPluginId !== null}
-        onOpenChange={(open) => { if (!open) setUninstallPluginId(null); }}
+      <Modal.Backdrop
+        isOpen={uninstallPluginId !== null}
+        onOpenChange={(open: boolean) => { if (!open) setUninstallPluginId(null); }}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Uninstall Plugin</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to uninstall <strong>{uninstallPluginName}</strong>? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              disabled={uninstallMutation.isPending}
-              onClick={() => {
-                if (uninstallPluginId) {
-                  uninstallMutation.mutate(uninstallPluginId, {
-                    onSettled: () => setUninstallPluginId(null),
-                  });
-                }
-              }}
-            >
-              {uninstallMutation.isPending ? "Uninstalling..." : "Uninstall"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        <Modal.Container>
+          <Modal.Dialog>
+            {({ close }) => (
+              <>
+                <Modal.Header>
+                  <h2 className="text-lg font-semibold">Uninstall Plugin</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Are you sure you want to uninstall <strong>{uninstallPluginName}</strong>? This action cannot be undone.
+                  </p>
+                </Modal.Header>
+                <Modal.Footer>
+                  <Button variant="outline" onPress={close}>Cancel</Button>
+                  <Button
+                    variant="danger"
+                    isDisabled={uninstallMutation.isPending}
+                    onPress={() => {
+                      if (uninstallPluginId) {
+                        uninstallMutation.mutate(uninstallPluginId, {
+                          onSettled: () => setUninstallPluginId(null),
+                        });
+                      }
+                    }}
+                  >
+                    {uninstallMutation.isPending ? "Uninstalling..." : "Uninstall"}
+                  </Button>
+                </Modal.Footer>
+              </>
+            )}
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
-      <Dialog
-        open={errorDetailsPlugin !== null}
-        onOpenChange={(open) => { if (!open) setErrorDetailsPlugin(null); }}
+      <Modal.Backdrop
+        isOpen={errorDetailsPlugin !== null}
+        onOpenChange={(open: boolean) => { if (!open) setErrorDetailsPlugin(null); }}
       >
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Error Details</DialogTitle>
-            <DialogDescription>
-              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-md border border-red-500/25 bg-red-500/[0.06] px-4 py-3">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
-                <div className="space-y-1 text-sm">
-                  <p className="font-medium text-red-700 dark:text-red-300">
-                    What errored
+        <Modal.Container className="sm:max-w-2xl">
+          <Modal.Dialog>
+            {({ close }) => (
+              <>
+                <Modal.Header>
+                  <h2 className="text-lg font-semibold">Error Details</h2>
+                  <p className="text-sm text-muted-foreground">
+                    {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
                   </p>
-                  <p className="text-red-700/90 dark:text-red-200/90 break-words">
-                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Full error output</p>
-              <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
-                {errorDetailsPlugin?.lastError ?? "No stored error message."}
-              </pre>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setErrorDetailsPlugin(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                </Modal.Header>
+                <Modal.Body>
+                  <div className="space-y-4">
+                    <div className="rounded-md border border-red-500/25 bg-red-500/[0.06] px-4 py-3">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+                        <div className="space-y-1 text-sm">
+                          <p className="font-medium text-red-700 dark:text-red-300">
+                            What errored
+                          </p>
+                          <p className="text-red-700/90 dark:text-red-200/90 break-words">
+                            {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium">Full error output</p>
+                      <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
+                        {errorDetailsPlugin?.lastError ?? "No stored error message."}
+                      </pre>
+                    </div>
+                  </div>
+                </Modal.Body>
+                <Modal.Footer>
+                  <Button variant="outline" onPress={close}>
+                    Close
+                  </Button>
+                </Modal.Footer>
+              </>
+            )}
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
     </div>
   );
 }

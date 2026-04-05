@@ -1,18 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
-import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { Input, Select, ListBox } from "@heroui/react";
 
 const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select"];
 
@@ -63,8 +52,12 @@ export function RoutineVariablesEditor({
   }
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-left">
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-left"
+        onClick={() => setOpen((v) => !v)}
+      >
         <div>
           <p className="text-sm font-medium">Variables</p>
           <p className="text-xs text-muted-foreground">
@@ -72,14 +65,14 @@ export function RoutineVariablesEditor({
           </p>
         </div>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-3 pt-3">
+      </button>
+      {open && <div className="space-y-3 pt-3">
         {syncedVariables.map((variable) => (
           <div key={variable.name} className="rounded-lg border border-border/70 p-4">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="font-mono text-xs">
+              <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 font-mono text-xs">
                 {`{{${variable.name}}}`}
-              </Badge>
+              </span>
               <span className="text-xs text-muted-foreground">
                 Prompt the user for this value before each manual run.
               </span>
@@ -87,7 +80,7 @@ export function RoutineVariablesEditor({
 
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
-                <Label className="text-xs">Label</Label>
+                <label className="text-xs text-muted-foreground">Label</label>
                 <Input
                   value={variable.label ?? ""}
                   onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
@@ -99,30 +92,30 @@ export function RoutineVariablesEditor({
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-xs">Type</Label>
+                <label className="text-xs text-muted-foreground">Type</label>
                 <Select
-                  value={variable.type}
-                  onValueChange={(type) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
+                  selectedKey={variable.type}
+                  onSelectionChange={(type) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                     ...current,
                     type: type as RoutineVariable["type"],
                     defaultValue: type === "boolean" ? null : current.defaultValue,
                     options: type === "select" ? current.options : [],
                   })))}
                 >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {variableTypes.map((type) => (
-                      <SelectItem key={type} value={type}>{type}</SelectItem>
-                    ))}
-                  </SelectContent>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {variableTypes.map((type) => (
+                        <ListBox.Item key={type} id={type}>{type}</ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
                 </Select>
               </div>
 
               <div className="space-y-1.5 md:col-span-2">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs">Default value</Label>
+                  <label className="text-xs text-muted-foreground">Default value</label>
                   <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
@@ -137,8 +130,9 @@ export function RoutineVariablesEditor({
                 </div>
 
                 {variable.type === "textarea" ? (
-                  <Textarea
+                  <textarea
                     rows={3}
+                    className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm resize-none"
                     value={variable.defaultValue == null ? "" : String(variable.defaultValue)}
                     onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                       ...current,
@@ -147,25 +141,25 @@ export function RoutineVariablesEditor({
                   />
                 ) : variable.type === "boolean" ? (
                   <Select
-                    value={variable.defaultValue === true ? "true" : variable.defaultValue === false ? "false" : "__unset__"}
-                    onValueChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
+                    selectedKey={variable.defaultValue === true ? "true" : variable.defaultValue === false ? "false" : "__unset__"}
+                    onSelectionChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                       ...current,
                       defaultValue: next === "__unset__" ? null : next === "true",
                     })))}
                   >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__unset__">No default</SelectItem>
-                      <SelectItem value="true">True</SelectItem>
-                      <SelectItem value="false">False</SelectItem>
-                    </SelectContent>
+                    <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                    <Select.Popover>
+                      <ListBox>
+                        <ListBox.Item id="__unset__">No default</ListBox.Item>
+                        <ListBox.Item id="true">True</ListBox.Item>
+                        <ListBox.Item id="false">False</ListBox.Item>
+                      </ListBox>
+                    </Select.Popover>
                   </Select>
                 ) : variable.type === "select" ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Options</Label>
+                      <label className="text-xs text-muted-foreground">Options</label>
                       <Input
                         value={variable.options.join(", ")}
                         onChange={(event) => {
@@ -183,23 +177,23 @@ export function RoutineVariablesEditor({
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Default option</Label>
+                      <label className="text-xs text-muted-foreground">Default option</label>
                       <Select
-                        value={typeof variable.defaultValue === "string" ? variable.defaultValue : "__unset__"}
-                        onValueChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
+                        selectedKey={typeof variable.defaultValue === "string" ? variable.defaultValue : "__unset__"}
+                        onSelectionChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                           ...current,
                           defaultValue: next === "__unset__" ? null : next,
                         })))}
                       >
-                        <SelectTrigger>
-                          <SelectValue placeholder="No default" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__unset__">No default</SelectItem>
-                          {variable.options.map((option) => (
-                            <SelectItem key={option} value={option}>{option}</SelectItem>
-                          ))}
-                        </SelectContent>
+                        <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                        <Select.Popover>
+                          <ListBox>
+                            <ListBox.Item id="__unset__">No default</ListBox.Item>
+                            {variable.options.map((option) => (
+                              <ListBox.Item key={option} id={option}>{option}</ListBox.Item>
+                            ))}
+                          </ListBox>
+                        </Select.Popover>
                       </Select>
                     </div>
                   </div>
@@ -218,8 +212,8 @@ export function RoutineVariablesEditor({
             </div>
           </div>
         ))}
-      </CollapsibleContent>
-    </Collapsible>
+      </div>}
+    </div>
   );
 }
 

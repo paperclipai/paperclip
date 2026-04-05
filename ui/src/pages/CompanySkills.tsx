@@ -20,19 +20,8 @@ import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Modal, Tooltip, Button, Input } from "@heroui/react";
 import { cn } from "../lib/utils";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Boxes,
   ChevronDown,
@@ -268,20 +257,20 @@ function NewSkillForm({
           placeholder="optional-shortname"
           className="h-9 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
         />
-        <Textarea
+        <textarea
           value={description}
           onChange={(event) => setDescription(event.target.value)}
           placeholder="Short description"
-          className="min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none focus-visible:ring-0"
+          className="w-full min-h-20 rounded-none border-0 border-b border-border px-0 shadow-none bg-transparent text-sm outline-none resize-none"
         />
         <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={isPending}>
+          <Button variant="ghost" size="sm" onPress={onCancel} isDisabled={isPending}>
             Cancel
           </Button>
           <Button
             size="sm"
-            onClick={() => onCreate({ name, slug: slug || null, description: description || null })}
-            disabled={isPending || name.trim().length === 0}
+            onPress={() => onCreate({ name, slug: slug || null, description: description || null })}
+            isDisabled={isPending || name.trim().length === 0}
           >
             {isPending ? "Creating..." : "Create skill"}
           </Button>
@@ -438,13 +427,13 @@ function SkillList({
               >
                 <span className="flex min-w-0 items-center gap-2 self-center">
                   <Tooltip>
-                    <TooltipTrigger asChild>
+                    <Tooltip.Trigger>
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground opacity-75 transition-opacity group-hover:opacity-100">
                         <SourceIcon className="h-3.5 w-3.5" />
                         <span className="sr-only">{source.managedLabel}</span>
                       </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">{source.managedLabel}</TooltipContent>
+                    </Tooltip.Trigger>
+                    <Tooltip.Content>{source.managedLabel}</Tooltip.Content>
                   </Tooltip>
                   <span className="min-w-0 overflow-hidden text-[13px] font-medium leading-5 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">
                     {skill.name}
@@ -603,8 +592,8 @@ function SkillPane({
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={onCheckUpdates}
-                  disabled={checkUpdatesPending || updateStatusLoading}
+                  onPress={onCheckUpdates}
+                  isDisabled={checkUpdatesPending || updateStatusLoading}
                 >
                   <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", (checkUpdatesPending || updateStatusLoading) && "animate-spin")} />
                   Check for updates
@@ -612,8 +601,8 @@ function SkillPane({
                 {updateStatus?.supported && updateStatus.hasUpdate && (
                   <Button
                     size="sm"
-                    onClick={onInstallUpdate}
-                    disabled={installUpdatePending}
+                    onPress={onInstallUpdate}
+                    isDisabled={installUpdatePending}
                   >
                     <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", installUpdatePending && "animate-spin")} />
                     Install update{latestPin ? ` ${latestPin}` : ""}
@@ -687,10 +676,10 @@ function SkillPane({
             )}
             {editMode && file?.editable && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>
+                <Button variant="ghost" size="sm" onPress={() => setEditMode(false)} isDisabled={savePending}>
                   Cancel
                 </Button>
-                <Button size="sm" onClick={onSave} disabled={savePending}>
+                <Button size="sm" onPress={onSave} isDisabled={savePending}>
                   <Save className="mr-1.5 h-3.5 w-3.5" />
                   {savePending ? "Saving..." : "Save"}
                 </Button>
@@ -714,10 +703,10 @@ function SkillPane({
               className="min-h-[520px]"
             />
           ) : (
-            <Textarea
+            <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+              className="w-full min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none outline-none resize-none"
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
@@ -1002,47 +991,53 @@ export function CompanySkills() {
 
   return (
     <>
-      <Dialog open={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Add a skill source</DialogTitle>
-            <DialogDescription>
-              Paste a local path, GitHub URL, or `skills.sh` command into the field first.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 text-sm">
-            <a
-              href="https://skills.sh"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
-            >
-              <span>
-                <span className="block font-medium">Browse skills.sh</span>
-                <span className="mt-1 block text-muted-foreground">
-                  Find install commands and paste one here.
-                </span>
-              </span>
-              <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            </a>
-            <a
-              href="https://github.com/search?q=SKILL.md&type=code"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
-            >
-              <span>
-                <span className="block font-medium">Search GitHub</span>
-                <span className="mt-1 block text-muted-foreground">
-                  Look for repositories with `SKILL.md`, then paste the repo URL here.
-                </span>
-              </span>
-              <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            </a>
-          </div>
-          <DialogFooter showCloseButton />
-        </DialogContent>
-      </Dialog>
+      <Modal.Backdrop isOpen={emptySourceHelpOpen} onOpenChange={setEmptySourceHelpOpen}>
+        <Modal.Container size="md">
+          <Modal.Dialog>
+            <div className="p-6 space-y-4 max-w-md">
+              <div>
+                <h2 className="text-base font-semibold">Add a skill source</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Paste a local path, GitHub URL, or `skills.sh` command into the field first.
+                </p>
+              </div>
+              <div className="space-y-3 text-sm">
+                <a
+                  href="https://skills.sh"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
+                >
+                  <span>
+                    <span className="block font-medium">Browse skills.sh</span>
+                    <span className="mt-1 block text-muted-foreground">
+                      Find install commands and paste one here.
+                    </span>
+                  </span>
+                  <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+                <a
+                  href="https://github.com/search?q=SKILL.md&type=code"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-start justify-between rounded-md border border-border px-3 py-3 text-foreground no-underline transition-colors hover:bg-accent/40"
+                >
+                  <span>
+                    <span className="block font-medium">Search GitHub</span>
+                    <span className="mt-1 block text-muted-foreground">
+                      Look for repositories with `SKILL.md`, then paste the repo URL here.
+                    </span>
+                  </span>
+                  <ExternalLink className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                </a>
+              </div>
+              <div className="flex justify-end">
+                <Button size="sm" variant="outline" onPress={() => setEmptySourceHelpOpen(false)}>Close</Button>
+              </div>
+            </div>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       <div className="grid min-h-[calc(100vh-12rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
         <aside className="border-r border-border">
@@ -1057,14 +1052,15 @@ export function CompanySkills() {
               <div className="flex items-center gap-1">
                 <Button
                   variant="ghost"
-                  size="icon-sm"
-                  onClick={() => scanProjects.mutate()}
-                  disabled={scanProjects.isPending}
-                  title="Scan project workspaces for skills"
+                  size="sm"
+                  isIconOnly
+                  onPress={() => scanProjects.mutate()}
+                  isDisabled={scanProjects.isPending}
+                  aria-label="Scan project workspaces for skills"
                 >
                   <RefreshCw className={cn("h-4 w-4", scanProjects.isPending && "animate-spin")} />
                 </Button>
-                <Button variant="ghost" size="icon-sm" onClick={() => setCreateOpen((value) => !value)}>
+                <Button variant="ghost" size="sm" isIconOnly onPress={() => setCreateOpen((value) => !value)}>
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
@@ -1090,8 +1086,8 @@ export function CompanySkills() {
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={handleAddSkillSource}
-                disabled={importSkill.isPending}
+                onPress={handleAddSkillSource}
+                isDisabled={importSkill.isPending}
               >
                 {importSkill.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : "Add"}
               </Button>

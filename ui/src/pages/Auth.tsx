@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
 
@@ -143,7 +143,7 @@ export function AuthPage() {
             {error && <p className="text-xs text-destructive">{error}</p>}
             <Button
               type="submit"
-              disabled={mutation.isPending}
+              isDisabled={mutation.isPending}
               aria-disabled={!canSubmit || mutation.isPending}
               className={`w-full ${!canSubmit && !mutation.isPending ? "opacity-50" : ""}`}
             >

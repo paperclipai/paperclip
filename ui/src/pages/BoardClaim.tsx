@@ -1,15 +1,16 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "@/lib/router";
+import { useParams, useSearchParams, useNavigate } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 
 export function BoardClaimPage() {
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const token = (params.token ?? "").trim();
   const code = (searchParams.get("code") ?? "").trim();
   const currentPath = useMemo(
@@ -74,9 +75,7 @@ export function BoardClaimPage() {
           <p className="mt-2 text-sm text-muted-foreground">
             This instance is now linked to your authenticated user.
           </p>
-          <Button asChild className="mt-4">
-            <Link to="/">Open board</Link>
-          </Button>
+          <Button className="mt-4" onPress={() => navigate("/")}>Open board</Button>
         </div>
       </div>
     );
@@ -90,9 +89,7 @@ export function BoardClaimPage() {
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to claim Board ownership.
           </p>
-          <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
-          </Button>
+          <Button className="mt-4" onPress={() => navigate(`/auth?next=${encodeURIComponent(currentPath)}`)}>Sign in / Create account</Button>
         </div>
       </div>
     );
@@ -114,8 +111,8 @@ export function BoardClaimPage() {
 
         <Button
           className="mt-5"
-          onClick={() => claimMutation.mutate()}
-          disabled={claimMutation.isPending}
+          onPress={() => claimMutation.mutate()}
+          isDisabled={claimMutation.isPending}
         >
           {claimMutation.isPending ? "Claiming…" : "Claim ownership"}
         </Button>

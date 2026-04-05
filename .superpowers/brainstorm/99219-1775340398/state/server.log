@@ -1,0 +1,8 @@
+{"type":"server-started","port":57406,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:57406","screen_dir":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content","state_dir":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/state"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/visual-direction.html"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/waiting.html"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/style-comparison.html"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/waiting-2.html"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/approach-overview.html"}
+{"type":"screen-added","file":"/Users/nickthegoat/conductor/workspaces/paperclip/cancun/.superpowers/brainstorm/99219-1775340398/content/waiting-3.html"}
+{"type":"server-stopped","reason":"idle timeout"}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Card } from "@heroui/react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -20,7 +21,6 @@ import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
-import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -81,7 +81,7 @@ export function Dashboard() {
   });
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
-  const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const recentActivity = useMemo(() => (activity ?? []).slice(0, 5), [activity]);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -206,12 +206,10 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
-
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3">
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02))] px-4 py-3 glow-danger">
               <div className="flex items-start gap-2.5">
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
@@ -229,12 +227,18 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="mb-2">
+            <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+            <p className="text-sm text-foreground/40 mt-1">Here's what's happening across your company.</p>
+          </div>
+
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <MetricCard
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
               to="/agents"
+              tone="accent"
               description={
                 <span>
                   {data.agents.running} running{", "}
@@ -248,6 +252,7 @@ export function Dashboard() {
               value={data.tasks.inProgress}
               label="Tasks In Progress"
               to="/issues"
+              tone="neutral"
               description={
                 <span>
                   {data.tasks.open} open{", "}
@@ -260,6 +265,7 @@ export function Dashboard() {
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
               to="/costs"
+              tone="success"
               description={
                 <span>
                   {data.costs.monthBudgetCents > 0
@@ -273,6 +279,7 @@ export function Dashboard() {
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
               to="/approvals"
+              tone="neutral"
               description={
                 <span>
                   {data.budgets.pendingApprovals > 0
@@ -283,7 +290,7 @@ export function Dashboard() {
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
@@ -305,78 +312,85 @@ export function Dashboard() {
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
 
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="grid md:grid-cols-2 gap-3">
             {/* Recent Activity */}
             {recentActivity.length > 0 && (
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
-                    <ActivityRow
-                      key={event.id}
-                      event={event}
-                      agentMap={agentMap}
-                      entityNameMap={entityNameMap}
-                      entityTitleMap={entityTitleMap}
-                      className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
-                    />
-                  ))}
-                </div>
+                <Card className="border-default-200/60">
+                  <Card.Header className="px-4 py-3 border-b border-default-200/40">
+                    <Card.Title className="text-sm font-semibold text-foreground/60">Recent Activity</Card.Title>
+                  </Card.Header>
+                  <Card.Content className="p-0">
+                    {recentActivity.map((event) => (
+                      <ActivityRow
+                        key={event.id}
+                        event={event}
+                        agentMap={agentMap}
+                        entityNameMap={entityNameMap}
+                        entityTitleMap={entityTitleMap}
+                        className={cn(
+                          "border-b border-default-200/30 last:border-0",
+                          animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined,
+                        )}
+                      />
+                    ))}
+                  </Card.Content>
+                </Card>
               </div>
             )}
 
             {/* Recent Tasks */}
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
-              {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
-                </div>
-              ) : (
-                <div className="border border-border divide-y divide-border overflow-hidden">
-                  {recentIssues.slice(0, 10).map((issue) => (
-                    <Link
-                      key={issue.id}
-                      to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
-                    >
-                      <div className="flex items-start gap-2 sm:items-center sm:gap-3">
-                        {/* Status icon - left column on mobile */}
-                        <span className="shrink-0 sm:hidden">
-                          <StatusIcon status={issue.status} />
-                        </span>
+              <Card className="border-default-200/60">
+                <Card.Header className="px-4 py-3 border-b border-default-200/40">
+                  <Card.Title className="text-sm font-semibold text-foreground/60">Recent Tasks</Card.Title>
+                </Card.Header>
+                <Card.Content className="p-0">
+                  {recentIssues.length === 0 ? (
+                    <div className="p-4">
+                      <p className="text-sm text-foreground/40">No tasks yet.</p>
+                    </div>
+                  ) : (
+                    recentIssues.slice(0, 5).map((issue) => (
+                      <Link
+                        key={issue.id}
+                        to={`/issues/${issue.identifier ?? issue.id}`}
+                        className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/[0.03] transition-colors no-underline text-inherit block border-b border-default-200/30 last:border-0 first:rounded-t-none last:rounded-b-2xl"
+                      >
+                        <div className="flex items-start gap-2 sm:items-center sm:gap-3">
+                          {/* Status icon - left column on mobile */}
+                          <span className="shrink-0 sm:hidden">
+                            <StatusIcon status={issue.status} />
+                          </span>
 
-                        {/* Right column on mobile: title + metadata stacked */}
-                        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-                          <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
-                            {issue.title}
-                          </span>
-                          <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
-                            <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
-                            <span className="text-xs font-mono text-muted-foreground">
-                              {issue.identifier ?? issue.id.slice(0, 8)}
+                          {/* Right column on mobile: title + metadata stacked */}
+                          <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
+                            <span className="line-clamp-2 text-sm sm:order-2 sm:flex-1 sm:min-w-0 sm:line-clamp-none sm:truncate">
+                              {issue.title}
                             </span>
-                            {issue.assigneeAgentId && (() => {
-                              const name = agentName(issue.assigneeAgentId);
-                              return name
-                                ? <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
-                                : null;
-                            })()}
-                            <span className="text-xs text-muted-foreground sm:hidden">&middot;</span>
-                            <span className="text-xs text-muted-foreground shrink-0 sm:order-last">
-                              {timeAgo(issue.updatedAt)}
+                            <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
+                              <span className="hidden sm:inline-flex"><StatusIcon status={issue.status} /></span>
+                              <span className="text-xs font-mono text-foreground/40">
+                                {issue.identifier ?? issue.id.slice(0, 8)}
+                              </span>
+                              {issue.assigneeAgentId && (() => {
+                                const name = agentName(issue.assigneeAgentId);
+                                return name
+                                  ? <span className="hidden sm:inline-flex"><Identity name={name} size="sm" /></span>
+                                  : null;
+                              })()}
+                              <span className="text-xs text-foreground/40 sm:hidden">&middot;</span>
+                              <span className="text-xs text-foreground/40 shrink-0 sm:order-last">
+                                {timeAgo(issue.updatedAt)}
+                              </span>
                             </span>
                           </span>
-                        </span>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
-              )}
+                        </div>
+                      </Link>
+                    ))
+                  )}
+                </Card.Content>
+              </Card>
             </div>
           </div>
 

@@ -17,8 +17,7 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
-import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator, Popover } from "@heroui/react";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
@@ -104,13 +103,13 @@ function PropertyPicker({
 
   return (
     <PropertyRow label={label}>
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
+      <Popover isOpen={open} onOpenChange={onOpenChange}>
+        <Popover.Trigger>
           <button className={btnCn}>{triggerContent}</button>
-        </PopoverTrigger>
-        <PopoverContent className={cn("p-1", popoverClassName)} align={popoverAlign} collisionPadding={16}>
+        </Popover.Trigger>
+        <Popover.Content className={cn("p-1", popoverClassName)}>
           {children}
-        </PopoverContent>
+        </Popover.Content>
       </Popover>
       {extra}
     </PropertyRow>

@@ -1,7 +1,7 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
-import { Layout } from "./components/Layout";
+import { Button } from "@heroui/react";
+import { AppShell } from "./components/layout/AppShell";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
@@ -44,6 +44,8 @@ import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
+import { lazy, Suspense } from "react";
+const VisualPrototype = lazy(() => import("./pages/VisualPrototype").then(m => ({ default: m.VisualPrototype })));
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -177,6 +179,7 @@ function boardRoutes() {
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="design-guide" element={<DesignGuide />} />
+      {import.meta.env.DEV && <Route path="visual-prototype" element={<Suspense fallback={null}><VisualPrototype /></Suspense>} />}
       <Route path="tests/ux/runs" element={<RunTranscriptUxLab />} />
       <Route path=":pluginRoutePath" element={<PluginPage />} />
       <Route path="*" element={<NotFoundPage scope="board" />} />
@@ -219,7 +222,7 @@ function OnboardingRoutePage() {
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
           <Button
-            onClick={() =>
+            onPress={() =>
               matchedCompany
                 ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
                 : openOnboarding()
@@ -297,7 +300,7 @@ function NoCompaniesStartPage() {
           Get started by creating a company.
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+          <Button onPress={() => openOnboarding()}>New Company</Button>
         </div>
       </div>
     </div>
@@ -317,7 +320,7 @@ export function App() {
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<Navigate to="/instance/settings/general" replace />} />
-          <Route path="instance/settings" element={<Layout />}>
+          <Route path="instance/settings" element={<AppShell />}>
             <Route index element={<Navigate to="general" replace />} />
             <Route path="general" element={<InstanceGeneralSettings />} />
             <Route path="heartbeats" element={<InstanceSettings />} />
@@ -348,7 +351,7 @@ export function App() {
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="tests/ux/runs" element={<UnprefixedBoardRedirect />} />
-          <Route path=":companyPrefix" element={<Layout />}>
+          <Route path=":companyPrefix" element={<AppShell />}>
             {boardRoutes()}
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />

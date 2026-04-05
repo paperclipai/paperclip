@@ -1,12 +1,12 @@
 import { useEffect, useMemo } from "react";
-import { Link, Navigate, useParams } from "@/lib/router";
+import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { PluginSlotMount } from "@/plugins/slots";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
 
@@ -25,6 +25,7 @@ export function PluginPage() {
     pluginRoutePath?: string;
   }>();
   const { companies, selectedCompanyId } = useCompany();
+  const navigate = useNavigate();
   const { setBreadcrumbs } = useBreadcrumbs();
   const routeCompany = useMemo(() => {
     if (!routeCompanyPrefix) return null;
@@ -138,11 +139,9 @@ export function PluginPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="sm" asChild>
-          <Link to={companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard"}>
-            <ArrowLeft className="h-4 w-4 mr-1" />
-            Back
-          </Link>
+        <Button variant="ghost" size="sm" onPress={() => navigate(companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard")}>
+          <ArrowLeft className="h-4 w-4 mr-1" />
+          Back
         </Button>
       </div>
       <PluginSlotMount

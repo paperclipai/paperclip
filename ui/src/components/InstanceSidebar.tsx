@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
-import { NavLink } from "@/lib/router";
+import { ArrowLeft, Clock3, FlaskConical, Puzzle, Settings, SlidersHorizontal } from "lucide-react";
+import { NavLink, Link } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -13,6 +13,13 @@ export function InstanceSidebar() {
 
   return (
     <aside className="w-60 h-full min-h-0 border-r border-border bg-background flex flex-col">
+      <Link
+        to="/"
+        className="flex items-center gap-2 px-4 py-2 text-xs text-foreground/40 hover:text-foreground/70 transition-colors"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Back to app
+      </Link>
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">

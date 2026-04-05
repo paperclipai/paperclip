@@ -67,17 +67,17 @@ function KanbanColumn({
     <div className="flex flex-col min-w-[260px] w-[260px] shrink-0">
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="text-xs font-medium text-foreground/50">
           {statusLabel(status)}
         </span>
-        <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
+        <span className="text-xs text-foreground/30 ml-auto tabular-nums">
           {issues.length}
         </span>
       </div>
       <div
         ref={setNodeRef}
-        className={`flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors ${
-          isOver ? "bg-accent/40" : "bg-muted/20"
+        className={`flex-1 min-h-[120px] rounded-xl p-1.5 space-y-1.5 transition-colors ${
+          isOver ? "bg-accent/[0.06]" : "bg-transparent"
         }`}
       >
         <SortableContext
@@ -136,9 +136,9 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow ${
+      className={`rounded-xl border border-default-200/60 bg-surface p-3 cursor-grab active:cursor-grabbing transition-all ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"}`}
+      } ${isOverlay ? "shadow-xl ring-1 ring-accent/20 scale-[1.02]" : "hover:shadow-md hover:border-default-200"}`}
     >
       <Link
         to={`/issues/${issue.identifier ?? issue.id}`}
@@ -149,7 +149,7 @@ function KanbanCard({
         }}
       >
         <div className="flex items-start gap-1.5 mb-1.5">
-          <span className="text-xs text-muted-foreground font-mono shrink-0">
+          <span className="text-xs text-foreground/40 font-mono shrink-0">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
           {isLive && (
@@ -167,7 +167,7 @@ function KanbanCard({
             return name ? (
               <Identity name={name} size="xs" />
             ) : (
-              <span className="text-xs text-muted-foreground font-mono">
+              <span className="text-xs text-foreground/40 font-mono">
                 {issue.assigneeAgentId.slice(0, 8)}
               </span>
             );

@@ -22,24 +22,7 @@ import {
   type RoutineRunDialogSubmitData,
 } from "../components/RoutineRunVariablesDialog";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/RoutineVariablesEditor";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Button, Card, Modal, Select, Dropdown, ListBox, Separator } from "@heroui/react";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
@@ -283,43 +266,42 @@ export function Routines() {
             Routines
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">Beta</span>
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-foreground/40">
             Recurring work definitions that materialize into auditable execution issues.
           </p>
         </div>
-        <Button onClick={() => setComposerOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create routine
+        <Button size="sm" variant="primary" onPress={() => setComposerOpen(true)}>
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          New Routine
         </Button>
       </div>
 
-      <Dialog
-        open={composerOpen}
-        onOpenChange={(open) => {
+      <Modal.Backdrop
+        isOpen={composerOpen}
+        onOpenChange={(open: boolean) => {
           if (!createRoutine.isPending) {
             setComposerOpen(open);
           }
         }}
       >
-        <DialogContent
-          showCloseButton={false}
-          className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
-        >
-          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
+        <Modal.Container className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+          <Modal.Dialog>
+          {() => (<>
+          <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-default-200/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs font-medium uppercase tracking-[0.2em] text-foreground/40">New routine</p>
+              <p className="text-sm text-foreground/40">
                 Define the recurring work first. Trigger setup comes next on the detail page.
               </p>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
+              onPress={() => {
                 setComposerOpen(false);
                 setAdvancedOpen(false);
               }}
-              disabled={createRoutine.isPending}
+              isDisabled={createRoutine.isPending}
             >
               Cancel
             </Button>
@@ -329,7 +311,7 @@ export function Routines() {
             <div className="px-5 pt-5 pb-3">
               <textarea
                 ref={titleInputRef}
-                className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
+                className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-foreground/50"
                 placeholder="Routine title"
                 rows={1}
                 value={draft.title}
@@ -362,7 +344,7 @@ export function Routines() {
 
             <div className="px-5 pb-3">
               <div className="overflow-x-auto overscroll-x-contain">
-                <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-muted-foreground sm:min-w-max sm:flex-nowrap">
+                <div className="inline-flex min-w-full flex-wrap items-center gap-2 text-sm text-foreground/40 sm:min-w-max sm:flex-nowrap">
                   <span>For</span>
                   <InlineEntitySelector
                     ref={assigneeSelectorRef}
@@ -387,14 +369,14 @@ export function Routines() {
                       option ? (
                         currentAssignee ? (
                           <>
-                            <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
                             <span className="truncate">{option.label}</span>
                           </>
                         ) : (
                           <span className="truncate">{option.label}</span>
                         )
                       ) : (
-                        <span className="text-muted-foreground">Assignee</span>
+                        <span className="text-foreground/40">Assignee</span>
                       )
                     }
                     renderOption={(option) => {
@@ -402,7 +384,7 @@ export function Routines() {
                       const assignee = agentById.get(option.id);
                       return (
                         <>
-                          {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                          {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-foreground/40" /> : null}
                           <span className="truncate">{option.label}</span>
                         </>
                       );
@@ -429,7 +411,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
-                        <span className="text-muted-foreground">Project</span>
+                        <span className="text-foreground/40">Project</span>
                       )
                     }
                     renderOption={(option) => {
@@ -450,14 +432,14 @@ export function Routines() {
               </div>
             </div>
 
-            <div className="border-t border-border/60 px-5 py-4">
+            <div className="border-t border-default-200/60 px-5 py-4">
               <MarkdownEditor
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
                 placeholder="Add instructions..."
                 bordered={false}
-                contentClassName="min-h-[160px] text-sm text-muted-foreground"
+                contentClassName="min-h-[160px] text-sm text-foreground/40"
                 onSubmit={() => {
                   if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
                     createRoutine.mutate();
@@ -474,65 +456,69 @@ export function Routines() {
               </div>
             </div>
 
-            <div className="border-t border-border/60 px-5 py-3">
-              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-                <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
-                  <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
-                  </div>
-                  {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                </CollapsibleTrigger>
-                <CollapsibleContent className="pt-3">
+            <div className="border-t border-default-200/60 px-5 py-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-left"
+                onClick={() => setAdvancedOpen((v) => !v)}
+              >
+                <div>
+                  <p className="text-sm font-medium">Advanced delivery settings</p>
+                  <p className="text-sm text-foreground/40">Keep policy controls secondary to the work definition.</p>
+                </div>
+                {advancedOpen ? <ChevronDown className="h-4 w-4 text-foreground/40" /> : <ChevronRight className="h-4 w-4 text-foreground/40" />}
+              </button>
+              {advancedOpen && (
+                <div className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-foreground/40">Concurrency</p>
                       <Select
-                        value={draft.concurrencyPolicy}
-                        onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
+                        selectedKey={draft.concurrencyPolicy}
+                        onSelectionChange={(key) => setDraft((current) => ({ ...current, concurrencyPolicy: key as string }))}
                       >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {concurrencyPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-                          ))}
-                        </SelectContent>
+                        <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                        <Select.Popover>
+                          <ListBox>
+                            {concurrencyPolicies.map((value) => (
+                              <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
+                            ))}
+                          </ListBox>
+                        </Select.Popover>
                       </Select>
-                      <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
+                      <p className="text-xs text-foreground/40">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-foreground/40">Catch-up</p>
                       <Select
-                        value={draft.catchUpPolicy}
-                        onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
+                        selectedKey={draft.catchUpPolicy}
+                        onSelectionChange={(key) => setDraft((current) => ({ ...current, catchUpPolicy: key as string }))}
                       >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {catchUpPolicies.map((value) => (
-                            <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-                          ))}
-                        </SelectContent>
+                        <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                        <Select.Popover>
+                          <ListBox>
+                            {catchUpPolicies.map((value) => (
+                              <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
+                            ))}
+                          </ListBox>
+                        </Select.Popover>
                       </Select>
-                      <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[draft.catchUpPolicy]}</p>
+                      <p className="text-xs text-foreground/40">{catchUpPolicyDescriptions[draft.catchUpPolicy]}</p>
                     </div>
                   </div>
-                </CollapsibleContent>
-              </Collapsible>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-muted-foreground">
+          <div className="shrink-0 flex flex-col gap-3 border-t border-default-200/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-foreground/40">
               After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
-                onClick={() => createRoutine.mutate()}
-                disabled={
+                onPress={() => createRoutine.mutate()}
+                isDisabled={
                   createRoutine.isPending ||
                   !draft.title.trim() ||
                   !draft.projectId ||
@@ -543,20 +529,22 @@ export function Routines() {
                 {createRoutine.isPending ? "Creating..." : "Create routine"}
               </Button>
               {createRoutine.isError ? (
-                <p className="text-sm text-destructive">
+                <p className="text-sm text-danger">
                   {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
                 </p>
               ) : null}
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+          </>)}
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
 
       {error ? (
         <Card>
-          <CardContent className="pt-6 text-sm text-destructive">
+          <Card.Content className="pt-6 text-sm text-danger">
             {error instanceof Error ? error.message : "Failed to load routines"}
-          </CardContent>
+          </Card.Content>
         </Card>
       ) : null}
 
@@ -569,10 +557,11 @@ export function Routines() {
             />
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <Card className="border-default-200/60">
+            <Card.Content className="p-0 overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
-                <tr className="text-left text-xs text-muted-foreground border-b border-border">
+                <tr className="text-left text-xs text-foreground/40 border-b border-default-200/40">
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="px-3 py-2 font-medium">Project</th>
                   <th className="px-3 py-2 font-medium">Agent</th>
@@ -589,7 +578,7 @@ export function Routines() {
                   return (
                     <tr
                       key={routine.id}
-                      className="align-middle border-b border-border transition-colors hover:bg-accent/50 last:border-b-0 cursor-pointer"
+                      className="align-middle border-b border-default-200/30 transition-colors hover:bg-accent/[0.03] last:border-b-0 cursor-pointer"
                       onClick={() => navigate(`/routines/${routine.id}`)}
                     >
                       <td className="px-3 py-2.5">
@@ -598,7 +587,7 @@ export function Routines() {
                             {routine.title}
                           </span>
                           {(isArchived || routine.status === "paused") && (
-                            <div className="mt-1 text-xs text-muted-foreground">
+                            <div className="mt-1 text-xs text-foreground/40">
                               {isArchived ? "archived" : "paused"}
                             </div>
                           )}
@@ -606,7 +595,7 @@ export function Routines() {
                       </td>
                       <td className="px-3 py-2.5">
                         {routine.projectId ? (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-2 text-sm text-foreground/40">
                             <span
                               className="shrink-0 h-3 w-3 rounded-sm"
                               style={{ backgroundColor: projectById.get(routine.projectId)?.color ?? "#6366f1" }}
@@ -614,25 +603,25 @@ export function Routines() {
                             <span className="truncate">{projectById.get(routine.projectId)?.name ?? "Unknown"}</span>
                           </div>
                         ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <span className="text-xs text-foreground/40">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2.5">
                         {routine.assigneeAgentId ? (() => {
                           const agent = agentById.get(routine.assigneeAgentId);
                           return agent ? (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <div className="flex items-center gap-2 text-sm text-foreground/40">
                               <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />
                               <span className="truncate">{agent.name}</span>
                             </div>
                           ) : (
-                            <span className="text-xs text-muted-foreground">Unknown</span>
+                            <span className="text-xs text-foreground/40">Unknown</span>
                           );
                         })() : (
-                          <span className="text-xs text-muted-foreground">—</span>
+                          <span className="text-xs text-foreground/40">—</span>
                         )}
                       </td>
-                      <td className="px-3 py-2.5 text-muted-foreground">
+                      <td className="px-3 py-2.5 text-foreground/40">
                         <div>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}</div>
                         {routine.lastRun ? (
                           <div className="mt-1 text-xs">{routine.lastRun.status.replaceAll("_", " ")}</div>
@@ -648,7 +637,7 @@ export function Routines() {
                             aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
                             disabled={isStatusPending || isArchived}
                             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                              enabled ? "bg-foreground" : "bg-muted"
+                              enabled ? "bg-foreground" : "bg-default-200"
                             } ${isStatusPending || isArchived ? "cursor-not-allowed opacity-50" : ""}`}
                             onClick={() =>
                               updateRoutineStatus.mutate({
@@ -663,60 +652,67 @@ export function Routines() {
                               }`}
                             />
                           </button>
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-xs text-foreground/40">
                             {isArchived ? "Archived" : enabled ? "On" : "Off"}
                           </span>
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${routine.title}`}>
+                        <Dropdown>
+                          <Dropdown.Trigger>
+                            <Button variant="ghost" size="sm" aria-label={`More actions for ${routine.title}`}>
                               <MoreHorizontal className="h-4 w-4" />
                             </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/routines/${routine.id}`)}>
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              disabled={runningRoutineId === routine.id || isArchived}
-                              onClick={() => handleRunNow(routine)}
-                            >
-                              {runningRoutineId === routine.id ? "Running..." : "Run now"}
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              onClick={() =>
-                                updateRoutineStatus.mutate({
-                                  id: routine.id,
-                                  status: enabled ? "paused" : "active",
-                                })
-                              }
-                              disabled={isStatusPending || isArchived}
-                            >
-                              {enabled ? "Pause" : "Enable"}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() =>
-                                updateRoutineStatus.mutate({
-                                  id: routine.id,
-                                  status: routine.status === "archived" ? "active" : "archived",
-                                })
-                              }
-                              disabled={isStatusPending}
-                            >
-                              {routine.status === "archived" ? "Restore" : "Archive"}
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                          </Dropdown.Trigger>
+                          <Dropdown.Popover>
+                            <Dropdown.Menu>
+                              <Dropdown.Item id="edit" onAction={() => navigate(`/routines/${routine.id}`)}>
+                                Edit
+                              </Dropdown.Item>
+                              <Dropdown.Item
+                                id="run"
+                                isDisabled={runningRoutineId === routine.id || isArchived}
+                                onAction={() => handleRunNow(routine)}
+                              >
+                                {runningRoutineId === routine.id ? "Running..." : "Run now"}
+                              </Dropdown.Item>
+                              <Dropdown.Section className="border-t border-default-200/30 my-1" aria-label="Status">
+                                <Dropdown.Item
+                                  id="toggle-status"
+                                  onAction={() =>
+                                    updateRoutineStatus.mutate({
+                                      id: routine.id,
+                                      status: enabled ? "paused" : "active",
+                                    })
+                                  }
+                                  isDisabled={isStatusPending || isArchived}
+                                >
+                                  {enabled ? "Pause" : "Enable"}
+                                </Dropdown.Item>
+                                <Dropdown.Item
+                                  id="archive"
+                                  onAction={() =>
+                                    updateRoutineStatus.mutate({
+                                      id: routine.id,
+                                      status: routine.status === "archived" ? "active" : "archived",
+                                    })
+                                  }
+                                  isDisabled={isStatusPending}
+                                >
+                                  {routine.status === "archived" ? "Restore" : "Archive"}
+                                </Dropdown.Item>
+                              </Dropdown.Section>
+                            </Dropdown.Menu>
+                          </Dropdown.Popover>
+                        </Dropdown>
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-          </div>
+            </Card.Content>
+          </Card>
         )}
       </div>
 

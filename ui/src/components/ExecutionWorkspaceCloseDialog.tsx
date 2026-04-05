@@ -6,15 +6,7 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, issueUrl } from "../lib/utils";
-import { Button } from "./ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./ui/dialog";
+import { Button, Modal } from "@heroui/react";
 
 type ExecutionWorkspaceCloseDialogProps = {
   workspaceId: string;
@@ -85,17 +77,19 @@ export function ExecutionWorkspaceCloseDialog({
     readiness.state === "blocked";
 
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => {
+    <Modal.Backdrop isOpen={open} onOpenChange={(nextOpen: boolean) => {
       if (!closeWorkspace.isPending) onOpenChange(nextOpen);
     }}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{actionLabel}</DialogTitle>
-          <DialogDescription className="break-words">
-            Archive <span className="font-medium text-foreground">{workspaceName}</span> and clean up any owned workspace
-            artifacts. Paperclip keeps the workspace record and issue history, but removes it from active workspace views.
-          </DialogDescription>
-        </DialogHeader>
+      <Modal.Container size="lg">
+        <Modal.Dialog>
+          <Modal.Header>
+            <Modal.Heading>{actionLabel}</Modal.Heading>
+            <p className="text-sm text-muted-foreground break-words mt-1">
+              Archive <span className="font-medium text-foreground">{workspaceName}</span> and clean up any owned workspace
+              artifacts. Paperclip keeps the workspace record and issue history, but removes it from active workspace views.
+            </p>
+          </Modal.Header>
+          <Modal.Body className="max-h-[60vh] overflow-y-auto space-y-4">
 
         {readinessQuery.isLoading ? (
           <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
@@ -291,24 +285,26 @@ export function ExecutionWorkspaceCloseDialog({
           </div>
         ) : null}
 
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={closeWorkspace.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant={currentStatus === "cleanup_failed" ? "default" : "destructive"}
-            onClick={() => closeWorkspace.mutate()}
-            disabled={confirmDisabled}
-          >
-            {closeWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {actionLabel}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button
+              variant="outline"
+              onPress={() => onOpenChange(false)}
+              isDisabled={closeWorkspace.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={currentStatus === "cleanup_failed" ? "primary" : "danger"}
+              onPress={() => closeWorkspace.mutate()}
+              isDisabled={confirmDisabled}
+            >
+              {closeWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {actionLabel}
+            </Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

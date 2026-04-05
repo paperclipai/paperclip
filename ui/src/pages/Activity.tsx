@@ -11,13 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { ActivityRow } from "../components/ActivityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Card, Select, ListBox } from "@heroui/react";
 import { History } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 
@@ -101,18 +95,31 @@ export function Activity() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-end">
-        <Select value={filter} onValueChange={setFilter}>
-          <SelectTrigger className="w-[140px] h-8 text-xs">
-            <SelectValue placeholder="Filter by type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            {entityTypes.map((type) => (
-              <SelectItem key={type} value={type}>
-                {type.charAt(0).toUpperCase() + type.slice(1)}
-              </SelectItem>
-            ))}
-          </SelectContent>
+        <Select
+          selectedKey={filter}
+          onSelectionChange={(key) => setFilter(String(key))}
+          className="w-[160px]"
+          aria-label="Filter by type"
+          placeholder="All types"
+        >
+          <Select.Trigger className="h-8 text-xs">
+            <Select.Value />
+            <Select.Indicator />
+          </Select.Trigger>
+          <Select.Popover>
+            <ListBox>
+              <ListBox.Item id="all" textValue="All types">
+                All types
+                <ListBox.ItemIndicator />
+              </ListBox.Item>
+              {entityTypes.map((type) => (
+                <ListBox.Item key={type} id={type} textValue={type.charAt(0).toUpperCase() + type.slice(1)}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                  <ListBox.ItemIndicator />
+                </ListBox.Item>
+              ))}
+            </ListBox>
+          </Select.Popover>
         </Select>
       </div>
 
@@ -123,17 +130,19 @@ export function Activity() {
       )}
 
       {filtered && filtered.length > 0 && (
-        <div className="border border-border divide-y divide-border">
-          {filtered.map((event) => (
-            <ActivityRow
-              key={event.id}
-              event={event}
-              agentMap={agentMap}
-              entityNameMap={entityNameMap}
-              entityTitleMap={entityTitleMap}
-            />
-          ))}
-        </div>
+        <Card className="border-default-200/60">
+          <Card.Content className="p-0">
+            {filtered.map((event) => (
+              <ActivityRow
+                key={event.id}
+                event={event}
+                agentMap={agentMap}
+                entityNameMap={entityNameMap}
+                entityTitleMap={entityTitleMap}
+              />
+            ))}
+          </Card.Content>
+        </Card>
       )}
     </div>
   );

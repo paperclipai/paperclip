@@ -1,5 +1,4 @@
 import type { FinanceByKind } from "@paperclipai/shared";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { financeEventKindDisplayName, formatCents } from "@/lib/utils";
 
 interface FinanceKindCardProps {
@@ -8,12 +7,12 @@ interface FinanceKindCardProps {
 
 export function FinanceKindCard({ rows }: FinanceKindCardProps) {
   return (
-    <Card>
-      <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Financial event mix</CardTitle>
-        <CardDescription>Account-level charges grouped by event kind.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2 px-4 pb-4 pt-3">
+    <div className="border border-border rounded-lg bg-card">
+      <div className="px-4 pt-4 pb-1">
+        <p className="text-base font-semibold">Financial event mix</p>
+        <p className="text-sm text-muted-foreground">Account-level charges grouped by event kind.</p>
+      </div>
+      <div className="space-y-2 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">No finance events in this period.</p>
         ) : (
@@ -37,7 +36,7 @@ export function FinanceKindCard({ rows }: FinanceKindCardProps) {
             </div>
           ))
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

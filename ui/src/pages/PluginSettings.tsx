@@ -3,21 +3,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { Link, Navigate, useParams } from "@/lib/router";
+import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { Button, Badge, Card, Separator } from "@heroui/react";
 import { PageTabBar } from "@/components/PageTabBar";
 import {
   JsonSchemaForm,
@@ -61,6 +51,7 @@ export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
   const { data: plugin, isLoading: pluginLoading } = useQuery({
@@ -134,36 +125,34 @@ export function PluginSettings() {
   }
 
   const displayStatus = plugin.status;
-  const statusVariant =
-    plugin.status === "ready"
-      ? "default"
-      : plugin.status === "error"
-        ? "destructive"
-        : "secondary";
+  const statusColor =
+    plugin.status === "error"
+      ? "danger"
+      : plugin.status === "ready"
+        ? "success"
+        : "default";
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
 
   return (
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center gap-4">
-        <Link to="/instance/settings/plugins">
-          <Button variant="outline" size="icon" className="h-8 w-8">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
+        <Button variant="outline" size="sm" className="h-8 w-8" onPress={() => navigate("/instance/settings/plugins")}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
-          <Badge variant={statusVariant} className="ml-2">
+          <Badge color={statusColor} className="ml-2">
             {displayStatus}
           </Badge>
-          <Badge variant="outline" className="ml-1">
+          <Badge className="ml-1">
             v{plugin.manifestJson.version ?? plugin.version}
           </Badge>
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "configuration" | "status")} className="space-y-6">
+      <div className="space-y-6">
         <PageTabBar
           align="start"
           items={[
@@ -174,7 +163,7 @@ export function PluginSettings() {
           onValueChange={(value) => setActiveTab(value as "configuration" | "status")}
         />
 
-        <TabsContent value="configuration" className="space-y-6">
+        {activeTab === "configuration" && <div className="space-y-6">
           <div className="space-y-8">
             <section className="space-y-5">
               <h2 className="text-base font-semibold">About</h2>
@@ -193,7 +182,7 @@ export function PluginSettings() {
                     <div className="flex flex-wrap gap-2">
                       {plugin.categories.length > 0 ? (
                         plugin.categories.map((category) => (
-                          <Badge key={category} variant="outline" className="capitalize">
+                          <Badge key={category} className="capitalize">
                             {category}
                           </Badge>
                         ))
@@ -242,22 +231,22 @@ export function PluginSettings() {
               )}
             </section>
           </div>
-        </TabsContent>
+        </div>}
 
-        <TabsContent value="status" className="space-y-6">
+        {activeTab === "status" && <div className="space-y-6">
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_320px]">
             <div className="space-y-6">
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                <Card.Header>
+                  <h3 className="text-base font-semibold flex items-center gap-1.5">
                     <Cpu className="h-4 w-4" />
                     Runtime Dashboard
-                  </CardTitle>
-                  <CardDescription>
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
                     Worker process, scheduled jobs, and webhook deliveries
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
+                  </p>
+                </Card.Header>
+                <Card.Content className="space-y-6">
                   {dashboardData ? (
                     <>
                       <div>
@@ -269,7 +258,7 @@ export function PluginSettings() {
                           <div className="grid grid-cols-2 gap-3 text-sm">
                             <div className="flex justify-between">
                               <span className="text-muted-foreground">Status</span>
-                              <Badge variant={dashboardData.worker.status === "running" ? "default" : "secondary"}>
+                              <Badge color={dashboardData.worker.status === "running" ? "success" : "default"} className="text-xs">
                                 {dashboardData.worker.status}
                               </Badge>
                             </div>
@@ -329,7 +318,7 @@ export function PluginSettings() {
                                   <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
-                                  <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                                  <Badge className="px-1 py-0 text-[10px]">
                                     {run.trigger}
                                   </Badge>
                                 </div>
@@ -387,19 +376,19 @@ export function PluginSettings() {
                       Runtime diagnostics are unavailable right now.
                     </p>
                   )}
-                </CardContent>
+                </Card.Content>
               </Card>
 
               {recentLogs && recentLogs.length > 0 ? (
                 <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-1.5">
+                  <Card.Header>
+                    <h3 className="text-base font-semibold flex items-center gap-1.5">
                       <ActivitySquare className="h-4 w-4" />
                       Recent Logs
-                    </CardTitle>
-                    <CardDescription>Last {recentLogs.length} log entries</CardDescription>
-                  </CardHeader>
-                  <CardContent>
+                    </h3>
+                    <p className="text-sm text-muted-foreground">Last {recentLogs.length} log entries</p>
+                  </Card.Header>
+                  <Card.Content>
                     <div className="max-h-64 space-y-1 overflow-y-auto font-mono text-xs">
                       {recentLogs.map((entry) => (
                         <div
@@ -415,32 +404,32 @@ export function PluginSettings() {
                           }`}
                         >
                           <span className="shrink-0 text-muted-foreground/50">{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">{entry.level}</Badge>
+                          <Badge className="h-4 shrink-0 px-1 text-[10px]">{entry.level}</Badge>
                           <span className="truncate" title={entry.message}>{entry.message}</span>
                         </div>
                       ))}
                     </div>
-                  </CardContent>
+                  </Card.Content>
                 </Card>
               ) : null}
             </div>
 
             <div className="space-y-6">
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                <Card.Header>
+                  <h3 className="text-base font-semibold flex items-center gap-1.5">
                     <ActivitySquare className="h-4 w-4" />
                     Health Status
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
+                  </h3>
+                </Card.Header>
+                <Card.Content>
                   {healthLoading ? (
                     <p className="text-sm text-muted-foreground">Checking health...</p>
                   ) : healthData ? (
                     <div className="space-y-4 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Overall</span>
-                        <Badge variant={healthData.healthy ? "default" : "destructive"}>
+                        <Badge color={healthData.healthy ? "success" : "danger"}>
                           {healthData.status}
                         </Badge>
                       </div>
@@ -472,7 +461,7 @@ export function PluginSettings() {
                     <div className="space-y-3 text-sm text-muted-foreground">
                       <div className="flex items-center justify-between">
                         <span>Lifecycle</span>
-                        <Badge variant={statusVariant}>{displayStatus}</Badge>
+                        <Badge color={statusColor}>{displayStatus}</Badge>
                       </div>
                       <p>Health checks run once the plugin is ready.</p>
                       {plugin.lastError ? (
@@ -482,14 +471,14 @@ export function PluginSettings() {
                       ) : null}
                     </div>
                   )}
-                </CardContent>
+                </Card.Content>
               </Card>
 
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Details</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm text-muted-foreground">
+                <Card.Header>
+                  <h3 className="text-base font-semibold">Details</h3>
+                </Card.Header>
+                <Card.Content className="space-y-3 text-sm text-muted-foreground">
                   <div className="flex justify-between gap-3">
                     <span>Plugin ID</span>
                     <span className="font-mono text-xs text-right">{plugin.id}</span>
@@ -508,17 +497,17 @@ export function PluginSettings() {
                     <span>Version</span>
                     <span className="text-right text-foreground">v{plugin.manifestJson.version ?? plugin.version}</span>
                   </div>
-                </CardContent>
+                </Card.Content>
               </Card>
 
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-1.5">
+                <Card.Header>
+                  <h3 className="text-base font-semibold flex items-center gap-1.5">
                     <ShieldAlert className="h-4 w-4" />
                     Permissions
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
+                  </h3>
+                </Card.Header>
+                <Card.Content>
                   {pluginCapabilities.length > 0 ? (
                     <ul className="space-y-2 text-sm text-muted-foreground">
                       {pluginCapabilities.map((cap) => (
@@ -530,12 +519,12 @@ export function PluginSettings() {
                   ) : (
                     <p className="text-sm text-muted-foreground italic">No special permissions requested.</p>
                   )}
-                </CardContent>
+                </Card.Content>
               </Card>
             </div>
           </div>
-        </TabsContent>
-      </Tabs>
+        </div>}
+      </div>
     </div>
   );
 }
@@ -704,8 +693,8 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
       {/* Action buttons */}
       <div className="flex items-center gap-2 pt-2">
         <Button
-          onClick={handleSave}
-          disabled={saveMutation.isPending || !isDirty}
+          onPress={handleSave}
+          isDisabled={saveMutation.isPending || !isDirty}
           size="sm"
         >
           {saveMutation.isPending ? (
@@ -720,8 +709,8 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         {pluginStatus === "ready" && supportsConfigTest && (
           <Button
             variant="outline"
-            onClick={handleTestConnection}
-            disabled={testMutation.isPending}
+            onPress={handleTestConnection}
+            isDisabled={testMutation.isPending}
             size="sm"
           >
             {testMutation.isPending ? (

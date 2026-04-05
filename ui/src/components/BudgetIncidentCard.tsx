@@ -2,9 +2,7 @@ import { useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
 import { formatCents } from "../lib/utils";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Button, Input } from "@heroui/react";
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -33,24 +31,24 @@ export function BudgetIncidentCard({
   const parsed = parseDollarInput(draftAmount);
 
   return (
-    <Card className="overflow-hidden border-red-500/20 bg-[linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02))]">
-      <CardHeader className="px-5 pt-5 pb-3">
+    <div className="overflow-hidden border border-red-500/20 bg-[linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02))] rounded-lg">
+      <div className="px-5 pt-5 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] uppercase tracking-[0.22em] text-red-200/80">
               {incident.scopeType} hard stop
             </div>
-            <CardTitle className="mt-1 text-base text-red-50">{incident.scopeName}</CardTitle>
-            <CardDescription className="mt-1 text-red-100/70">
+            <p className="mt-1 text-base font-semibold text-red-50">{incident.scopeName}</p>
+            <p className="mt-1 text-red-100/70 text-sm">
               Spending reached {formatCents(incident.amountObserved)} against a limit of {formatCents(incident.amountLimit)}.
-            </CardDescription>
+            </p>
           </div>
           <div className="rounded-full border border-red-400/30 bg-red-500/10 p-2 text-red-200">
             <AlertOctagon className="h-4 w-4" />
           </div>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-4 px-5 pb-5 pt-0">
+      </div>
+      <div className="space-y-4 px-5 pb-5 pt-0">
         <div className="flex items-start gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-50/90">
           <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
@@ -73,8 +71,8 @@ export function BudgetIncidentCard({
             />
             <Button
               className="gap-2"
-              disabled={isMutating || parsed === null || parsed <= incident.amountObserved}
-              onClick={() => {
+              isDisabled={isMutating || parsed === null || parsed <= incident.amountObserved}
+              onPress={() => {
                 if (typeof parsed === "number") onRaiseAndResume(parsed);
               }}
             >
@@ -90,11 +88,11 @@ export function BudgetIncidentCard({
         </div>
 
         <div className="flex justify-end">
-          <Button variant="ghost" className="text-muted-foreground" disabled={isMutating} onClick={onKeepPaused}>
+          <Button variant="ghost" className="text-muted-foreground" isDisabled={isMutating} onPress={onKeepPaused}>
             Keep paused
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

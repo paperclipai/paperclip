@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover } from "@heroui/react";
 import { StatusIcon } from "./StatusIcon";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { timeAgo } from "../lib/timeAgo";
@@ -15,21 +15,19 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
   const [open, setOpen] = useState(false);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        asChild
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-      >
-        {children}
-      </PopoverTrigger>
-      <PopoverContent
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        <span
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+        >
+          {children}
+        </span>
+      </Popover.Trigger>
+      <Popover.Content
         className="w-64 p-3"
-        side="top"
-        align="start"
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
-        onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <div className="space-y-2">
           <div className="flex items-start gap-2">
@@ -49,7 +47,7 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
             <span>{timeAgo(new Date(issue.updatedAt))}</span>
           </div>
         </div>
-      </PopoverContent>
+      </Popover.Content>
     </Popover>
   );
 }

@@ -1,0 +1,106 @@
+<h2>Which visual direction feels right for Paperclip?</h2>
+<p class="subtitle">Think about the overall mood and impression you want operators to feel when they open the app</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%); padding: 32px; min-height: 220px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center;">
+          <span style="color: white; font-size: 14px; font-weight: 700;">P</span>
+        </div>
+        <span style="color: #e2e8f0; font-size: 14px; font-weight: 600;">Paperclip</span>
+      </div>
+      <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 20px;">
+        <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Active Agents</div>
+        <div style="color: #f1f5f9; font-size: 28px; font-weight: 700;">12</div>
+        <div style="display: flex; gap: 4px; margin-top: 8px;">
+          <span style="background: #22c55e; width: 8px; height: 8px; border-radius: 50%; display: inline-block;"></span>
+          <span style="color: #4ade80; font-size: 12px;">8 running</span>
+          <span style="color: #64748b; font-size: 12px; margin-left: 8px;">4 idle</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div style="flex: 1; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.25); border-radius: 8px; padding: 12px;">
+          <div style="color: #a5b4fc; font-size: 11px;">Tasks</div>
+          <div style="color: #e2e8f0; font-size: 18px; font-weight: 600;">47</div>
+        </div>
+        <div style="flex: 1; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); border-radius: 8px; padding: 12px;">
+          <div style="color: #86efac; font-size: 11px;">Spend</div>
+          <div style="color: #e2e8f0; font-size: 18px; font-weight: 600;">$234</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Dark & Immersive</h3>
+      <p>Dark-first with glowing accents, glass-morphism cards. Feels like a mission control center. Think Linear meets Bloomberg Terminal. <strong>Premium through darkness and depth.</strong></p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="background: #fafbfc; padding: 32px; min-height: 220px; display: flex; flex-direction: column; gap: 12px; border-bottom: 1px solid #e5e7eb;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="width: 32px; height: 32px; border-radius: 10px; background: #111827; display: flex; align-items: center; justify-content: center;">
+          <span style="color: white; font-size: 14px; font-weight: 700;">P</span>
+        </div>
+        <span style="color: #111827; font-size: 14px; font-weight: 600;">Paperclip</span>
+      </div>
+      <div style="background: white; border: 1px solid #e5e7eb; border-radius: 16px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+        <div style="color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Active Agents</div>
+        <div style="color: #111827; font-size: 28px; font-weight: 700;">12</div>
+        <div style="display: flex; gap: 4px; margin-top: 8px;">
+          <span style="background: #10b981; width: 8px; height: 8px; border-radius: 50%; display: inline-block;"></span>
+          <span style="color: #059669; font-size: 12px;">8 running</span>
+          <span style="color: #9ca3af; font-size: 12px; margin-left: 8px;">4 idle</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div style="flex: 1; background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
+          <div style="color: #6b7280; font-size: 11px;">Tasks</div>
+          <div style="color: #111827; font-size: 18px; font-weight: 600;">47</div>
+        </div>
+        <div style="flex: 1; background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
+          <div style="color: #6b7280; font-size: 11px;">Spend</div>
+          <div style="color: #111827; font-size: 18px; font-weight: 600;">$234</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Light & Polished</h3>
+      <p>Clean white surfaces, subtle shadows, generous spacing. Feels like Notion or Stripe Dashboard. <strong>Premium through simplicity and whitespace.</strong></p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="background: linear-gradient(180deg, #111118 0%, #18181b 100%); padding: 32px; min-height: 220px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div style="width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #f0f0f0, #d4d4d8); display: flex; align-items: center; justify-content: center;">
+          <span style="color: #18181b; font-size: 14px; font-weight: 700;">P</span>
+        </div>
+        <span style="color: #fafafa; font-size: 14px; font-weight: 600;">Paperclip</span>
+      </div>
+      <div style="background: #27272a; border: 1px solid #3f3f46; border-radius: 12px; padding: 20px;">
+        <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Active Agents</div>
+        <div style="color: #fafafa; font-size: 28px; font-weight: 700;">12</div>
+        <div style="display: flex; gap: 4px; margin-top: 8px;">
+          <span style="background: #22c55e; width: 8px; height: 8px; border-radius: 50%; display: inline-block;"></span>
+          <span style="color: #4ade80; font-size: 12px;">8 running</span>
+          <span style="color: #71717a; font-size: 12px; margin-left: 8px;">4 idle</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div style="flex: 1; background: #27272a; border: 1px solid #3f3f46; border-radius: 8px; padding: 12px;">
+          <div style="color: #a1a1aa; font-size: 11px;">Tasks</div>
+          <div style="color: #fafafa; font-size: 18px; font-weight: 600;">47</div>
+        </div>
+        <div style="flex: 1; background: #27272a; border: 1px solid #3f3f46; border-radius: 8px; padding: 12px;">
+          <div style="color: #a1a1aa; font-size: 11px;">Spend</div>
+          <div style="color: #fafafa; font-size: 18px; font-weight: 600;">$234</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Dark & Minimal</h3>
+      <p>Muted zinc palette, no gradients or glow — just clean contrast and structure. Feels like Vercel or Apple developer tools. <strong>Premium through restraint and precision.</strong></p>
+    </div>
+  </div>
+</div>

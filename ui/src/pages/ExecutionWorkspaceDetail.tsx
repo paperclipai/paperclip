@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "@/lib/router";
+import { Link, useParams, useNavigate } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Project, ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, Copy, ExternalLink, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Button, Separator } from "@heroui/react";
 import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
@@ -212,6 +211,7 @@ function WorkspaceLink({
 
 export function ExecutionWorkspaceDetail() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -376,11 +376,9 @@ export function ExecutionWorkspaceDetail() {
     <>
       <div className="mx-auto max-w-5xl space-y-6">
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="ghost" size="sm" asChild>
-            <Link to={project ? `/projects/${projectRef}/workspaces` : "/projects"}>
-              <ArrowLeft className="mr-1 h-4 w-4" />
-              Back to all workspaces
-            </Link>
+          <Button variant="ghost" size="sm" onPress={() => navigate(project ? `/projects/${projectRef}/workspaces` : "/projects")}>
+            <ArrowLeft className="mr-1 h-4 w-4" />
+            Back to all workspaces
           </Button>
           <StatusPill>{workspace.mode}</StatusPill>
           <StatusPill>{workspace.providerType}</StatusPill>
@@ -408,8 +406,8 @@ export function ExecutionWorkspaceDetail() {
                   <Button
                     variant="outline"
                     className="w-full sm:w-auto"
-                    onClick={() => setCloseDialogOpen(true)}
-                    disabled={workspace.status === "archived"}
+                    onPress={() => setCloseDialogOpen(true)}
+                    isDisabled={workspace.status === "archived"}
                   >
                     {workspace.status === "cleanup_failed" ? "Retry close" : "Close workspace"}
                   </Button>
@@ -522,8 +520,8 @@ export function ExecutionWorkspaceDetail() {
                       variant="outline"
                       className="w-full sm:w-auto"
                       size="sm"
-                      disabled={!linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime}
-                      onClick={() =>
+                      isDisabled={!linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime}
+                      onPress={() =>
                         setForm((current) => current ? {
                           ...current,
                           inheritRuntime: true,
@@ -559,15 +557,15 @@ export function ExecutionWorkspaceDetail() {
               </div>
 
               <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                <Button className="w-full sm:w-auto" disabled={!isDirty || updateWorkspace.isPending} onClick={saveChanges}>
+                <Button className="w-full sm:w-auto" isDisabled={!isDirty || updateWorkspace.isPending} onPress={saveChanges}>
                   {updateWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   Save changes
                 </Button>
                 <Button
                   variant="outline"
                   className="w-full sm:w-auto"
-                  disabled={!isDirty || updateWorkspace.isPending}
-                  onClick={() => {
+                  isDisabled={!isDirty || updateWorkspace.isPending}
+                  onPress={() => {
                     setForm(initialState);
                     setErrorMessage(null);
                     setRuntimeActionMessage(null);
@@ -690,8 +688,8 @@ export function ExecutionWorkspaceDetail() {
                     variant="outline"
                     size="sm"
                     className="w-full sm:w-auto"
-                    disabled={controlRuntimeServices.isPending || !effectiveRuntimeConfig || !workspace.cwd}
-                    onClick={() => controlRuntimeServices.mutate("start")}
+                    isDisabled={controlRuntimeServices.isPending || !effectiveRuntimeConfig || !workspace.cwd}
+                    onPress={() => controlRuntimeServices.mutate("start")}
                   >
                     {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
                     Start
@@ -700,8 +698,8 @@ export function ExecutionWorkspaceDetail() {
                     variant="outline"
                     size="sm"
                     className="w-full sm:w-auto"
-                    disabled={controlRuntimeServices.isPending || !effectiveRuntimeConfig || !workspace.cwd}
-                    onClick={() => controlRuntimeServices.mutate("restart")}
+                    isDisabled={controlRuntimeServices.isPending || !effectiveRuntimeConfig || !workspace.cwd}
+                    onPress={() => controlRuntimeServices.mutate("restart")}
                   >
                     Restart
                   </Button>
@@ -709,8 +707,8 @@ export function ExecutionWorkspaceDetail() {
                     variant="outline"
                     size="sm"
                     className="w-full sm:w-auto"
-                    disabled={controlRuntimeServices.isPending || (workspace.runtimeServices?.length ?? 0) === 0}
-                    onClick={() => controlRuntimeServices.mutate("stop")}
+                    isDisabled={controlRuntimeServices.isPending || (workspace.runtimeServices?.length ?? 0) === 0}
+                    onPress={() => controlRuntimeServices.mutate("stop")}
                   >
                     Stop
                   </Button>

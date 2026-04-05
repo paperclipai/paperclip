@@ -16,7 +16,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { projectsApi } from "../api/projects";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -948,8 +948,8 @@ export function CompanyExport() {
           </div>
           <Button
             size="sm"
-            onClick={handleDownload}
-            disabled={selectedCount === 0 || downloadMutation.isPending}
+            onPress={handleDownload}
+            isDisabled={selectedCount === 0 || downloadMutation.isPending}
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending

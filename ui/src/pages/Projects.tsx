@@ -10,7 +10,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, projectUrl } from "../lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button, Card } from "@heroui/react";
 import { Hexagon, Plus } from "lucide-react";
 
 export function Projects() {
@@ -42,10 +42,10 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
-        <Button size="sm" variant="outline" onClick={openNewProject}>
-          <Plus className="h-4 w-4 mr-1" />
-          Add Project
+      <div className="flex items-center justify-start">
+        <Button size="sm" variant="primary" onPress={openNewProject}>
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          New Project
         </Button>
       </div>
 
@@ -61,26 +61,28 @@ export function Projects() {
       )}
 
       {projects.length > 0 && (
-        <div className="border border-border">
-          {projects.map((project) => (
-            <EntityRow
-              key={project.id}
-              title={project.name}
-              subtitle={project.description ?? undefined}
-              to={projectUrl(project)}
-              trailing={
-                <div className="flex items-center gap-3">
-                  {project.targetDate && (
-                    <span className="text-xs text-muted-foreground">
-                      {formatDate(project.targetDate)}
-                    </span>
-                  )}
-                  <StatusBadge status={project.status} />
-                </div>
-              }
-            />
-          ))}
-        </div>
+        <Card className="border-default-200/60">
+          <Card.Content className="p-0">
+            {projects.map((project) => (
+              <EntityRow
+                key={project.id}
+                title={project.name}
+                subtitle={project.description ?? undefined}
+                to={projectUrl(project)}
+                trailing={
+                  <div className="flex items-center gap-3">
+                    {project.targetDate && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(project.targetDate)}
+                      </span>
+                    )}
+                    <StatusBadge status={project.status} />
+                  </div>
+                }
+              />
+            ))}
+          </Card.Content>
+        </Card>
       )}
     </div>
   );

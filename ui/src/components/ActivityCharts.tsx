@@ -1,3 +1,4 @@
+import { Card } from "@heroui/react";
 import type { HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
@@ -46,13 +47,15 @@ function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
-      <div>
-        <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
-      </div>
-      {children}
-    </div>
+    <Card className="border-default-200/60">
+      <Card.Content className="p-4 space-y-3">
+        <div>
+          <h3 className="text-xs font-semibold text-foreground/50">{title}</h3>
+          {subtitle && <span className="text-[10px] text-foreground/25">{subtitle}</span>}
+        </div>
+        {children}
+      </Card.Content>
+    </Card>
   );
 }
 

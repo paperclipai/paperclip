@@ -8,25 +8,17 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Button } from "@heroui/react";
+import { Label } from "@heroui/react";
+import { Checkbox } from "@heroui/react";
+import { Select, ListBox } from "@heroui/react";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /**
- * Threshold for string length above which a Textarea is used instead of a standard Input.
+ * Threshold for string length above which a TextArea is used instead of a standard Input.
  */
 const TEXTAREA_THRESHOLD = 200;
 
@@ -390,9 +382,9 @@ const BooleanField = React.memo(({
   <div className="flex items-start space-x-3 space-y-0">
     <Checkbox
       id={id}
-      checked={!!value}
-      onCheckedChange={onChange}
-      disabled={disabled}
+      isSelected={!!value}
+      onChange={onChange}
+      isDisabled={disabled}
     />
     <div className="grid gap-1.5 leading-none">
       {label && (
@@ -446,20 +438,20 @@ const EnumField = React.memo(({
     disabled={disabled}
   >
     <Select
-      value={String(value ?? "")}
-      onValueChange={onChange}
-      disabled={disabled}
+      selectedKey={String(value ?? "")}
+      onSelectionChange={onChange}
+      isDisabled={disabled}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={String(option)} value={String(option)}>
-            {String(option)}
-          </SelectItem>
-        ))}
-      </SelectContent>
+      <Select.Trigger className="w-full" />
+      <Select.Popover>
+        <ListBox>
+          {options.map((option) => (
+            <ListBox.Item key={String(option)} id={String(option)}>
+              {String(option)}
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
     </Select>
   </FieldWrapper>
 ));
@@ -501,22 +493,21 @@ const SecretField = React.memo(({
       disabled={disabled}
     >
       <div className="relative">
-        <Input
+        <input
           type={isVisible ? "text" : "password"}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="pr-10"
+          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none pr-10 aria-invalid:border-destructive"
           aria-invalid={!!error}
         />
         <Button
-          type="button"
           variant="ghost"
           size="sm"
           className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-          onClick={() => setIsVisible(!isVisible)}
-          disabled={disabled}
+          onPress={() => setIsVisible(!isVisible)}
+          isDisabled={disabled}
         >
           {isVisible ? (
             <EyeOff className="h-4 w-4 text-muted-foreground" />
@@ -565,7 +556,7 @@ const NumberField = React.memo(({
     error={error}
     disabled={disabled}
   >
-    <Input
+    <input
       type="number"
       step={type === "integer" ? "1" : "any"}
       value={value !== undefined ? String(value) : ""}
@@ -575,6 +566,7 @@ const NumberField = React.memo(({
       }}
       placeholder={String(defaultValue ?? "")}
       disabled={disabled}
+      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none aria-invalid:border-destructive"
       aria-invalid={!!error}
     />
   </FieldWrapper>
@@ -618,21 +610,22 @@ const StringField = React.memo(({
       disabled={disabled}
     >
       {isTextArea ? (
-        <Textarea
+        <textarea
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[100px]"
+          className="w-full min-h-[100px] rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none aria-invalid:border-destructive"
           aria-invalid={!!error}
         />
       ) : (
-        <Input
+        <input
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
+          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none aria-invalid:border-destructive"
           aria-invalid={!!error}
         />
       )}
@@ -680,15 +673,14 @@ const ArrayField = React.memo(({
           )}
         </div>
         <Button
-          type="button"
           variant="outline"
           size="sm"
-          disabled={
+          isDisabled={
             disabled ||
             (propSchema.maxItems !== undefined &&
               items.length >= (propSchema.maxItems as number))
           }
-          onClick={() => {
+          onPress={() => {
             const newItem = getDefaultForSchema(itemSchema);
             onChange([...items, newItem]);
           }}
@@ -723,16 +715,16 @@ const ArrayField = React.memo(({
               />
             </div>
             <Button
-              type="button"
               variant="ghost"
-              size="icon"
+              isIconOnly
+              size="sm"
               className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              disabled={
+              isDisabled={
                 disabled ||
                 (propSchema.minItems !== undefined &&
                   items.length <= (propSchema.minItems as number))
               }
-              onClick={() => {
+              onPress={() => {
                 const newItems = [...items];
                 newItems.splice(index, 1);
                 onChange(newItems);

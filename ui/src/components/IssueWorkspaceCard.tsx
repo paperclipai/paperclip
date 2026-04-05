@@ -7,7 +7,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
@@ -336,15 +336,15 @@ export function IssueWorkspaceCard({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-2 text-xs text-muted-foreground"
-                onClick={handleCancel}
+                onPress={handleCancel}
               >
                 <X className="h-3 w-3 mr-1" />Cancel
               </Button>
               <Button
                 size="sm"
                 className="h-6 px-2 text-xs"
-                onClick={handleSave}
-                disabled={!canSaveWorkspaceConfig}
+                onPress={handleSave}
+                isDisabled={!canSaveWorkspaceConfig}
               >
                 Save
               </Button>
@@ -354,7 +354,7 @@ export function IssueWorkspaceCard({
               variant="ghost"
               size="sm"
               className="h-6 px-2 text-xs text-muted-foreground"
-              onClick={() => setEditing(true)}
+              onPress={() => setEditing(true)}
             >
               <Pencil className="h-3 w-3 mr-1" />Edit
             </Button>

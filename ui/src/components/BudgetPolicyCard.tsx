@@ -2,9 +2,7 @@ import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
 import { cn, formatCents } from "../lib/utils";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Button, Input } from "@heroui/react";
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -141,10 +139,10 @@ export function BudgetPolicyCard({
         />
       </div>
       <Button
-        onClick={() => {
+        onPress={() => {
           if (typeof parsedDraft === "number" && onSave) onSave(parsedDraft);
         }}
-        disabled={!canSave || isSaving || parsedDraft === null}
+        isDisabled={!canSave || isSaving || parsedDraft === null}
       >
         {isSaving ? "Saving..." : summary.amount > 0 ? "Update budget" : "Set budget"}
       </Button>
@@ -189,23 +187,21 @@ export function BudgetPolicyCard({
   }
 
   return (
-    <Card className={cn("overflow-hidden border-border/70 bg-card/80", compact ? "" : "shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]")}>
-      <CardHeader className={cn("gap-3", compact ? "px-4 pt-4 pb-2" : "px-5 pt-5 pb-3")}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
-              {summary.scopeType}
-            </div>
-            <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>
-            <CardDescription className="mt-1">{windowLabel(summary.windowKind)}</CardDescription>
+    <div className={cn("overflow-hidden border border-border/70 bg-card/80 rounded-lg", compact ? "" : "shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]")}>
+      <div className={cn("flex items-start justify-between gap-3", compact ? "px-4 pt-4 pb-2" : "px-5 pt-5 pb-3")}>
+        <div>
+          <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+            {summary.scopeType}
           </div>
-          <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]", statusTone(summary.status))}>
-            <StatusIcon className="h-3.5 w-3.5" />
-            {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
-          </div>
+          <p className="mt-1 text-base font-semibold">{summary.scopeName}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{windowLabel(summary.windowKind)}</p>
         </div>
-      </CardHeader>
-      <CardContent className={cn("space-y-4", compact ? "px-4 pb-4 pt-0" : "px-5 pb-5 pt-0")}>
+        <div className={cn("inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] uppercase tracking-[0.18em]", statusTone(summary.status))}>
+          <StatusIcon className="h-3.5 w-3.5" />
+          {summary.paused ? "Paused" : summary.status === "warning" ? "Warning" : summary.status === "hard_stop" ? "Hard stop" : "Healthy"}
+        </div>
+      </div>
+      <div className={cn("space-y-4", compact ? "px-4 pb-4 pt-0" : "px-5 pb-5 pt-0")}>
         {observedBudgetGrid}
         {progressSection}
         {pausedPane}
@@ -213,7 +209,7 @@ export function BudgetPolicyCard({
         {parsedDraft === null ? (
           <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
         ) : null}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

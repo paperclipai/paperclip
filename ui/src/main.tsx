@@ -13,7 +13,7 @@ import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
-import { TooltipProvider } from "@/components/ui/tooltip";
+// HeroUI v3 tooltips work standalone — no global provider needed
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import "@mdxeditor/editor/style.css";
@@ -44,19 +44,17 @@ createRoot(document.getElementById("root")!).render(
           <CompanyProvider>
             <ToastProvider>
               <LiveUpdatesProvider>
-                <TooltipProvider>
-                  <BreadcrumbProvider>
-                    <SidebarProvider>
-                      <PanelProvider>
-                        <PluginLauncherProvider>
-                          <DialogProvider>
-                            <App />
-                          </DialogProvider>
-                        </PluginLauncherProvider>
-                      </PanelProvider>
-                    </SidebarProvider>
-                  </BreadcrumbProvider>
-                </TooltipProvider>
+                <BreadcrumbProvider>
+                  <SidebarProvider>
+                    <PanelProvider>
+                      <PluginLauncherProvider>
+                        <DialogProvider>
+                          <App />
+                        </DialogProvider>
+                      </PluginLauncherProvider>
+                    </PanelProvider>
+                  </SidebarProvider>
+                </BreadcrumbProvider>
               </LiveUpdatesProvider>
             </ToastProvider>
           </CompanyProvider>

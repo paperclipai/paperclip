@@ -1,17 +1,9 @@
 import { Link } from "@/lib/router";
-import { Menu } from "lucide-react";
+import { Menu, ChevronRight } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
-import { Button } from "@/components/ui/button";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
+import { Button } from "@heroui/react";
 import { Fragment, useMemo } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
@@ -56,9 +48,10 @@ export function BreadcrumbBar() {
   const menuButton = isMobile && (
     <Button
       variant="ghost"
-      size="icon-sm"
+      size="sm"
+      isIconOnly
       className="mr-2 shrink-0"
-      onClick={toggleSidebar}
+      onPress={toggleSidebar}
       aria-label="Open sidebar"
     >
       <Menu className="h-5 w-5" />
@@ -71,7 +64,7 @@ export function BreadcrumbBar() {
       <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+          <h1 className="text-sm font-semibold tracking-tight truncate">
             {breadcrumbs[0].label}
           </h1>
         </div>
@@ -85,27 +78,36 @@ export function BreadcrumbBar() {
     <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
       {menuButton}
       <div className="min-w-0 overflow-hidden flex-1">
-        <Breadcrumb className="min-w-0 overflow-hidden">
-          <BreadcrumbList className="flex-nowrap">
+        <nav aria-label="Breadcrumb" className="flex items-center gap-0 min-w-0 overflow-hidden">
+          <ol className="flex items-center gap-0 flex-nowrap">
             {breadcrumbs.map((crumb, i) => {
               const isLast = i === breadcrumbs.length - 1;
               return (
                 <Fragment key={i}>
-                  {i > 0 && <BreadcrumbSeparator />}
-                  <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
+                  {i > 0 && (
+                    <li className="shrink-0 flex items-center" aria-hidden>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground mx-1" />
+                    </li>
+                  )}
+                  <li className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      <span className="text-sm font-medium truncate block" aria-current={isLast ? "page" : undefined}>
+                        {crumb.label}
+                      </span>
                     ) : (
-                      <BreadcrumbLink asChild>
-                        <Link to={crumb.href}>{crumb.label}</Link>
-                      </BreadcrumbLink>
+                      <Link
+                        to={crumb.href}
+                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {crumb.label}
+                      </Link>
                     )}
-                  </BreadcrumbItem>
+                  </li>
                 </Fragment>
               );
             })}
-          </BreadcrumbList>
-        </Breadcrumb>
+          </ol>
+        </nav>
       </div>
       {globalToolbarSlots}
     </div>

@@ -8,7 +8,7 @@ import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { Settings, Check, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -312,8 +312,8 @@ export function CompanySettings() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={handleClearLogo}
-                        disabled={clearLogoMutation.isPending}
+                        onPress={handleClearLogo}
+                        isDisabled={clearLogoMutation.isPending}
                       >
                         {clearLogoMutation.isPending ? "Removing..." : "Remove logo"}
                       </Button>
@@ -364,7 +364,7 @@ export function CompanySettings() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setBrandColor("")}
+                      onPress={() => setBrandColor("")}
                       className="text-xs text-muted-foreground"
                     >
                       Clear
@@ -382,8 +382,8 @@ export function CompanySettings() {
         <div className="flex items-center gap-2">
           <Button
             size="sm"
-            onClick={handleSaveGeneral}
-            disabled={generalMutation.isPending || !companyName.trim()}
+            onPress={handleSaveGeneral}
+            isDisabled={generalMutation.isPending || !companyName.trim()}
           >
             {generalMutation.isPending ? "Saving..." : "Save changes"}
           </Button>
@@ -474,8 +474,8 @@ export function CompanySettings() {
             <Button
               data-testid="company-settings-invites-generate-button"
               size="sm"
-              onClick={() => inviteMutation.mutate()}
-              disabled={inviteMutation.isPending}
+              onPress={() => inviteMutation.mutate()}
+              isDisabled={inviteMutation.isPending}
             >
               {inviteMutation.isPending
                 ? "Generating..."
@@ -516,7 +516,7 @@ export function CompanySettings() {
                     data-testid="company-settings-invites-copy-button"
                     size="sm"
                     variant="ghost"
-                    onClick={async () => {
+                    onPress={async () => {
                       try {
                         await navigator.clipboard.writeText(inviteSnippet);
                         setSnippetCopied(true);
@@ -547,18 +547,14 @@ export function CompanySettings() {
             <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <a href="/company/export">
-                <Download className="mr-1.5 h-3.5 w-3.5" />
-                Export
-              </a>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <a href="/company/import">
-                <Upload className="mr-1.5 h-3.5 w-3.5" />
-                Import
-              </a>
-            </Button>
+            <a href="/company/export" className="inline-flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent transition-colors">
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Export
+            </a>
+            <a href="/company/import" className="inline-flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-xs hover:bg-accent transition-colors">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              Import
+            </a>
           </div>
         </div>
       </div>
@@ -576,12 +572,12 @@ export function CompanySettings() {
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              variant="destructive"
-              disabled={
+              variant="danger"
+              isDisabled={
                 archiveMutation.isPending ||
                 selectedCompany.status === "archived"
               }
-              onClick={() => {
+              onPress={() => {
                 if (!selectedCompanyId) return;
                 const confirmed = window.confirm(
                   `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`

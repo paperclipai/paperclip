@@ -1,0 +1,202 @@
+<h2>Which visual style feels right?</h2>
+<p class="subtitle">Same dashboard card shown in 3 styles — each with light and dark variants</p>
+
+<div class="cards">
+  <!-- Option A: Soft & Rounded -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 0; min-height: 400px; display: flex; flex-direction: column;">
+      <!-- Light variant -->
+      <div style="background: #f8f9fb; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Light</div>
+        <div style="background: white; border-radius: 16px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #111827; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="background: #f0fdf4; color: #16a34a; font-size: 11px; padding: 4px 10px; border-radius: 20px; font-weight: 500;">All Healthy</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <div style="flex: 1; background: #f3f4f6; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">8</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Running</div>
+            </div>
+            <div style="flex: 1; background: #f3f4f6; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">4</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Idle</div>
+            </div>
+            <div style="flex: 1; background: #f3f4f6; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">$234</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button style="flex: 1; background: #111827; color: white; border: none; padding: 10px; border-radius: 10px; font-size: 13px; font-weight: 500; cursor: pointer;">View Agents</button>
+            <button style="flex: 1; background: white; color: #111827; border: 1px solid #e5e7eb; padding: 10px; border-radius: 10px; font-size: 13px; font-weight: 500; cursor: pointer;">New Agent</button>
+          </div>
+        </div>
+      </div>
+      <!-- Dark variant -->
+      <div style="background: #0f0f12; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid #222;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Dark</div>
+        <div style="background: #1c1c22; border-radius: 16px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #f1f5f9; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="background: rgba(34,197,94,0.12); color: #4ade80; font-size: 11px; padding: 4px 10px; border-radius: 20px; font-weight: 500;">All Healthy</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <div style="flex: 1; background: #27272f; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #f1f5f9; font-size: 22px; font-weight: 700;">8</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Running</div>
+            </div>
+            <div style="flex: 1; background: #27272f; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #f1f5f9; font-size: 22px; font-weight: 700;">4</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Idle</div>
+            </div>
+            <div style="flex: 1; background: #27272f; border-radius: 12px; padding: 14px; text-align: center;">
+              <div style="color: #f1f5f9; font-size: 22px; font-weight: 700;">$234</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button style="flex: 1; background: #f1f5f9; color: #111; border: none; padding: 10px; border-radius: 10px; font-size: 13px; font-weight: 500; cursor: pointer;">View Agents</button>
+            <button style="flex: 1; background: transparent; color: #f1f5f9; border: 1px solid #3f3f46; padding: 10px; border-radius: 10px; font-size: 13px; font-weight: 500; cursor: pointer;">New Agent</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Soft & Rounded</h3>
+      <p>16px radius, soft shadows, warm surfaces. Approachable and friendly. <strong>Apple / Notion vibes.</strong></p>
+    </div>
+  </div>
+
+  <!-- Option B: Sharp & Geometric -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 0; min-height: 400px; display: flex; flex-direction: column;">
+      <!-- Light variant -->
+      <div style="background: #fafafa; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Light</div>
+        <div style="background: white; border: 1px solid #e5e7eb; padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #111827; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="background: #ecfdf5; color: #059669; font-size: 11px; padding: 3px 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Healthy</span>
+          </div>
+          <div style="display: flex; gap: 0; border: 1px solid #e5e7eb;">
+            <div style="flex: 1; padding: 14px; text-align: center; border-right: 1px solid #e5e7eb;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">8</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Running</div>
+            </div>
+            <div style="flex: 1; padding: 14px; text-align: center; border-right: 1px solid #e5e7eb;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">4</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Idle</div>
+            </div>
+            <div style="flex: 1; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">$234</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0;">
+            <button style="flex: 1; background: #111827; color: white; border: none; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">View Agents</button>
+            <button style="flex: 1; background: white; color: #111827; border: 1px solid #d1d5db; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">New Agent</button>
+          </div>
+        </div>
+      </div>
+      <!-- Dark variant -->
+      <div style="background: #09090b; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid #222;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Dark</div>
+        <div style="background: #18181b; border: 1px solid #27272a; padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #fafafa; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="background: rgba(34,197,94,0.1); color: #4ade80; font-size: 11px; padding: 3px 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Healthy</span>
+          </div>
+          <div style="display: flex; gap: 0; border: 1px solid #27272a;">
+            <div style="flex: 1; padding: 14px; text-align: center; border-right: 1px solid #27272a;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">8</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Running</div>
+            </div>
+            <div style="flex: 1; padding: 14px; text-align: center; border-right: 1px solid #27272a;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">4</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Idle</div>
+            </div>
+            <div style="flex: 1; padding: 14px; text-align: center;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;">$234</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 0;">
+            <button style="flex: 1; background: #fafafa; color: #09090b; border: none; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">View Agents</button>
+            <button style="flex: 1; background: transparent; color: #fafafa; border: 1px solid #3f3f46; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;">New Agent</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Sharp & Geometric</h3>
+      <p>0px radius, hard borders, structured grid. Dense and authoritative. <strong>Linear / Bloomberg vibes.</strong></p>
+    </div>
+  </div>
+
+  <!-- Option C: Modern Balanced -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 0; min-height: 400px; display: flex; flex-direction: column;">
+      <!-- Light variant -->
+      <div style="background: #fafafa; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Light</div>
+        <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #111827; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="color: #16a34a; font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 4px;"><span style="width: 6px; height: 6px; background: #16a34a; border-radius: 50%; display: inline-block;"></span> All Healthy</span>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <div style="flex: 1; background: #f9fafb; border: 1px solid #f3f4f6; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">8</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Running</div>
+            </div>
+            <div style="flex: 1; background: #f9fafb; border: 1px solid #f3f4f6; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">4</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Idle</div>
+            </div>
+            <div style="flex: 1; background: #f9fafb; border: 1px solid #f3f4f6; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #111827; font-size: 22px; font-weight: 700;">$234</div>
+              <div style="color: #9ca3af; font-size: 11px; margin-top: 2px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button style="flex: 1; background: #111827; color: white; border: none; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">View Agents</button>
+            <button style="flex: 1; background: white; color: #374151; border: 1px solid #d1d5db; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">New Agent</button>
+          </div>
+        </div>
+      </div>
+      <!-- Dark variant -->
+      <div style="background: #09090b; padding: 24px; flex: 1; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid #222;">
+        <div style="color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Dark</div>
+        <div style="background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); display: flex; flex-direction: column; gap: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #fafafa; font-size: 15px; font-weight: 600;">Agent Overview</span>
+            <span style="color: #4ade80; font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 4px;"><span style="width: 6px; height: 6px; background: #4ade80; border-radius: 50%; display: inline-block;"></span> All Healthy</span>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <div style="flex: 1; background: #27272a; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700;">8</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Running</div>
+            </div>
+            <div style="flex: 1; background: #27272a; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700;">4</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Idle</div>
+            </div>
+            <div style="flex: 1; background: #27272a; border-radius: 8px; padding: 14px; text-align: center;">
+              <div style="color: #fafafa; font-size: 22px; font-weight: 700;">$234</div>
+              <div style="color: #71717a; font-size: 11px; margin-top: 2px;">Today</div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button style="flex: 1; background: #fafafa; color: #09090b; border: none; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">View Agents</button>
+            <button style="flex: 1; background: transparent; color: #fafafa; border: 1px solid #3f3f46; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;">New Agent</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Modern Balanced</h3>
+      <p>8px radius, subtle borders + shadows, clean lines. Professional and versatile. <strong>Vercel / Stripe vibes.</strong></p>
+    </div>
+  </div>
+</div>

@@ -7,9 +7,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Badge, Button, Card } from "@heroui/react";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime, relativeTime } from "../lib/utils";
 
@@ -181,11 +179,11 @@ export function InstanceSettings() {
         <span><span className="font-semibold text-foreground">{grouped.length}</span> {grouped.length === 1 ? "company" : "companies"}</span>
         {anyEnabled && (
           <Button
-            variant="destructive"
+            variant="danger"
             size="sm"
             className="ml-auto h-7 text-xs"
-            disabled={disableAllMutation.isPending}
-            onClick={() => {
+            isDisabled={disableAllMutation.isPending}
+            onPress={() => {
               const noun = enabledCount === 1 ? "agent" : "agents";
               if (!window.confirm(`Disable timer heartbeats for all ${enabledCount} enabled ${noun}?`)) {
                 return;
@@ -213,7 +211,7 @@ export function InstanceSettings() {
         <div className="space-y-4">
           {grouped.map((group) => (
             <Card key={group.companyName}>
-              <CardContent className="p-0">
+              <Card.Content className="p-0">
                 <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {group.companyName}
                 </div>
@@ -226,7 +224,6 @@ export function InstanceSettings() {
                         className="flex items-center gap-3 px-3 py-2 text-sm"
                       >
                         <Badge
-                          variant={agent.schedulerActive ? "default" : "outline"}
                           className="shrink-0 text-[10px] px-1.5 py-0"
                         >
                           {agent.schedulerActive ? "On" : "Off"}
@@ -263,8 +260,8 @@ export function InstanceSettings() {
                             variant="ghost"
                             size="sm"
                             className="h-6 px-2 text-xs"
-                            disabled={saving}
-                            onClick={() => toggleMutation.mutate(agent)}
+                            isDisabled={saving}
+                            onPress={() => toggleMutation.mutate(agent)}
                           >
                             {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
                           </Button>
@@ -273,7 +270,7 @@ export function InstanceSettings() {
                     );
                   })}
                 </div>
-              </CardContent>
+              </Card.Content>
             </Card>
           ))}
         </div>

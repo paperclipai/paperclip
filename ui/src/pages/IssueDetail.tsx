@@ -48,13 +48,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
-import { Separator } from "@/components/ui/separator";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button, Separator, Popover, Tabs, Drawer, useOverlayState } from "@heroui/react";
 import {
   Activity as ActivityIcon,
   Check,
@@ -288,7 +282,7 @@ export function IssueDetail() {
   const { pushToast } = useToast();
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const mobilePropsState = useOverlayState();
   const [detailTab, setDetailTab] = useState("comments");
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
@@ -1116,8 +1110,8 @@ export function IssueDetail() {
       <Button
         variant="outline"
         size="sm"
-        onClick={() => fileInputRef.current?.click()}
-        disabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
+        onPress={() => fileInputRef.current?.click()}
+        isDisabled={uploadAttachment.isPending || importMarkdownDocument.isPending}
         className={cn(
           "shadow-none",
           attachmentDragActive && "border-primary bg-primary/5",
@@ -1235,17 +1229,17 @@ export function IssueDetail() {
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
             <Button
               variant="ghost"
-              size="icon-xs"
-              onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              size="sm"
+              onPress={copyIssueToClipboard}
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
             <Button
               variant="ghost"
-              size="icon-xs"
-              onClick={() => setMobilePropsOpen(true)}
-              title="Properties"
+              size="sm"
+              onPress={() => mobilePropsState.setOpen(true)}
+              aria-label="Properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
@@ -1254,46 +1248,46 @@ export function IssueDetail() {
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
             <Button
               variant="ghost"
-              size="icon-xs"
-              onClick={copyIssueToClipboard}
-              title="Copy issue as markdown"
+              size="sm"
+              onPress={copyIssueToClipboard}
+              aria-label="Copy issue as markdown"
             >
               {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
             </Button>
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="sm"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
                 panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
               )}
-              onClick={() => setPanelVisible(true)}
-              title="Show properties"
+              onPress={() => setPanelVisible(true)}
+              aria-label="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
 
-            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
+            <Popover isOpen={moreOpen} onOpenChange={setMoreOpen}>
+              <Popover.Trigger>
+                <Button variant="ghost" size="sm" className="shrink-0">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
-              </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
+              </Popover.Trigger>
+              <Popover.Content className="w-44 p-1">
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this Issue
+                </button>
+              </Popover.Content>
             </Popover>
           </div>
         </div>
@@ -1487,28 +1481,30 @@ export function IssueDetail() {
 
       <Separator />
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Comments
-          </TabsTrigger>
-          <TabsTrigger value="subissues" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Sub-issues
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-          {issuePluginTabItems.map((item) => (
-            <TabsTrigger key={item.value} value={item.value}>
-              {item.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      <Tabs selectedKey={detailTab} onSelectionChange={(key) => setDetailTab(String(key))} className="space-y-3">
+        <Tabs.ListContainer>
+          <Tabs.List className="w-full justify-start gap-1">
+            <Tabs.Tab id="comments" className="gap-1.5">
+              <MessageSquare className="h-3.5 w-3.5" />
+              Comments<Tabs.Indicator />
+            </Tabs.Tab>
+            <Tabs.Tab id="subissues" className="gap-1.5">
+              <ListTree className="h-3.5 w-3.5" />
+              Sub-issues<Tabs.Indicator />
+            </Tabs.Tab>
+            <Tabs.Tab id="activity" className="gap-1.5">
+              <ActivityIcon className="h-3.5 w-3.5" />
+              Activity<Tabs.Indicator />
+            </Tabs.Tab>
+            {issuePluginTabItems.map((item) => (
+              <Tabs.Tab key={item.value} id={item.value}>
+                {item.label}<Tabs.Indicator />
+              </Tabs.Tab>
+            ))}
+          </Tabs.List>
+        </Tabs.ListContainer>
 
-        <TabsContent value="comments">
+        <Tabs.Panel id="comments">
           <CommentThread
             comments={timelineComments}
             queuedComments={queuedComments}
@@ -1560,9 +1556,9 @@ export function IssueDetail() {
             }}
             liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
           />
-        </TabsContent>
+        </Tabs.Panel>
 
-        <TabsContent value="subissues">
+        <Tabs.Panel id="subissues">
           {childIssues.length === 0 ? (
             <p className="text-xs text-muted-foreground">No sub-issues.</p>
           ) : (
@@ -1592,9 +1588,9 @@ export function IssueDetail() {
               ))}
             </div>
           )}
-        </TabsContent>
+        </Tabs.Panel>
 
-        <TabsContent value="activity">
+        <Tabs.Panel id="activity">
           {linkedRuns && linkedRuns.length > 0 && (
             <div className="mb-3 px-3 py-2 rounded-lg border border-border">
               <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1632,10 +1628,10 @@ export function IssueDetail() {
               ))}
             </div>
           )}
-        </TabsContent>
+        </Tabs.Panel>
 
         {activePluginTab && (
-          <TabsContent value={activePluginTab.value}>
+          <Tabs.Panel id={activePluginTab.value}>
             <PluginSlotMount
               slot={activePluginTab.slot}
               context={{
@@ -1646,25 +1642,24 @@ export function IssueDetail() {
               }}
               missingBehavior="placeholder"
             />
-          </TabsContent>
+          </Tabs.Panel>
         )}
       </Tabs>
 
       {linkedApprovals && linkedApprovals.length > 0 && (
-        <Collapsible
-          open={secondaryOpen.approvals}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, approvals: open }))}
-          className="rounded-lg border border-border"
-        >
-          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
+        <div className="rounded-lg border border-border">
+          <button
+            className="flex w-full items-center justify-between px-3 py-2 text-left"
+            onClick={() => setSecondaryOpen((prev) => ({ ...prev, approvals: !prev.approvals }))}
+          >
             <span className="text-sm font-medium text-muted-foreground">
               Linked Approvals ({linkedApprovals.length})
             </span>
             <ChevronDown
               className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
             />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
+          </button>
+          {secondaryOpen.approvals && (
             <div className="border-t border-border divide-y divide-border">
               {linkedApprovals.map((approval) => (
                 <Link
@@ -1683,24 +1678,26 @@ export function IssueDetail() {
                 </Link>
               ))}
             </div>
-          </CollapsibleContent>
-        </Collapsible>
+          )}
+        </div>
       )}
 
 
       {/* Mobile properties drawer */}
-      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
-          <SheetHeader>
-            <SheetTitle className="text-sm">Properties</SheetTitle>
-          </SheetHeader>
-          <ScrollArea className="flex-1 overflow-y-auto">
-            <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
-            </div>
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
+      <Drawer state={mobilePropsState}>
+        <Drawer.Backdrop isDismissable>
+          <Drawer.Content placement="bottom">
+            <Drawer.Dialog>
+              <Drawer.Header>
+                <span className="text-sm">Properties</span>
+              </Drawer.Header>
+              <Drawer.Body className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)] overflow-auto scrollbar-auto-hide">
+                <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              </Drawer.Body>
+            </Drawer.Dialog>
+          </Drawer.Content>
+        </Drawer.Backdrop>
+      </Drawer>
       <ScrollToBottom />
     </div>
   );

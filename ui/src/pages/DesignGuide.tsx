@@ -5,7 +5,6 @@ import {
   Check,
   ChevronDown,
   CircleDot,
-  Command as CommandIcon,
   DollarSign,
   Hexagon,
   History,
@@ -22,96 +21,23 @@ import {
   User,
   Zap,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
+  Button,
+  Badge,
+  Input,
+  Checkbox,
+  Separator,
+  Skeleton,
+  Tabs,
   Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-  CardFooter,
-} from "@/components/ui/card";
-import {
-  Dialog,
-  DialogTrigger,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
+  Modal,
   Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
-import {
   Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuCheckboxItem,
-  DropdownMenuShortcut,
-} from "@/components/ui/dropdown-menu";
-import {
+  ListBox,
+  Dropdown,
   Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from "@/components/ui/popover";
-import {
-  Sheet,
-  SheetTrigger,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-  SheetFooter,
-} from "@/components/ui/sheet";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "@/components/ui/collapsible";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Command,
-  CommandInput,
-  CommandList,
-  CommandGroup,
-  CommandItem,
-  CommandEmpty,
-  CommandSeparator,
-} from "@/components/ui/command";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarGroup,
-  AvatarGroupCount,
-} from "@/components/ui/avatar";
+  Drawer,
+} from "@heroui/react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
@@ -131,7 +57,7 @@ import { Identity } from "@/components/Identity";
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-4">
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+      <h3 className="text-sm font-semibold text-foreground/60">
         {title}
       </h3>
       <Separator />
@@ -175,9 +101,11 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 export function DesignGuide() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
-  const [selectValue, setSelectValue] = useState("in_progress");
-  const [menuChecked, setMenuChecked] = useState(true);
-  const [collapsibleOpen, setCollapsibleOpen] = useState(false);
+  const [selectValue, setSelectValue] = useState<string>("in_progress");
+  const [checked1, setChecked1] = useState(true);
+  const [checked2, setChecked2] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [inlineText, setInlineText] = useState("Click to edit this text");
   const [inlineTitle, setInlineTitle] = useState("Editable Title");
   const [inlineDesc, setInlineDesc] = useState(
@@ -209,11 +137,10 @@ export function DesignGuide() {
           <SubSection title="UI primitives">
             <div className="flex flex-wrap gap-2">
               {[
-                "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
-                "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
-                "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
+                "badge", "button", "card", "checkbox", "drawer", "input", "modal",
+                "popover", "select", "separator", "skeleton", "tabs", "tooltip",
               ].map((name) => (
-                <Badge key={name} variant="outline" className="font-mono text-[10px]">
+                <Badge key={name} variant="secondary" className="font-mono text-[10px]">
                   {name}
                 </Badge>
               ))}
@@ -226,7 +153,7 @@ export function DesignGuide() {
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette",
               ].map((name) => (
-                <Badge key={name} variant="ghost" className="font-mono text-[10px]">
+                <Badge key={name} variant="soft" className="font-mono text-[10px]">
                   {name}
                 </Badge>
               ))}
@@ -281,7 +208,7 @@ export function DesignGuide() {
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
           <h2 className="text-lg font-semibold">Section Title — text-lg font-semibold</h2>
-          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          <h3 className="text-sm font-semibold text-foreground/60">
             Section Heading — text-sm font-semibold uppercase tracking-wide
           </h3>
           <p className="text-sm font-medium">Card Title — text-sm font-medium</p>
@@ -330,46 +257,42 @@ export function DesignGuide() {
       <Section title="Buttons">
         <SubSection title="Variants">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="default">Default</Button>
+            <Button variant="primary">Primary</Button>
             <Button variant="secondary">Secondary</Button>
             <Button variant="outline">Outline</Button>
             <Button variant="ghost">Ghost</Button>
-            <Button variant="destructive">Destructive</Button>
-            <Button variant="link">Link</Button>
+            <Button variant="danger">Danger</Button>
           </div>
         </SubSection>
 
         <SubSection title="Sizes">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button size="xs">Extra Small</Button>
             <Button size="sm">Small</Button>
-            <Button size="default">Default</Button>
+            <Button>Default</Button>
             <Button size="lg">Large</Button>
           </div>
         </SubSection>
 
         <SubSection title="Icon buttons">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="ghost" size="icon-xs"><Search /></Button>
-            <Button variant="ghost" size="icon-sm"><Search /></Button>
-            <Button variant="outline" size="icon"><Search /></Button>
-            <Button variant="outline" size="icon-lg"><Search /></Button>
+            <Button variant="ghost" size="sm" isIconOnly><Search className="h-4 w-4" /></Button>
+            <Button variant="outline" isIconOnly><Search className="h-4 w-4" /></Button>
           </div>
         </SubSection>
 
         <SubSection title="With icons">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button><Plus /> New Issue</Button>
-            <Button variant="outline"><Upload /> Upload</Button>
-            <Button variant="destructive"><Trash2 /> Delete</Button>
-            <Button size="sm"><Plus /> Add</Button>
+            <Button><Plus className="h-4 w-4 mr-1.5" /> New Issue</Button>
+            <Button variant="outline"><Upload className="h-4 w-4 mr-1.5" /> Upload</Button>
+            <Button variant="danger"><Trash2 className="h-4 w-4 mr-1.5" /> Delete</Button>
+            <Button size="sm"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
           </div>
         </SubSection>
 
         <SubSection title="States">
           <div className="flex items-center gap-2 flex-wrap">
-            <Button disabled>Disabled</Button>
-            <Button variant="outline" disabled>Disabled Outline</Button>
+            <Button isDisabled>Disabled</Button>
+            <Button variant="outline" isDisabled>Disabled Outline</Button>
           </div>
         </SubSection>
       </Section>
@@ -380,11 +303,10 @@ export function DesignGuide() {
       <Section title="Badges">
         <SubSection title="Variants">
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="default">Default</Badge>
+            <Badge>Default</Badge>
             <Badge variant="secondary">Secondary</Badge>
-            <Badge variant="outline">Outline</Badge>
-            <Badge variant="destructive">Destructive</Badge>
-            <Badge variant="ghost">Ghost</Badge>
+            <Badge variant="secondary">Secondary (was outline)</Badge>
+            <Badge variant="soft">Soft (was ghost)</Badge>
           </div>
         </SubSection>
       </Section>
@@ -479,22 +401,26 @@ export function DesignGuide() {
           </SubSection>
 
           <SubSection title="Textarea">
-            <Textarea placeholder="Write something..." />
+            <textarea
+              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none"
+              placeholder="Write something..."
+              rows={3}
+            />
           </SubSection>
 
-          <SubSection title="Checkbox & Label">
+          <SubSection title="Checkbox">
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <Checkbox id="check1" defaultChecked />
-                <Label htmlFor="check1">Checked item</Label>
+                <Checkbox id="check1" isSelected={checked1} onChange={() => setChecked1(!checked1)} />
+                <label htmlFor="check1" className="text-sm">Checked item</label>
               </div>
               <div className="flex items-center gap-2">
-                <Checkbox id="check2" />
-                <Label htmlFor="check2">Unchecked item</Label>
+                <Checkbox id="check2" isSelected={checked2} onChange={() => setChecked2(!checked2)} />
+                <label htmlFor="check2" className="text-sm">Unchecked item</label>
               </div>
               <div className="flex items-center gap-2">
-                <Checkbox id="check3" disabled />
-                <Label htmlFor="check3">Disabled item</Label>
+                <Checkbox id="check3" isDisabled />
+                <label htmlFor="check3" className="text-sm text-muted-foreground">Disabled item</label>
               </div>
             </div>
           </SubSection>
@@ -541,31 +467,35 @@ export function DesignGuide() {
       <Section title="Select">
         <div className="grid gap-6 md:grid-cols-2">
           <SubSection title="Default size">
-            <Select value={selectValue} onValueChange={setSelectValue}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="backlog">Backlog</SelectItem>
-                <SelectItem value="todo">Todo</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="in_review">In Review</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
-              </SelectContent>
+            <Select
+              selectedKey={selectValue}
+              onSelectionChange={(key) => setSelectValue(String(key))}
+              aria-label="Select status"
+            >
+              <Select.Trigger className="w-full" />
+              <Select.Popover>
+                <ListBox>
+                  <ListBox.Item id="backlog">Backlog</ListBox.Item>
+                  <ListBox.Item id="todo">Todo</ListBox.Item>
+                  <ListBox.Item id="in_progress">In Progress</ListBox.Item>
+                  <ListBox.Item id="in_review">In Review</ListBox.Item>
+                  <ListBox.Item id="done">Done</ListBox.Item>
+                </ListBox>
+              </Select.Popover>
             </Select>
             <p className="text-xs text-muted-foreground">Current value: {selectValue}</p>
           </SubSection>
           <SubSection title="Small trigger">
-            <Select defaultValue="high">
-              <SelectTrigger size="sm" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="critical">Critical</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
-              </SelectContent>
+            <Select defaultSelectedKey="high" aria-label="Select priority">
+              <Select.Trigger className="w-full" />
+              <Select.Popover>
+                <ListBox>
+                  <ListBox.Item id="critical">Critical</ListBox.Item>
+                  <ListBox.Item id="high">High</ListBox.Item>
+                  <ListBox.Item id="medium">Medium</ListBox.Item>
+                  <ListBox.Item id="low">Low</ListBox.Item>
+                </ListBox>
+              </Select.Popover>
             </Select>
           </SubSection>
         </div>
@@ -575,36 +505,30 @@ export function DesignGuide() {
       {/*  DROPDOWN MENU                                                */}
       {/* ============================================================ */}
       <Section title="Dropdown Menu">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+        <Dropdown>
+          <Dropdown.Trigger>
             <Button variant="outline" size="sm">
               Quick Actions
-              <ChevronDown className="h-4 w-4" />
+              <ChevronDown className="h-4 w-4 ml-1" />
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuItem>
-              <Check className="h-4 w-4" />
-              Mark as done
-              <DropdownMenuShortcut>⌘D</DropdownMenuShortcut>
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <BookOpen className="h-4 w-4" />
-              Open docs
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuCheckboxItem
-              checked={menuChecked}
-              onCheckedChange={(value) => setMenuChecked(value === true)}
-            >
-              Watch issue
-            </DropdownMenuCheckboxItem>
-            <DropdownMenuItem variant="destructive">
-              <Trash2 className="h-4 w-4" />
-              Delete issue
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </Dropdown.Trigger>
+          <Dropdown.Popover>
+            <Dropdown.Menu className="w-56">
+              <Dropdown.Item>
+                <Check className="h-4 w-4 mr-2" />
+                Mark as done
+              </Dropdown.Item>
+              <Dropdown.Item>
+                <BookOpen className="h-4 w-4 mr-2" />
+                Open docs
+              </Dropdown.Item>
+              <Dropdown.Item className="text-destructive">
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete issue
+              </Dropdown.Item>
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
       </Section>
 
       {/* ============================================================ */}
@@ -612,74 +536,57 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Popover">
         <Popover>
-          <PopoverTrigger asChild>
+          <Popover.Trigger>
             <Button variant="outline" size="sm">Open Popover</Button>
-          </PopoverTrigger>
-          <PopoverContent className="space-y-2">
+          </Popover.Trigger>
+          <Popover.Content className="space-y-2 p-3">
             <p className="text-sm font-medium">Agent heartbeat</p>
             <p className="text-xs text-muted-foreground">
               Last run succeeded 24s ago. Next timer run in 9m.
             </p>
-            <Button size="xs">Wake now</Button>
-          </PopoverContent>
+            <Button size="sm">Wake now</Button>
+          </Popover.Content>
         </Popover>
       </Section>
 
       {/* ============================================================ */}
-      {/*  COLLAPSIBLE                                                  */}
+      {/*  DRAWER (replaces Sheet)                                      */}
       {/* ============================================================ */}
-      <Section title="Collapsible">
-        <Collapsible open={collapsibleOpen} onOpenChange={setCollapsibleOpen} className="space-y-2">
-          <CollapsibleTrigger asChild>
-            <Button variant="outline" size="sm">
-              {collapsibleOpen ? "Hide" : "Show"} advanced filters
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="rounded-md border border-border p-3">
-            <div className="space-y-2">
-              <Label htmlFor="owner-filter">Owner</Label>
-              <Input id="owner-filter" placeholder="Filter by agent name" />
+      <Section title="Drawer">
+        <Button variant="outline" size="sm" onPress={() => setDrawerOpen(true)}>Open Side Panel</Button>
+        <Drawer isOpen={drawerOpen} onOpenChange={setDrawerOpen}>
+          <Drawer.Content>
+            <div className="space-y-4 p-4">
+              <div>
+                <h2 className="text-base font-semibold">Issue Properties</h2>
+                <p className="text-sm text-muted-foreground mt-0.5">Edit metadata without leaving the current page.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Title</label>
+                <Input defaultValue="Improve onboarding docs" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Description</label>
+                <textarea
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none resize-none"
+                  defaultValue="Capture setup pitfalls and screenshots."
+                  rows={3}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onPress={() => setDrawerOpen(false)}>Cancel</Button>
+                <Button onPress={() => setDrawerOpen(false)}>Save</Button>
+              </div>
             </div>
-          </CollapsibleContent>
-        </Collapsible>
+          </Drawer.Content>
+        </Drawer>
       </Section>
 
       {/* ============================================================ */}
-      {/*  SHEET                                                        */}
-      {/* ============================================================ */}
-      <Section title="Sheet">
-        <Sheet>
-          <SheetTrigger asChild>
-            <Button variant="outline" size="sm">Open Side Panel</Button>
-          </SheetTrigger>
-          <SheetContent side="right">
-            <SheetHeader>
-              <SheetTitle>Issue Properties</SheetTitle>
-              <SheetDescription>Edit metadata without leaving the current page.</SheetDescription>
-            </SheetHeader>
-            <div className="space-y-4 px-4">
-              <div className="space-y-1">
-                <Label htmlFor="sheet-title">Title</Label>
-                <Input id="sheet-title" defaultValue="Improve onboarding docs" />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="sheet-description">Description</Label>
-                <Textarea id="sheet-description" defaultValue="Capture setup pitfalls and screenshots." />
-              </div>
-            </div>
-            <SheetFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
-            </SheetFooter>
-          </SheetContent>
-        </Sheet>
-      </Section>
-
-      {/* ============================================================ */}
-      {/*  SCROLL AREA                                                  */}
+      {/*  SCROLL AREA (overflow-auto)                                  */}
       {/* ============================================================ */}
       <Section title="Scroll Area">
-        <ScrollArea className="h-36 rounded-md border border-border">
+        <div className="h-36 rounded-md border border-border overflow-auto scrollbar-auto-hide">
           <div className="space-y-2 p-3">
             {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="rounded-md border border-border p-2 text-sm">
@@ -687,63 +594,7 @@ export function DesignGuide() {
               </div>
             ))}
           </div>
-        </ScrollArea>
-      </Section>
-
-      {/* ============================================================ */}
-      {/*  COMMAND                                                      */}
-      {/* ============================================================ */}
-      <Section title="Command (CMDK)">
-        <div className="rounded-md border border-border">
-          <Command>
-            <CommandInput placeholder="Type a command or search..." />
-            <CommandList>
-              <CommandEmpty>No results found.</CommandEmpty>
-              <CommandGroup heading="Pages">
-                <CommandItem>
-                  <LayoutDashboard className="h-4 w-4" />
-                  Dashboard
-                </CommandItem>
-                <CommandItem>
-                  <CircleDot className="h-4 w-4" />
-                  Issues
-                </CommandItem>
-              </CommandGroup>
-              <CommandSeparator />
-              <CommandGroup heading="Actions">
-                <CommandItem>
-                  <CommandIcon className="h-4 w-4" />
-                  Open command palette
-                </CommandItem>
-                <CommandItem>
-                  <Plus className="h-4 w-4" />
-                  Create new issue
-                </CommandItem>
-              </CommandGroup>
-            </CommandList>
-          </Command>
         </div>
-      </Section>
-
-      {/* ============================================================ */}
-      {/*  BREADCRUMB                                                   */}
-      {/* ============================================================ */}
-      <Section title="Breadcrumb">
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbLink href="#">Projects</BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbLink href="#">Paperclip App</BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage>Issue List</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
       </Section>
 
       {/* ============================================================ */}
@@ -752,17 +603,17 @@ export function DesignGuide() {
       <Section title="Cards">
         <SubSection title="Standard Card">
           <Card>
-            <CardHeader>
-              <CardTitle>Card Title</CardTitle>
-              <CardDescription>Card description with supporting text.</CardDescription>
-            </CardHeader>
-            <CardContent>
+            <Card.Header>
+              <div className="font-semibold">Card Title</div>
+              <p className="text-sm text-muted-foreground">Card description with supporting text.</p>
+            </Card.Header>
+            <Card.Content>
               <p className="text-sm">Card content goes here. This is the main body area.</p>
-            </CardContent>
-            <CardFooter className="gap-2">
+            </Card.Content>
+            <Card.Footer className="gap-2">
               <Button size="sm">Action</Button>
               <Button variant="outline" size="sm">Cancel</Button>
-            </CardFooter>
+            </Card.Footer>
           </Card>
         </SubSection>
 
@@ -780,45 +631,28 @@ export function DesignGuide() {
       {/*  TABS                                                         */}
       {/* ============================================================ */}
       <Section title="Tabs">
-        <SubSection title="Default (pill) variant">
-          <Tabs defaultValue="overview">
-            <TabsList>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="runs">Runs</TabsTrigger>
-              <TabsTrigger value="config">Config</TabsTrigger>
-              <TabsTrigger value="costs">Costs</TabsTrigger>
-            </TabsList>
-            <TabsContent value="overview">
+        <SubSection title="Default variant">
+          <Tabs defaultSelectedKey="overview">
+            <Tabs.ListContainer>
+              <Tabs.List>
+                <Tabs.Tab id="overview">Overview<Tabs.Indicator /></Tabs.Tab>
+                <Tabs.Tab id="runs">Runs<Tabs.Indicator /></Tabs.Tab>
+                <Tabs.Tab id="config">Config<Tabs.Indicator /></Tabs.Tab>
+                <Tabs.Tab id="costs">Costs<Tabs.Indicator /></Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+            <Tabs.Panel id="overview">
               <p className="text-sm text-muted-foreground py-4">Overview tab content.</p>
-            </TabsContent>
-            <TabsContent value="runs">
+            </Tabs.Panel>
+            <Tabs.Panel id="runs">
               <p className="text-sm text-muted-foreground py-4">Runs tab content.</p>
-            </TabsContent>
-            <TabsContent value="config">
+            </Tabs.Panel>
+            <Tabs.Panel id="config">
               <p className="text-sm text-muted-foreground py-4">Config tab content.</p>
-            </TabsContent>
-            <TabsContent value="costs">
+            </Tabs.Panel>
+            <Tabs.Panel id="costs">
               <p className="text-sm text-muted-foreground py-4">Costs tab content.</p>
-            </TabsContent>
-          </Tabs>
-        </SubSection>
-
-        <SubSection title="Line variant">
-          <Tabs defaultValue="summary">
-            <TabsList variant="line">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="comments">Comments</TabsTrigger>
-            </TabsList>
-            <TabsContent value="summary">
-              <p className="text-sm text-muted-foreground py-4">Summary content with underline tabs.</p>
-            </TabsContent>
-            <TabsContent value="details">
-              <p className="text-sm text-muted-foreground py-4">Details content.</p>
-            </TabsContent>
-            <TabsContent value="comments">
-              <p className="text-sm text-muted-foreground py-4">Comments content.</p>
-            </TabsContent>
+            </Tabs.Panel>
           </Tabs>
         </SubSection>
       </Section>
@@ -895,7 +729,7 @@ export function DesignGuide() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
+            onPress={() =>
               setFilters([
                 { key: "status", label: "Status", value: "Active" },
                 { key: "priority", label: "Priority", value: "High" },
@@ -905,28 +739,6 @@ export function DesignGuide() {
             Reset filters
           </Button>
         )}
-      </Section>
-
-      {/* ============================================================ */}
-      {/*  AVATARS                                                      */}
-      {/* ============================================================ */}
-      <Section title="Avatars">
-        <SubSection title="Sizes">
-          <div className="flex items-center gap-3">
-            <Avatar size="sm"><AvatarFallback>SM</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>DF</AvatarFallback></Avatar>
-            <Avatar size="lg"><AvatarFallback>LG</AvatarFallback></Avatar>
-          </div>
-        </SubSection>
-
-        <SubSection title="Group">
-          <AvatarGroup>
-            <Avatar><AvatarFallback>A1</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>A2</AvatarFallback></Avatar>
-            <Avatar><AvatarFallback>A3</AvatarFallback></Avatar>
-            <AvatarGroupCount>+5</AvatarGroupCount>
-          </AvatarGroup>
-        </SubSection>
       </Section>
 
       {/* ============================================================ */}
@@ -960,51 +772,57 @@ export function DesignGuide() {
       <Section title="Tooltips">
         <div className="flex items-center gap-4">
           <Tooltip>
-            <TooltipTrigger asChild>
+            <Tooltip.Trigger>
               <Button variant="outline" size="sm">Hover me</Button>
-            </TooltipTrigger>
-            <TooltipContent>This is a tooltip</TooltipContent>
+            </Tooltip.Trigger>
+            <Tooltip.Content>This is a tooltip</Tooltip.Content>
           </Tooltip>
           <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm"><Settings /></Button>
-            </TooltipTrigger>
-            <TooltipContent>Settings</TooltipContent>
+            <Tooltip.Trigger>
+              <Button variant="ghost" size="sm" isIconOnly><Settings className="h-4 w-4" /></Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content>Settings</Tooltip.Content>
           </Tooltip>
         </div>
       </Section>
 
       {/* ============================================================ */}
-      {/*  DIALOG                                                       */}
+      {/*  MODAL (replaces Dialog)                                      */}
       {/* ============================================================ */}
-      <Section title="Dialog">
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="outline">Open Dialog</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Dialog Title</DialogTitle>
-              <DialogDescription>
-                This is a sample dialog showing the standard layout with header, content, and footer.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3">
-              <div>
-                <Label>Name</Label>
-                <Input placeholder="Enter a name" className="mt-1.5" />
+      <Section title="Modal">
+        <Button variant="outline" onPress={() => setDialogOpen(true)}>Open Modal</Button>
+        <Modal.Backdrop isOpen={dialogOpen} onOpenChange={setDialogOpen}>
+          <Modal.Container size="md">
+            <Modal.Dialog>
+              <div className="p-6 space-y-4 max-w-md">
+                <div>
+                  <h2 className="text-base font-semibold">Modal Title</h2>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    This is a sample modal showing the standard layout with header, content, and footer.
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Name</label>
+                    <Input placeholder="Enter a name" className="mt-1.5" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Description</label>
+                    <textarea
+                      className="w-full mt-1.5 rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none resize-none"
+                      placeholder="Describe..."
+                      rows={3}
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onPress={() => setDialogOpen(false)}>Cancel</Button>
+                  <Button onPress={() => setDialogOpen(false)}>Save</Button>
+                </div>
               </div>
-              <div>
-                <Label>Description</Label>
-                <Textarea placeholder="Describe..." className="mt-1.5" />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline">Cancel</Button>
-              <Button>Save</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
       </Section>
 
       {/* ============================================================ */}
@@ -1081,13 +899,6 @@ export function DesignGuide() {
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Priority</span>
             <PriorityIcon priority="high" />
-          </div>
-          <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
-            <div className="flex items-center gap-1.5">
-              <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
-              <span className="text-xs">Agent Alpha</span>
-            </div>
           </div>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Created</span>
@@ -1188,7 +999,11 @@ export function DesignGuide() {
             </div>
           </div>
           <div className="space-y-2">
-            <Textarea placeholder="Leave a comment..." rows={3} />
+            <textarea
+              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none resize-none"
+              placeholder="Leave a comment..."
+              rows={3}
+            />
             <Button size="sm">Comment</Button>
           </div>
         </div>
@@ -1260,11 +1075,6 @@ export function DesignGuide() {
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">Horizontal</p>
           <Separator />
-          <div className="flex items-center gap-4 h-8">
-            <span className="text-sm">Left</span>
-            <Separator orientation="vertical" />
-            <span className="text-sm">Right</span>
-          </div>
         </div>
       </Section>
 
@@ -1313,7 +1123,6 @@ export function DesignGuide() {
             ["C", "New Issue (outside inputs)"],
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
-
             ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">

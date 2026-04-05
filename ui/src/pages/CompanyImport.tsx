@@ -17,7 +17,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
 import { getProjectOrderStorageKey, writeProjectOrder } from "../lib/project-order";
 import { MarkdownBody } from "../components/MarkdownBody";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { EmptyState } from "../components/EmptyState";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { cn } from "../lib/utils";
@@ -1141,7 +1141,7 @@ export function CompanyImport() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => packageInputRef.current?.click()}
+                onPress={() => packageInputRef.current?.click()}
               >
                 Choose zip
               </Button>
@@ -1230,8 +1230,8 @@ export function CompanyImport() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => previewMutation.mutate()}
-            disabled={previewMutation.isPending || !hasSource}
+            onPress={() => previewMutation.mutate()}
+            isDisabled={previewMutation.isPending || !hasSource}
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
           </Button>
@@ -1289,8 +1289,8 @@ export function CompanyImport() {
           <div className="mx-5 mt-3 flex justify-end">
             <Button
               size="sm"
-              onClick={() => importMutation.mutate()}
-              disabled={importMutation.isPending || hasErrors || selectedCount === 0}
+              onPress={() => importMutation.mutate()}
+              isDisabled={importMutation.isPending || hasErrors || selectedCount === 0}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending

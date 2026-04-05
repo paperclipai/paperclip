@@ -116,17 +116,17 @@ export function ActivityRow({ event, agentMap, entityNameMap, entityTitleMap, cl
           size="xs"
           className="align-baseline"
         />
-        <span className="text-muted-foreground ml-1">{verb} </span>
+        <span className="text-foreground/40 ml-1">{verb} </span>
         {name && <span className="font-medium">{name}</span>}
-        {entityTitle && <span className="text-muted-foreground ml-1">— {entityTitle}</span>}
+        {entityTitle && <span className="text-foreground/40 ml-1">— {entityTitle}</span>}
       </p>
-      <span className="text-xs text-muted-foreground shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
+      <span className="text-xs text-foreground/40 shrink-0 pt-0.5">{timeAgo(event.createdAt)}</span>
     </div>
   );
 
   const classes = cn(
-    "px-4 py-2 text-sm",
-    link && "cursor-pointer hover:bg-accent/50 transition-colors",
+    "px-4 py-2 text-sm border-b border-default-200/30 last:border-0 first:rounded-t-2xl last:rounded-b-2xl",
+    link && "cursor-pointer hover:bg-accent/[0.03] transition-colors",
     className,
   );
 

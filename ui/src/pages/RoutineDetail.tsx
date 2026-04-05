@@ -41,20 +41,8 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/Rout
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
+import { Button, Input, Separator, Select, Badge, ListBox } from "@heroui/react";
+import { PageTabBar } from "@/components/PageTabBar";
 import type { RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
@@ -164,7 +152,7 @@ function TriggerEditor({
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">
-          <Label className="text-xs">Label</Label>
+          <label className="text-xs font-medium">Label</label>
           <Input
             value={draft.label}
             onChange={(event) => setDraft((current) => ({ ...current, label: event.target.value }))}
@@ -172,7 +160,7 @@ function TriggerEditor({
         </div>
         {trigger.kind === "schedule" && (
           <div className="md:col-span-2 space-y-1.5">
-            <Label className="text-xs">Schedule</Label>
+            <label className="text-xs font-medium">Schedule</label>
             <ScheduleEditor
               value={draft.cronExpression}
               onChange={(cronExpression) => setDraft((current) => ({ ...current, cronExpression }))}
@@ -182,23 +170,23 @@ function TriggerEditor({
         {trigger.kind === "webhook" && (
           <>
             <div className="space-y-1.5">
-              <Label className="text-xs">Signing mode</Label>
+              <label className="text-xs font-medium">Signing mode</label>
               <Select
-                value={draft.signingMode}
-                onValueChange={(signingMode) => setDraft((current) => ({ ...current, signingMode }))}
+                selectedKey={draft.signingMode}
+                onSelectionChange={(key) => setDraft((current) => ({ ...current, signingMode: key as string }))}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {signingModes.map((mode) => (
-                    <SelectItem key={mode} value={mode}>{mode}</SelectItem>
-                  ))}
-                </SelectContent>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover>
+                  <ListBox>
+                    {signingModes.map((mode) => (
+                      <ListBox.Item key={mode} id={mode}>{mode}</ListBox.Item>
+                    ))}
+                  </ListBox>
+                </Select.Popover>
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Replay window (seconds)</Label>
+              <label className="text-xs font-medium">Replay window (seconds)</label>
               <Input
                 value={draft.replayWindowSec}
                 onChange={(event) => setDraft((current) => ({ ...current, replayWindowSec: event.target.value }))}
@@ -212,7 +200,7 @@ function TriggerEditor({
         {trigger.lastResult && <span className="text-xs text-muted-foreground">Last: {trigger.lastResult}</span>}
         <div className="ml-auto flex items-center gap-2">
           {trigger.kind === "webhook" && (
-            <Button variant="outline" size="sm" onClick={() => onRotate(trigger.id)}>
+            <Button variant="outline" size="sm" onPress={() => onRotate(trigger.id)}>
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
               Rotate secret
             </Button>
@@ -220,7 +208,7 @@ function TriggerEditor({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()))}
+            onPress={() => onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()))}
           >
             <Save className="mr-1.5 h-3.5 w-3.5" />
             Save trigger
@@ -229,7 +217,7 @@ function TriggerEditor({
             variant="ghost"
             size="sm"
             className="text-muted-foreground hover:text-destructive"
-            onClick={() => onDelete(trigger.id)}
+            onPress={() => onDelete(trigger.id)}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
@@ -701,14 +689,14 @@ export function RoutineDetail() {
         />
         <div className="flex shrink-0 items-center gap-3 pt-1">
           <RunButton
-            onClick={() => {
+            onPress={() => {
               if (needsRunConfiguration) {
                 setRunVariablesOpen(true);
                 return;
               }
               runRoutine.mutate({});
             }}
-            disabled={runRoutine.isPending}
+            isDisabled={runRoutine.isPending}
           />
           <button
             type="button"
@@ -744,14 +732,14 @@ export function RoutineDetail() {
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Input value={secretMessage.webhookUrl} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
+              <Button variant="outline" size="sm" onPress={() => copySecretValue("Webhook URL", secretMessage.webhookUrl)}>
                 <Copy className="h-3.5 w-3.5 mr-1" />
                 URL
               </Button>
             </div>
             <div className="flex items-center gap-2">
               <Input value={secretMessage.webhookSecret} readOnly className="flex-1" />
-              <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
+              <Button variant="outline" size="sm" onPress={() => copySecretValue("Webhook secret", secretMessage.webhookSecret)}>
                 <Copy className="h-3.5 w-3.5 mr-1" />
                 Secret
               </Button>
@@ -871,50 +859,56 @@ export function RoutineDetail() {
       />
 
       {/* Advanced delivery settings */}
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
+      <div>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-left"
+          onClick={() => setAdvancedOpen((v) => !v)}
+        >
           <span className="text-sm font-medium">Advanced delivery settings</span>
           {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-        </CollapsibleTrigger>
-        <CollapsibleContent className="pt-3">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
-              <Select
-                value={editDraft.concurrencyPolicy}
-                onValueChange={(concurrencyPolicy) => setEditDraft((current) => ({ ...current, concurrencyPolicy }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {concurrencyPolicies.map((value) => (
-                    <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[editDraft.concurrencyPolicy]}</p>
-            </div>
-            <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
-              <Select
-                value={editDraft.catchUpPolicy}
-                onValueChange={(catchUpPolicy) => setEditDraft((current) => ({ ...current, catchUpPolicy }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {catchUpPolicies.map((value) => (
-                    <SelectItem key={value} value={value}>{value.replaceAll("_", " ")}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[editDraft.catchUpPolicy]}</p>
+        </button>
+        {advancedOpen && (
+          <div className="pt-3">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                <Select
+                  selectedKey={editDraft.concurrencyPolicy}
+                  onSelectionChange={(key) => setEditDraft((current) => ({ ...current, concurrencyPolicy: key as string }))}
+                >
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {concurrencyPolicies.map((value) => (
+                        <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+                <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[editDraft.concurrencyPolicy]}</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                <Select
+                  selectedKey={editDraft.catchUpPolicy}
+                  onSelectionChange={(key) => setEditDraft((current) => ({ ...current, catchUpPolicy: key as string }))}
+                >
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {catchUpPolicies.map((value) => (
+                        <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
+                </Select>
+                <p className="text-xs text-muted-foreground">{catchUpPolicyDescriptions[editDraft.catchUpPolicy]}</p>
+              </div>
             </div>
           </div>
-        </CollapsibleContent>
-      </Collapsible>
+        )}
+      </div>
 
       {/* Save bar */}
       <div className="flex items-center justify-between">
@@ -924,8 +918,8 @@ export function RoutineDetail() {
           <span />
         )}
         <Button
-          onClick={() => saveRoutine.mutate()}
-          disabled={saveRoutine.isPending || !editDraft.title.trim() || !editDraft.projectId || !editDraft.assigneeAgentId}
+          onPress={() => saveRoutine.mutate()}
+          isDisabled={saveRoutine.isPending || !editDraft.title.trim() || !editDraft.projectId || !editDraft.assigneeAgentId}
         >
           <Save className="mr-2 h-4 w-4" />
           Save routine
@@ -935,46 +929,44 @@ export function RoutineDetail() {
       <Separator />
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="triggers" className="gap-1.5">
-            <Clock3 className="h-3.5 w-3.5" />
-            Triggers
-          </TabsTrigger>
-          <TabsTrigger value="runs" className="gap-1.5">
-            <Play className="h-3.5 w-3.5" />
-            Runs
-            {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
-          </TabsTrigger>
-<TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-        </TabsList>
+      <div className="space-y-3">
+        <PageTabBar
+          align="start"
+          items={[
+            { value: "triggers", label: "Triggers" },
+            { value: "runs", label: "Runs" },
+            { value: "activity", label: "Activity" },
+          ]}
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as RoutineTab)}
+        />
 
-        <TabsContent value="triggers" className="space-y-4">
+        {activeTab === "triggers" && <div className="space-y-4">
           {/* Add trigger form */}
           <div className="rounded-lg border border-border p-4 space-y-3">
             <p className="text-sm font-medium">Add trigger</p>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
-                <Label className="text-xs">Kind</Label>
-                <Select value={newTrigger.kind} onValueChange={(kind) => setNewTrigger((current) => ({ ...current, kind }))}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {triggerKinds.map((kind) => (
-                      <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
-                        {kind}{kind === "webhook" ? " — COMING SOON" : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
+                <label className="text-xs font-medium">Kind</label>
+                <Select
+                  selectedKey={newTrigger.kind}
+                  onSelectionChange={(key) => setNewTrigger((current) => ({ ...current, kind: key as string }))}
+                >
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover>
+                    <ListBox>
+                      {triggerKinds.map((kind) => (
+                        <ListBox.Item key={kind} id={kind} isDisabled={kind === "webhook"}>
+                          {kind}{kind === "webhook" ? " — COMING SOON" : ""}
+                        </ListBox.Item>
+                      ))}
+                    </ListBox>
+                  </Select.Popover>
                 </Select>
               </div>
               {newTrigger.kind === "schedule" && (
                 <div className="md:col-span-2 space-y-1.5">
-                  <Label className="text-xs">Schedule</Label>
+                  <label className="text-xs font-medium">Schedule</label>
                   <ScheduleEditor
                     value={newTrigger.cronExpression}
                     onChange={(cronExpression) => setNewTrigger((current) => ({ ...current, cronExpression }))}
@@ -984,28 +976,31 @@ export function RoutineDetail() {
               {newTrigger.kind === "webhook" && (
                 <>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Signing mode</Label>
-                    <Select value={newTrigger.signingMode} onValueChange={(signingMode) => setNewTrigger((current) => ({ ...current, signingMode }))}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {signingModes.map((mode) => (
-                          <SelectItem key={mode} value={mode}>{mode}</SelectItem>
-                        ))}
-                      </SelectContent>
+                    <label className="text-xs font-medium">Signing mode</label>
+                    <Select
+                      selectedKey={newTrigger.signingMode}
+                      onSelectionChange={(key) => setNewTrigger((current) => ({ ...current, signingMode: key as string }))}
+                    >
+                      <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                      <Select.Popover>
+                        <ListBox>
+                          {signingModes.map((mode) => (
+                            <ListBox.Item key={mode} id={mode}>{mode}</ListBox.Item>
+                          ))}
+                        </ListBox>
+                      </Select.Popover>
                     </Select>
                     <p className="text-xs text-muted-foreground">{signingModeDescriptions[newTrigger.signingMode]}</p>
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">Replay window (seconds)</Label>
+                    <label className="text-xs font-medium">Replay window (seconds)</label>
                     <Input value={newTrigger.replayWindowSec} onChange={(event) => setNewTrigger((current) => ({ ...current, replayWindowSec: event.target.value }))} />
                   </div>
                 </>
               )}
             </div>
             <div className="flex items-center justify-end">
-              <Button size="sm" onClick={() => createTrigger.mutate()} disabled={createTrigger.isPending}>
+              <Button size="sm" onPress={() => createTrigger.mutate()} isDisabled={createTrigger.isPending}>
                 {createTrigger.isPending ? "Adding..." : "Add trigger"}
               </Button>
             </div>
@@ -1027,9 +1022,9 @@ export function RoutineDetail() {
               ))}
             </div>
           )}
-        </TabsContent>
+        </div>}
 
-        <TabsContent value="runs" className="space-y-4">
+        {activeTab === "runs" && <div className="space-y-4">
           {hasLiveRun && activeIssueId && routine && (
             <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
           )}
@@ -1040,8 +1035,8 @@ export function RoutineDetail() {
               {(routineRuns ?? []).map((run) => (
                 <div key={run.id} className="flex items-center justify-between px-3 py-2 text-sm">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Badge variant="outline" className="shrink-0">{run.source}</Badge>
-                    <Badge variant={run.status === "failed" ? "destructive" : "secondary"} className="shrink-0">
+                    <Badge className="shrink-0">{run.source}</Badge>
+                    <Badge className="shrink-0">
                       {run.status.replaceAll("_", " ")}
                     </Badge>
                     {run.trigger && (
@@ -1058,9 +1053,9 @@ export function RoutineDetail() {
               ))}
             </div>
           )}
-        </TabsContent>
+        </div>}
 
-        <TabsContent value="activity">
+        {activeTab === "activity" && <div>
           {(activity ?? []).length === 0 ? (
             <p className="text-xs text-muted-foreground">No activity yet.</p>
           ) : (
@@ -1086,8 +1081,8 @@ export function RoutineDetail() {
               ))}
             </div>
           )}
-        </TabsContent>
-      </Tabs>
+        </div>}
+      </div>
 
       <RoutineRunVariablesDialog
         open={runVariablesOpen}

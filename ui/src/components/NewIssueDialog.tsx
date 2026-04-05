@@ -19,16 +19,9 @@ import {
   currentUserAssigneeOption,
   parseAssigneeValue,
 } from "../lib/assignees";
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Modal } from "@heroui/react";
+import { Button } from "@heroui/react";
+import { Popover } from "@heroui/react";
 import {
   Maximize2,
   Minimize2,
@@ -859,49 +852,28 @@ export function NewIssueDialog() {
   );
 
   return (
-    <Dialog
-      open={newIssueOpen}
-      onOpenChange={(open) => {
+    <Modal.Backdrop
+      isOpen={newIssueOpen}
+      onOpenChange={(open: boolean) => {
         if (!open && !createIssue.isPending) closeNewIssue();
       }}
     >
-      <DialogContent
-        showCloseButton={false}
-        aria-describedby={undefined}
+      <Modal.Container size={expanded ? "lg" : "md"}>
+        <Modal.Dialog>
+      <div
         className={cn(
           "p-0 gap-0 flex flex-col max-h-[calc(100dvh-2rem)]",
           expanded
-            ? "sm:max-w-2xl h-[calc(100dvh-2rem)]"
-            : "sm:max-w-lg"
+            ? "h-[calc(100dvh-2rem)]"
+            : ""
         )}
         onKeyDown={handleKeyDown}
-        onEscapeKeyDown={(event) => {
-          if (createIssue.isPending) {
-            event.preventDefault();
-          }
-        }}
-        onPointerDownOutside={(event) => {
-          if (createIssue.isPending) {
-            event.preventDefault();
-            return;
-          }
-          // Radix Dialog's modal DismissableLayer calls preventDefault() on
-          // pointerdown events that originate outside the Dialog DOM tree.
-          // Popover portals render at the body level (outside the Dialog), so
-          // touch events on popover content get their default prevented — which
-          // kills scroll gesture recognition on mobile.  Telling Radix "this
-          // event is handled" skips that preventDefault, restoring touch scroll.
-          const target = event.detail.originalEvent.target as HTMLElement | null;
-          if (target?.closest("[data-radix-popper-content-wrapper]")) {
-            event.preventDefault();
-          }
-        }}
       >
         {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Popover open={companyOpen} onOpenChange={setCompanyOpen}>
-              <PopoverTrigger asChild>
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/40 shrink-0">
+          <div className="flex items-center gap-2 text-sm text-foreground/40">
+            <Popover isOpen={companyOpen} onOpenChange={setCompanyOpen}>
+              <Popover.Trigger>
                 <button
                   className={cn(
                     "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
@@ -918,60 +890,66 @@ export function NewIssueDialog() {
                 >
                   {(dialogCompany?.name ?? "").slice(0, 3).toUpperCase()}
                 </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-48 p-1" align="start">
-                {companies.filter((c) => c.status !== "archived").map((c) => (
-                  <button
-                    key={c.id}
-                    className={cn(
-                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                      c.id === effectiveCompanyId && "bg-accent",
-                    )}
-                    onClick={() => {
-                      handleCompanyChange(c.id);
-                      setCompanyOpen(false);
-                    }}
-                  >
-                    <span
+              </Popover.Trigger>
+              <Popover.Content className="w-52 p-0">
+                <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5">
+                  {companies.filter((c) => c.status !== "archived").map((c) => (
+                    <button
+                      key={c.id}
                       className={cn(
-                        "px-1 py-0.5 rounded text-[10px] font-semibold leading-none",
-                        !c.brandColor && "bg-muted",
+                        "flex items-center gap-2.5 w-full px-2.5 py-2 text-xs rounded-lg transition-colors",
+                        c.id === effectiveCompanyId
+                          ? "bg-accent/[0.08] text-accent font-medium"
+                          : "text-foreground hover:bg-default/40",
                       )}
-                      style={
-                        c.brandColor
-                          ? {
-                              backgroundColor: c.brandColor,
-                              color: pickTextColorForSolidBg(c.brandColor),
-                            }
-                          : undefined
-                      }
+                      onClick={() => {
+                        handleCompanyChange(c.id);
+                        setCompanyOpen(false);
+                      }}
                     >
-                      {c.name.slice(0, 3).toUpperCase()}
-                    </span>
-                    <span className="truncate">{c.name}</span>
-                  </button>
-                ))}
-              </PopoverContent>
+                      <span
+                        className={cn(
+                          "px-1.5 py-0.5 rounded-md text-[10px] font-semibold leading-none",
+                          !c.brandColor && "bg-default",
+                        )}
+                        style={
+                          c.brandColor
+                            ? {
+                                backgroundColor: c.brandColor,
+                                color: pickTextColorForSolidBg(c.brandColor),
+                              }
+                            : undefined
+                        }
+                      >
+                        {c.name.slice(0, 3).toUpperCase()}
+                      </span>
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                  ))}
+                </Popover.Dialog>
+              </Popover.Content>
             </Popover>
-            <span className="text-muted-foreground/60">&rsaquo;</span>
+            <span className="text-foreground/60">&rsaquo;</span>
             <span>New issue</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => setExpanded(!expanded)}
-              disabled={createIssue.isPending}
+              isIconOnly
+              size="sm"
+              className="text-foreground/40"
+              onPress={() => setExpanded(!expanded)}
+              isDisabled={createIssue.isPending}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
             </Button>
             <Button
               variant="ghost"
-              size="icon-xs"
-              className="text-muted-foreground"
-              onClick={() => closeNewIssue()}
-              disabled={createIssue.isPending}
+              isIconOnly
+              size="sm"
+              className="text-foreground/40"
+              onPress={() => closeNewIssue()}
+              isDisabled={createIssue.isPending}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -981,7 +959,7 @@ export function NewIssueDialog() {
         {/* Title */}
         <div className="px-4 pt-4 pb-2 shrink-0">
           <textarea
-            className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
+            className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-foreground/50"
             placeholder="Issue title"
             rows={1}
             value={title}
@@ -1021,7 +999,7 @@ export function NewIssueDialog() {
 
         <div className="px-4 pb-2 shrink-0">
           <div className="overflow-x-auto overscroll-x-contain">
-            <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+            <div className="inline-flex items-center gap-2 text-sm text-foreground/40 flex-wrap sm:flex-nowrap sm:min-w-max">
               <span>For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
@@ -1050,14 +1028,14 @@ export function NewIssueDialog() {
                   option ? (
                     currentAssignee ? (
                       <>
-                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
                         <span className="truncate">{option.label}</span>
                       </>
                     ) : (
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-foreground/40">Assignee</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1067,7 +1045,7 @@ export function NewIssueDialog() {
                     : null;
                   return (
                     <>
-                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                      {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-foreground/40" /> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );
@@ -1097,7 +1075,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-foreground/40">Project</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1122,11 +1100,11 @@ export function NewIssueDialog() {
           <div className="px-4 py-3 shrink-0 space-y-2">
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-[11px] text-foreground/40">
                 Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
               <select
-                className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                className="w-full rounded border border-default-200/40 bg-transparent px-2 py-1.5 text-xs outline-none"
                 value={executionWorkspaceMode}
                 onChange={(e) => {
                   setExecutionWorkspaceMode(e.target.value);
@@ -1143,7 +1121,7 @@ export function NewIssueDialog() {
               </select>
               {executionWorkspaceMode === "reuse_existing" && (
                 <select
-                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                  className="w-full rounded border border-default-200/40 bg-transparent px-2 py-1.5 text-xs outline-none"
                   value={selectedExecutionWorkspaceId}
                   onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
                 >
@@ -1156,7 +1134,7 @@ export function NewIssueDialog() {
                 </select>
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-[11px] text-foreground/40">
                   Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
                 </div>
               )}
@@ -1167,16 +1145,16 @@ export function NewIssueDialog() {
         {supportsAssigneeOverrides && (
           <div className="px-4 pb-2 shrink-0">
             <button
-              className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground/40 hover:text-foreground transition-colors"
               onClick={() => setAssigneeOptionsOpen((open) => !open)}
             >
               {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
               {assigneeOptionsTitle}
             </button>
             {assigneeOptionsOpen && (
-              <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+              <div className="mt-2 rounded-md border border-default-200/40 p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Model</div>
+                  <div className="text-xs text-foreground/40">Model</div>
                   <InlineEntitySelector
                     value={assigneeModelOverride}
                     options={modelOverrideOptions}
@@ -1189,14 +1167,14 @@ export function NewIssueDialog() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <div className="text-xs text-muted-foreground">Thinking effort</div>
+                  <div className="text-xs text-foreground/40">Thinking effort</div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {thinkingEffortOptions.map((option) => (
                       <button
                         key={option.value || "default"}
                         className={cn(
-                          "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                          assigneeThinkingEffort === option.value && "bg-accent"
+                          "px-2 py-1 rounded-md text-xs border border-default-200/40 hover:bg-accent/[0.05] transition-colors",
+                          assigneeThinkingEffort === option.value && "bg-accent/10 text-accent font-medium"
                         )}
                         onClick={() => setAssigneeThinkingEffort(option.value)}
                       >
@@ -1206,8 +1184,8 @@ export function NewIssueDialog() {
                   </div>
                 </div>
                 {assigneeAdapterType === "claude_local" && (
-                  <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+                  <div className="flex items-center justify-between rounded-md border border-default-200/40 px-2 py-1.5">
+                    <div className="text-xs text-foreground/40">Enable Chrome (--chrome)</div>
                     <button
                       data-slot="toggle"
                       className={cn(
@@ -1232,7 +1210,7 @@ export function NewIssueDialog() {
 
         {/* Description */}
         <div
-          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-border/60 pt-3", expanded ? "flex-1" : "")}
+          className={cn("px-4 pb-2 overflow-y-auto min-h-0 border-t border-default-200/60 pt-3", expanded ? "flex-1" : "")}
           onDragEnter={handleFileDragEnter}
           onDragOver={handleFileDragOver}
           onDragLeave={handleFileDragLeave}
@@ -1251,7 +1229,7 @@ export function NewIssueDialog() {
               placeholder="Add description..."
               bordered={false}
               mentions={mentionOptions}
-              contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+              contentClassName={cn("text-sm text-foreground/40 pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
               imageUploadHandler={async (file) => {
                 const asset = await uploadDescriptionImage.mutateAsync(file);
                 return asset.contentPath;
@@ -1259,21 +1237,21 @@ export function NewIssueDialog() {
             />
           </div>
           {stagedFiles.length > 0 ? (
-            <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+            <div className="mt-4 space-y-3 rounded-lg border border-default-200/70 p-3">
               {stagedDocuments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                  <div className="text-xs font-medium text-foreground/40">Documents</div>
                   <div className="space-y-2">
                     {stagedDocuments.map((file) => (
-                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-default-200/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                            <span className="rounded-full border border-default-200/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-foreground/40">
                               {file.documentKey}
                             </span>
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
-                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-foreground/40">
                             <FileText className="h-3.5 w-3.5" />
                             <span>{file.title || file.file.name}</span>
                             <span>•</span>
@@ -1282,11 +1260,12 @@ export function NewIssueDialog() {
                         </div>
                         <Button
                           variant="ghost"
-                          size="icon-xs"
-                          className="shrink-0 text-muted-foreground"
-                          onClick={() => removeStagedFile(file.id)}
-                          disabled={createIssue.isPending}
-                          title="Remove document"
+                          isIconOnly
+                          size="sm"
+                          className="shrink-0 text-foreground/40"
+                          onPress={() => removeStagedFile(file.id)}
+                          isDisabled={createIssue.isPending}
+                          aria-label="Remove document"
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1298,26 +1277,27 @@ export function NewIssueDialog() {
 
               {stagedAttachments.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                  <div className="text-xs font-medium text-foreground/40">Attachments</div>
                   <div className="space-y-2">
                     {stagedAttachments.map((file) => (
-                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                      <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-default-200/70 px-3 py-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <Paperclip className="h-3.5 w-3.5 shrink-0 text-foreground/40" />
                             <span className="truncate text-sm">{file.file.name}</span>
                           </div>
-                          <div className="mt-1 text-[11px] text-muted-foreground">
+                          <div className="mt-1 text-[11px] text-foreground/40">
                             {file.file.type || "application/octet-stream"} • {formatFileSize(file.file)}
                           </div>
                         </div>
                         <Button
                           variant="ghost"
-                          size="icon-xs"
-                          className="shrink-0 text-muted-foreground"
-                          onClick={() => removeStagedFile(file.id)}
-                          disabled={createIssue.isPending}
-                          title="Remove attachment"
+                          isIconOnly
+                          size="sm"
+                          className="shrink-0 text-foreground/40"
+                          onPress={() => removeStagedFile(file.id)}
+                          isDisabled={createIssue.isPending}
+                          aria-label="Remove attachment"
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
@@ -1331,36 +1311,40 @@ export function NewIssueDialog() {
         </div>
 
         {/* Property chips bar */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
+        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-default-200/40 flex-wrap shrink-0">
           {/* Status chip */}
-          <Popover open={statusOpen} onOpenChange={setStatusOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+          <Popover isOpen={statusOpen} onOpenChange={setStatusOpen}>
+            <Popover.Trigger>
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors">
                 <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
                 {currentStatus.label}
               </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {statuses.map((s) => (
-                <button
-                  key={s.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    s.value === status && "bg-accent"
-                  )}
-                  onClick={() => { setStatus(s.value); setStatusOpen(false); }}
-                >
-                  <CircleDot className={cn("h-3 w-3", s.color)} />
-                  {s.label}
-                </button>
-              ))}
-            </PopoverContent>
+            </Popover.Trigger>
+            <Popover.Content className="w-40 p-0">
+              <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5">
+                {statuses.map((s) => (
+                  <button
+                    key={s.value}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2.5 py-2 text-xs rounded-lg transition-colors",
+                      s.value === status
+                        ? "bg-accent/[0.08] text-accent font-medium"
+                        : "text-foreground hover:bg-default/40"
+                    )}
+                    onClick={() => { setStatus(s.value); setStatusOpen(false); }}
+                  >
+                    <CircleDot className={cn("h-3 w-3", s.color)} />
+                    {s.label}
+                  </button>
+                ))}
+              </Popover.Dialog>
+            </Popover.Content>
           </Popover>
 
           {/* Priority chip */}
-          <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+          <Popover isOpen={priorityOpen} onOpenChange={setPriorityOpen}>
+            <Popover.Trigger>
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors">
                 {currentPriority ? (
                   <>
                     <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
@@ -1368,31 +1352,35 @@ export function NewIssueDialog() {
                   </>
                 ) : (
                   <>
-                    <Minus className="h-3 w-3 text-muted-foreground" />
+                    <Minus className="h-3 w-3 text-foreground/40" />
                     Priority
                   </>
                 )}
               </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
-              {priorities.map((p) => (
-                <button
-                  key={p.value}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    p.value === priority && "bg-accent"
-                  )}
-                  onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
-                >
-                  <p.icon className={cn("h-3 w-3", p.color)} />
-                  {p.label}
-                </button>
-              ))}
-            </PopoverContent>
+            </Popover.Trigger>
+            <Popover.Content className="w-40 p-0">
+              <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5">
+                {priorities.map((p) => (
+                  <button
+                    key={p.value}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2.5 py-2 text-xs rounded-lg transition-colors",
+                      p.value === priority
+                        ? "bg-accent/[0.08] text-accent font-medium"
+                        : "text-foreground hover:bg-default/40"
+                    )}
+                    onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
+                  >
+                    <p.icon className={cn("h-3 w-3", p.color)} />
+                    {p.label}
+                  </button>
+                ))}
+              </Popover.Dialog>
+            </Popover.Content>
           </Popover>
 
           {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+          <button className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors text-foreground/40">
             <Tag className="h-3 w-3" />
             Labels
           </button>
@@ -1406,7 +1394,7 @@ export function NewIssueDialog() {
             multiple
           />
           <button
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors text-foreground/40"
             onClick={() => stageFileInputRef.current?.click()}
             disabled={createIssue.isPending}
           >
@@ -1415,52 +1403,54 @@ export function NewIssueDialog() {
           </button>
 
           {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+          <Popover isOpen={moreOpen} onOpenChange={setMoreOpen}>
+            <Popover.Trigger>
+              <button className="inline-flex items-center justify-center rounded-md border border-default-200/40 p-1 text-xs hover:bg-accent/[0.05] transition-colors text-foreground/40">
                 <MoreHorizontal className="h-3 w-3" />
               </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
-            </PopoverContent>
+            </Popover.Trigger>
+            <Popover.Content className="w-44 p-0">
+              <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5">
+                <button className="flex items-center gap-2 w-full px-2.5 py-2 text-xs rounded-lg text-foreground hover:bg-default/40 transition-colors">
+                  <Calendar className="h-3 w-3 text-foreground/40" />
+                  Start date
+                </button>
+                <button className="flex items-center gap-2 w-full px-2.5 py-2 text-xs rounded-lg text-foreground hover:bg-default/40 transition-colors">
+                  <Calendar className="h-3 w-3 text-foreground/40" />
+                  Due date
+                </button>
+              </Popover.Dialog>
+            </Popover.Content>
           </Popover>
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
+        <div className="flex items-center justify-between px-4 py-2.5 border-t border-default-200/40 shrink-0">
           <Button
             variant="ghost"
             size="sm"
-            className="text-muted-foreground"
-            onClick={discardDraft}
-            disabled={createIssue.isPending || !canDiscardDraft}
+            className="text-foreground/40"
+            onPress={discardDraft}
+            isDisabled={createIssue.isPending || !canDiscardDraft}
           >
             Discard Draft
           </Button>
           <div className="flex items-center gap-3">
             <div className="min-h-5 text-right">
               {createIssue.isPending ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground/40">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Creating issue...
                 </span>
               ) : createIssue.isError ? (
-                <span className="text-xs text-destructive">{createIssueErrorMessage}</span>
+                <span className="text-xs text-danger">{createIssueErrorMessage}</span>
               ) : null}
             </div>
             <Button
               size="sm"
               className="min-w-[8.5rem] disabled:opacity-100"
-              disabled={!title.trim() || createIssue.isPending}
-              onClick={handleSubmit}
+              isDisabled={!title.trim() || createIssue.isPending}
+              onPress={handleSubmit}
               aria-busy={createIssue.isPending}
             >
               <span className="inline-flex items-center justify-center gap-1.5">
@@ -1470,7 +1460,9 @@ export function NewIssueDialog() {
             </Button>
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

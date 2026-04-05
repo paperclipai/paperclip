@@ -1,5 +1,4 @@
 import { Database, Gauge, ReceiptText } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 
 const SURFACES = [
   {
@@ -27,18 +26,18 @@ const SURFACES = [
 
 export function AccountingModelCard() {
   return (
-    <Card className="relative overflow-hidden border-border/70">
+    <div className="relative overflow-hidden border border-border/70 bg-card rounded-lg">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(244,114,182,0.08),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(56,189,248,0.1),transparent_32%)]" />
-      <CardHeader className="relative px-5 pt-5 pb-2">
-        <CardTitle className="text-sm font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+      <div className="relative px-5 pt-5 pb-2">
+        <p className="text-sm font-semibold uppercase tracking-[0.22em] text-muted-foreground">
           Accounting model
-        </CardTitle>
-        <CardDescription className="max-w-2xl text-sm leading-6">
+        </p>
+        <p className="max-w-2xl text-sm leading-6 text-muted-foreground mt-1">
           Paperclip now separates request-level inference usage from account-level finance events.
           That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="relative grid gap-3 px-5 pb-5 md:grid-cols-3">
+        </p>
+      </div>
+      <div className="relative grid gap-3 px-5 pb-5 md:grid-cols-3">
         {SURFACES.map((surface) => {
           const Icon = surface.icon;
           return (
@@ -63,7 +62,7 @@ export function AccountingModelCard() {
             </div>
           );
         })}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

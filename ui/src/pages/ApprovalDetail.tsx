@@ -10,8 +10,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@heroui/react";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -191,7 +190,7 @@ export function ApprovalDetail() {
               size="sm"
               variant="outline"
               className="border-green-400 dark:border-green-600/50 text-green-800 dark:text-green-100 hover:bg-green-100 dark:hover:bg-green-900/30"
-              onClick={() => navigate(resolvedCta.to)}
+              onPress={() => navigate(resolvedCta.to)}
             >
               {resolvedCta.label}
             </Button>
@@ -266,16 +265,16 @@ export function ApprovalDetail() {
               <Button
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
-                onClick={() => approveMutation.mutate()}
-                disabled={approveMutation.isPending}
+                onPress={() => approveMutation.mutate()}
+                isDisabled={approveMutation.isPending}
               >
                 Approve
               </Button>
               <Button
-                variant="destructive"
+                variant="danger"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
-                disabled={rejectMutation.isPending}
+                onPress={() => rejectMutation.mutate()}
+                isDisabled={rejectMutation.isPending}
               >
                 Reject
               </Button>
@@ -290,8 +289,8 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => revisionMutation.mutate()}
-              disabled={revisionMutation.isPending}
+              onPress={() => revisionMutation.mutate()}
+              isDisabled={revisionMutation.isPending}
             >
               Request revision
             </Button>
@@ -300,8 +299,8 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => resubmitMutation.mutate()}
-              disabled={resubmitMutation.isPending}
+              onPress={() => resubmitMutation.mutate()}
+              isDisabled={resubmitMutation.isPending}
             >
               Mark resubmitted
             </Button>
@@ -311,11 +310,11 @@ export function ApprovalDetail() {
               size="sm"
               variant="outline"
               className="text-destructive border-destructive/40"
-              onClick={() => {
+              onPress={() => {
                 if (!window.confirm("Delete this disapproved agent? This cannot be undone.")) return;
                 deleteAgentMutation.mutate(linkedAgentId);
               }}
-              disabled={deleteAgentMutation.isPending}
+              isDisabled={deleteAgentMutation.isPending}
             >
               Delete disapproved agent
             </Button>
@@ -347,7 +346,8 @@ export function ApprovalDetail() {
             </div>
           ))}
         </div>
-        <Textarea
+        <textarea
+          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none"
           value={commentBody}
           onChange={(e) => setCommentBody(e.target.value)}
           placeholder="Add a comment..."
@@ -356,8 +356,8 @@ export function ApprovalDetail() {
         <div className="flex justify-end">
           <Button
             size="sm"
-            onClick={() => addCommentMutation.mutate()}
-            disabled={!commentBody.trim() || addCommentMutation.isPending}
+            onPress={() => addCommentMutation.mutate()}
+            isDisabled={!commentBody.trim() || addCommentMutation.isPending}
           >
             {addCommentMutation.isPending ? "Posting…" : "Post comment"}
           </Button>

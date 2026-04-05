@@ -2,8 +2,7 @@ import { useState } from "react";
 import { ArrowUp, ArrowDown, Minus, AlertTriangle } from "lucide-react";
 import { cn } from "../lib/utils";
 import { priorityColor, priorityColorDefault } from "../lib/status-colors";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
+import { Popover, Button } from "@heroui/react";
 
 const priorityConfig: Record<string, { icon: typeof ArrowUp; color: string; label: string }> = {
   critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: "Critical" },
@@ -41,17 +40,21 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
 
   if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{icon}<span className="text-sm">{config.label}</span></span> : icon;
 
-  const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+  const triggerContent = showLabel ? (
+    <span className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {icon}
       <span className="text-sm">{config.label}</span>
-    </button>
+    </span>
   ) : icon;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-36 p-1" align="start">
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        <button type="button" className="inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+          {triggerContent}
+        </button>
+      </Popover.Trigger>
+      <Popover.Content placement="bottom start" className="w-36 p-1">
         {allPriorities.map((p) => {
           const c = priorityConfig[p]!;
           const PIcon = c.icon;
@@ -61,7 +64,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
               variant="ghost"
               size="sm"
               className={cn("w-full justify-start gap-2 text-xs", p === priority && "bg-accent")}
-              onClick={() => {
+              onPress={() => {
                 onChange(p);
                 setOpen(false);
               }}
@@ -71,7 +74,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
             </Button>
           );
         })}
-      </PopoverContent>
+      </Popover.Content>
     </Popover>
   );
 }

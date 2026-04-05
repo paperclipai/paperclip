@@ -1,0 +1,102 @@
+/* Paperclip Light Theme — Soft & Rounded, Apple/Notion aesthetic */
+@layer base {
+  [data-theme="paperclip"] {
+    color-scheme: light;
+
+    /* Primitive Colors */
+    --white: oklch(100% 0 0);
+    --black: oklch(0% 0 0);
+    --snow: oklch(0.9911 0 0);
+    --eclipse: oklch(0.2103 0.0059 285.89);
+
+    /* Spacing & Layout */
+    --spacing: 0.25rem;
+    --border-width: 1px;
+    --field-border-width: 1px;
+    --disabled-opacity: 0.5;
+    --ring-offset-width: 2px;
+    --cursor-interactive: pointer;
+    --cursor-disabled: not-allowed;
+
+    /* Radius — Soft & Rounded (16px base) */
+    --radius: 1rem;
+    --field-radius: calc(var(--radius) * 1.5);
+
+    /* Base Colors */
+    --background: oklch(0.985 0.002 260);
+    --foreground: var(--eclipse);
+
+    /* Surface */
+    --surface: var(--white);
+    --surface-foreground: var(--foreground);
+
+    /* Overlay */
+    --overlay: var(--white);
+    --overlay-foreground: var(--foreground);
+
+    --muted: oklch(0.5517 0.0138 285.94);
+    --scrollbar: oklch(87.1% 0.006 286.286);
+
+    --default: oklch(0.955 0.003 260);
+    --default-foreground: var(--eclipse);
+
+    /* Accent — Indigo */
+    --accent: oklch(0.585 0.233 264);
+    --accent-foreground: var(--snow);
+
+    /* Form Field Defaults */
+    --field-background: var(--white);
+    --field-foreground: var(--eclipse);
+    --field-placeholder: var(--muted);
+    --field-border: oklch(0.90 0.006 286);
+
+    /* Status Colors */
+    --success: oklch(0.7329 0.1935 150.81);
+    --success-foreground: var(--eclipse);
+
+    --warning: oklch(0.7819 0.1585 72.33);
+    --warning-foreground: var(--eclipse);
+
+    --danger: oklch(0.6532 0.2328 25.74);
+    --danger-foreground: var(--snow);
+
+    /* Component Colors */
+    --segment: var(--white);
+    --segment-foreground: var(--foreground);
+
+    /* Surface Secondary & Tertiary */
+    --surface-secondary: oklch(0.975 0.002 260);
+    --surface-secondary-foreground: var(--foreground);
+    --surface-tertiary: oklch(0.96 0.003 260);
+    --surface-tertiary-foreground: var(--foreground);
+
+    /* Misc */
+    --border: oklch(0.92 0.006 286);
+    --separator: oklch(0.94 0.004 286);
+    --focus: var(--accent);
+    --link: var(--accent);
+    --backdrop: oklch(0 0 0 / 40%);
+
+    /* Shadows — Soft & Premium */
+    --surface-shadow:
+      0 1px 2px 0 rgba(0, 0, 0, 0.03),
+      0 2px 8px 0 rgba(0, 0, 0, 0.04),
+      0 0 1px 0 rgba(0, 0, 0, 0.05);
+    --overlay-shadow:
+      0 4px 16px 0 rgba(24, 24, 27, 0.06),
+      0 12px 32px 0 rgba(24, 24, 27, 0.08);
+    --field-shadow:
+      0 1px 2px 0 rgba(0, 0, 0, 0.03),
+      0 0 1px 0 rgba(0, 0, 0, 0.04);
+
+    /* Skeleton Animation */
+    --skeleton-animation: shimmer;
+
+    /* Chart Colors */
+    --chart-1: oklch(0.585 0.233 264);
+    --chart-2: oklch(0.696 0.17 162.48);
+    --chart-3: oklch(0.769 0.188 70.08);
+    --chart-4: oklch(0.627 0.265 303.9);
+    --chart-5: oklch(0.645 0.246 16.439);
+  }
+}

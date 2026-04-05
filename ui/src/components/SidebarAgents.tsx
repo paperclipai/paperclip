@@ -13,11 +13,6 @@ import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import type { Agent } from "@paperclipai/shared";
 export function SidebarAgents() {
   const [open, setOpen] = useState(true);
@@ -70,10 +65,14 @@ export function SidebarAgents() {
 
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <div>
       <div className="group">
         <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+          <button
+            type="button"
+            className="flex items-center gap-1 flex-1 min-w-0"
+            onClick={() => setOpen((v) => !v)}
+          >
             <ChevronRight
               className={cn(
                 "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
@@ -83,7 +82,7 @@ export function SidebarAgents() {
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
               Agents
             </span>
-          </CollapsibleTrigger>
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -97,7 +96,7 @@ export function SidebarAgents() {
         </div>
       </div>
 
-      <CollapsibleContent>
+      {open && (
         <div className="flex flex-col gap-0.5 mt-0.5">
           {orderedAgents.map((agent: Agent) => {
             const runCount = liveCountByAgent.get(agent.id) ?? 0;
@@ -139,7 +138,7 @@ export function SidebarAgents() {
             );
           })}
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      )}
+    </div>
   );
 }

@@ -17,12 +17,8 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
+import { Popover } from "@heroui/react";
+import { Button } from "@heroui/react";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
@@ -471,8 +467,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <span className="text-xs text-muted-foreground">Unsaved changes</span>
             <Button
               size="sm"
-              onClick={handleSave}
-              disabled={!isCreate && props.isSaving}
+              onPress={handleSave}
+              isDisabled={!isCreate && props.isSaving}
             >
               {!isCreate && props.isSaving ? "Saving..." : "Save"}
             </Button>
@@ -571,8 +567,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               variant="outline"
               size="sm"
               className="h-7 px-2.5 text-xs"
-              onClick={() => testEnvironment.mutate()}
-              disabled={testEnvironment.isPending || !selectedCompanyId}
+              onPress={() => testEnvironment.mutate()}
+              isDisabled={testEnvironment.isPending || !selectedCompanyId}
             >
               {testEnvironment.isPending ? "Testing..." : "Test environment"}
             </Button>
@@ -1044,7 +1040,7 @@ function AdapterTypeDropdown({
 }) {
   return (
     <Popover>
-      <PopoverTrigger asChild>
+      <Popover.Trigger>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
@@ -1052,8 +1048,8 @@ function AdapterTypeDropdown({
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+      </Popover.Trigger>
+      <Popover.Content className="w-full min-w-[180px] p-1">
         {ADAPTER_DISPLAY_LIST.map((item) => (
           <button
             key={item.value}
@@ -1078,7 +1074,7 @@ function AdapterTypeDropdown({
             )}
           </button>
         ))}
-      </PopoverContent>
+      </Popover.Content>
     </Popover>
   );
 }
@@ -1436,13 +1432,13 @@ function ModelDropdown({
   return (
     <Field label="Model" hint={help.model}>
       <Popover
-        open={open}
+        isOpen={open}
         onOpenChange={(nextOpen) => {
           onOpenChange(nextOpen);
           if (!nextOpen) setModelSearch("");
         }}
       >
-        <PopoverTrigger asChild>
+        <Popover.Trigger>
           <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
@@ -1451,8 +1447,8 @@ function ModelDropdown({
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        </Popover.Trigger>
+        <Popover.Content className="w-full min-w-[180px] p-1">
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
@@ -1594,7 +1590,7 @@ function ModelDropdown({
               </div>
             )}
           </div>
-        </PopoverContent>
+        </Popover.Content>
       </Popover>
     </Field>
   );
@@ -1617,14 +1613,14 @@ function ThinkingEffortDropdown({
 
   return (
     <Field label="Thinking effort" hint={help.thinkingEffort}>
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
+      <Popover isOpen={open} onOpenChange={onOpenChange}>
+        <Popover.Trigger>
           <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
             <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        </Popover.Trigger>
+        <Popover.Content className="w-full min-w-[180px] p-1">
           {options.map((option) => (
             <button
               key={option.id || "auto"}
@@ -1641,7 +1637,7 @@ function ThinkingEffortDropdown({
               {option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : null}
             </button>
           ))}
-        </PopoverContent>
+        </Popover.Content>
       </Popover>
     </Field>
   );

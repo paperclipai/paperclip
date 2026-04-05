@@ -1,10 +1,6 @@
 import { useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover } from "@heroui/react";
 import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
@@ -37,12 +33,12 @@ export function ReportsToPicker({
   const unknownManager = Boolean(value && !current);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
+    <Popover isOpen={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
         <button
           type="button"
           className={cn(
-            "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+            "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors",
             terminatedManager && "border-amber-600/45 bg-amber-500/5",
             disabled && "opacity-60 cursor-not-allowed",
           )}
@@ -50,12 +46,12 @@ export function ReportsToPicker({
         >
           {unknownManager ? (
             <>
-              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 truncate text-muted-foreground">Unknown manager (stale ID)</span>
+              <User className="h-3 w-3 shrink-0 text-foreground/40" />
+              <span className="min-w-0 truncate text-foreground/40">Unknown manager (stale ID)</span>
             </>
           ) : current ? (
             <>
-              <AgentIcon icon={current.icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <AgentIcon icon={current.icon} className="h-3 w-3 shrink-0 text-foreground/40" />
               <span
                 className={cn(
                   "min-w-0 truncate",
@@ -67,60 +63,62 @@ export function ReportsToPicker({
             </>
           ) : (
             <>
-              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <User className="h-3 w-3 shrink-0 text-foreground/40" />
               <span className="min-w-0 truncate">
                 {disabled ? disabledEmptyLabel : chooseLabel}
               </span>
             </>
           )}
         </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-1" align="start">
-        <button
-          type="button"
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-            value === null && "bg-accent",
-          )}
-          onClick={() => {
-            onChange(null);
-            setOpen(false);
-          }}
-        >
-          No manager
-        </button>
-        {terminatedManager && (
-          <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
-            <span className="min-w-0 truncate">
-              Current: {current.name} (terminated)
-            </span>
-          </div>
-        )}
-        {unknownManager && (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
-          </div>
-        )}
-        {rows.map((a) => (
+      </Popover.Trigger>
+      <Popover.Content className="w-48 p-0">
+        <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5 max-h-56 overflow-y-auto">
           <button
             type="button"
-            key={a.id}
             className={cn(
-              "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
-              a.id === value && "bg-accent",
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded-lg hover:bg-default/40",
+              value === null && "bg-accent/[0.08] text-accent font-medium",
             )}
             onClick={() => {
-              onChange(a.id);
+              onChange(null);
               setOpen(false);
             }}
           >
-            <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-            <span className="min-w-0 truncate">{a.name}</span>
-            <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
+            No manager
           </button>
-        ))}
-      </PopoverContent>
+          {terminatedManager && (
+            <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-foreground/40 border-b border-default-200/40 mb-0.5">
+              <AgentIcon icon={current.icon} className="shrink-0 h-3 w-3" />
+              <span className="min-w-0 truncate">
+                Current: {current.name} (terminated)
+              </span>
+            </div>
+          )}
+          {unknownManager && (
+            <div className="px-2 py-1.5 text-xs text-foreground/40 border-b border-default-200/40 mb-0.5">
+              Saved manager is missing from this company. Choose a new manager or clear.
+            </div>
+          )}
+          {rows.map((a) => (
+            <button
+              type="button"
+              key={a.id}
+              className={cn(
+                "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded-lg hover:bg-default/40 overflow-hidden",
+                a.id === value && "bg-accent/[0.08] text-accent font-medium",
+              )}
+              onClick={() => {
+                onChange(a.id);
+                setOpen(false);
+              }}
+            >
+              <AgentIcon icon={a.icon} className="shrink-0 h-3 w-3 text-foreground/40" />
+              <span className="min-w-0 truncate">{a.name}</span>
+              <span className="text-foreground/40 ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
+            </button>
+          ))}
+        </Popover.Dialog>
+      </Popover.Content>
     </Popover>
   );
 }

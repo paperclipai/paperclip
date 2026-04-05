@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebar } from "../context/SidebarContext";
 
 export interface PageTabItem {
@@ -34,12 +33,25 @@ export function PageTabBar({ items, value, onValueChange, align = "center" }: Pa
   }
 
   return (
-    <TabsList variant="line" className={align === "start" ? "justify-start" : undefined}>
+    <div
+      className={`flex items-center border-b border-border ${align === "start" ? "justify-start" : "justify-center"}`}
+      role="tablist"
+    >
       {items.map((item) => (
-        <TabsTrigger key={item.value} value={item.value}>
+        <button
+          key={item.value}
+          role="tab"
+          aria-selected={value === item.value}
+          onClick={() => onValueChange?.(item.value)}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            value === item.value
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
+          }`}
+        >
           {item.label}
-        </TabsTrigger>
+        </button>
       ))}
-    </TabsList>
+    </div>
   );
 }

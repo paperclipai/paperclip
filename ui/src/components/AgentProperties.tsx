@@ -7,7 +7,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
-import { Separator } from "@/components/ui/separator";
+import { Separator } from "@heroui/react";
 
 interface AgentPropertiesProps {
   agent: Agent;

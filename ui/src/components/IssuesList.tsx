@@ -16,11 +16,7 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Button, Card, Popover, Checkbox } from "@heroui/react";
 import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
@@ -202,16 +198,65 @@ function IssuesSearchInput({ initialValue, onValueCommitted }: IssuesSearchInput
   return (
     <div className="relative w-48 sm:w-64 md:w-80">
       <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <Input
+      <input
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="Search issues..."
-        className="pl-7 text-xs sm:text-sm"
+        className="w-full rounded-md border border-border bg-background pl-7 pr-3 py-1.5 text-xs sm:text-sm outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring"
         aria-label="Search issues"
       />
     </div>
   );
 }
+
+/* ── Collapsible group ── */
+
+interface CollapsibleGroupProps {
+  groupKey: string;
+  label: string | null;
+  isCollapsed: boolean;
+  onToggle: () => void;
+  onAddIssue: () => void;
+  children: React.ReactNode;
+}
+
+function CollapsibleGroup({ groupKey: _groupKey, label, isCollapsed, onToggle, onAddIssue, children }: CollapsibleGroupProps) {
+  return (
+    <div>
+      {label && (
+        <div className="flex items-center py-1.5 pl-1 pr-3">
+          <button
+            type="button"
+            className="flex items-center gap-1.5"
+            onClick={onToggle}
+          >
+            <ChevronRight
+              className={cn(
+                "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                !isCollapsed && "rotate-90",
+              )}
+            />
+            <span className="text-sm font-semibold uppercase tracking-wide">
+              {label}
+            </span>
+          </button>
+          <Button
+            variant="ghost"
+            size="sm"
+            isIconOnly
+            className="ml-auto text-muted-foreground"
+            onPress={onAddIssue}
+          >
+            <Plus className="h-3 w-3" />
+          </Button>
+        </div>
+      )}
+      {!isCollapsed && children}
+    </div>
+  );
+}
+
+/* ── Main export ── */
 
 export function IssuesList({
   issues,
@@ -368,9 +413,9 @@ export function IssuesList({
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <Button size="sm" variant="outline" onClick={() => openNewIssue(newIssueDefaults())}>
-            <Plus className="h-4 w-4 sm:mr-1" />
-            <span className="hidden sm:inline">New Issue</span>
+          <Button size="sm" variant="primary" onPress={() => openNewIssue(newIssueDefaults())}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            New Issue
           </Button>
           <IssuesSearchInput
             initialValue={initialSearch ?? ""}
@@ -399,7 +444,7 @@ export function IssuesList({
 
           {/* Filter */}
           <Popover>
-            <PopoverTrigger asChild>
+            <Popover.Trigger>
               <Button variant="ghost" size="sm" className={`text-xs ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`}>
                 <Filter className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                 <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>
@@ -416,8 +461,8 @@ export function IssuesList({
                   />
                 )}
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-[min(480px,calc(100vw-2rem))] p-0">
+            </Popover.Trigger>
+            <Popover.Content placement="bottom end" className="w-[min(480px,calc(100vw-2rem))] p-0">
               <div className="p-3 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Filters</span>
@@ -465,8 +510,8 @@ export function IssuesList({
                       {statusOrder.map((s) => (
                         <label key={s} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                           <Checkbox
-                            checked={viewState.statuses.includes(s)}
-                            onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
+                            isSelected={viewState.statuses.includes(s)}
+                            onChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
                           />
                           <StatusIcon status={s} />
                           <span className="text-sm">{statusLabel(s)}</span>
@@ -484,8 +529,8 @@ export function IssuesList({
                         {priorityOrder.map((p) => (
                           <label key={p} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                             <Checkbox
-                              checked={viewState.priorities.includes(p)}
-                              onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
+                              isSelected={viewState.priorities.includes(p)}
+                              onChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
                             />
                             <PriorityIcon priority={p} />
                             <span className="text-sm">{statusLabel(p)}</span>
@@ -500,16 +545,16 @@ export function IssuesList({
                       <div className="space-y-0.5 max-h-32 overflow-y-auto">
                         <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                           <Checkbox
-                            checked={viewState.assignees.includes("__unassigned")}
-                            onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
+                            isSelected={viewState.assignees.includes("__unassigned")}
+                            onChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__unassigned") })}
                           />
                           <span className="text-sm">No assignee</span>
                         </label>
                         {currentUserId && (
                           <label className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                             <Checkbox
-                              checked={viewState.assignees.includes("__me")}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
+                              isSelected={viewState.assignees.includes("__me")}
+                              onChange={() => updateView({ assignees: toggleInArray(viewState.assignees, "__me") })}
                             />
                             <User className="h-3.5 w-3.5 text-muted-foreground" />
                             <span className="text-sm">Me</span>
@@ -518,8 +563,8 @@ export function IssuesList({
                         {(agents ?? []).map((agent) => (
                           <label key={agent.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                             <Checkbox
-                              checked={viewState.assignees.includes(agent.id)}
-                              onCheckedChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
+                              isSelected={viewState.assignees.includes(agent.id)}
+                              onChange={() => updateView({ assignees: toggleInArray(viewState.assignees, agent.id) })}
                             />
                             <span className="text-sm">{agent.name}</span>
                           </label>
@@ -534,8 +579,8 @@ export function IssuesList({
                           {labels.map((label) => (
                             <label key={label.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                               <Checkbox
-                                checked={viewState.labels.includes(label.id)}
-                                onCheckedChange={() => updateView({ labels: toggleInArray(viewState.labels, label.id) })}
+                                isSelected={viewState.labels.includes(label.id)}
+                                onChange={() => updateView({ labels: toggleInArray(viewState.labels, label.id) })}
                               />
                               <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: label.color }} />
                               <span className="text-sm">{label.name}</span>
@@ -552,8 +597,8 @@ export function IssuesList({
                           {projects.map((project) => (
                             <label key={project.id} className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-accent/50 cursor-pointer">
                               <Checkbox
-                                checked={viewState.projects.includes(project.id)}
-                                onCheckedChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
+                                isSelected={viewState.projects.includes(project.id)}
+                                onChange={() => updateView({ projects: toggleInArray(viewState.projects, project.id) })}
                               />
                               <span className="text-sm">{project.name}</span>
                             </label>
@@ -564,19 +609,19 @@ export function IssuesList({
                   </div>
                 </div>
               </div>
-            </PopoverContent>
+            </Popover.Content>
           </Popover>
 
           {/* Sort (list view only) */}
           {viewState.viewMode === "list" && (
             <Popover>
-              <PopoverTrigger asChild>
+              <Popover.Trigger>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                   <span className="hidden sm:inline">Sort</span>
                 </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-48 p-0">
+              </Popover.Trigger>
+              <Popover.Content placement="bottom end" className="w-48 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
                     ["status", "Status"],
@@ -607,20 +652,20 @@ export function IssuesList({
                     </button>
                   ))}
                 </div>
-              </PopoverContent>
+              </Popover.Content>
             </Popover>
           )}
 
           {/* Group (list view only) */}
           {viewState.viewMode === "list" && (
             <Popover>
-              <PopoverTrigger asChild>
+              <Popover.Trigger>
                 <Button variant="ghost" size="sm" className="text-xs">
                   <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                   <span className="hidden sm:inline">Group</span>
                 </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-44 p-0">
+              </Popover.Trigger>
+              <Popover.Content placement="bottom end" className="w-44 p-0">
                 <div className="p-2 space-y-0.5">
                   {([
                     ["status", "Status"],
@@ -640,7 +685,7 @@ export function IssuesList({
                     </button>
                   ))}
                 </div>
-              </PopoverContent>
+              </Popover.Content>
             </Popover>
           )}
         </div>
@@ -666,45 +711,47 @@ export function IssuesList({
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
-        groupedContent.map((group) => (
-          <Collapsible
+        <Card className="border-default-200/60">
+          <Card.Content className="p-0">
+        {groupedContent.map((group) => (
+          <CollapsibleGroup
             key={group.key}
-            open={!viewState.collapsedGroups.includes(group.key)}
-            onOpenChange={(open) => {
+            groupKey={group.key}
+            label={group.label}
+            isCollapsed={viewState.collapsedGroups.includes(group.key)}
+            onToggle={() => {
+              const isCollapsed = viewState.collapsedGroups.includes(group.key);
               updateView({
-                collapsedGroups: open
+                collapsedGroups: isCollapsed
                   ? viewState.collapsedGroups.filter((k) => k !== group.key)
                   : [...viewState.collapsedGroups, group.key],
               });
             }}
+            onAddIssue={() => openNewIssue(newIssueDefaults(group.key))}
           >
-            {group.label && (
-              <div className="flex items-center py-1.5 pl-1 pr-3">
-                <CollapsibleTrigger className="flex items-center gap-1.5">
-                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                  <span className="text-sm font-semibold uppercase tracking-wide">
-                    {group.label}
+            {group.items.map((issue) => (
+              <IssueRow
+                key={issue.id}
+                issue={issue}
+                issueLinkState={issueLinkState}
+                desktopLeadingSpacer
+                mobileLeading={(
+                  <span
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    <StatusIcon
+                      status={issue.status}
+                      onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                    />
                   </span>
-                </CollapsibleTrigger>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="ml-auto text-muted-foreground"
-                  onClick={() => openNewIssue(newIssueDefaults(group.key))}
-                >
-                  <Plus className="h-3 w-3" />
-                </Button>
-              </div>
-            )}
-            <CollapsibleContent>
-              {group.items.map((issue) => (
-                <IssueRow
-                  key={issue.id}
-                  issue={issue}
-                  issueLinkState={issueLinkState}
-                  desktopLeadingSpacer
-                  mobileLeading={(
+                )}
+                desktopMetaLeading={(
+                  <>
                     <span
+                      className="hidden shrink-0 sm:inline-flex"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -715,173 +762,158 @@ export function IssuesList({
                         onChange={(s) => onUpdateIssue(issue.id, { status: s })}
                       />
                     </span>
-                  )}
-                  desktopMetaLeading={(
-                    <>
-                      <span
-                        className="hidden shrink-0 sm:inline-flex"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                      >
-                        <StatusIcon
-                          status={issue.status}
-                          onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                        />
-                      </span>
-                      <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                        {issue.identifier ?? issue.id.slice(0, 8)}
-                      </span>
-                      {liveIssueIds?.has(issue.id) && (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
-                          <span className="relative flex h-2 w-2">
-                            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-                            <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
-                          </span>
-                          <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
-                            Live
-                          </span>
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                      {issue.identifier ?? issue.id.slice(0, 8)}
+                    </span>
+                    {liveIssueIds?.has(issue.id) && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 sm:gap-1.5 sm:px-2">
+                        <span className="relative flex h-2 w-2">
+                          <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
                         </span>
-                      )}
-                    </>
-                  )}
-                  mobileMeta={timeAgo(issue.updatedAt)}
-                  desktopTrailing={(
-                    <>
-                      {(issue.labels ?? []).length > 0 && (
-                        <span className="hidden items-center gap-1 overflow-hidden md:flex md:max-w-[240px]">
-                          {(issue.labels ?? []).slice(0, 3).map((label) => (
-                            <span
-                              key={label.id}
-                              className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
-                              style={{
-                                borderColor: label.color,
-                                color: pickTextColorForPillBg(label.color, 0.12),
-                                backgroundColor: `${label.color}1f`,
-                              }}
-                            >
-                              {label.name}
+                        <span className="hidden text-[11px] font-medium text-blue-600 dark:text-blue-400 sm:inline">
+                          Live
+                        </span>
+                      </span>
+                    )}
+                  </>
+                )}
+                mobileMeta={timeAgo(issue.updatedAt)}
+                desktopTrailing={(
+                  <>
+                    {(issue.labels ?? []).length > 0 && (
+                      <span className="hidden items-center gap-1 overflow-hidden md:flex md:max-w-[240px]">
+                        {(issue.labels ?? []).slice(0, 3).map((label) => (
+                          <span
+                            key={label.id}
+                            className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium"
+                            style={{
+                              borderColor: label.color,
+                              color: pickTextColorForPillBg(label.color, 0.12),
+                              backgroundColor: `${label.color}1f`,
+                            }}
+                          >
+                            {label.name}
+                          </span>
+                        ))}
+                        {(issue.labels ?? []).length > 3 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            +{(issue.labels ?? []).length - 3}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    <Popover
+                      isOpen={assigneePickerIssueId === issue.id}
+                      onOpenChange={(open) => {
+                        setAssigneePickerIssueId(open ? issue.id : null);
+                        if (!open) setAssigneeSearch("");
+                      }}
+                    >
+                      <Popover.Trigger>
+                        <button
+                          className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                        >
+                          {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
+                            <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
+                          ) : issue.assigneeUserId ? (
+                            <span className="inline-flex items-center gap-1.5 text-xs">
+                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                <User className="h-3 w-3" />
+                              </span>
+                              {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User"}
                             </span>
-                          ))}
-                          {(issue.labels ?? []).length > 3 && (
-                            <span className="text-[10px] text-muted-foreground">
-                              +{(issue.labels ?? []).length - 3}
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
+                                <User className="h-3 w-3" />
+                              </span>
+                              Assignee
                             </span>
                           )}
-                        </span>
-                      )}
-                      <Popover
-                        open={assigneePickerIssueId === issue.id}
-                        onOpenChange={(open) => {
-                          setAssigneePickerIssueId(open ? issue.id : null);
-                          if (!open) setAssigneeSearch("");
-                        }}
+                        </button>
+                      </Popover.Trigger>
+                      <Popover.Content
+                        placement="bottom end"
+                        className="w-56 p-1"
+                        onClick={(e: React.MouseEvent) => e.stopPropagation()}
                       >
-                        <PopoverTrigger asChild>
+                        <input
+                          className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+                          placeholder="Search assignees..."
+                          value={assigneeSearch}
+                          onChange={(e) => setAssigneeSearch(e.target.value)}
+                          autoFocus
+                        />
+                        <div className="max-h-48 overflow-y-auto overscroll-contain">
                           <button
-                            className="flex w-[180px] shrink-0 items-center rounded-md px-2 py-1 transition-colors hover:bg-accent/50"
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                              !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
+                            )}
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
+                              assignIssue(issue.id, null, null);
                             }}
                           >
-                            {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                              <Identity name={agentName(issue.assigneeAgentId)!} size="sm" />
-                            ) : issue.assigneeUserId ? (
-                              <span className="inline-flex items-center gap-1.5 text-xs">
-                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                  <User className="h-3 w-3" />
-                                </span>
-                                {formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User"}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
-                                  <User className="h-3 w-3" />
-                                </span>
-                                Assignee
-                              </span>
-                            )}
+                            No assignee
                           </button>
-                        </PopoverTrigger>
-                        <PopoverContent
-                          className="w-56 p-1"
-                          align="end"
-                          onClick={(e) => e.stopPropagation()}
-                          onPointerDownOutside={() => setAssigneeSearch("")}
-                        >
-                          <input
-                            className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                            placeholder="Search assignees..."
-                            value={assigneeSearch}
-                            onChange={(e) => setAssigneeSearch(e.target.value)}
-                            autoFocus
-                          />
-                          <div className="max-h-48 overflow-y-auto overscroll-contain">
+                          {currentUserId && (
                             <button
                               className={cn(
-                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                                !issue.assigneeAgentId && !issue.assigneeUserId && "bg-accent",
+                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                                issue.assigneeUserId === currentUserId && "bg-accent",
                               )}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                assignIssue(issue.id, null, null);
+                                assignIssue(issue.id, null, currentUserId);
                               }}
                             >
-                              No assignee
+                              <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span>Me</span>
                             </button>
-                            {currentUserId && (
+                          )}
+                          {(agents ?? [])
+                            .filter((agent) => {
+                              if (!assigneeSearch.trim()) return true;
+                              return agent.name
+                                .toLowerCase()
+                                .includes(assigneeSearch.toLowerCase());
+                            })
+                            .map((agent) => (
                               <button
+                                key={agent.id}
                                 className={cn(
                                   "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                  issue.assigneeUserId === currentUserId && "bg-accent",
+                                  issue.assigneeAgentId === agent.id && "bg-accent",
                                 )}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  assignIssue(issue.id, null, currentUserId);
+                                  assignIssue(issue.id, agent.id, null);
                                 }}
                               >
-                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                <span>Me</span>
+                                <Identity name={agent.name} size="sm" className="min-w-0" />
                               </button>
-                            )}
-                            {(agents ?? [])
-                              .filter((agent) => {
-                                if (!assigneeSearch.trim()) return true;
-                                return agent.name
-                                  .toLowerCase()
-                                  .includes(assigneeSearch.toLowerCase());
-                              })
-                              .map((agent) => (
-                                <button
-                                  key={agent.id}
-                                  className={cn(
-                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
-                                    issue.assigneeAgentId === agent.id && "bg-accent",
-                                  )}
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    assignIssue(issue.id, agent.id, null);
-                                  }}
-                                >
-                                  <Identity name={agent.name} size="sm" className="min-w-0" />
-                                </button>
-                              ))}
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    </>
-                  )}
-                  trailingMeta={formatDate(issue.createdAt)}
-                />
-              ))}
-            </CollapsibleContent>
-          </Collapsible>
-        ))
+                            ))}
+                        </div>
+                      </Popover.Content>
+                    </Popover>
+                  </>
+                )}
+                trailingMeta={formatDate(issue.createdAt)}
+              />
+            ))}
+          </CollapsibleGroup>
+        ))}
+          </Card.Content>
+        </Card>
       )}
     </div>
   );

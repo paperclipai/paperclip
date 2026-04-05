@@ -23,7 +23,7 @@ import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function Sidebar() {
@@ -62,9 +62,9 @@ export function Sidebar() {
         </span>
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="sm"
           className="text-muted-foreground shrink-0"
-          onClick={openSearch}
+          onPress={openSearch}
         >
           <Search className="h-4 w-4" />
         </Button>

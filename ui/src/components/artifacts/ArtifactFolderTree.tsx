@@ -1,13 +1,7 @@
 import { useState } from "react";
 import { ChevronRight, ChevronDown, Folder, FolderOpen, Plus, MoreHorizontal } from "lucide-react";
 import type { ArtifactFolderTreeNode } from "@paperclipai/shared";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
+import { Button, Dropdown } from "@heroui/react";
 import { cn } from "@/lib/utils";
 
 interface ArtifactFolderTreeProps {
@@ -76,26 +70,28 @@ function FolderNode({
         {node.fileCount > 0 && (
           <span className="text-xs text-muted-foreground">{node.fileCount}</span>
         )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+        <Dropdown>
+          <Dropdown.Trigger>
             <button
               className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-0.5 rounded hover:bg-muted"
               onClick={(e) => e.stopPropagation()}
             >
               <MoreHorizontal className="w-3.5 h-3.5 text-muted-foreground" />
             </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => onCreateFolder(node.id)}>New subfolder</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => onRenameFolder(node)}>Rename</DropdownMenuItem>
-            <DropdownMenuItem
+          </Dropdown.Trigger>
+          <Dropdown.Popover>
+            <Dropdown.Menu>
+            <Dropdown.Item onPress={() => onCreateFolder(node.id)}>New subfolder</Dropdown.Item>
+            <Dropdown.Item onPress={() => onRenameFolder(node)}>Rename</Dropdown.Item>
+            <Dropdown.Item
               className="text-destructive"
-              onClick={() => onDeleteFolder(node)}
+              onPress={() => onDeleteFolder(node)}
             >
               Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </Dropdown.Item>
+            </Dropdown.Menu>
+          </Dropdown.Popover>
+        </Dropdown>
       </div>
       {expanded &&
         node.children.map((child: ArtifactFolderTreeNode) => (
@@ -126,7 +122,7 @@ export function ArtifactFolderTree({
     <div className="flex flex-col h-full border-r">
       <div className="flex items-center justify-between px-3 py-2 border-b">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Folders</span>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => onCreateFolder(null)}>
+        <Button variant="ghost" isIconOnly className="h-6 w-6" onPress={() => onCreateFolder(null)}>
           <Plus className="w-3.5 h-3.5" />
         </Button>
       </div>

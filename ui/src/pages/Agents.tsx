@@ -8,15 +8,13 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
-import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
+import { Button, Card, Chip } from "@heroui/react";
 import { Bot, Plus, List, GitBranch, SlidersHorizontal } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 
@@ -136,25 +134,23 @@ export function Agents() {
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
-            ]}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+        <PageTabBar
+          items={[
+            { value: "all", label: "All" },
+            { value: "active", label: "Active" },
+            { value: "paused", label: "Paused" },
+            { value: "error", label: "Error" },
+          ]}
+          value={tab}
+          onValueChange={(v) => navigate(`/agents/${v}`)}
+        />
         <div className="flex items-center gap-2">
           {/* Filters */}
           <div className="relative">
             <button
               className={cn(
                 "flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors border border-border",
-                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-muted-foreground hover:bg-accent/50"
+                filtersOpen || showTerminated ? "text-foreground bg-accent" : "text-foreground/40 hover:bg-accent/50"
               )}
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
@@ -185,7 +181,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "list" ? "bg-accent text-foreground" : "text-foreground/40 hover:bg-accent/50"
                 )}
                 onClick={() => setView("list")}
               >
@@ -194,7 +190,7 @@ export function Agents() {
               <button
                 className={cn(
                   "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
+                  effectiveView === "org" ? "bg-accent text-foreground" : "text-foreground/40 hover:bg-accent/50"
                 )}
                 onClick={() => setView("org")}
               >
@@ -202,7 +198,7 @@ export function Agents() {
               </button>
             </div>
           )}
-          <Button size="sm" variant="outline" onClick={openNewAgent}>
+          <Button size="sm" variant="primary" onPress={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
           </Button>
@@ -210,7 +206,7 @@ export function Agents() {
       </div>
 
       {filtered.length > 0 && (
-        <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
+        <p className="text-xs text-foreground/40">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
 
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -226,7 +222,8 @@ export function Agents() {
 
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
-        <div className="border border-border">
+        <Card className="border-default-200/60">
+          <Card.Content className="p-0">
           {filtered.map((agent) => {
             return (
               <EntityRow
@@ -251,7 +248,7 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       ) : (
-                        <StatusBadge status={agent.status} />
+                        <AgentStatusChip status={agent.status} />
                       )}
                     </span>
                     <div className="hidden sm:flex items-center gap-3">
@@ -262,14 +259,14 @@ export function Agents() {
                           liveCount={liveRunByAgent.get(agent.id)!.liveCount}
                         />
                       )}
-                      <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                      <span className="text-xs text-foreground/40 font-mono w-14 text-right">
                         {adapterLabels[agent.adapterType] ?? agent.adapterType}
                       </span>
-                      <span className="text-xs text-muted-foreground w-16 text-right">
+                      <span className="text-xs text-foreground/40 w-16 text-right">
                         {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
                       </span>
                       <span className="w-20 flex justify-end">
-                        <StatusBadge status={agent.status} />
+                        <AgentStatusChip status={agent.status} />
                       </span>
                     </div>
                   </div>
@@ -277,36 +274,57 @@ export function Agents() {
               />
             );
           })}
-        </div>
+          </Card.Content>
+        </Card>
       )}
 
       {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
+        <p className="text-sm text-foreground/40 text-center py-8">
           No agents match the selected filter.
         </p>
       )}
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="border border-border py-1">
-          {filteredOrg.map((node) => (
-            <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
-          ))}
-        </div>
+        <Card className="border-default-200/60">
+          <Card.Content className="p-0 py-1">
+            {filteredOrg.map((node) => (
+              <OrgTreeNode key={node.id} node={node} depth={0} agentMap={agentMap} liveRunByAgent={liveRunByAgent} />
+            ))}
+          </Card.Content>
+        </Card>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
+        <p className="text-sm text-foreground/40 text-center py-8">
           No agents match the selected filter.
         </p>
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
+        <p className="text-sm text-foreground/40 text-center py-8">
           No organizational hierarchy defined.
         </p>
       )}
     </div>
+  );
+}
+
+function AgentStatusChip({ status }: { status: string }) {
+  const colorMap: Record<string, "success" | "danger" | "warning" | "default"> = {
+    active: "success",
+    running: "success",
+    error: "danger",
+    terminated: "danger",
+    paused: "warning",
+    idle: "default",
+    archived: "default",
+  };
+  const color = colorMap[status] ?? "default";
+  return (
+    <Chip size="sm" variant="soft" color={color}>
+      {status.replace("_", " ")}
+    </Chip>
   );
 }
 
@@ -329,14 +347,14 @@ function OrgTreeNode({
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className="flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit"
+        className="flex items-center gap-3 px-3 py-2 hover:bg-accent/[0.03] transition-colors w-full text-left no-underline text-inherit"
       >
         <span className="relative flex h-2.5 w-2.5 shrink-0">
           <span className={`absolute inline-flex h-full w-full rounded-full ${statusColor}`} />
         </span>
         <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium">{node.name}</span>
-          <span className="text-xs text-muted-foreground ml-2">
+          <span className="text-sm font-medium text-foreground/80">{node.name}</span>
+          <span className="text-xs text-foreground/40 ml-2">
             {roleLabels[node.role] ?? node.role}
             {agent?.title ? ` - ${agent.title}` : ""}
           </span>
@@ -350,7 +368,7 @@ function OrgTreeNode({
                 liveCount={liveRunByAgent.get(node.id)!.liveCount}
               />
             ) : (
-              <StatusBadge status={node.status} />
+              <AgentStatusChip status={node.status} />
             )}
           </span>
           <div className="hidden sm:flex items-center gap-3">
@@ -363,16 +381,16 @@ function OrgTreeNode({
             )}
             {agent && (
               <>
-                <span className="text-xs text-muted-foreground font-mono w-14 text-right">
+                <span className="text-xs text-foreground/40 font-mono w-14 text-right">
                   {adapterLabels[agent.adapterType] ?? agent.adapterType}
                 </span>
-                <span className="text-xs text-muted-foreground w-16 text-right">
+                <span className="text-xs text-foreground/40 w-16 text-right">
                   {agent.lastHeartbeatAt ? relativeTime(agent.lastHeartbeatAt) : "—"}
                 </span>
               </>
             )}
             <span className="w-20 flex justify-end">
-              <StatusBadge status={node.status} />
+              <AgentStatusChip status={node.status} />
             </span>
           </div>
         </div>

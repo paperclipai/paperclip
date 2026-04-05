@@ -1,6 +1,5 @@
 import { X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Button } from "@heroui/react";
 
 export interface FilterValue {
   key: string;
@@ -20,7 +19,10 @@ export function FilterBar({ filters, onRemove, onClear }: FilterBarProps) {
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {filters.map((f) => (
-        <Badge key={f.key} variant="secondary" className="gap-1 pr-1">
+        <span
+          key={f.key}
+          className="inline-flex items-center gap-1 pr-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs"
+        >
           <span className="text-muted-foreground">{f.label}:</span>
           <span>{f.value}</span>
           <button
@@ -29,9 +31,9 @@ export function FilterBar({ filters, onRemove, onClear }: FilterBarProps) {
           >
             <X className="h-3 w-3" />
           </button>
-        </Badge>
+        </span>
       ))}
-      <Button variant="ghost" size="sm" className="text-xs h-6" onClick={onClear}>
+      <Button variant="ghost" size="sm" className="text-xs h-6" onPress={onClear}>
         Clear all
       </Button>
     </div>

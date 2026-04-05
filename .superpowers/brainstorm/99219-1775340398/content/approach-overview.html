@@ -1,0 +1,164 @@
+<h2>Proposed Approach: HeroUI Rewrite</h2>
+<p class="subtitle">Here's the full picture based on your choices — review and let me know if anything feels off</p>
+
+<div class="section">
+  <h3>Design Decisions Locked In</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Target User</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Non-technical executive/operator</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Theme</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">System default + user toggle (light/dark/system)</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Visual Style</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Soft & rounded (16px radius, soft shadows, Apple/Notion)</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Navigation</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Sidebar + native Electron titlebar (desktop) / sidebar-only (web)</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">IA Structure</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Grouped categories (Overview, Work, Team, Operations)</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Dashboard</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Action-first (needs attention) + Activity feed (what's happening)</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Motion</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Apple-level: spring physics, purposeful micro-interactions</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Responsive</div>
+      <div style="color: #f4f4f5; font-size: 14px; font-weight: 500;">Fully responsive — desktop, tablet, and mobile first-class</div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 32px;">
+  <h3>Proposed Sidebar Layout</h3>
+  <div style="display: flex; gap: 24px; margin-top: 16px;">
+    <!-- Desktop Electron -->
+    <div style="flex: 1;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Desktop (Electron)</div>
+      <div style="background: #1c1c22; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);">
+        <!-- Titlebar area -->
+        <div style="padding: 14px 16px 8px 78px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center;">
+              <span style="color: white; font-size: 12px; font-weight: 700;">A</span>
+            </div>
+            <span style="color: #f4f4f5; font-size: 13px; font-weight: 600;">Acme Corp</span>
+          </div>
+        </div>
+        <!-- Search -->
+        <div style="padding: 4px 12px 8px;">
+          <div style="background: rgba(255,255,255,0.06); border-radius: 8px; padding: 8px 12px; color: #71717a; font-size: 12px;">Search...</div>
+        </div>
+        <!-- Overview group -->
+        <div style="padding: 8px 12px 4px;">
+          <div style="color: #52525b; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; padding: 4px 8px;">Overview</div>
+          <div style="display: flex; flex-direction: column; gap: 1px;">
+            <div style="padding: 8px 8px; border-radius: 8px; background: rgba(99,102,241,0.12); color: #a5b4fc; font-size: 13px; display: flex; align-items: center; gap: 8px;">
+              <span>◉</span> Dashboard
+              <span style="margin-left: auto; background: #ef4444; color: white; font-size: 10px; padding: 1px 6px; border-radius: 10px;">3</span>
+            </div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>◎</span> Activity</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>✉</span> Inbox <span style="margin-left: auto; background: rgba(255,255,255,0.1); color: #a1a1aa; font-size: 10px; padding: 1px 6px; border-radius: 10px;">5</span></div>
+          </div>
+        </div>
+        <!-- Work group -->
+        <div style="padding: 8px 12px 4px;">
+          <div style="color: #52525b; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; padding: 4px 8px;">Work</div>
+          <div style="display: flex; flex-direction: column; gap: 1px;">
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>☐</span> Issues</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>▦</span> Projects</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>◎</span> Goals</div>
+          </div>
+        </div>
+        <!-- Team group -->
+        <div style="padding: 8px 12px 4px;">
+          <div style="color: #52525b; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; padding: 4px 8px;">Team</div>
+          <div style="display: flex; flex-direction: column; gap: 1px;">
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>⚙</span> Agents</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>★</span> Skills</div>
+          </div>
+        </div>
+        <!-- Operations group -->
+        <div style="padding: 8px 12px 4px;">
+          <div style="color: #52525b; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; padding: 4px 8px;">Operations</div>
+          <div style="display: flex; flex-direction: column; gap: 1px;">
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>✓</span> Approvals</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>$</span> Costs</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>↻</span> Routines</div>
+            <div style="padding: 8px 8px; border-radius: 8px; color: #a1a1aa; font-size: 13px; display: flex; align-items: center; gap: 8px;"><span>◇</span> Artifacts</div>
+          </div>
+        </div>
+        <!-- Footer -->
+        <div style="padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06); margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+          <div style="width: 28px; height: 28px; border-radius: 50%; background: #3f3f46; display: flex; align-items: center; justify-content: center; color: #a1a1aa; font-size: 11px;">N</div>
+          <span style="color: #a1a1aa; font-size: 12px;">Nick</span>
+          <span style="margin-left: auto; color: #52525b; font-size: 14px;">⚙</span>
+        </div>
+      </div>
+    </div>
+    <!-- Mobile -->
+    <div style="flex: 0.6;">
+      <div style="color: #a1a1aa; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Mobile</div>
+      <div style="background: #1c1c22; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);">
+        <!-- Status bar mockup -->
+        <div style="padding: 8px 16px; display: flex; justify-content: space-between; color: #a1a1aa; font-size: 11px;">
+          <span>9:41</span>
+          <span>● ● ●</span>
+        </div>
+        <!-- Compact header -->
+        <div style="padding: 8px 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center;">
+              <span style="color: white; font-size: 10px; font-weight: 700;">A</span>
+            </div>
+            <span style="color: #f4f4f5; font-size: 14px; font-weight: 600;">Dashboard</span>
+          </div>
+          <span style="color: #71717a; font-size: 16px;">🔍</span>
+        </div>
+        <!-- Content preview -->
+        <div style="padding: 12px 16px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.15); border-radius: 12px; padding: 12px;">
+            <div style="color: #fca5a5; font-size: 11px; font-weight: 600;">3 items need attention</div>
+          </div>
+          <div style="background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px;">
+            <div style="color: #71717a; font-size: 10px; margin-bottom: 6px;">LIVE ACTIVITY</div>
+            <div style="color: #a1a1aa; font-size: 12px;">Agent "Writer" completed task...</div>
+          </div>
+        </div>
+        <!-- Bottom nav -->
+        <div style="padding: 10px 8px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-around; margin-top: 12px;">
+          <div style="text-align: center;">
+            <div style="color: #a5b4fc; font-size: 16px;">◉</div>
+            <div style="color: #a5b4fc; font-size: 9px; margin-top: 2px;">Home</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="color: #52525b; font-size: 16px;">☐</div>
+            <div style="color: #52525b; font-size: 9px; margin-top: 2px;">Issues</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="color: #52525b; font-size: 16px;">⚙</div>
+            <div style="color: #52525b; font-size: 9px; margin-top: 2px;">Agents</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="color: #52525b; font-size: 16px;">✉</div>
+            <div style="color: #52525b; font-size: 9px; margin-top: 2px;">Inbox</div>
+          </div>
+          <div style="text-align: center;">
+            <div style="color: #52525b; font-size: 16px;">⋯</div>
+            <div style="color: #52525b; font-size: 9px; margin-top: 2px;">More</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

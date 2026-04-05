@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
 
@@ -54,14 +53,14 @@ export function BillerSpendCard({
       : 0;
 
   return (
-    <Card>
-      <CardHeader className="px-4 pt-4 pb-0 gap-1">
+    <div className="border border-border rounded-lg bg-card">
+      <div className="px-4 pt-4 pb-0 gap-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <CardTitle className="text-sm font-semibold">
+            <p className="text-sm font-semibold">
               {providerDisplayName(row.biller)}
-            </CardTitle>
-            <CardDescription className="text-xs mt-0.5">
+            </p>
+            <p className="text-xs mt-0.5 text-muted-foreground">
               <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span> in
               {" · "}
               <span className="font-mono">{formatTokens(row.outputTokens)}</span> out
@@ -69,15 +68,15 @@ export function BillerSpendCard({
               {row.providerCount} provider{row.providerCount === 1 ? "" : "s"}
               {" · "}
               {row.modelCount} model{row.modelCount === 1 ? "" : "s"}
-            </CardDescription>
+            </p>
           </div>
           <span className="text-xl font-bold tabular-nums shrink-0">
             {formatCents(row.costCents)}
           </span>
         </div>
-      </CardHeader>
+      </div>
 
-      <CardContent className="px-4 pb-4 pt-3 space-y-4">
+      <div className="px-4 pb-4 pt-3 space-y-4">
         {budgetMonthlyCents > 0 && (
           <QuotaBar
             label="Period spend"
@@ -139,7 +138,7 @@ export function BillerSpendCard({
             </div>
           </>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

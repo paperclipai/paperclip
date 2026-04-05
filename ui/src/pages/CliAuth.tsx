@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useSearchParams } from "@/lib/router";
-import { Button } from "@/components/ui/button";
+import { useParams, useSearchParams, useNavigate } from "@/lib/router";
+import { Button } from "@heroui/react";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
@@ -10,6 +10,7 @@ export function CliAuthPage() {
   const queryClient = useQueryClient();
   const params = useParams();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const challengeId = (params.id ?? "").trim();
   const token = (searchParams.get("token") ?? "").trim();
   const currentPath = useMemo(
@@ -109,9 +110,7 @@ export function CliAuthPage() {
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in or create an account, then return to this page to approve the CLI access request.
           </p>
-          <Button asChild className="mt-4">
-            <Link to={`/auth?next=${encodeURIComponent(currentPath)}`}>Sign in / Create account</Link>
-          </Button>
+          <Button className="mt-4" onPress={() => navigate(`/auth?next=${encodeURIComponent(currentPath)}`)}>Sign in / Create account</Button>
         </div>
       </div>
     );
@@ -164,16 +163,15 @@ export function CliAuthPage() {
 
         <div className="mt-5 flex gap-3">
           <Button
-            onClick={() => approveMutation.mutate()}
-            disabled={!challenge.canApprove || approveMutation.isPending || cancelMutation.isPending}
+            onPress={() => approveMutation.mutate()}
+            isDisabled={!challenge.canApprove || approveMutation.isPending || cancelMutation.isPending}
           >
             {approveMutation.isPending ? "Approving..." : "Approve CLI access"}
           </Button>
           <Button
-            type="button"
             variant="outline"
-            onClick={() => cancelMutation.mutate()}
-            disabled={approveMutation.isPending || cancelMutation.isPending}
+            onPress={() => cancelMutation.mutate()}
+            isDisabled={approveMutation.isPending || cancelMutation.isPending}
           >
             {cancelMutation.isPending ? "Cancelling..." : "Cancel"}
           </Button>

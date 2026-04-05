@@ -1,6 +1,4 @@
 import type { FinanceEvent } from "@paperclipai/shared";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   financeDirectionDisplayName,
   financeEventKindDisplayName,
@@ -19,12 +17,12 @@ export function FinanceTimelineCard({
   emptyMessage = "No financial events in this period.",
 }: FinanceTimelineCardProps) {
   return (
-    <Card>
-      <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
-        <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3 px-4 pb-4 pt-3">
+    <div className="border border-border rounded-lg bg-card">
+      <div className="px-4 pt-4 pb-1">
+        <p className="text-base font-semibold">Recent financial events</p>
+        <p className="text-sm text-muted-foreground">Top-ups, fees, credits, commitments, and other non-request charges.</p>
+      </div>
+      <div className="space-y-3 px-4 pb-4 pt-3">
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">{emptyMessage}</p>
         ) : (
@@ -36,10 +34,12 @@ export function FinanceTimelineCard({
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="secondary">{financeEventKindDisplayName(row.eventKind)}</Badge>
-                    <Badge variant={row.direction === "credit" ? "outline" : "secondary"}>
+                    <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium">
+                      {financeEventKindDisplayName(row.eventKind)}
+                    </span>
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${row.direction === "credit" ? "border-border text-muted-foreground" : "border-border bg-muted text-muted-foreground"}`}>
                       {financeDirectionDisplayName(row.direction)}
-                    </Badge>
+                    </span>
                     <span className="text-xs text-muted-foreground">{formatDateTime(row.occurredAt)}</span>
                   </div>
                   <div className="text-sm font-medium">
@@ -65,7 +65,7 @@ export function FinanceTimelineCard({
             </div>
           ))
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

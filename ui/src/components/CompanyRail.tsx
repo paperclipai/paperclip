@@ -24,11 +24,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useLocation, useNavigate } from "@/lib/router";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { Tooltip } from "@heroui/react";
 import type { Company } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -101,8 +97,8 @@ function SortableCompanyItem({
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners} className="overflow-visible">
-      <Tooltip delayDuration={300}>
-        <TooltipTrigger asChild>
+      <Tooltip>
+        <Tooltip.Trigger>
           <div
             role="button"
             tabIndex={0}
@@ -155,10 +151,10 @@ function SortableCompanyItem({
               )}
             </div>
           </div>
-        </TooltipTrigger>
-        <TooltipContent side="right" sideOffset={8}>
+        </Tooltip.Trigger>
+        <Tooltip.Content placement="right" offset={8}>
           <p>{company.name}</p>
-        </TooltipContent>
+        </Tooltip.Content>
       </Tooltip>
     </div>
   );
@@ -213,8 +209,6 @@ export function CompanyRail() {
   );
 
   // Re-sync orderedIds from localStorage whenever companies changes.
-  // Handles initial data load (companies starts as [] before query resolves)
-  // and subsequent refetches triggered by live updates.
   useEffect(() => {
     if (sidebarCompanies.length === 0) {
       setOrderedIds([]);
@@ -256,7 +250,6 @@ export function CompanyRail() {
 
   // Require 8px of movement before starting a drag to avoid interfering with clicks
   const sensors = useSensors(
-    // Keep sidebar reordering mouse-only so touch input can scroll/tap without drag affordances.
     useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     })
@@ -291,7 +284,7 @@ export function CompanyRail() {
 
   return (
     <div className="flex flex-col items-center w-[72px] shrink-0 h-full bg-background border-r border-border">
-      {/* Paperclip icon - aligned with top sections (implied line, no visible border) */}
+      {/* Paperclip icon */}
       <div className="flex items-center justify-center h-12 w-full shrink-0">
         <Paperclip className="h-5 w-5 text-foreground" />
       </div>
@@ -333,8 +326,8 @@ export function CompanyRail() {
 
       {/* Add company button */}
       <div className="flex items-center justify-center py-2 shrink-0">
-        <Tooltip delayDuration={300}>
-          <TooltipTrigger asChild>
+        <Tooltip>
+          <Tooltip.Trigger>
             <button
               onClick={() => openOnboarding()}
               className="flex items-center justify-center w-11 h-11 rounded-[22px] hover:rounded-[14px] border-2 border-dashed border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground transition-[border-color,color,border-radius] duration-150"
@@ -342,18 +335,18 @@ export function CompanyRail() {
             >
               <Plus className="h-5 w-5" />
             </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" sideOffset={8}>
+          </Tooltip.Trigger>
+          <Tooltip.Content placement="right" offset={8}>
             <p>Add company</p>
-          </TooltipContent>
+          </Tooltip.Content>
         </Tooltip>
       </div>
 
       {/* Sidebar toggle */}
       {!isMobile && (
         <div className="flex items-center justify-center pb-2 shrink-0">
-          <Tooltip delayDuration={300}>
-            <TooltipTrigger asChild>
+          <Tooltip>
+            <Tooltip.Trigger>
               <button
                 onClick={toggleSidebar}
                 className="flex items-center justify-center w-8 h-8 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors duration-150"
@@ -365,10 +358,10 @@ export function CompanyRail() {
                   <ChevronRight className="h-4 w-4" />
                 )}
               </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={8}>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="right" offset={8}>
               <p>{sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}</p>
-            </TooltipContent>
+            </Tooltip.Content>
           </Tooltip>
         </div>
       )}

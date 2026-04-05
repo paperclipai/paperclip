@@ -21,11 +21,6 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import type { Project } from "@paperclipai/shared";
 
@@ -153,7 +148,6 @@ export function SidebarProjects() {
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
   const sensors = useSensors(
-    // Project reordering is intentionally desktop-only; touch should remain tap/scroll behavior.
     useSensor(MouseSensor, {
       activationConstraint: { distance: 8 },
     }),
@@ -175,10 +169,14 @@ export function SidebarProjects() {
   );
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <div>
       <div className="group">
         <div className="flex items-center px-3 py-1.5">
-          <CollapsibleTrigger className="flex items-center gap-1 flex-1 min-w-0">
+          <button
+            type="button"
+            className="flex items-center gap-1 flex-1 min-w-0"
+            onClick={() => setOpen((v) => !v)}
+          >
             <ChevronRight
               className={cn(
                 "h-3 w-3 text-muted-foreground/60 transition-transform opacity-0 group-hover:opacity-100",
@@ -188,7 +186,7 @@ export function SidebarProjects() {
             <span className="text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60">
               Projects
             </span>
-          </CollapsibleTrigger>
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -202,7 +200,7 @@ export function SidebarProjects() {
         </div>
       </div>
 
-      <CollapsibleContent>
+      {open && (
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -228,7 +226,7 @@ export function SidebarProjects() {
             </div>
           </SortableContext>
         </DndContext>
-      </CollapsibleContent>
-    </Collapsible>
+      )}
+    </div>
   );
 }

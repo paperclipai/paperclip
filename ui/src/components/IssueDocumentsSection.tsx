@@ -17,18 +17,8 @@ import { cn, relativeTime } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Button } from "@heroui/react";
+import { Dropdown } from "@heroui/react";
 import { Check, ChevronDown, ChevronRight, Copy, Download, FilePenLine, FileText, MoreHorizontal, Plus, Trash2, X } from "lucide-react";
 
 type DraftState = {
@@ -683,7 +673,7 @@ export function IssueDocumentsSection({
       {isEmpty && !draft?.isNew ? (
         <div className="flex items-center justify-end gap-2 min-w-0">
           {extraActions}
-          <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
+          <Button variant="outline" size="sm" onPress={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             <span className="hidden sm:inline">New document</span>
             <span className="sm:hidden">New</span>
@@ -694,7 +684,7 @@ export function IssueDocumentsSection({
           <h3 className="text-sm font-medium text-muted-foreground shrink-0">Documents</h3>
           <div className="flex items-center gap-2 min-w-0">
             {extraActions}
-            <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
+            <Button variant="outline" size="sm" onPress={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               <span className="hidden sm:inline">New document</span>
               <span className="sm:hidden">New</span>
@@ -711,8 +701,9 @@ export function IssueDocumentsSection({
           onBlurCapture={handleDraftBlur}
           onKeyDown={handleDraftKeyDown}
         >
-          <Input
+          <input
             autoFocus
+            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={draft.key}
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
@@ -723,7 +714,8 @@ export function IssueDocumentsSection({
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
           )}
           {!isPlanKey(draft.key) && (
-            <Input
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               value={draft.title}
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
@@ -745,14 +737,14 @@ export function IssueDocumentsSection({
             onSubmit={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
           />
           <div className="flex items-center justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={cancelDraft}>
+            <Button variant="outline" size="sm" onPress={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
-              disabled={upsertDocument.isPending}
+              onPress={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
+              isDisabled={upsertDocument.isPending}
             >
               {upsertDocument.isPending ? "Saving..." : "Create document"}
             </Button>
@@ -824,11 +816,11 @@ export function IssueDocumentsSection({
                     <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
-                    <DropdownMenu
-                      open={revisionMenuOpenKey === doc.key}
+                    <Dropdown
+                      isOpen={revisionMenuOpenKey === doc.key}
                       onOpenChange={(open) => setRevisionMenuOpenKey(open ? doc.key : null)}
                     >
-                      <DropdownMenuTrigger asChild>
+                      <Dropdown.Trigger>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -840,20 +832,20 @@ export function IssueDocumentsSection({
                           rev {displayedRevisionNumber}
                           <ChevronDown className="h-3 w-3" />
                         </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" className="w-72">
-                        <DropdownMenuLabel>Revision history</DropdownMenuLabel>
+                      </Dropdown.Trigger>
+                      <Dropdown.Popover>
+                        <Dropdown.Menu>
                         {revisionMenuOpenKey === doc.key && isFetchingDocumentRevisions && revisionHistory.length === 0 ? (
-                          <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
+                          <Dropdown.Item isDisabled>Loading revisions...</Dropdown.Item>
                         ) : revisionHistory.length > 0 ? (
-                          <DropdownMenuRadioGroup value={selectedRevisionId ?? doc.latestRevisionId ?? ""}>
+                          <>
                             {revisionHistory.map((revision) => {
                               const isCurrentRevision = revision.id === doc.latestRevisionId;
                               return (
-                                <DropdownMenuRadioItem
+                                <Dropdown.Item
                                   key={revision.id}
-                                  value={revision.id}
-                                  onSelect={() => previewRevision(doc, revision.id)}
+                                  id={revision.id}
+                                  onAction={() => previewRevision(doc, revision.id)}
                                   className="items-start"
                                 >
                                   <div className="flex min-w-0 flex-col">
@@ -869,15 +861,16 @@ export function IssueDocumentsSection({
                                       {relativeTime(revision.createdAt)} • {getRevisionActorLabel(revision)}
                                     </span>
                                   </div>
-                                </DropdownMenuRadioItem>
+                                </Dropdown.Item>
                               );
                             })}
-                          </DropdownMenuRadioGroup>
+                          </>
                         ) : (
-                          <DropdownMenuItem disabled>No revisions yet</DropdownMenuItem>
+                          <Dropdown.Item isDisabled>No revisions yet</Dropdown.Item>
                         )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                        </Dropdown.Menu>
+                      </Dropdown.Popover>
+                    </Dropdown>
                     <a
                       href={`#document-${encodeURIComponent(doc.key)}`}
                       className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -890,13 +883,14 @@ export function IssueDocumentsSection({
                 <div className="flex items-center gap-1 shrink-0">
                   <Button
                     variant="ghost"
-                    size="icon-xs"
+                    size="sm"
+                    isIconOnly
                     className={cn(
                       "text-muted-foreground transition-colors",
                       copiedDocumentKey === doc.key && "text-foreground",
                     )}
-                    title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
-                    onClick={() => void copyDocumentBody(doc.key, displayedBody)}
+                    aria-label={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                    onPress={() => void copyDocumentBody(doc.key, displayedBody)}
                   >
                     {copiedDocumentKey === doc.key ? (
                       <Check className="h-3.5 w-3.5" />
@@ -904,43 +898,39 @@ export function IssueDocumentsSection({
                       <Copy className="h-3.5 w-3.5" />
                     )}
                   </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+                  <Dropdown>
+                    <Dropdown.Trigger>
                       <Button
                         variant="ghost"
-                        size="icon-xs"
+                        isIconOnly
+                        size="sm"
                         className="text-muted-foreground"
-                        title="Document actions"
+                        aria-label="Document actions"
                       >
                         <MoreHorizontal className="h-3.5 w-3.5" />
                       </Button>
-                    </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                    </Dropdown.Trigger>
+                    <Dropdown.Popover>
+                      <Dropdown.Menu>
                       {!isHistoricalPreview ? (
-                        <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
+                        <Dropdown.Item id="edit" onAction={() => beginEdit(doc.key)}>
                           <FilePenLine className="h-3.5 w-3.5" />
                           Edit document
-                        </DropdownMenuItem>
+                        </Dropdown.Item>
                       ) : null}
-                      {!isHistoricalPreview ? <DropdownMenuSeparator /> : null}
-                      <DropdownMenuItem
-                        onClick={() => downloadDocumentFile(doc.key, displayedBody)}
-                      >
+                      <Dropdown.Item id="download" onAction={() => downloadDocumentFile(doc.key, displayedBody)}>
                         <Download className="h-3.5 w-3.5" />
                         Download document
-                      </DropdownMenuItem>
-                      {canDeleteDocuments ? <DropdownMenuSeparator /> : null}
+                      </Dropdown.Item>
                       {canDeleteDocuments ? (
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => setConfirmDeleteKey(doc.key)}
-                        >
+                        <Dropdown.Item id="delete" className="text-destructive" onAction={() => setConfirmDeleteKey(doc.key)}>
                           <Trash2 className="h-3.5 w-3.5" />
                           Delete document
-                        </DropdownMenuItem>
+                        </Dropdown.Item>
                       ) : null}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
                 </div>
               </div>
 
@@ -977,17 +967,17 @@ export function IssueDocumentsSection({
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => returnToLatestRevision(doc.key)}
+                            onPress={() => returnToLatestRevision(doc.key)}
                           >
                             Return to latest
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => restoreDocumentRevision.mutate({
+                            onPress={() => restoreDocumentRevision.mutate({
                               key: doc.key,
                               revisionId: selectedHistoricalRevision.id,
                             })}
-                            disabled={restoreDocumentRevision.isPending}
+                            isDisabled={restoreDocumentRevision.isPending}
                           >
                             {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
                               ? "Restoring..."
@@ -1010,7 +1000,7 @@ export function IssueDocumentsSection({
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() =>
+                            onPress={() =>
                               setDocumentConflict((current) =>
                                 current?.key === doc.key
                                   ? { ...current, showRemote: !current.showRemote }
@@ -1023,21 +1013,21 @@ export function IssueDocumentsSection({
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => keepConflictedDraft(doc.key)}
+                            onPress={() => keepConflictedDraft(doc.key)}
                           >
                             Keep my draft
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => reloadDocumentFromServer(doc.key)}
+                            onPress={() => reloadDocumentFromServer(doc.key)}
                           >
                             Reload remote
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => void overwriteDocumentFromDraft(doc.key)}
-                            disabled={upsertDocument.isPending}
+                            onPress={() => void overwriteDocumentFromDraft(doc.key)}
+                            isDisabled={upsertDocument.isPending}
                           >
                             {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
                           </Button>
@@ -1059,7 +1049,8 @@ export function IssueDocumentsSection({
                     </div>
                   )}
                   {activeDraft && !isPlanKey(doc.key) && !isHistoricalPreview && (
-                    <Input
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       value={activeDraft.title}
                       onChange={(event) => {
                         markDocumentDirty(doc.key);
@@ -1154,16 +1145,16 @@ export function IssueDocumentsSection({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setConfirmDeleteKey(null)}
-                      disabled={deleteDocument.isPending}
+                      onPress={() => setConfirmDeleteKey(null)}
+                      isDisabled={deleteDocument.isPending}
                     >
                       Cancel
                     </Button>
                     <Button
-                      variant="destructive"
+                      variant="danger"
                       size="sm"
-                      onClick={() => deleteDocument.mutate(doc.key)}
-                      disabled={deleteDocument.isPending}
+                      onPress={() => deleteDocument.mutate(doc.key)}
+                      isDisabled={deleteDocument.isPending}
                     >
                       {deleteDocument.isPending ? "Deleting..." : "Delete"}
                     </Button>

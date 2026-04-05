@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 
 interface EmptyStateProps {
   icon: LucideIcon;
@@ -17,7 +17,7 @@ export function EmptyState({ icon: Icon, message, action, onAction }: EmptyState
       </div>
       <p className="text-sm text-muted-foreground mb-4">{message}</p>
       {action && onAction && (
-        <Button onClick={onAction}>
+        <Button onPress={onAction}>
           <Plus className="h-4 w-4 mr-1.5" />
           {action}
         </Button>

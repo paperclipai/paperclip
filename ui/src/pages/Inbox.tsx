@@ -36,33 +36,7 @@ import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/Approval
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { timeAgo } from "../lib/timeAgo";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Separator } from "@/components/ui/separator";
-import { Tabs } from "@/components/ui/tabs";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Button, Separator, Select, Modal, Dropdown, Input, ListBox } from "@heroui/react";
 import {
   Inbox as InboxIcon,
   AlertTriangle,
@@ -73,7 +47,6 @@ import {
   Columns3,
   Search,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
@@ -179,7 +152,7 @@ export function InboxIssueMetaLeading({
         </span>
       ) : null}
       {showIdentifier ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-foreground/40">
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
@@ -270,14 +243,14 @@ export function InboxIssueTrailingColumns({
 
           if (issue.assigneeUserId) {
             return (
-              <span key={column} className="min-w-0 truncate text-xs font-medium text-muted-foreground">
+              <span key={column} className="min-w-0 truncate text-xs font-medium text-foreground/40">
                 {userLabel}
               </span>
             );
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
+            <span key={column} className="min-w-0 truncate text-xs text-foreground/40">
               Unassigned
             </span>
           );
@@ -302,7 +275,7 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
+            <span key={column} className="min-w-0 truncate text-xs text-foreground/40">
               No project
             </span>
           );
@@ -324,7 +297,7 @@ export function InboxIssueTrailingColumns({
                   </span>
                 ))}
                 {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+                  <span className="shrink-0 text-[11px] font-medium text-foreground/40">
                     +{(issue.labels ?? []).length - 2}
                   </span>
                 ) : null}
@@ -341,14 +314,14 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
+            <span key={column} className="min-w-0 truncate text-xs text-foreground/40">
               {workspaceName}
             </span>
           );
         }
 
         return (
-          <span key={column} className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground">
+          <span key={column} className="min-w-0 truncate whitespace-nowrap text-right text-[11px] font-medium text-foreground/40">
             {activityText}
           </span>
         );
@@ -394,7 +367,7 @@ export function FailedRunInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-default-200/30 px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -421,7 +394,7 @@ export function FailedRunInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-foreground/40 opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -447,7 +420,7 @@ export function FailedRunInboxRow({
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
               {issue ? (
                 <>
-                  <span className="font-mono text-muted-foreground mr-1.5">
+                  <span className="font-mono text-foreground/40 mr-1.5">
                     {issue.identifier ?? issue.id.slice(0, 8)}
                   </span>
                   {issue.title}
@@ -456,7 +429,7 @@ export function FailedRunInboxRow({
                 <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
               )}
             </span>
-            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/40">
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
               <span className="truncate max-w-[300px]">{displayError}</span>
@@ -470,8 +443,8 @@ export function FailedRunInboxRow({
             variant="outline"
             size="sm"
             className="h-8 shrink-0 px-2.5"
-            onClick={onRetry}
-            disabled={isRetrying}
+            onPress={onRetry}
+            isDisabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
             {isRetrying ? "Retrying…" : "Retry"}
@@ -480,7 +453,7 @@ export function FailedRunInboxRow({
             <button
               type="button"
               onClick={onDismiss}
-              className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+              className="rounded-md p-1 text-foreground/40 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
               aria-label="Dismiss"
             >
               <X className="h-4 w-4" />
@@ -494,8 +467,8 @@ export function FailedRunInboxRow({
           variant="outline"
           size="sm"
           className="h-8 shrink-0 px-2.5"
-          onClick={onRetry}
-          disabled={isRetrying}
+          onPress={onRetry}
+          isDisabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
           {isRetrying ? "Retrying…" : "Retry"}
@@ -504,7 +477,7 @@ export function FailedRunInboxRow({
           <button
             type="button"
             onClick={onDismiss}
-            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="rounded-md p-1 text-foreground/40 hover:bg-accent hover:text-foreground"
             aria-label="Dismiss"
           >
             <X className="h-4 w-4" />
@@ -550,7 +523,7 @@ function ApprovalInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-default-200/30 px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -577,7 +550,7 @@ function ApprovalInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-foreground/40 opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -597,13 +570,13 @@ function ApprovalInboxRow({
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
           <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
-            <Icon className="h-4 w-4 text-muted-foreground" />
+            <Icon className="h-4 w-4 text-foreground/40" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
               {label}
             </span>
-            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/40">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
               {requesterName ? <span>requested by {requesterName}</span> : null}
               <span>updated {timeAgo(approval.updatedAt)}</span>
@@ -615,17 +588,17 @@ function ApprovalInboxRow({
             <Button
               size="sm"
               className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-              onClick={onApprove}
-              disabled={isPending}
+              onPress={onApprove}
+              isDisabled={isPending}
             >
               Approve
             </Button>
             <Button
-              variant="destructive"
+              variant="danger"
               size="sm"
               className="h-8 px-3"
-              onClick={onReject}
-              disabled={isPending}
+              onPress={onReject}
+              isDisabled={isPending}
             >
               Reject
             </Button>
@@ -637,17 +610,17 @@ function ApprovalInboxRow({
           <Button
             size="sm"
             className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-            onClick={onApprove}
-            disabled={isPending}
+            onPress={onApprove}
+            isDisabled={isPending}
           >
             Approve
           </Button>
           <Button
-            variant="destructive"
+            variant="danger"
             size="sm"
             className="h-8 px-3"
-            onClick={onReject}
-            disabled={isPending}
+            onPress={onReject}
+            isDisabled={isPending}
           >
             Reject
           </Button>
@@ -689,7 +662,7 @@ function JoinRequestInboxRow({
 
   return (
     <div className={cn(
-      "group border-b border-border px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
+      "group border-b border-default-200/30 px-2 py-2.5 last:border-b-0 sm:px-1 sm:pr-3 sm:py-2",
       className,
     )}>
       <div className="flex items-start gap-2 sm:items-center">
@@ -716,7 +689,7 @@ function JoinRequestInboxRow({
                 type="button"
                 onClick={onArchive}
                 disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-foreground/40 opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
                 aria-label="Dismiss from inbox"
               >
                 <X className="h-3.5 w-3.5" />
@@ -730,13 +703,13 @@ function JoinRequestInboxRow({
           {!showUnreadSlot && <span className="hidden h-2 w-2 shrink-0 sm:inline-flex" aria-hidden="true" />}
           <span className="hidden h-3.5 w-3.5 shrink-0 sm:inline-flex" aria-hidden="true" />
           <span className="mt-0.5 shrink-0 rounded-md bg-muted p-1.5 sm:mt-0">
-            <UserPlus className="h-4 w-4 text-muted-foreground" />
+            <UserPlus className="h-4 w-4 text-foreground/40" />
           </span>
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-sm font-medium sm:truncate sm:line-clamp-none">
               {label}
             </span>
-            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/40">
               <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
               {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
             </span>
@@ -746,17 +719,17 @@ function JoinRequestInboxRow({
           <Button
             size="sm"
             className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-            onClick={onApprove}
-            disabled={isPending}
+            onPress={onApprove}
+            isDisabled={isPending}
           >
             Approve
           </Button>
           <Button
-            variant="destructive"
+            variant="danger"
             size="sm"
             className="h-8 px-3"
-            onClick={onReject}
-            disabled={isPending}
+            onPress={onReject}
+            isDisabled={isPending}
           >
             Reject
           </Button>
@@ -766,17 +739,17 @@ function JoinRequestInboxRow({
         <Button
           size="sm"
           className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-          onClick={onApprove}
-          disabled={isPending}
+          onPress={onApprove}
+          isDisabled={isPending}
         >
           Approve
         </Button>
         <Button
-          variant="destructive"
+          variant="danger"
           size="sm"
           className="h-8 px-3"
-          onClick={onReject}
-          disabled={isPending}
+          onPress={onReject}
+          isDisabled={isPending}
         >
           Reject
         </Button>
@@ -1563,30 +1536,35 @@ export function Inbox() {
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
   const unreadIssueIds = markAllReadIssues
     .map((issue) => issue.id);
-  const canMarkAllRead = unreadIssueIds.length > 0;
+  const unreadNonIssueKeys = useMemo(() => {
+    if (!canArchiveFromTab) return [];
+    return filteredWorkItems
+      .filter((item) => item.kind !== "issue")
+      .map((item) => {
+        if (item.kind === "approval") return `approval:${item.approval.id}`;
+        if (item.kind === "failed_run") return `run:${item.run.id}`;
+        return `join:${item.joinRequest.id}`;
+      })
+      .filter((key) => !readItems.has(key) && !fadingNonIssueItems.has(key));
+  }, [canArchiveFromTab, filteredWorkItems, readItems, fadingNonIssueItems]);
+  const canMarkAllRead = unreadIssueIds.length > 0 || unreadNonIssueKeys.length > 0;
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-2">
-        <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
-          <PageTabBar
-            items={[
-              {
-                value: "mine",
-                label: "Mine",
-              },
-              {
-                value: "recent",
-                label: "Recent",
-              },
-              { value: "unread", label: "Unread" },
-              { value: "all", label: "All" },
-            ]}
-          />
-        </Tabs>
+        <PageTabBar
+          items={[
+            { value: "mine", label: "Mine" },
+            { value: "recent", label: "Recent" },
+            { value: "unread", label: "Unread" },
+            { value: "all", label: "All" },
+          ]}
+          value={tab}
+          onValueChange={(value) => navigate(`/inbox/${value}`)}
+        />
 
         <div className="flex items-center gap-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-foreground/40" />
             <Input
               type="search"
               placeholder="Search inbox…"
@@ -1595,58 +1573,74 @@ export function Inbox() {
               className="h-8 w-[180px] pl-8 text-xs sm:w-[220px]"
             />
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+          <Dropdown>
+            <Dropdown.Trigger>
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                className="h-8 shrink-0 px-2 text-xs text-foreground/40 hover:text-foreground"
               >
                 <Columns3 className="mr-1 h-3.5 w-3.5" />
                 Show / hide columns
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
-              <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
-                <div className="space-y-1">
-                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                    Desktop issue rows
-                  </div>
-                  <div className="text-sm font-medium text-foreground">
-                    Choose which inbox columns stay visible
-                  </div>
-                </div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {availableIssueColumns.map((column) => (
-                <DropdownMenuCheckboxItem
-                  key={column}
-                  checked={visibleIssueColumnSet.has(column)}
-                  onSelect={(event) => event.preventDefault()}
-                  onCheckedChange={(checked) => toggleIssueColumn(column, checked === true)}
-                  className="items-start rounded-lg px-3 py-2.5 pl-8"
-                >
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">
-                      {inboxIssueColumnLabels[column]}
-                    </span>
-                    <span className="text-xs leading-relaxed text-muted-foreground">
-                      {inboxIssueColumnDescriptions[column]}
-                    </span>
-                  </span>
-                </DropdownMenuCheckboxItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                className="rounded-lg px-3 py-2 text-sm"
-              >
-                Reset defaults
-                <span className="ml-auto text-xs text-muted-foreground">status, id, updated</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            </Dropdown.Trigger>
+            <Dropdown.Popover className="w-[300px] rounded-xl border-default-200/60 p-1.5 shadow-xl shadow-black/10">
+              <Dropdown.Menu>
+                <Dropdown.Section aria-label="Column visibility">
+                  <Dropdown.Item id="__header__" className="pointer-events-none">
+                    <div className="px-2 pb-1 pt-1.5">
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-foreground/40">
+                          Desktop issue rows
+                        </div>
+                        <div className="text-sm font-medium text-foreground">
+                          Choose which inbox columns stay visible
+                        </div>
+                      </div>
+                    </div>
+                  </Dropdown.Item>
+                </Dropdown.Section>
+                <Dropdown.Section aria-label="Columns">
+                  {availableIssueColumns.map((column) => (
+                    <Dropdown.Item
+                      key={column}
+                      id={column}
+                      className="items-start rounded-lg px-3 py-2.5"
+                      onAction={() => toggleIssueColumn(column, !visibleIssueColumnSet.has(column))}
+                    >
+                      <span className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={visibleIssueColumnSet.has(column)}
+                          readOnly
+                          className="mt-0.5"
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium text-foreground">
+                            {inboxIssueColumnLabels[column]}
+                          </span>
+                          <span className="text-xs leading-relaxed text-foreground/40">
+                            {inboxIssueColumnDescriptions[column]}
+                          </span>
+                        </span>
+                      </span>
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Section>
+                <Dropdown.Section aria-label="Actions">
+                  <Dropdown.Item
+                    id="reset-defaults"
+                    onAction={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
+                    className="rounded-lg px-3 py-2 text-sm"
+                  >
+                    Reset defaults
+                    <span className="ml-auto text-xs text-foreground/40">status, id, updated</span>
+                  </Dropdown.Item>
+                </Dropdown.Section>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
           {canMarkAllRead && (
             <>
               <Button
@@ -1654,34 +1648,49 @@ export function Inbox() {
                 variant="outline"
                 size="sm"
                 className="h-8 shrink-0"
-                onClick={() => setShowMarkAllReadConfirm(true)}
-                disabled={markAllReadMutation.isPending}
+                onPress={() => setShowMarkAllReadConfirm(true)}
+                isDisabled={markAllReadMutation.isPending}
               >
                 {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
               </Button>
-              <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>Mark all as read?</DialogTitle>
-                    <DialogDescription>
-                      This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowMarkAllReadConfirm(false);
-                        markAllReadMutation.mutate(unreadIssueIds);
-                      }}
-                    >
-                      Mark all as read
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+              <Modal.Backdrop isOpen={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
+                <Modal.Container>
+                  <Modal.Dialog>
+                    {({ close }) => (
+                      <>
+                        <Modal.Header>
+                          <span>Mark all as read?</span>
+                        </Modal.Header>
+                        <Modal.Body>
+                          <p className="text-sm text-foreground/40">
+                            This will mark {unreadIssueIds.length + unreadNonIssueKeys.length} unread {(unreadIssueIds.length + unreadNonIssueKeys.length) === 1 ? "item" : "items"} as read.
+                          </p>
+                        </Modal.Body>
+                        <Modal.Footer>
+                          <Button variant="outline" onPress={close}>
+                            Cancel
+                          </Button>
+                          <Button
+                            onPress={() => {
+                              close();
+                              // Mark non-issue items as read locally
+                              for (const key of unreadNonIssueKeys) {
+                                markItemRead(key);
+                              }
+                              // Mark issues as read via API
+                              if (unreadIssueIds.length > 0) {
+                                markAllReadMutation.mutate(unreadIssueIds);
+                              }
+                            }}
+                          >
+                            Mark all as read
+                          </Button>
+                        </Modal.Footer>
+                      </>
+                    )}
+                  </Modal.Dialog>
+                </Modal.Container>
+              </Modal.Backdrop>
             </>
           )}
         </div>
@@ -1690,35 +1699,39 @@ export function Inbox() {
       {tab === "all" && (
         <div className="flex flex-wrap items-center gap-2">
           <Select
-            value={allCategoryFilter}
-            onValueChange={(value) => setAllCategoryFilter(value as InboxCategoryFilter)}
+            selectedKey={allCategoryFilter}
+            onSelectionChange={(key) => setAllCategoryFilter(String(key) as InboxCategoryFilter)}
           >
-            <SelectTrigger className="h-8 w-[170px] text-xs">
-              <SelectValue placeholder="Category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
-              <SelectItem value="alerts">Alerts</SelectItem>
-            </SelectContent>
+            <Select.Trigger className="h-8 w-[170px] text-xs">
+              <Select.Value /><Select.Indicator />
+            </Select.Trigger>
+            <Select.Popover>
+              <ListBox>
+                <ListBox.Item id="everything">All categories</ListBox.Item>
+                <ListBox.Item id="issues_i_touched">My recent issues</ListBox.Item>
+                <ListBox.Item id="join_requests">Join requests</ListBox.Item>
+                <ListBox.Item id="approvals">Approvals</ListBox.Item>
+                <ListBox.Item id="failed_runs">Failed runs</ListBox.Item>
+                <ListBox.Item id="alerts">Alerts</ListBox.Item>
+              </ListBox>
+            </Select.Popover>
           </Select>
 
           {showApprovalsCategory && (
             <Select
-              value={allApprovalFilter}
-              onValueChange={(value) => setAllApprovalFilter(value as InboxApprovalFilter)}
+              selectedKey={allApprovalFilter}
+              onSelectionChange={(key) => setAllApprovalFilter(String(key) as InboxApprovalFilter)}
             >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
-                <SelectValue placeholder="Approval status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
-              </SelectContent>
+              <Select.Trigger className="h-8 w-[170px] text-xs">
+                <Select.Value /><Select.Indicator />
+              </Select.Trigger>
+              <Select.Popover>
+                <ListBox>
+                  <ListBox.Item id="all">All approval statuses</ListBox.Item>
+                  <ListBox.Item id="actionable">Needs action</ListBox.Item>
+                  <ListBox.Item id="resolved">Resolved</ListBox.Item>
+                </ListBox>
+              </Select.Popover>
             </Select>
           )}
         </div>
@@ -1752,7 +1765,7 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={listRef} className="overflow-hidden rounded-xl border border-default-200/60 bg-card">
               {filteredWorkItems.flatMap((item, index) => {
                 const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
                   <div
@@ -1968,12 +1981,12 @@ export function Inbox() {
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <h3 className="mb-3 text-sm font-semibold text-foreground/60">
               Alerts
             </h3>
-            <div className="divide-y divide-border border border-border">
+            <div className="divide-y divide-default-200/30 border border-default-200/60">
               {showAggregateAgentError && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/[0.03]">
                   <Link
                     to="/agents"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -1987,7 +2000,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:agent-errors")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-md p-1 text-foreground/40 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -1995,7 +2008,7 @@ export function Inbox() {
                 </div>
               )}
               {showBudgetAlert && (
-                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/[0.03]">
                   <Link
                     to="/costs"
                     className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
@@ -2010,7 +2023,7 @@ export function Inbox() {
                   <button
                     type="button"
                     onClick={() => dismiss("alert:budget")}
-                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    className="rounded-md p-1 text-foreground/40 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
                     aria-label="Dismiss"
                   >
                     <X className="h-3.5 w-3.5" />

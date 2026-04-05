@@ -6,15 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Input, Button, Dropdown } from "@heroui/react";
 import {
   Pencil,
   Check,
@@ -90,7 +82,7 @@ export function Companies() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">
-        <Button size="sm" onClick={() => openOnboarding()}>
+        <Button size="sm" variant="primary" onPress={() => openOnboarding()}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
           New Company
         </Button>
@@ -154,13 +146,14 @@ export function Companies() {
                       />
                       <Button
                         variant="ghost"
-                        size="icon-xs"
-                        onClick={saveEdit}
-                        disabled={editMutation.isPending}
+                        size="sm"
+                        isIconOnly
+                        onPress={saveEdit}
+                        isDisabled={editMutation.isPending}
                       >
                         <Check className="h-3.5 w-3.5 text-green-500" />
                       </Button>
-                      <Button variant="ghost" size="icon-xs" onClick={cancelEdit}>
+                      <Button variant="ghost" size="sm" isIconOnly onPress={cancelEdit}>
                         <X className="h-3.5 w-3.5 text-muted-foreground" />
                       </Button>
                     </div>
@@ -178,17 +171,17 @@ export function Companies() {
                       >
                         {company.status}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="text-muted-foreground opacity-0 group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEdit(company.id, company.name);
-                        }}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </Button>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          isIconOnly
+                          className="text-muted-foreground opacity-0 group-hover:opacity-100"
+                          onPress={() => startEdit(company.id, company.name)}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
                   )}
                   {company.description && !isEditing && (
@@ -200,33 +193,30 @@ export function Companies() {
 
                 {/* Three-dot menu */}
                 <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
+                  <Dropdown>
+                    <Dropdown.Trigger>
                       <Button
                         variant="ghost"
-                        size="icon-xs"
+                        size="sm"
+                        isIconOnly
                         className="text-muted-foreground opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
                       >
                         <MoreHorizontal className="h-4 w-4" />
                       </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() => startEdit(company.id, company.name)}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => setConfirmDeleteId(company.id)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        Delete Company
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                    </Dropdown.Trigger>
+                    <Dropdown.Popover>
+                      <Dropdown.Menu>
+                        <Dropdown.Item onAction={() => startEdit(company.id, company.name)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                          Rename
+                        </Dropdown.Item>
+                        <Dropdown.Item onAction={() => setConfirmDeleteId(company.id)} className="text-destructive">
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete Company
+                        </Dropdown.Item>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
                 </div>
               </div>
 
@@ -272,16 +262,16 @@ export function Companies() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setConfirmDeleteId(null)}
-                      disabled={deleteMutation.isPending}
+                      onPress={() => setConfirmDeleteId(null)}
+                      isDisabled={deleteMutation.isPending}
                     >
                       Cancel
                     </Button>
                     <Button
-                      variant="destructive"
+                      variant="danger"
                       size="sm"
-                      onClick={() => deleteMutation.mutate(company.id)}
-                      disabled={deleteMutation.isPending}
+                      onPress={() => deleteMutation.mutate(company.id)}
+                      isDisabled={deleteMutation.isPending}
                     >
                       {deleteMutation.isPending ? "Deleting…" : "Delete"}
                     </Button>

@@ -1,7 +1,6 @@
 import { useRef } from "react";
 import { Search, FolderPlus, Upload } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button, Input } from "@heroui/react";
 
 interface ArtifactToolbarProps {
   search: string;
@@ -30,14 +29,14 @@ export function ArtifactToolbar({
         />
       </div>
       <div className="flex items-center gap-1 ml-auto">
-        <Button variant="outline" size="sm" onClick={onCreateFolder}>
+        <Button variant="outline" size="sm" onPress={onCreateFolder}>
           <FolderPlus className="w-4 h-4 mr-1.5" />
           New Folder
         </Button>
         <Button
           variant="outline"
           size="sm"
-          onClick={() => fileInputRef.current?.click()}
+          onPress={() => fileInputRef.current?.click()}
         >
           <Upload className="w-4 h-4 mr-1.5" />
           Upload

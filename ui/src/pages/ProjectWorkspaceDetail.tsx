@@ -3,8 +3,7 @@ import { Link, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { Button, Separator } from "@heroui/react";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
 import { projectsApi } from "../api/projects";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -350,11 +349,9 @@ export function ProjectWorkspaceDetail() {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="sm" asChild>
-          <Link to={`/projects/${canonicalProjectRef}/workspaces`}>
-            <ArrowLeft className="mr-1 h-4 w-4" />
-            Back to workspaces
-          </Link>
+        <Button variant="ghost" size="sm" onPress={() => navigate(`/projects/${canonicalProjectRef}/workspaces`)}>
+          <ArrowLeft className="mr-1 h-4 w-4" />
+          Back to workspaces
         </Button>
         <div className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground">
           {workspace.isPrimary ? "Primary workspace" : "Secondary workspace"}
@@ -380,8 +377,8 @@ export function ProjectWorkspaceDetail() {
                 <Button
                   variant="outline"
                   className="w-full sm:w-auto"
-                  disabled={setPrimaryWorkspace.isPending}
-                  onClick={() => setPrimaryWorkspace.mutate()}
+                  isDisabled={setPrimaryWorkspace.isPending}
+                  onPress={() => setPrimaryWorkspace.mutate()}
                 >
                   {setPrimaryWorkspace.isPending
                     ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -539,15 +536,15 @@ export function ProjectWorkspaceDetail() {
             </div>
 
             <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <Button className="w-full sm:w-auto" disabled={!isDirty || updateWorkspace.isPending} onClick={saveChanges}>
+              <Button className="w-full sm:w-auto" isDisabled={!isDirty || updateWorkspace.isPending} onPress={saveChanges}>
                 {updateWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Save changes
               </Button>
               <Button
                 variant="outline"
                 className="w-full sm:w-auto"
-                disabled={!isDirty || updateWorkspace.isPending}
-                onClick={() => {
+                isDisabled={!isDirty || updateWorkspace.isPending}
+                onPress={() => {
                   setForm(initialState);
                   setErrorMessage(null);
                 }}
@@ -605,8 +602,8 @@ export function ProjectWorkspaceDetail() {
                   variant="outline"
                   size="sm"
                   className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.runtimeConfig?.workspaceRuntime || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("start")}
+                  isDisabled={controlRuntimeServices.isPending || !workspace.runtimeConfig?.workspaceRuntime || !workspace.cwd}
+                  onPress={() => controlRuntimeServices.mutate("start")}
                 >
                   {controlRuntimeServices.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
                   Start
@@ -615,8 +612,8 @@ export function ProjectWorkspaceDetail() {
                   variant="outline"
                   size="sm"
                   className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || !workspace.cwd}
-                  onClick={() => controlRuntimeServices.mutate("restart")}
+                  isDisabled={controlRuntimeServices.isPending || !workspace.cwd}
+                  onPress={() => controlRuntimeServices.mutate("restart")}
                 >
                   Restart
                 </Button>
@@ -624,8 +621,8 @@ export function ProjectWorkspaceDetail() {
                   variant="outline"
                   size="sm"
                   className="w-full sm:w-auto"
-                  disabled={controlRuntimeServices.isPending || (workspace.runtimeServices?.length ?? 0) === 0}
-                  onClick={() => controlRuntimeServices.mutate("stop")}
+                  isDisabled={controlRuntimeServices.isPending || (workspace.runtimeServices?.length ?? 0) === 0}
+                  onPress={() => controlRuntimeServices.mutate("stop")}
                 >
                   Stop
                 </Button>

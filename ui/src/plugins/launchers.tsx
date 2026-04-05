@@ -11,8 +11,6 @@ import {
   useState,
   type CSSProperties,
   type ErrorInfo,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -25,7 +23,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
-import { Button } from "@/components/ui/button";
+import { Button } from "@heroui/react";
 import { useNavigate, useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -568,7 +566,7 @@ function LauncherModalShell({
             variant="ghost"
             size="sm"
             className="ml-auto"
-            onClick={() => void closeLauncher(instance.key, { reason: "programmatic" })}
+            onPress={() => void closeLauncher(instance.key, { reason: "programmatic" })}
           >
             Close
           </Button>
@@ -731,15 +729,17 @@ function DefaultLauncherTrigger({
 }: {
   launcher: ResolvedPluginLauncher;
   placementZone: PluginLauncherPlacementZone;
-  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  onClick: (element: HTMLElement | null) => void;
 }) {
+  const ref = useRef<HTMLButtonElement>(null);
   return (
     <Button
+      ref={ref}
       type="button"
       variant={placementZone === "toolbarButton" || placementZone === "globalToolbarButton" ? "outline" : "ghost"}
       size="sm"
       className={launcherTriggerClassName(placementZone)}
-      onClick={onClick}
+      onPress={() => onClick(ref.current)}
     >
       {launcher.displayName}
     </Button>
@@ -788,10 +788,10 @@ export function PluginLauncherOutlet({
           <DefaultLauncherTrigger
             launcher={launcher}
             placementZone={launcher.placementZone}
-            onClick={(event) => {
+            onClick={(element) => {
               const contribution = contributionsByPluginId.get(launcher.pluginId);
               if (!contribution) return;
-              void activateLauncher(launcher, context, contribution, event.currentTarget);
+              void activateLauncher(launcher, context, contribution, element);
             }}
           />
         </div>
@@ -822,10 +822,9 @@ export function PluginLauncherButton({
       <DefaultLauncherTrigger
         launcher={launcher}
         placementZone={launcher.placementZone}
-        onClick={(event) => {
-          event.preventDefault();
+        onClick={(element) => {
           onActivated?.();
-          void activateLauncher(launcher, context, contribution, event.currentTarget);
+          void activateLauncher(launcher, context, contribution, element);
         }}
       />
     </div>
