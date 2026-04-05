@@ -154,7 +154,14 @@ export function parseJson(value: string): Record<string, unknown> | null {
 
 export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
   const combined = prev + chunk;
-  return combined.length > cap ? combined.slice(combined.length - cap) : combined;
+  // Use Buffer.byteLength for accurate UTF-8 byte counting (not string.length which counts UTF-16 code units)
+  // This prevents splitting multi-byte characters (surrogate pairs) which would produce invalid UTF-8
+  while (Buffer.byteLength(combined, 'utf8') > cap) {
+    // Remove characters from the start until we're within the byte limit
+    // This ensures we don't split a multi-byte character
+    combined = combined.slice(1);
+  }
+  return combined;
 }
 
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
