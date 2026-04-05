@@ -25,8 +25,82 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Math.floor(parsed);
 }
 
+// ---------------------------------------------------------------------------
+// Secret management — supports env var, GCP Secret Manager, and rotation
+// ---------------------------------------------------------------------------
+
+/** Whether initJwtSecret() has been called (enables caching). */
+let initialized = false;
+
+/** Cached primary secret (loaded once at startup via initJwtSecret). */
+let cachedSecret: string | null = null;
+
+/** Cached previous secret for dual-validation during rotation window. */
+let cachedPreviousSecret: string | null = null;
+
+/**
+ * Initialise the JWT signing secret. Call once at server startup.
+ *
+ * Priority:
+ *   1. PAPERCLIP_AGENT_JWT_SECRET env var (direct value)
+ *   2. GCP Secret Manager (if PAPERCLIP_GCP_PROJECT_ID and
+ *      PAPERCLIP_AGENT_JWT_SECRET_SM_NAME are set)
+ *   3. null — JWT auth is disabled
+ *
+ * During rotation the previous secret is sourced from:
+ *   - PAPERCLIP_AGENT_JWT_SECRET_PREVIOUS env var
+ */
+export async function initJwtSecret(): Promise<void> {
+  initialized = true;
+  cachedSecret = null;
+
+  // Primary secret — env var takes precedence
+  const envSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (envSecret) {
+    cachedSecret = envSecret;
+  } else {
+    // Attempt GCP Secret Manager
+    const gcpProject = process.env.PAPERCLIP_GCP_PROJECT_ID;
+    const smName = process.env.PAPERCLIP_AGENT_JWT_SECRET_SM_NAME;
+    const smVersion = process.env.PAPERCLIP_AGENT_JWT_SECRET_SM_VERSION ?? "latest";
+
+    if (gcpProject && smName) {
+      try {
+        const mod = await import("@google-cloud/secret-manager");
+        const client = new mod.SecretManagerServiceClient();
+        const resourceName = `projects/${gcpProject}/secrets/${smName}/versions/${smVersion}`;
+        const [response] = await client.accessSecretVersion({ name: resourceName });
+        const payload = response.payload?.data;
+        if (payload) {
+          cachedSecret = typeof payload === "string"
+            ? payload
+            : Buffer.from(payload).toString("utf8");
+        }
+      } catch (err) {
+        // Log but don't crash — fall through to null (JWT auth disabled)
+        console.error("[agent-auth-jwt] Failed to load JWT secret from GCP Secret Manager:", err);
+      }
+    }
+  }
+
+  // Previous secret for rotation window
+  cachedPreviousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET_PREVIOUS || null;
+}
+
+function getSecret(): string | null {
+  // When initJwtSecret() has been called, use the cached value.
+  // Otherwise (tests, or startup not reached yet), read live from env.
+  if (initialized) return cachedSecret;
+  return process.env.PAPERCLIP_AGENT_JWT_SECRET || null;
+}
+
+function getPreviousSecret(): string | null {
+  if (initialized) return cachedPreviousSecret;
+  return process.env.PAPERCLIP_AGENT_JWT_SECRET_PREVIOUS || null;
+}
+
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const secret = getSecret();
   if (!secret) return null;
 
   return {
@@ -92,11 +166,35 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   return `${signingInput}.${signature}`;
 }
 
+/**
+ * Verify a JWT token against the current secret and, during rotation, the
+ * previous secret. This dual-validation allows a seamless rotation window
+ * where tokens signed with the old secret remain valid until they expire.
+ */
 export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
 
+  // Try current secret first
+  const result = verifyWithSecret(token, config.secret, config.issuer, config.audience);
+  if (result) return result;
+
+  // During rotation, try previous secret
+  const previousSecret = getPreviousSecret();
+  if (previousSecret) {
+    return verifyWithSecret(token, previousSecret, config.issuer, config.audience);
+  }
+
+  return null;
+}
+
+function verifyWithSecret(
+  token: string,
+  secret: string,
+  issuer: string,
+  audience: string,
+): LocalAgentJwtClaims | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [headerB64, claimsB64, signature] = parts;
@@ -105,7 +203,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (!header || header.alg !== JWT_ALGORITHM) return null;
 
   const signingInput = `${headerB64}.${claimsB64}`;
-  const expectedSig = signPayload(config.secret, signingInput);
+  const expectedSig = signPayload(secret, signingInput);
   if (!safeCompare(signature, expectedSig)) return null;
 
   const claims = parseJson(base64UrlDecode(claimsB64));
@@ -122,10 +220,10 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const now = Math.floor(Date.now() / 1000);
   if (exp < now) return null;
 
-  const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
-  const audience = typeof claims.aud === "string" ? claims.aud : undefined;
-  if (issuer && issuer !== config.issuer) return null;
-  if (audience && audience !== config.audience) return null;
+  const claimIssuer = typeof claims.iss === "string" ? claims.iss : undefined;
+  const claimAudience = typeof claims.aud === "string" ? claims.aud : undefined;
+  if (claimIssuer && claimIssuer !== issuer) return null;
+  if (claimAudience && claimAudience !== audience) return null;
 
   return {
     sub,
@@ -134,8 +232,8 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     run_id: runId,
     iat,
     exp,
-    ...(issuer ? { iss: issuer } : {}),
-    ...(audience ? { aud: audience } : {}),
+    ...(claimIssuer ? { iss: claimIssuer } : {}),
+    ...(claimAudience ? { aud: claimAudience } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
   };
 }

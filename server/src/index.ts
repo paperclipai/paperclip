@@ -456,6 +456,10 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
+  // Initialise JWT signing secret (may load from GCP Secret Manager)
+  const { initJwtSecret } = await import("./agent-auth-jwt.js");
+  await initJwtSecret();
+
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
   let resolveSession:
