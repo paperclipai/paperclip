@@ -89,9 +89,84 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 }
 
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
+  const asTrimmedString = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const asStringList = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  };
+
+  const actionKind =
+    asTrimmedString(payload.actionKind) ??
+    asTrimmedString(payload.action) ??
+    asTrimmedString(payload.kind);
+  const behaviorSummary = asStringList(payload.behaviorSummary).join(" | ");
+  const changeSummary =
+    behaviorSummary ||
+    asTrimmedString(payload.changeSummary) ||
+    asTrimmedString(payload.changes) ||
+    asTrimmedString(payload.summary);
+  const routineProject = [
+    asTrimmedString(payload.routineTitle),
+    asTrimmedString(payload.projectTitle),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" | ");
+  const scheduleRecord =
+    payload.schedule && typeof payload.schedule === "object"
+      ? (payload.schedule as Record<string, unknown>)
+      : null;
+  const scheduleLabel = [scheduleRecord && asTrimmedString(scheduleRecord.label), scheduleRecord && asTrimmedString(scheduleRecord.timezone)]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+  const schedule =
+    scheduleLabel ||
+    (scheduleRecord && asTrimmedString(scheduleRecord.cron)) ||
+    asTrimmedString(payload.schedule);
+  const impacts = [
+    ...asStringList(payload.impactedFiles),
+    ...asStringList(payload.ticketIds),
+  ].join(" | ");
+  const rationale =
+    asTrimmedString(payload.recommendationRationale) ??
+    asTrimmedString(payload.rationale) ??
+    asTrimmedString(payload.notes) ??
+    asTrimmedString(payload.reason);
+  const sourceArtifact =
+    asTrimmedString(payload.sourceArtifactUrl) ??
+    (payload.sourceArtifact &&
+    typeof payload.sourceArtifact === "object"
+      ? asTrimmedString((payload.sourceArtifact as Record<string, unknown>).url)
+      : null);
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
   return (
     <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Action kind" value={actionKind} />
+      <PayloadField label="What changes" value={changeSummary || null} />
+      <PayloadField label="Routine/project" value={routineProject || null} />
+      <PayloadField label="Schedule" value={schedule} />
+      <PayloadField label="Files/tickets" value={impacts || null} />
+      <PayloadField label="Why" value={rationale} />
+      {!!sourceArtifact && (
+        <div className="flex items-start gap-2">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Source</span>
+          <a
+            href={sourceArtifact}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs underline underline-offset-2 break-all"
+          >
+            {sourceArtifact}
+          </a>
+        </div>
+      )}
       <PayloadField label="Title" value={payload.title} />
       {!!plan && (
         <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
