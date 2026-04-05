@@ -523,7 +523,7 @@ export function CompanySettings() {
                         setSnippetCopyDelightId((prev) => prev + 1);
                         setTimeout(() => setSnippetCopied(false), 2000);
                       } catch {
-                        /* clipboard may not be available */
+                        pushToast({ title: "Could not copy to clipboard", tone: "error" });
                       }
                     }}
                   >

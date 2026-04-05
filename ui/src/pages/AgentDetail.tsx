@@ -623,6 +623,7 @@ export function AgentDetail() {
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
@@ -967,6 +968,7 @@ export function AgentDetail() {
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                 onClick={() => {
                   navigator.clipboard.writeText(agent.id);
+                  pushToast({ title: "Agent ID copied", tone: "success" });
                   setMoreOpen(false);
                 }}
               >
