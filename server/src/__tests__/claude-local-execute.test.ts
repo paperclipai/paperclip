@@ -96,4 +96,83 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("disables Claude auto-memory when para-memory-files is active", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-auto-memory-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const paraMemoryDir = path.join(root, "para-memory-files");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.mkdir(paraMemoryDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
+    try {
+      const result = await execute({
+        runId: "run-auto-memory",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          paperclipRuntimeSkills: [
+            {
+              name: "para-memory-files",
+              source: paraMemoryDir,
+            },
+          ],
+          paperclipSkillSync: {
+            desiredSkills: ["para-memory-files"],
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const workspaceSettings = JSON.parse(
+        await fs.readFile(path.join(workspace, ".claude", "settings.json"), "utf8"),
+      ) as { autoMemoryEnabled?: boolean };
+      const agentHomeSettings = JSON.parse(
+        await fs.readFile(path.join(agentHome, ".claude", "settings.json"), "utf8"),
+      ) as { autoMemoryEnabled?: boolean };
+
+      expect(workspaceSettings.autoMemoryEnabled).toBe(false);
+      expect(agentHomeSettings.autoMemoryEnabled).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
