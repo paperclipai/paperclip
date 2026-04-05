@@ -208,15 +208,15 @@ export function NewProjectDialog() {
             onKeyDown={handleKeyDown}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/40">
-              <div className="flex items-center gap-2 text-sm text-foreground/40">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/60">
+              <div className="flex items-center gap-2 text-sm">
                 {selectedCompany && (
-                  <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
+                  <span className="bg-accent/15 text-accent px-2 py-0.5 rounded-md text-xs font-semibold tracking-wide">
                     {selectedCompany.name.slice(0, 3).toUpperCase()}
                   </span>
                 )}
-                <span className="text-foreground/60">&rsaquo;</span>
-                <span>New project</span>
+                <span className="text-foreground/30">/</span>
+                <span className="text-foreground/60 font-medium">New project</span>
               </div>
               <div className="flex items-center gap-1">
                 <Button
@@ -274,7 +274,7 @@ export function NewProjectDialog() {
               />
             </div>
 
-            <div className="px-4 pt-3 pb-3 space-y-3 border-t border-default-200/40">
+            <div className="px-4 pt-3 pb-3 space-y-3 border-t border-default-200/70">
               <div>
                 <div className="mb-1 flex items-center gap-1.5">
                   <label className="block text-xs text-foreground/40">Repo URL</label>
@@ -289,7 +289,7 @@ export function NewProjectDialog() {
                   </Tooltip>
                 </div>
                 <input
-                  className="w-full rounded-lg border border-default-200/40 bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-accent/30 focus:ring-1 focus:ring-accent/10 transition-colors"
+                  className="w-full rounded-lg border border-default-200/70 bg-transparent px-2.5 py-1.5 text-xs outline-none focus:border-accent/30 focus:ring-1 focus:ring-accent/10 transition-colors"
                   value={workspaceRepoUrl}
                   onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
                   placeholder="https://github.com/org/repo"
@@ -311,7 +311,7 @@ export function NewProjectDialog() {
                 </div>
                 <div className="flex items-center gap-2">
                   <input
-                    className="w-full rounded-lg border border-default-200/40 bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none focus:border-accent/30 focus:ring-1 focus:ring-accent/10 transition-colors"
+                    className="w-full rounded-lg border border-default-200/70 bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none focus:border-accent/30 focus:ring-1 focus:ring-accent/10 transition-colors"
                     value={workspaceLocalPath}
                     onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
                     placeholder="/absolute/path/to/workspace"
@@ -326,11 +326,11 @@ export function NewProjectDialog() {
             </div>
 
             {/* Property chips */}
-            <div className="flex items-center gap-1.5 px-4 py-2 border-t border-default-200/40 flex-wrap">
+            <div className="flex items-center gap-1.5 px-4 py-2 border-t border-default-200/70 flex-wrap">
               {/* Status */}
               <Popover isOpen={statusOpen} onOpenChange={setStatusOpen}>
                 <Popover.Trigger>
-                  <button className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors">
+                  <button className="inline-flex items-center gap-1.5 rounded-md border border-default-200/70 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors">
                     <StatusBadge status={status} />
                   </button>
                 </Popover.Trigger>
@@ -357,7 +357,7 @@ export function NewProjectDialog() {
               {selectedGoals.map((goal) => (
                 <span
                   key={goal.id}
-                  className="inline-flex items-center gap-1 rounded-md border border-default-200/40 px-2 py-1 text-xs"
+                  className="inline-flex items-center gap-1 rounded-md border border-default-200/70 px-2 py-1 text-xs"
                 >
                   <Target className="h-3 w-3 text-foreground/40" />
                   <span className="max-w-[160px] truncate">{goal.title}</span>
@@ -375,7 +375,7 @@ export function NewProjectDialog() {
               <Popover isOpen={goalOpen} onOpenChange={setGoalOpen}>
                 <Popover.Trigger>
                   <button
-                    className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors disabled:opacity-60"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-default-200/70 px-2 py-1 text-xs hover:bg-accent/[0.05] transition-colors disabled:opacity-60"
                     disabled={selectedGoals.length > 0 && availableGoals.length === 0}
                   >
                     {selectedGoals.length > 0 ? <Plus className="h-3 w-3 text-foreground/40" /> : <Target className="h-3 w-3 text-foreground/40" />}
@@ -414,7 +414,7 @@ export function NewProjectDialog() {
               </Popover>
 
               {/* Target date */}
-              <div className="inline-flex items-center gap-1.5 rounded-md border border-default-200/40 px-2 py-1 text-xs">
+              <div className="inline-flex items-center gap-1.5 rounded-md border border-default-200/70 px-2 py-1 text-xs">
                 <Calendar className="h-3 w-3 text-foreground/40" />
                 <input
                   type="date"
@@ -427,7 +427,7 @@ export function NewProjectDialog() {
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-t border-default-200/40">
+            <div className="flex items-center justify-between px-4 py-2.5 border-t border-default-200/70">
               {createProject.isError ? (
                 <p className="text-xs text-destructive">Failed to create project.</p>
               ) : (

@@ -197,8 +197,8 @@ export function ScheduleEditor({
         onSelectionChange={(key) => handlePresetChange(key as SchedulePreset)}
         className="w-full"
       >
-        <Select.Trigger />
-        <Select.Popover>
+        <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+        <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
           <ListBox>
             {PRESETS.map((p) => (
               <ListBox.Item key={p.value} id={p.value}>
@@ -237,8 +237,8 @@ export function ScheduleEditor({
                 }}
                 className="w-[120px]"
               >
-                <Select.Trigger />
-                <Select.Popover>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                   <ListBox>
                     {HOURS.map((h) => (
                       <ListBox.Item key={h.value} id={h.value}>
@@ -257,8 +257,8 @@ export function ScheduleEditor({
                 }}
                 className="w-[80px]"
               >
-                <Select.Trigger />
-                <Select.Popover>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                   <ListBox>
                     {MINUTES.map((m) => (
                       <ListBox.Item key={m.value} id={m.value}>
@@ -282,8 +282,8 @@ export function ScheduleEditor({
                 }}
                 className="w-[80px]"
               >
-                <Select.Trigger />
-                <Select.Popover>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                   <ListBox>
                     {MINUTES.map((m) => (
                       <ListBox.Item key={m.value} id={m.value}>
@@ -330,8 +330,8 @@ export function ScheduleEditor({
                 }}
                 className="w-[80px]"
               >
-                <Select.Trigger />
-                <Select.Popover>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                   <ListBox>
                     {DAYS_OF_MONTH.map((d) => (
                       <ListBox.Item key={d.value} id={d.value}>

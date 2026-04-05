@@ -469,7 +469,7 @@ export function IssuesList({
                 )}
               </Button>
             </Popover.Trigger>
-            <Popover.Content placement="bottom end" className="w-[min(480px,calc(100vw-2rem))] p-0">
+            <Popover.Content placement="bottom end" className="w-[min(480px,calc(100vw-2rem))] overflow-hidden p-0">
               <div className="p-3 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Filters</span>
@@ -628,8 +628,8 @@ export function IssuesList({
                   <span className="hidden sm:inline">Sort</span>
                 </Button>
               </Popover.Trigger>
-              <Popover.Content placement="bottom end" className="w-48 p-0">
-                <div className="p-2 space-y-0.5">
+              <Popover.Content placement="bottom end" className="w-48 overflow-hidden p-0">
+                <div>
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -639,8 +639,8 @@ export function IssuesList({
                   ] as const).map(([field, label]) => (
                     <button
                       key={field}
-                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.sortField === field ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                      className={`flex items-center justify-between w-full px-3 py-2 text-sm ${
+                        viewState.sortField === field ? "bg-accent/15 text-foreground" : "hover:bg-default/40 text-muted-foreground"
                       }`}
                       onClick={() => {
                         if (viewState.sortField === field) {
@@ -672,8 +672,8 @@ export function IssuesList({
                   <span className="hidden sm:inline">Group</span>
                 </Button>
               </Popover.Trigger>
-              <Popover.Content placement="bottom end" className="w-44 p-0">
-                <div className="p-2 space-y-0.5">
+              <Popover.Content placement="bottom end" className="w-44 overflow-hidden p-0">
+                <div>
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
@@ -682,8 +682,8 @@ export function IssuesList({
                   ] as const).map(([value, label]) => (
                     <button
                       key={value}
-                      className={`flex items-center justify-between w-full px-2 py-1.5 text-sm rounded-sm ${
-                        viewState.groupBy === value ? "bg-accent/50 text-foreground" : "hover:bg-accent/50 text-muted-foreground"
+                      className={`flex items-center justify-between w-full px-3 py-2 text-sm ${
+                        viewState.groupBy === value ? "bg-accent/15 text-foreground" : "hover:bg-default/40 text-muted-foreground"
                       }`}
                       onClick={() => updateView({ groupBy: value })}
                     >

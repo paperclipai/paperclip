@@ -13,7 +13,7 @@ import { adaptersApi } from "@/api/adapters";
 import type { AdapterInfo } from "@/api/adapters";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
-import { Button, Input, Badge, Card, Modal } from "@heroui/react";
+import { Button, Input, Card, Modal } from "@heroui/react";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 import { ChoosePathButton } from "@/components/PathInstructionsModal";
@@ -61,31 +61,31 @@ function AdapterRow({
             <span className={cn("font-medium", adapter.disabled && "text-muted-foreground line-through")}>
               {adapter.label || getAdapterLabel(adapter.type)}
             </span>
-            <Badge className="border border-border text-xs">{adapter.source === "external" ? "External" : "Built-in"}</Badge>
+            <span className="rounded-full border border-border bg-default/30 px-2 py-0.5 text-[10px] font-medium">{adapter.source === "external" ? "External" : "Built-in"}</span>
             {adapter.source === "external" && (
               adapter.isLocalPath
                 ? <span title="Installed from local path"><FolderOpen className="h-4 w-4 text-amber-500" /></span>
                 : <span title="Installed from npm"><Package className="h-4 w-4 text-red-500" /></span>
             )}
             {adapter.version && (
-              <Badge className="font-mono text-[10px] bg-muted text-muted-foreground border-transparent">
+              <span className="rounded-full bg-default/30 px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
                 v{adapter.version}
-              </Badge>
+              </span>
             )}
             {adapter.overriddenBuiltin && (
-              <Badge className="text-blue-600 border-blue-400 bg-muted">
+              <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
                 Overrides built-in
-              </Badge>
+              </span>
             )}
             {overriddenBy && (
-              <Badge className="text-blue-600 border-blue-400 bg-muted">
+              <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
                 Overridden by {overriddenBy}
-              </Badge>
+              </span>
             )}
             {adapter.disabled && (
-              <Badge className="text-amber-600 border-amber-400 bg-muted">
+              <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                 {disabledBadgeLabel ?? "Hidden from menus"}
-              </Badge>
+              </span>
             )}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -384,18 +384,18 @@ export function AdapterManager() {
   const isMutating = installMutation.isPending || removeMutation.isPending || toggleMutation.isPending || overrideMutation.isPending || reloadMutation.isPending || reinstallMutation.isPending;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-5xl overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-xl font-semibold">Adapters</h1>
-          <Badge className="text-amber-600 border border-amber-400">
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
             Alpha
-          </Badge>
+          </span>
         </div>
 
-        <Button size="sm" className="gap-2" onPress={() => setInstallDialogOpen(true)}>
+        <Button size="sm" className="gap-2 shrink-0" onPress={() => setInstallDialogOpen(true)}>
           <Plus className="h-4 w-4" />
           Install Adapter
         </Button>

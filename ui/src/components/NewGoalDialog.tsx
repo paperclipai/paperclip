@@ -114,15 +114,15 @@ export function NewGoalDialog() {
             onKeyDown={handleKeyDown}
           >
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/40">
-              <div className="flex items-center gap-2 text-sm text-foreground/40">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/60">
+              <div className="flex items-center gap-2 text-sm">
                 {selectedCompany && (
-                  <span className="bg-default-100 px-1.5 py-0.5 rounded text-xs font-medium">
+                  <span className="bg-accent/15 text-accent px-2 py-0.5 rounded-md text-xs font-semibold tracking-wide">
                     {selectedCompany.name.slice(0, 3).toUpperCase()}
                   </span>
                 )}
-                <span className="text-foreground/25">&rsaquo;</span>
-                <span>{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
+                <span className="text-foreground/30">/</span>
+                <span className="text-foreground/60 font-medium">{newGoalDefaults.parentId ? "New sub-goal" : "New goal"}</span>
               </div>
               <div className="flex items-center gap-1">
                 <Button

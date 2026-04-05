@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace, type Project } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -25,7 +25,7 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
-import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { formatDate, projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@heroui/react";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
@@ -63,7 +63,7 @@ function OverviewContent({
   onUpdate,
   imageUploadHandler,
 }: {
-  project: { description: string | null; status: string; targetDate: string | null };
+  project: Project;
   onUpdate: (data: Record<string, unknown>) => void;
   imageUploadHandler?: (file: File) => Promise<string>;
 }) {
@@ -73,25 +73,61 @@ function OverviewContent({
         value={project.description ?? ""}
         onSave={(description) => onUpdate({ description })}
         as="p"
-        className="text-sm text-muted-foreground"
+        className="text-sm text-foreground/70"
         placeholder="Add a description..."
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-xs text-muted-foreground">Status</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
+            <span className="text-xs text-muted-foreground">Target Date</span>
+            <p className="mt-1">{formatDate(project.targetDate)}</p>
           </div>
         )}
+        {project.goals.length > 0 && (
+          <div>
+            <span className="text-xs text-muted-foreground">Goals</span>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {project.goals.map((goal) => (
+                <Link
+                  key={goal.id}
+                  to={`/goals/${goal.id}`}
+                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs hover:bg-default/40 transition-colors"
+                >
+                  {goal.title}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+        {project.codebase.repoUrl && (
+          <div>
+            <span className="text-xs text-muted-foreground">Repository</span>
+            <p className="mt-1 text-xs font-mono truncate">{project.codebase.repoUrl}</p>
+          </div>
+        )}
+        {project.codebase.localFolder && (
+          <div>
+            <span className="text-xs text-muted-foreground">Local Folder</span>
+            <p className="mt-1 text-xs font-mono truncate">{project.codebase.localFolder}</p>
+          </div>
+        )}
+        <div>
+          <span className="text-xs text-muted-foreground">Created</span>
+          <p className="mt-1">{formatDate(project.createdAt)}</p>
+        </div>
+        <div>
+          <span className="text-xs text-muted-foreground">Updated</span>
+          <p className="mt-1">{formatDate(project.updatedAt)}</p>
+        </div>
       </div>
     </div>
   );

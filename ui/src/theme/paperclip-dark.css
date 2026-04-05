@@ -18,9 +18,9 @@
     --cursor-interactive: pointer;
     --cursor-disabled: not-allowed;
 
-    /* Radius — Soft & Rounded (16px base) */
-    --radius: 1rem;
-    --field-radius: calc(var(--radius) * 1.5);
+    /* Radius — Soft & Rounded (8px base) */
+    --radius: 0.5rem;
+    --field-radius: calc(var(--radius) * 0.625);
 
     /* Base Colors */
     --background: oklch(0.145 0.005 270);
@@ -48,7 +48,7 @@
     --field-background: var(--default);
     --field-foreground: var(--foreground);
     --field-placeholder: var(--muted);
-    --field-border: oklch(0.32 0.008 270);
+    --field-border: oklch(0.40 0.008 270);
 
     /* Status Colors */
     --success: oklch(0.7329 0.1935 150.81);
@@ -71,8 +71,8 @@
     --surface-tertiary-foreground: var(--foreground);
 
     /* Misc */
-    --border: oklch(0.28 0.008 270);
-    --separator: oklch(0.26 0.006 270);
+    --border: oklch(0.35 0.008 270);
+    --separator: oklch(0.30 0.006 270);
     --focus: var(--accent);
     --link: var(--accent);
     --backdrop: oklch(0 0 0 / 60%);

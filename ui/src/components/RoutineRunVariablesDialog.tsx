@@ -206,8 +206,8 @@ export function RoutineRunVariablesDialog({
                     [variable.name]: next === "__unset__" ? "" : next === "true",
                   }))}
                 >
-                  <Select.Trigger />
-                  <Select.Popover>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       <ListBox.Item id="__unset__">No value</ListBox.Item>
                       <ListBox.Item id="true">True</ListBox.Item>
@@ -223,8 +223,8 @@ export function RoutineRunVariablesDialog({
                     [variable.name]: next === "__unset__" ? "" : next,
                   }))}
                 >
-                  <Select.Trigger />
-                  <Select.Popover>
+                  <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       <ListBox.Item id="__unset__">No value</ListBox.Item>
                       {variable.options.map((option) => (

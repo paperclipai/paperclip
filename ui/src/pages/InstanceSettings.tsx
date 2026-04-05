@@ -7,9 +7,9 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
-import { Badge, Button, Card } from "@heroui/react";
+import { Button, Card } from "@heroui/react";
 import { queryKeys } from "../lib/queryKeys";
-import { formatDateTime, relativeTime } from "../lib/utils";
+import { cn, formatDateTime, relativeTime } from "../lib/utils";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -162,7 +162,7 @@ export function InstanceSettings() {
   }
 
   return (
-    <div className="max-w-5xl space-y-6">
+    <div className="max-w-5xl space-y-6 overflow-hidden">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <Settings className="h-5 w-5 text-muted-foreground" />
@@ -221,13 +221,16 @@ export function InstanceSettings() {
                     return (
                       <div
                         key={agent.id}
-                        className="flex items-center gap-3 px-3 py-2 text-sm"
+                        className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm overflow-hidden"
                       >
-                        <Badge
-                          className="shrink-0 text-[10px] px-1.5 py-0"
-                        >
+                        <span className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium leading-none",
+                          agent.schedulerActive
+                            ? "bg-green-500/15 text-green-600 dark:text-green-400"
+                            : "bg-default/40 text-muted-foreground",
+                        )}>
                           {agent.schedulerActive ? "On" : "Off"}
-                        </Badge>
+                        </span>
                         <Link
                           to={buildAgentHref(agent)}
                           className="font-medium truncate hover:underline"
@@ -259,11 +262,11 @@ export function InstanceSettings() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-6 px-2 text-xs"
+                            className="h-6 px-2 text-xs whitespace-nowrap"
                             isDisabled={saving}
                             onPress={() => toggleMutation.mutate(agent)}
                           >
-                            {saving ? "..." : agent.heartbeatEnabled ? "Disable Timer Heartbeat" : "Enable Timer Heartbeat"}
+                            {saving ? "..." : agent.heartbeatEnabled ? "Disable" : "Enable"}
                           </Button>
                         </span>
                       </div>

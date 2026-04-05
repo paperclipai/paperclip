@@ -13,7 +13,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { Button, Input, Card, Badge, Modal } from "@heroui/react";
+import { Button, Input, Card, Modal } from "@heroui/react";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 
@@ -147,7 +147,7 @@ export function PluginManager() {
   if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-5xl overflow-hidden">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
@@ -214,7 +214,7 @@ export function PluginManager() {
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
           <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge>Examples</Badge>
+          <span className="rounded-full bg-default/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Examples</span>
         </div>
 
         {examplesQuery.isLoading ? (
@@ -240,15 +240,16 @@ export function PluginManager() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{example.displayName}</span>
-                        <Badge>Example</Badge>
+                        <span className="rounded-full bg-default/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Example</span>
                         {installedPlugin ? (
-                          <Badge
-                            className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
-                          >
+                          <span className={cn(
+                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                            installedPlugin.status === "ready" ? "bg-green-500/15 text-green-600 dark:text-green-400" : "bg-default/40 text-muted-foreground",
+                          )}>
                             {installedPlugin.status}
-                          </Badge>
+                          </span>
                         ) : (
-                          <Badge>Not installed</Badge>
+                          <span className="rounded-full bg-default/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Not installed</span>
                         )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
@@ -325,7 +326,7 @@ export function PluginManager() {
                         {plugin.manifestJson.displayName ?? plugin.packageName}
                       </Link>
                       {examplePackageNames.has(plugin.packageName) && (
-                        <Badge>Example</Badge>
+                        <span className="rounded-full bg-default/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">Example</span>
                       )}
                     </div>
                     <div>
@@ -366,14 +367,12 @@ export function PluginManager() {
                   <div className="flex shrink-0 self-center">
                     <div className="flex flex-col items-end gap-2">
                       <div className="flex items-center gap-2">
-                        <Badge
-                          className={cn(
-                            "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
-                          )}
-                        >
+                        <span className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                          plugin.status === "ready" ? "bg-green-500/15 text-green-600 dark:text-green-400" : "bg-default/40 text-muted-foreground",
+                        )}>
                           {plugin.status}
-                        </Badge>
+                        </span>
                         <Button
                           variant="outline"
                           size="sm"

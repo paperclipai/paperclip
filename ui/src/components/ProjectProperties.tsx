@@ -215,6 +215,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
+  const [goalSearch, setGoalSearch] = useState("");
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<"local" | "repo" | null>(null);
   const [workspaceCwd, setWorkspaceCwd] = useState("");
@@ -545,31 +546,49 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </div>
           )}
           {(onUpdate || onFieldUpdate) && (
-            <Popover isOpen={goalOpen} onOpenChange={setGoalOpen}>
+            <Popover isOpen={goalOpen} onOpenChange={(open) => { setGoalOpen(open); if (!open) setGoalSearch(""); }}>
               <Popover.Trigger>
                 <button
-                  className={cn("inline-flex items-center rounded border border-border h-6 px-2 text-xs hover:bg-accent/50 transition-colors disabled:opacity-50 disabled:pointer-events-none", linkedGoals.length > 0 && "ml-1")}
+                  className={cn("inline-flex items-center rounded border border-border h-6 px-2 text-xs hover:bg-default/40 transition-colors disabled:opacity-50 disabled:pointer-events-none", linkedGoals.length > 0 && "ml-1")}
                   disabled={availableGoals.length === 0}
                 >
                   <Plus className="h-3 w-3 mr-1" />
                   Goal
                 </button>
               </Popover.Trigger>
-              <Popover.Content className="w-56 p-1">
+              <Popover.Content className="w-64 p-0">
                 {availableGoals.length === 0 ? (
-                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  <div className="px-3 py-2 text-xs text-muted-foreground">
                     All goals linked.
                   </div>
                 ) : (
-                  availableGoals.map((goal) => (
-                    <button
-                      key={goal.id}
-                      className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => addGoal(goal.id)}
-                    >
-                      {goal.title}
-                    </button>
-                  ))
+                  <div className="flex flex-col">
+                    <div className="border-b border-border px-2 py-1.5">
+                      <input
+                        className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
+                        placeholder="Search goals..."
+                        value={goalSearch}
+                        onChange={(e) => setGoalSearch(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="max-h-48 overflow-y-auto p-1">
+                      {availableGoals
+                        .filter((goal) => !goalSearch || goal.title.toLowerCase().includes(goalSearch.toLowerCase()))
+                        .map((goal) => (
+                          <button
+                            key={goal.id}
+                            className="flex items-center w-full px-2 py-1.5 text-xs rounded hover:bg-default/40 truncate"
+                            onClick={() => { addGoal(goal.id); setGoalSearch(""); }}
+                          >
+                            {goal.title}
+                          </button>
+                        ))}
+                      {availableGoals.filter((goal) => !goalSearch || goal.title.toLowerCase().includes(goalSearch.toLowerCase())).length === 0 && (
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground">No matching goals.</div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </Popover.Content>
             </Popover>

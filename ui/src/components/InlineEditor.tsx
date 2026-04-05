@@ -190,7 +190,7 @@ export function InlineEditor({
         className={cn(
           markdownPad,
           "rounded transition-colors",
-          multilineFocused ? "bg-transparent" : "hover:bg-accent/20",
+          multilineFocused ? "bg-transparent" : "hover:bg-default/30",
         )}
         onFocusCapture={() => {
           cancelPendingBlurCommit();
@@ -274,7 +274,7 @@ export function InlineEditor({
   return (
     <DisplayTag
       className={cn(
-        "cursor-pointer rounded hover:bg-accent/50 transition-colors overflow-hidden",
+        "cursor-pointer rounded hover:bg-default/30 transition-colors overflow-hidden",
         pad,
         !value && "text-muted-foreground italic",
         className,

@@ -170,7 +170,7 @@ function RoutineListRow({
 
   return (
     <div
-      className="group flex cursor-pointer flex-col gap-3 border-b border-border px-3 py-3 transition-colors hover:bg-accent/50 last:border-b-0 sm:flex-row sm:items-center"
+      className="group flex cursor-pointer flex-col gap-3 border-b border-border px-3 py-3 transition-colors hover:bg-default/40 last:border-b-0 sm:flex-row sm:items-center"
       onClick={() => onNavigate(routine.id)}
     >
       <div className="min-w-0 flex-1 space-y-1.5">
@@ -590,7 +590,7 @@ export function Routines() {
                 <span className="hidden sm:inline">Group</span>
               </Button>
             </Popover.Trigger>
-            <Popover.Content placement="bottom end" className="w-44 p-2 space-y-0.5">
+            <Popover.Content placement="bottom end" className="w-44 overflow-hidden p-0">
               {([
                 ["project", "Project"],
                 ["assignee", "Agent"],
@@ -598,10 +598,10 @@ export function Routines() {
               ] as const).map(([value, label]) => (
                 <button
                   key={value}
-                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm ${
+                  className={`flex w-full items-center justify-between px-3 py-2 text-sm ${
                     routineViewState.groupBy === value
-                      ? "bg-accent/50 text-foreground"
-                      : "text-muted-foreground hover:bg-accent/50"
+                      ? "bg-accent/15 text-foreground"
+                      : "text-muted-foreground hover:bg-default/40"
                   }`}
                   onClick={() => updateRoutineView({ groupBy: value, collapsedGroups: [] })}
                 >
@@ -830,7 +830,7 @@ export function Routines() {
                         onSelectionChange={(key) => setDraft((current) => ({ ...current, concurrencyPolicy: key as string }))}
                       >
                         <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                        <Select.Popover>
+                        <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                           <ListBox>
                             {concurrencyPolicies.map((value) => (
                               <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
@@ -847,7 +847,7 @@ export function Routines() {
                         onSelectionChange={(key) => setDraft((current) => ({ ...current, catchUpPolicy: key as string }))}
                       >
                         <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                        <Select.Popover>
+                        <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                           <ListBox>
                             {catchUpPolicies.map((value) => (
                               <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>

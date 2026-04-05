@@ -12,6 +12,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--default);
   --color-muted-foreground: var(--muted);
   --color-border: var(--border);
   --color-destructive: var(--danger);
@@ -59,6 +60,11 @@
   .paperclip-mdxeditor-content {
     font-family: inherit;
   }
+}
+
+/* ── HeroUI component radius overrides ──────────────────────────────────── */
+.card {
+  border-radius: var(--radius);
 }
 
 /* ── Touch target sizing ────────────────────────────────────────────────── */
@@ -198,7 +204,7 @@
 .paperclip-mdxeditor {
   --baseBase: var(--background);
   --baseBg: transparent;
-  --baseBgSubtle: color-mix(in oklab, var(--accent) 15%, transparent);
+  --baseBgSubtle: color-mix(in oklab, var(--foreground) 5%, transparent);
   --baseLine: var(--border);
   --baseSolid: var(--muted);
   --baseSolidHover: var(--foreground);

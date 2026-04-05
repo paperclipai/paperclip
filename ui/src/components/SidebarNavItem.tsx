@@ -42,7 +42,7 @@ export function SidebarNavItem({
           "flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors",
           isActive
             ? "bg-accent text-foreground"
-            : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+            : "text-foreground/80 hover:bg-default/40 hover:text-foreground",
           className,
         )
       }
@@ -78,10 +78,10 @@ export function SidebarNavItem({
       {badge != null && badge > 0 && (
         <span
           className={cn(
-            "ml-auto rounded-full px-1.5 py-0.5 text-xs leading-none",
+            "ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none",
             badgeTone === "danger"
               ? "bg-red-600/90 text-red-50"
-              : "bg-primary text-primary-foreground",
+              : "bg-accent/20 text-accent",
           )}
         >
           {badge}

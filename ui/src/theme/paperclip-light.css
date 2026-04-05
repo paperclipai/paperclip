@@ -18,9 +18,9 @@
     --cursor-interactive: pointer;
     --cursor-disabled: not-allowed;
 
-    /* Radius — Soft & Rounded (16px base) */
-    --radius: 1rem;
-    --field-radius: calc(var(--radius) * 1.5);
+    /* Radius — Soft & Rounded (8px base) */
+    --radius: 0.5rem;
+    --field-radius: calc(var(--radius) * 0.625);
 
     /* Base Colors */
     --background: oklch(0.985 0.002 260);

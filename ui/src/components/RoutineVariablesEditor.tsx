@@ -103,7 +103,7 @@ export function RoutineVariablesEditor({
                   })))}
                 >
                   <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                  <Select.Popover>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       {variableTypes.map((type) => (
                         <ListBox.Item key={type} id={type}>{type}</ListBox.Item>
@@ -148,7 +148,7 @@ export function RoutineVariablesEditor({
                     })))}
                   >
                     <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                    <Select.Popover>
+                    <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                       <ListBox>
                         <ListBox.Item id="__unset__">No default</ListBox.Item>
                         <ListBox.Item id="true">True</ListBox.Item>
@@ -186,7 +186,7 @@ export function RoutineVariablesEditor({
                         })))}
                       >
                         <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                        <Select.Popover>
+                        <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                           <ListBox>
                             <ListBox.Item id="__unset__">No default</ListBox.Item>
                             {variable.options.map((option) => (

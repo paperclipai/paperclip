@@ -871,14 +871,14 @@ export function NewIssueDialog() {
         onKeyDown={handleKeyDown}
       >
         {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/40 shrink-0">
-          <div className="flex items-center gap-2 text-sm text-foreground/40">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-default-200/60 shrink-0">
+          <div className="flex items-center gap-2 text-sm">
             <Popover isOpen={companyOpen} onOpenChange={setCompanyOpen}>
               <Popover.Trigger>
                 <button
                   className={cn(
-                    "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
-                    !dialogCompany?.brandColor && "bg-muted",
+                    "px-2 py-0.5 rounded-md text-xs font-semibold tracking-wide cursor-pointer hover:opacity-80 transition-opacity",
+                    !dialogCompany?.brandColor && "bg-accent/15 text-accent",
                   )}
                   style={
                     dialogCompany?.brandColor
@@ -892,15 +892,15 @@ export function NewIssueDialog() {
                   {(dialogCompany?.name ?? "").slice(0, 3).toUpperCase()}
                 </button>
               </Popover.Trigger>
-              <Popover.Content className="w-52 p-0">
-                <Popover.Dialog className="overflow-hidden rounded-xl border border-default-200/60 bg-overlay shadow-lg p-1.5">
+              <Popover.Content className="w-52 overflow-hidden p-0">
+                <Popover.Dialog className="bg-overlay shadow-lg">
                   {companies.filter((c) => c.status !== "archived").map((c) => (
                     <button
                       key={c.id}
                       className={cn(
-                        "flex items-center gap-2.5 w-full px-2.5 py-2 text-xs rounded-lg transition-colors",
+                        "flex items-center gap-2.5 w-full px-3 py-2 text-xs transition-colors",
                         c.id === effectiveCompanyId
-                          ? "bg-accent/[0.08] text-accent font-medium"
+                          ? "bg-accent/15 text-accent font-medium"
                           : "text-foreground hover:bg-default/40",
                       )}
                       onClick={() => {
@@ -910,8 +910,8 @@ export function NewIssueDialog() {
                     >
                       <span
                         className={cn(
-                          "px-1.5 py-0.5 rounded-md text-[10px] font-semibold leading-none",
-                          !c.brandColor && "bg-default",
+                          "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold leading-none",
+                          !c.brandColor && "bg-accent/15 text-accent",
                         )}
                         style={
                           c.brandColor
@@ -922,7 +922,7 @@ export function NewIssueDialog() {
                             : undefined
                         }
                       >
-                        {c.name.slice(0, 3).toUpperCase()}
+                        {c.name.charAt(0).toUpperCase()}
                       </span>
                       <span className="truncate">{c.name}</span>
                     </button>
@@ -930,8 +930,8 @@ export function NewIssueDialog() {
                 </Popover.Dialog>
               </Popover.Content>
             </Popover>
-            <span className="text-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span className="text-foreground/30">/</span>
+            <span className="text-foreground/60 font-medium">New issue</span>
           </div>
           <div className="flex items-center gap-1">
             <Button

@@ -177,7 +177,7 @@ function TriggerEditor({
                 onSelectionChange={(key) => setDraft((current) => ({ ...current, signingMode: key as string }))}
               >
                 <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                <Select.Popover>
+                <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                   <ListBox>
                     {signingModes.map((mode) => (
                       <ListBox.Item key={mode} id={mode}>{mode}</ListBox.Item>
@@ -407,6 +407,7 @@ export function RoutineDetail() {
       });
     },
     onSuccess: async () => {
+      pushToast({ title: "Routine saved", tone: "success" });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -868,7 +869,7 @@ export function RoutineDetail() {
                   onSelectionChange={(key) => setEditDraft((current) => ({ ...current, concurrencyPolicy: key as string }))}
                 >
                   <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                  <Select.Popover>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       {concurrencyPolicies.map((value) => (
                         <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
@@ -885,7 +886,7 @@ export function RoutineDetail() {
                   onSelectionChange={(key) => setEditDraft((current) => ({ ...current, catchUpPolicy: key as string }))}
                 >
                   <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                  <Select.Popover>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       {catchUpPolicies.map((value) => (
                         <ListBox.Item key={value} id={value}>{value.replaceAll("_", " ")}</ListBox.Item>
@@ -943,7 +944,7 @@ export function RoutineDetail() {
                   onSelectionChange={(key) => setNewTrigger((current) => ({ ...current, kind: key as string }))}
                 >
                   <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                  <Select.Popover>
+                  <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                     <ListBox>
                       {triggerKinds.map((kind) => (
                         <ListBox.Item key={kind} id={kind} isDisabled={kind === "webhook"}>
@@ -972,7 +973,7 @@ export function RoutineDetail() {
                       onSelectionChange={(key) => setNewTrigger((current) => ({ ...current, signingMode: key as string }))}
                     >
                       <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
-                      <Select.Popover>
+                      <Select.Popover placement="bottom" className="max-h-60 overflow-y-auto">
                         <ListBox>
                           {signingModes.map((mode) => (
                             <ListBox.Item key={mode} id={mode}>{mode}</ListBox.Item>

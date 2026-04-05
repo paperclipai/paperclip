@@ -116,10 +116,10 @@ function NavItem({
       {badge != null && badge > 0 && (
         <span
           className={cn(
-            "ml-auto flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold leading-none",
+            "ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none",
             badgeTone === "danger"
               ? "bg-gradient-to-r from-danger to-red-500 text-white shadow-sm shadow-danger/30 glow-danger"
-              : "bg-default-200 text-default-700",
+              : "bg-accent/20 text-accent",
           )}
         >
           {badge}
