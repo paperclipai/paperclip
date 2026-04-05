@@ -56,11 +56,21 @@ const tailscaleAuthFlagNames = new Set([
 ]);
 
 let tailscaleAuth = false;
+let networkMode = false;
+let localNetwork = false;
 const forwardedArgs = [];
 
 for (const arg of cliArgs) {
   if (tailscaleAuthFlagNames.has(arg)) {
     tailscaleAuth = true;
+    continue;
+  }
+  if (arg === "--network" || arg === "-n") {
+    networkMode = true;
+    continue;
+  }
+  if (arg === "--local-network") {
+    localNetwork = true;
     continue;
   }
   forwardedArgs.push(arg);
@@ -93,8 +103,15 @@ if (tailscaleAuth) {
   env.PAPERCLIP_AUTH_BASE_URL_MODE = "auto";
   env.HOST = "0.0.0.0";
   console.log("[paperclip] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
+} else if (localNetwork) {
+  env.HOST = "0.0.0.0";
+  env.PAPERCLIP_ALLOW_NETWORK_LOCAL = "true";
+  console.log("[paperclip] dev mode: local_trusted on 0.0.0.0 (trusted local network - no auth)");
+} else if (networkMode) {
+  env.HOST = "0.0.0.0";
+  console.log("[paperclip] dev mode: local_trusted on 0.0.0.0 (network accessible)");
 } else {
-  console.log("[paperclip] dev mode: local_trusted (default)");
+  console.log("[paperclip] dev mode: local_trusted (localhost only)");
 }
 
 const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";

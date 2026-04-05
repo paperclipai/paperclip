@@ -432,9 +432,16 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
-    throw new Error(
-      `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
-        "Use authenticated mode for non-loopback deployments.",
+    if (process.env.PAPERCLIP_ALLOW_NETWORK_LOCAL !== "true") {
+      throw new Error(
+        `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
+          "Use authenticated mode for non-loopback deployments, or use --local-network flag for trusted local networks.",
+      );
+    }
+    // Allow network access for trusted local networks when flag is set
+    logger.warn(
+      "Allowing non-loopback host binding for local_trusted mode (PAPERCLIP_ALLOW_NETWORK_LOCAL=true). " +
+        "Only use this on trusted local networks."
     );
   }
   
