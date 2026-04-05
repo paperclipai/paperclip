@@ -50,3 +50,34 @@ pnpm dev       # watch worker + manifest + ui bundles
 pnpm dev:ui    # local UI preview server with hot-reload events
 pnpm test
 ```
+
+## Publishing to npm
+
+The scaffold includes `scripts/publish.mjs`, a release helper that bumps versions and publishes in one step.
+
+```bash
+pnpm release                    # patch bump (0.1.0 → 0.1.1) + publish
+pnpm release -- --bump minor    # minor bump (0.1.0 → 0.2.0) + publish
+pnpm release -- --bump major    # major bump (0.1.0 → 1.0.0) + publish
+pnpm release -- --version 2.0.0 # explicit version + publish
+pnpm release -- --dry-run       # preview without publishing
+```
+
+The helper:
+- Bumps `version` in `package.json` and `src/manifest.ts` atomically so they stay in sync
+- Blocks publish if local `file:` SDK dependencies are present (development-only tarballs; not resolvable by npm users)
+- Delegates to `npm publish --access public` (`prepublishOnly` runs the build automatically)
+
+Log in to npm before your first release:
+
+```bash
+npm login
+```
+
+Once published, install into Paperclip by package name:
+
+```bash
+curl -X POST http://127.0.0.1:3100/api/plugins/install \
+  -H "Content-Type: application/json" \
+  -d '{"packageName":"@acme/my-plugin"}'
+```
