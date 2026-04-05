@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -46,6 +45,9 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 
 /* ---- Create mode values ---- */
 
@@ -180,6 +182,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
 
+  // Sync disabled adapter types from server so dropdown filters them out
+  const disabledTypes = useDisabledAdaptersSync();
+
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
@@ -311,15 +316,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
-  const isLocal =
-    adapterType === "claude_local" ||
-    adapterType === "codex_local" ||
-    adapterType === "gemini_local" ||
-    adapterType === "hermes_local" ||
-    adapterType === "opencode_local" ||
-    adapterType === "pi_local" ||
-    adapterType === "cursor";
-  const isHermesLocal = adapterType === "hermes_local";
+  const NONLOCAL_TYPES = new Set(["process", "http", "openclaw_gateway"]);
+  const isLocal = !NONLOCAL_TYPES.has(adapterType);
+  
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -345,13 +344,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["agents", "none", "detect-model", adapterType],
     queryFn: () => {
       if (!selectedCompanyId) {
-        throw new Error("Select a company to detect the Hermes model");
+        throw new Error("Select a company to detect the model");
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isHermesLocal),
+    enabled: Boolean(selectedCompanyId && isLocal),
   });
   const detectedModel = detectedModelData?.model ?? null;
+  const detectedModelCandidates = detectedModelData?.candidates ?? [];
 
   const { data: companyAgents = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none", "list"],
@@ -583,6 +583,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
+                disabledTypes={disabledTypes}
                 onChange={(t) => {
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
@@ -692,8 +693,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </>
           )}
 
-          {/* Adapter-specific fields */}
-          <uiAdapter.ConfigFields {...adapterFieldProps} />
+          {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
       </div>
@@ -716,24 +716,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onCommit={(v) =>
                     isCreate
                       ? set!({ command: v })
-                      : mark("adapterConfig", "command", v || undefined)
+                      : mark("adapterConfig", "command", v || null)
                   }
                   immediate
                   className={inputClass}
                   placeholder={
-                    adapterType === "codex_local"
-                      ? "codex"
-                      : adapterType === "gemini_local"
-                        ? "gemini"
-                        : adapterType === "hermes_local"
-                          ? "hermes"
-                        : adapterType === "pi_local"
-                          ? "pi"
-                        : adapterType === "cursor"
-                          ? "agent"
-                        : adapterType === "opencode_local"
-                          ? "opencode"
-                          : "claude"
+                    ({
+                      claude_local: "claude",
+                      codex_local: "codex",
+                      gemini_local: "gemini",
+                      pi_local: "pi",
+                      cursor: "agent",
+                      opencode_local: "opencode",
+                    } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
                   }
                 />
               </Field>
@@ -748,18 +743,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "hermes_local"}
-                required={adapterType === "opencode_local" || adapterType === "hermes_local"}
+                allowDefault={adapterType !== "opencode_local"}
+                required={adapterType === "opencode_local"}
                 groupByProvider={adapterType === "opencode_local"}
-                creatable={adapterType === "hermes_local"}
-                detectedModel={adapterType === "hermes_local" ? detectedModel : null}
-                onDetectModel={adapterType === "hermes_local"
-                  ? async () => {
-                      const result = await refetchDetectedModel();
-                      return result.data?.model ?? null;
-                    }
-                  : undefined}
-                detectModelLabel={adapterType === "hermes_local" ? "Detect from Hermes config" : undefined}
+                creatable
+                detectedModel={detectedModel}
+                detectedModelCandidates={[]}
+                onDetectModel={async () => {
+                  const result = await refetchDetectedModel();
+                  return result.data?.model ?? null;
+                }}
+                detectModelLabel="Detect model"
+                emptyDetectHint="No model detected. Select or enter one manually."
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -820,6 +815,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {adapterType === "claude_local" && (
                 <ClaudeLocalAdvancedFields {...adapterFieldProps} />
               )}
+              <uiAdapter.ConfigFields {...adapterFieldProps} />
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
@@ -831,7 +827,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onCommit={(v) =>
                     isCreate
                       ? set!({ extraArgs: v })
-                      : mark("adapterConfig", "extraArgs", v ? parseCommaArgs(v) : undefined)
+                      : mark("adapterConfig", "extraArgs", v ? parseCommaArgs(v) : null)
                   }
                   immediate
                   className={inputClass}
@@ -1024,37 +1020,37 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
 
 /* ---- Internal sub-components ---- */
 
-const ENABLED_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor", "hermes_local"]);
-
-/** Display list includes all real adapter types plus UI-only coming-soon entries. */
-const ADAPTER_DISPLAY_LIST: { value: string; label: string; comingSoon: boolean }[] = [
-  ...AGENT_ADAPTER_TYPES.map((t) => ({
-    value: t,
-    label: adapterLabels[t] ?? t,
-    comingSoon: !ENABLED_ADAPTER_TYPES.has(t),
-  })),
-];
-
 function AdapterTypeDropdown({
   value,
   onChange,
+  disabledTypes,
 }: {
   value: string;
   onChange: (type: string) => void;
+  disabledTypes: Set<string>;
 }) {
+  const [open, setOpen] = useState(false);
+  const adapterList = useMemo(
+    () =>
+      listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
+        (item) => !disabledTypes.has(item.value),
+      ),
+    [disabledTypes],
+  );
+
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
           <span className="inline-flex items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span>{adapterLabels[value] ?? value}</span>
+            <span>{adapterLabels[value] ?? getAdapterLabel(value)}</span>
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-        {ADAPTER_DISPLAY_LIST.map((item) => (
+        {adapterList.map((item) => (
           <button
             key={item.value}
             disabled={item.comingSoon}
@@ -1066,7 +1062,10 @@ function AdapterTypeDropdown({
               item.value === value && !item.comingSoon && "bg-accent",
             )}
             onClick={() => {
-              if (!item.comingSoon) onChange(item.value);
+              if (!item.comingSoon) {
+                onChange(item.value);
+                setOpen(false);
+              }
             }}
           >
             <span className="inline-flex items-center gap-1.5">
@@ -1357,8 +1356,10 @@ function ModelDropdown({
   groupByProvider,
   creatable,
   detectedModel,
+  detectedModelCandidates,
   onDetectModel,
   detectModelLabel,
+  emptyDetectHint,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1370,8 +1371,10 @@ function ModelDropdown({
   groupByProvider: boolean;
   creatable?: boolean;
   detectedModel?: string | null;
+  detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
   detectModelLabel?: string;
+  emptyDetectHint?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
@@ -1382,8 +1385,19 @@ function ModelDropdown({
       manualModel &&
       !models.some((m) => m.id.toLowerCase() === manualModel.toLowerCase()),
   );
+  // Model IDs already shown as detected/candidate badges — exclude from regular list
+  const promotedModelIds = useMemo(() => {
+    const set = new Set<string>();
+    if (detectedModel) set.add(detectedModel);
+    for (const c of detectedModelCandidates ?? []) {
+      if (c) set.add(c);
+    }
+    return set;
+  }, [detectedModel, detectedModelCandidates]);
+
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
+      if (promotedModelIds.has(m.id)) return false;
       if (!modelSearch.trim()) return true;
       const q = modelSearch.toLowerCase();
       const provider = extractProviderId(m.id) ?? "";
@@ -1393,7 +1407,7 @@ function ModelDropdown({
         provider.toLowerCase().includes(q)
       );
     });
-  }, [models, modelSearch]);
+  }, [models, modelSearch, promotedModelIds]);
   const groupedModels = useMemo(() => {
     if (!groupByProvider) {
       return [
@@ -1474,7 +1488,7 @@ function ModelDropdown({
               </button>
             )}
           </div>
-          {onDetectModel && !detectedModel && !modelSearch.trim() && (
+          {onDetectModel && !modelSearch.trim() && (
             <button
               type="button"
               className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
@@ -1487,10 +1501,10 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                 <path d="M3 3v5h5" />
               </svg>
-              {detectingModel ? "Detecting..." : (detectModelLabel ?? "Detect from config")}
+              {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
             </button>
           )}
-          {value && !models.some((m) => m.id === value) && (
+          {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
             <button
               type="button"
               className={cn(
@@ -1501,7 +1515,7 @@ function ModelDropdown({
               }}
             >
               <span className="block w-full text-left truncate font-mono text-xs" title={value}>
-                {value}
+                {models.find((m) => m.id === value)?.label ?? value}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/20">
                 current
@@ -1520,13 +1534,38 @@ function ModelDropdown({
               }}
             >
               <span className="block w-full text-left truncate font-mono text-xs" title={detectedModel}>
-                {detectedModel}
+                {models.find((m) => m.id === detectedModel)?.label ?? detectedModel}
               </span>
               <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
                 detected
               </span>
             </button>
           )}
+          {detectedModelCandidates
+            ?.filter((candidate) => candidate && candidate !== detectedModel && candidate !== value)
+            .map((candidate) => {
+              const entry = models.find((m) => m.id === candidate);
+              return (
+                <button
+                  key={`detected-${candidate}`}
+                  type="button"
+                  className={cn(
+                    "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                  )}
+                  onClick={() => {
+                    onChange(candidate);
+                    onOpenChange(false);
+                  }}
+                >
+                  <span className="block w-full text-left truncate font-mono text-xs" title={candidate}>
+                    {entry?.label ?? candidate}
+                  </span>
+                  <span className="shrink-0 ml-auto text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-sky-500/15 text-sky-400 border border-sky-500/20">
+                    config
+                  </span>
+                </button>
+              );
+            })}
           <div className="max-h-[240px] overflow-y-auto">
             {allowDefault && (
               <button
@@ -1584,11 +1623,11 @@ function ModelDropdown({
                 ))}
               </div>
             ))}
-            {filteredModels.length === 0 && !canCreateManualModel && (
+            {filteredModels.length === 0 && !canCreateManualModel && promotedModelIds.size === 0 && (
               <div className="px-2 py-2 space-y-2">
                 <p className="text-xs text-muted-foreground">
                   {onDetectModel
-                    ? "No Hermes model detected yet. Configure Hermes or enter a provider/model manually."
+                    ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
                     : "No models found."}
                 </p>
               </div>

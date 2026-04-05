@@ -27,7 +27,7 @@ import type {
   CompanySkillUsageAgent,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
-import { findServerAdapter } from "../adapters/index.js";
+import { findActiveServerAdapter } from "../adapters/index.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -1575,7 +1575,7 @@ export function companySkillService(db: Db) {
 
     return Promise.all(
       desiredAgents.map(async (agent) => {
-        const adapter = findServerAdapter(agent.adapterType);
+        const adapter = findActiveServerAdapter(agent.adapterType);
         let actualState: string | null = null;
 
         if (!adapter?.listSkills) {

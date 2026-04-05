@@ -43,6 +43,10 @@ function readText(value: string | null | undefined) {
   return value ?? "";
 }
 
+function hasActiveRuntimeServices(workspace: ExecutionWorkspace | null | undefined) {
+  return (workspace?.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
+}
+
 function formatJson(value: Record<string, unknown> | null | undefined) {
   if (!value || Object.keys(value).length === 0) return "";
   return JSON.stringify(value, null, 2);
@@ -709,7 +713,7 @@ export function ExecutionWorkspaceDetail() {
                     variant="outline"
                     size="sm"
                     className="w-full sm:w-auto"
-                    disabled={controlRuntimeServices.isPending || (workspace.runtimeServices?.length ?? 0) === 0}
+                    disabled={controlRuntimeServices.isPending || !hasActiveRuntimeServices(workspace)}
                     onClick={() => controlRuntimeServices.mutate("stop")}
                   >
                     Stop

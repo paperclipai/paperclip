@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MarkdownEditor } from "./MarkdownEditor";
+import { computeMentionMenuPosition, MarkdownEditor } from "./MarkdownEditor";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -81,6 +81,10 @@ vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
 }));
 
+vi.mock("../lib/paste-normalization", () => ({
+  pasteNormalizationPlugin: () => ({}),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,6 +160,30 @@ describe("MarkdownEditor", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  it("anchors the mention menu inside the visual viewport when mobile offsets are present", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 180, viewportLeft: 120 },
+        { offsetLeft: 24, offsetTop: 320, width: 320, height: 260 },
+      ),
+    ).toEqual({
+      top: 372,
+      left: 144,
+    });
+  });
+
+  it("clamps the mention menu back into view near the viewport edges", () => {
+    expect(
+      computeMentionMenuPosition(
+        { viewportTop: 260, viewportLeft: 240 },
+        { offsetLeft: 0, offsetTop: 0, width: 280, height: 220 },
+      ),
+    ).toEqual({
+      top: 12,
+      left: 92,
     });
   });
 });
