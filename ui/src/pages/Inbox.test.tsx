@@ -3,9 +3,9 @@
 import { act } from "react";
 import type { ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import type { Issue } from "@paperclipai/shared";
+import type { HeartbeatRun, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FailedRunInboxRow, InboxIssueMetaLeading } from "./Inbox";
+import { FailedRunInboxRow, InboxIssueMetaLeading, buildExecutiveInboxSummary } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, ...props }: ComponentProps<"a">) => (
@@ -57,6 +57,44 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     myLastTouchAt: null,
     lastExternalCommentAt: null,
     isUnreadForMe: false,
+    ...overrides,
+  };
+}
+
+function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
+  return {
+    id: "run-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    invocationSource: "assignment",
+    triggerDetail: null,
+    status: "failed",
+    error: "Run failed",
+    wakeupRequestId: null,
+    exitCode: null,
+    signal: null,
+    usageJson: null,
+    resultJson: null,
+    sessionIdBefore: null,
+    sessionIdAfter: null,
+    logStore: null,
+    logRef: null,
+    logBytes: null,
+    logSha256: null,
+    logCompressed: false,
+    errorCode: null,
+    externalRunId: null,
+    processPid: null,
+    processStartedAt: null,
+    retryOfRunId: null,
+    processLossRetryCount: 0,
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    contextSnapshot: null,
+    startedAt: new Date("2026-03-11T00:00:00.000Z"),
+    finishedAt: null,
+    createdAt: new Date("2026-03-11T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-11T00:00:00.000Z"),
     ...overrides,
   };
 }
@@ -177,5 +215,37 @@ describe("InboxIssueMetaLeading", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+describe("buildExecutiveInboxSummary", () => {
+  it("sorts top priorities and blockers and groups repeated failures by normalized family", () => {
+    const summary = buildExecutiveInboxSummary(
+      [
+        createIssue({ id: "issue-critical-new", identifier: "PAP-100", priority: "critical", status: "todo", updatedAt: new Date("2026-03-12T00:00:00.000Z") }),
+        createIssue({ id: "issue-high", identifier: "PAP-101", priority: "high", status: "in_progress", updatedAt: new Date("2026-03-11T12:00:00.000Z") }),
+        createIssue({ id: "issue-critical-old", identifier: "PAP-102", priority: "critical", status: "blocked", updatedAt: new Date("2026-03-11T00:00:00.000Z") }),
+        createIssue({ id: "issue-blocked-high", identifier: "PAP-103", priority: "high", status: "blocked", updatedAt: new Date("2026-03-12T02:00:00.000Z") }),
+        createIssue({ id: "issue-low", identifier: "PAP-104", priority: "low", status: "todo", updatedAt: new Date("2026-03-12T03:00:00.000Z") }),
+      ],
+      [
+        createRun({ id: "run-a", error: "Publish approval missing for run-17 deadbeef1234" }),
+        createRun({ id: "run-b", error: "Publish approval missing for run_22 cafe98765432" }),
+        createRun({ id: "run-c", error: "NotebookLM import failed for run 3 abcdef123456" }),
+      ],
+    );
+
+    expect(summary.executivePriorities.map((issue) => issue.id)).toEqual([
+      "issue-critical-new",
+      "issue-high",
+    ]);
+    expect(summary.executiveBlockers.map((issue) => issue.id)).toEqual([
+      "issue-critical-old",
+      "issue-blocked-high",
+    ]);
+    expect(summary.repeatedFailures).toEqual([
+      { label: "Publish approval missing for run <id>", count: 2 },
+      { label: "NotebookLM import failed for run <id>", count: 1 },
+    ]);
   });
 });
