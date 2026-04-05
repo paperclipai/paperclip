@@ -3851,7 +3851,89 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} workspaceOperations={workspaceOperations} />
+        <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
+          <div className="text-xs font-medium text-muted-foreground">Invocation</div>
+          {typeof adapterInvokePayload.adapterType === "string" && (
+            <div className="text-xs"><span className="text-muted-foreground">Adapter: </span>{adapterInvokePayload.adapterType}</div>
+          )}
+          {typeof adapterInvokePayload.cwd === "string" && (
+            <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{adapterInvokePayload.cwd}</span></div>
+          )}
+          {workspaceOperations.length > 0 && (() => {
+            const provisionOp = workspaceOperations.find((op) => op.phase === "workspace_provision" || op.phase === "worktree_prepare");
+            const metadata = provisionOp?.metadata as Record<string, unknown> | null | undefined;
+            const mode = metadata?.mode ?? metadata?.strategyType ?? (provisionOp?.phase === "worktree_prepare" ? "git_worktree" : null);
+            if (!mode) return null;
+            const modeLabels: Record<string, string> = {
+              shared_workspace: "Shared",
+              isolated_workspace: "Isolated",
+              operator_branch: "Operator branch",
+              git_worktree: "Git worktree",
+              project_primary: "Project primary",
+              adapter_managed: "Adapter managed",
+              cloud_sandbox: "Cloud sandbox",
+            };
+            return (
+              <div className="text-xs">
+                <span className="text-muted-foreground">Isolation: </span>
+                <span>{typeof mode === "string" ? modeLabels[mode] ?? mode.replace(/_/g, " ") : String(mode)}</span>
+              </div>
+            );
+          })()}
+          {typeof adapterInvokePayload.command === "string" && (
+            <div className="text-xs break-all">
+              <span className="text-muted-foreground">Command: </span>
+              <span className="font-mono">
+                {[
+                  adapterInvokePayload.command,
+                  ...(Array.isArray(adapterInvokePayload.commandArgs)
+                    ? adapterInvokePayload.commandArgs.filter((v): v is string => typeof v === "string")
+                    : []),
+                ].join(" ")}
+              </span>
+            </div>
+          )}
+          {Array.isArray(adapterInvokePayload.commandNotes) && adapterInvokePayload.commandNotes.length > 0 && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Command notes</div>
+              <ul className="list-disc pl-5 space-y-1">
+                {adapterInvokePayload.commandNotes
+                  .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+                  .map((note, idx) => (
+                    <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                      {note}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+          {adapterInvokePayload.prompt !== undefined && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Prompt</div>
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                {typeof adapterInvokePayload.prompt === "string"
+                  ? redactPathText(adapterInvokePayload.prompt, censorUsernameInLogs)
+                  : JSON.stringify(redactPathValue(adapterInvokePayload.prompt, censorUsernameInLogs), null, 2)}
+              </pre>
+            </div>
+          )}
+          {adapterInvokePayload.context !== undefined && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Context</div>
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                {JSON.stringify(redactPathValue(adapterInvokePayload.context, censorUsernameInLogs), null, 2)}
+              </pre>
+            </div>
+          )}
+          {adapterInvokePayload.env !== undefined && (
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Environment</div>
+              <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                {formatEnvForDisplay(adapterInvokePayload.env, censorUsernameInLogs)}
+              </pre>
+            </div>
+          )}
+        </div>
       )}
 
       <div className="flex items-center justify-between">
