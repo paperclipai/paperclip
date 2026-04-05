@@ -73,7 +73,7 @@ import {
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 // Terminal statuses for heartbeatRuns (matches HeartbeatRunStatus from @paperclipai/shared).
 // "skipped" is a WakeupRequestStatus, not a heartbeat run status — excluded intentionally.
-const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+const TERMINAL_RUN_STATUSES: string[] = ["succeeded", "failed", "cancelled", "timed_out"];
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 10;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
