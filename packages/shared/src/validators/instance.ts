@@ -27,6 +27,9 @@ export const instanceExperimentalSettingsSchema = z.object({
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enforceBlockedOnValidation: z.boolean().default(false),
   autoLabelRulesEngine: z.boolean().default(false),
+  enableWorkflows: z.boolean().default(true),
+  enableIssueDocuments: z.boolean().default(true),
+  enableWorkProductReconciliation: z.boolean().default(true),
   crashMonitoring: crashMonitoringSettingsSchema.default({}),
 }).strict();
 

@@ -8,12 +8,23 @@ import {
   submitWorkflowStepSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { workflowService, logActivity } from "../services/index.js";
+import { workflowService, instanceSettingsService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function workflowRoutes(db: Db) {
   const router = Router();
   const svc = workflowService(db);
+  const instanceSettings = instanceSettingsService(db);
+
+  // Gate all workflow routes behind the enableWorkflows feature flag
+  router.use(async (_req, res, next) => {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableWorkflows) {
+      res.status(403).json({ error: "Workflows feature is not enabled" });
+      return;
+    }
+    next();
+  });
 
   /* ================================================================ */
   /*  Definition CRUD                                                  */

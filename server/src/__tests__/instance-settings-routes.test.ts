@@ -41,6 +41,9 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableWorkflows: true,
+      enableIssueDocuments: true,
+      enableWorkProductReconciliation: true,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",
@@ -73,6 +76,9 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableWorkflows: true,
+      enableIssueDocuments: true,
+      enableWorkProductReconciliation: true,
     });
 
     const patchRes = await request(app)

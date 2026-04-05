@@ -19,6 +19,9 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enforceBlockedOnValidation: boolean;
   autoLabelRulesEngine: boolean;
+  enableWorkflows: boolean;
+  enableIssueDocuments: boolean;
+  enableWorkProductReconciliation: boolean;
   crashMonitoring: CrashMonitoringSettings;
 }
 

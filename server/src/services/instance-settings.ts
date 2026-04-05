@@ -47,6 +47,9 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enforceBlockedOnValidation: parsed.data.enforceBlockedOnValidation ?? false,
       autoLabelRulesEngine: parsed.data.autoLabelRulesEngine ?? false,
+      enableWorkflows: parsed.data.enableWorkflows ?? true,
+      enableIssueDocuments: parsed.data.enableIssueDocuments ?? true,
+      enableWorkProductReconciliation: parsed.data.enableWorkProductReconciliation ?? true,
       crashMonitoring: parsed.data.crashMonitoring ?? DEFAULT_CRASH_MONITORING,
     };
   }
@@ -55,6 +58,9 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     autoRestartDevServerWhenIdle: false,
     enforceBlockedOnValidation: false,
     autoLabelRulesEngine: false,
+    enableWorkflows: true,
+    enableIssueDocuments: true,
+    enableWorkProductReconciliation: true,
     crashMonitoring: DEFAULT_CRASH_MONITORING,
   };
 }

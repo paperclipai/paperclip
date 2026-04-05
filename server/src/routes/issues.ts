@@ -648,6 +648,11 @@ export function issueRoutes(
    * current PR state from GitHub and updating status / reviewState.
    */
   router.post("/issues/:id/work-products/reconcile", async (req, res) => {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableWorkProductReconciliation) {
+      res.status(403).json({ error: "Work-product reconciliation feature is not enabled" });
+      return;
+    }
 
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -782,7 +787,15 @@ export function issueRoutes(
     res.json({ reconciled, skipped, errors });
   });
 
+  async function assertIssueDocumentsEnabled() {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableIssueDocuments) {
+      throw new HttpError(403, "Issue documents feature is not enabled");
+    }
+  }
+
   router.get("/issues/:id/documents", async (req, res) => {
+    await assertIssueDocumentsEnabled();
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
@@ -795,6 +808,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
+    await assertIssueDocumentsEnabled();
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
@@ -816,6 +830,7 @@ export function issueRoutes(
   });
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
+    await assertIssueDocumentsEnabled();
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
@@ -866,6 +881,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
+    await assertIssueDocumentsEnabled();
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
@@ -886,6 +902,7 @@ export function issueRoutes(
     "/issues/:id/documents/:key/revisions/:revisionId/restore",
     validate(restoreIssueDocumentRevisionSchema),
     async (req, res) => {
+      await assertIssueDocumentsEnabled();
       const id = req.params.id as string;
       const revisionId = req.params.revisionId as string;
       const issue = await svc.getById(id);
@@ -934,6 +951,7 @@ export function issueRoutes(
   );
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
+    await assertIssueDocumentsEnabled();
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
