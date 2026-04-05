@@ -61,6 +61,7 @@ const mockAdapter = vi.hoisted(() => ({
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentCreated: mockTrackAgentCreated,
+  trackErrorHandlerCrash: vi.fn(),
 }));
 
 vi.mock("../telemetry.js", () => ({
@@ -85,7 +86,9 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
+  findActiveServerAdapter: vi.fn(() => mockAdapter),
   listAdapterModels: vi.fn(),
+  detectAdapterModel: vi.fn(),
 }));
 
 function createDb(requireBoardApprovalForNewAgents = false) {

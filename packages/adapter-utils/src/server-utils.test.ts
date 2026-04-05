@@ -1,105 +1,85 @@
 import { describe, expect, it } from "vitest";
-import { buildWakeContextNotice, joinPromptSections } from "./server-utils.js";
+import {
+  normalizePaperclipWakePayload,
+  renderPaperclipWakePrompt,
+  joinPromptSections,
+} from "./server-utils.js";
 
-describe("buildWakeContextNotice", () => {
-  it("returns empty string when context has no wakeCommentId", () => {
-    expect(buildWakeContextNotice({})).toBe("");
-    expect(buildWakeContextNotice({ wakeReason: "issue_comment_mentioned" })).toBe("");
+describe("normalizePaperclipWakePayload", () => {
+  it("returns null for empty or invalid input", () => {
+    expect(normalizePaperclipWakePayload(null)).toBeNull();
+    expect(normalizePaperclipWakePayload(undefined)).toBeNull();
+    expect(normalizePaperclipWakePayload({})).toBeNull();
+    expect(normalizePaperclipWakePayload("string")).toBeNull();
   });
 
-  it("returns empty string when wakeCommentId is not a string", () => {
-    expect(buildWakeContextNotice({ wakeCommentId: 123 })).toBe("");
-    expect(buildWakeContextNotice({ wakeCommentId: null })).toBe("");
-    expect(buildWakeContextNotice({ wakeCommentId: undefined })).toBe("");
-    expect(buildWakeContextNotice({ wakeCommentId: true })).toBe("");
-  });
-
-  it("returns empty string when wakeCommentId is whitespace-only", () => {
-    expect(buildWakeContextNotice({ wakeCommentId: "   " })).toBe("");
-    expect(buildWakeContextNotice({ wakeCommentId: "" })).toBe("");
-  });
-
-  it("includes wake comment ID when no taskId or issueId is present", () => {
-    const result = buildWakeContextNotice({ wakeCommentId: "comment-abc" });
-    expect(result).toContain("Wake comment ID: comment-abc");
-    expect(result).toContain("IMPORTANT: This heartbeat was triggered by a comment mention.");
-    expect(result).toContain("You MUST fetch and respond to this comment BEFORE doing any other work");
-  });
-
-  it("includes API endpoint when taskId is present", () => {
-    const result = buildWakeContextNotice({
-      wakeCommentId: "comment-abc",
-      taskId: "issue-123",
+  it("normalizes a payload with comments", () => {
+    const result = normalizePaperclipWakePayload({
+      reason: "issue_comment_mentioned",
+      issue: { id: "issue-1", identifier: "DSPA-100", title: "Test issue", status: "in_progress", priority: "high" },
+      commentIds: ["c1"],
+      latestCommentId: "c1",
+      comments: [{ id: "c1", issueId: "issue-1", body: "Hello", author: { type: "agent", id: "a1" } }],
     });
-    expect(result).toContain("GET /api/issues/issue-123/comments/comment-abc");
-    expect(result).not.toContain("Wake comment ID:");
+    expect(result).not.toBeNull();
+    expect(result!.reason).toBe("issue_comment_mentioned");
+    expect(result!.issue?.identifier).toBe("DSPA-100");
+    expect(result!.comments).toHaveLength(1);
+    expect(result!.comments[0].body).toBe("Hello");
   });
 
-  it("falls back to issueId when taskId is absent", () => {
-    const result = buildWakeContextNotice({
-      wakeCommentId: "comment-abc",
-      issueId: "issue-456",
+  it("normalizes a payload with only commentIds", () => {
+    const result = normalizePaperclipWakePayload({
+      commentIds: ["c1", "c2"],
+      comments: [],
     });
-    expect(result).toContain("GET /api/issues/issue-456/comments/comment-abc");
+    expect(result).not.toBeNull();
+    expect(result!.commentIds).toEqual(["c1", "c2"]);
+    expect(result!.comments).toHaveLength(0);
   });
 
-  it("prefers taskId over issueId", () => {
-    const result = buildWakeContextNotice({
-      wakeCommentId: "comment-abc",
-      taskId: "task-1",
-      issueId: "issue-2",
+  it("filters out empty comment bodies", () => {
+    const result = normalizePaperclipWakePayload({
+      comments: [
+        { body: "valid", author: {} },
+        { body: "", author: {} },
+        { body: "   ", author: {} },
+      ],
     });
-    expect(result).toContain("GET /api/issues/task-1/comments/comment-abc");
-    expect(result).not.toContain("issue-2");
+    expect(result).not.toBeNull();
+    expect(result!.comments).toHaveLength(1);
+    expect(result!.comments[0].body).toBe("valid");
+  });
+});
+
+describe("renderPaperclipWakePrompt", () => {
+  it("returns empty string for null/invalid payload", () => {
+    expect(renderPaperclipWakePrompt(null)).toBe("");
+    expect(renderPaperclipWakePrompt({})).toBe("");
   });
 
-  it("includes wakeReason in parentheses when provided", () => {
-    const result = buildWakeContextNotice({
-      wakeCommentId: "comment-abc",
-      wakeReason: "issue_comment_mentioned",
+  it("renders a wake prompt with comments", () => {
+    const result = renderPaperclipWakePrompt({
+      reason: "issue_comment_mentioned",
+      issue: { id: "i1", identifier: "DSPA-42", title: "Test" },
+      comments: [{ id: "c1", body: "Please review", author: { type: "agent", id: "a1" }, createdAt: "2026-04-04T12:00:00Z" }],
     });
-    expect(result).toContain("(issue_comment_mentioned)");
+    expect(result).toContain("Paperclip Wake Payload");
+    expect(result).toContain("DSPA-42");
+    expect(result).toContain("Please review");
   });
 
-  it("omits reason parenthetical when wakeReason is empty or non-string", () => {
-    const noReason = buildWakeContextNotice({ wakeCommentId: "c1" });
-    expect(noReason).toContain("by a comment mention.");
-    expect(noReason).not.toContain("(");
-
-    const emptyReason = buildWakeContextNotice({ wakeCommentId: "c1", wakeReason: "" });
-    expect(emptyReason).not.toContain("(");
-
-    const numericReason = buildWakeContextNotice({ wakeCommentId: "c1", wakeReason: 42 });
-    expect(numericReason).not.toContain("(");
-  });
-
-  it("trims whitespace from taskId and issueId", () => {
-    const result = buildWakeContextNotice({
-      wakeCommentId: "comment-abc",
-      taskId: "  ",
-      issueId: "  issue-456  ",
-    });
-    // taskId is whitespace-only so falls through to issueId
-    expect(result).toContain("GET /api/issues/issue-456/comments/comment-abc");
-  });
-
-  it("produces notice that joinPromptSections includes (non-empty integration)", () => {
-    const notice = buildWakeContextNotice({
-      wakeCommentId: "c1",
-      taskId: "t1",
-      wakeReason: "issue_comment_mentioned",
-    });
-    const prompt = joinPromptSections(["Bootstrap prompt", notice, "Main prompt"]);
-    expect(prompt).toContain("IMPORTANT: This heartbeat was triggered by a comment mention");
-    expect(prompt).toContain("Bootstrap prompt");
-    expect(prompt).toContain("Main prompt");
-  });
-
-  it("produces empty string that joinPromptSections filters out", () => {
-    const notice = buildWakeContextNotice({});
-    expect(notice).toBe("");
-    const prompt = joinPromptSections(["Bootstrap prompt", notice, "Main prompt"]);
-    expect(prompt).toBe("Bootstrap prompt\n\nMain prompt");
+  it("renders a resumed session prompt", () => {
+    const result = renderPaperclipWakePrompt(
+      {
+        reason: "issue_comment_mentioned",
+        issue: { id: "i1", identifier: "DSPA-42" },
+        comments: [{ body: "Update", author: {} }],
+      },
+      { resumedSession: true },
+    );
+    expect(result).toContain("Paperclip Resume Delta");
+    expect(result).not.toContain("Paperclip Wake Payload");
   });
 });
 

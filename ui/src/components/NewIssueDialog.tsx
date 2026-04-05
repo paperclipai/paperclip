@@ -24,6 +24,7 @@ import {
   DialogContent,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Popover,
   PopoverContent,
@@ -1208,21 +1209,10 @@ export function NewIssueDialog() {
                 {assigneeAdapterType === "claude_local" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
-                    <button
-                      data-slot="toggle"
-                      className={cn(
-                        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                        assigneeChrome ? "bg-green-600" : "bg-muted"
-                      )}
-                      onClick={() => setAssigneeChrome((value) => !value)}
-                    >
-                      <span
-                        className={cn(
-                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
-                          assigneeChrome ? "translate-x-4.5" : "translate-x-0.5"
-                        )}
-                      />
-                    </button>
+                    <ToggleSwitch
+                      checked={assigneeChrome}
+                      onCheckedChange={() => setAssigneeChrome((value) => !value)}
+                    />
                   </div>
                 )}
               </div>
