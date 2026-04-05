@@ -407,11 +407,8 @@ type PendingRequest = {
 };
 
 class CodexRpcClient {
-  private proc = spawn(
-    "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
-  );
+  private proc: ReturnType<typeof spawn>;
+  private spawnError: Error | null = null;
 
   private nextId = 1;
   private buffer = "";
@@ -419,11 +416,31 @@ class CodexRpcClient {
   private stderr = "";
 
   constructor() {
-    this.proc.stdout.setEncoding("utf8");
-    this.proc.stderr.setEncoding("utf8");
-    this.proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
-    this.proc.stderr.on("data", (chunk: string) => {
+    try {
+      this.proc = spawn(
+        "codex",
+        ["-s", "read-only", "-a", "untrusted", "app-server"],
+        { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+      );
+    } catch (err) {
+      this.spawnError = err instanceof Error ? err : new Error(String(err));
+      this.proc = {} as ReturnType<typeof spawn>;
+    }
+
+    this.proc.stdout?.setEncoding("utf8");
+    this.proc.stderr?.setEncoding("utf8");
+    this.proc.stdout?.on("data", (chunk: string) => this.onStdout(chunk));
+    this.proc.stderr?.on("data", (chunk: string) => {
       this.stderr += chunk;
+    });
+    this.proc.on("error", (err) => {
+      this.spawnError = err;
+      this.stderr += err.message + "\n";
+      for (const request of this.pending.values()) {
+        clearTimeout(request.timer);
+        request.reject(err);
+      }
+      this.pending.clear();
     });
     this.proc.on("exit", () => {
       for (const request of this.pending.values()) {
@@ -466,6 +483,7 @@ class CodexRpcClient {
   }
 
   private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 6_000): Promise<Record<string, unknown>> {
+    if (this.spawnError) throw this.spawnError;
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params }) + "\n";
     return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -474,15 +492,17 @@ class CodexRpcClient {
         reject(new Error(`codex app-server timed out on ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.proc.stdin.write(payload);
+      this.proc.stdin!.write(payload);
     });
   }
 
   private notify(method: string, params: Record<string, unknown> = {}) {
-    this.proc.stdin.write(JSON.stringify({ method, params }) + "\n");
+    if (this.spawnError) return;
+    this.proc.stdin!.write(JSON.stringify({ method, params }) + "\n");
   }
 
   async initialize() {
+    if (this.spawnError) throw this.spawnError;
     await this.request("initialize", {
       clientInfo: {
         name: "paperclip",
@@ -507,6 +527,7 @@ class CodexRpcClient {
   }
 
   async shutdown() {
+    if (this.spawnError) return;
     this.proc.kill("SIGTERM");
   }
 }
