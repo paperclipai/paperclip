@@ -980,3 +980,36 @@ export const BUDGET_GATES = {
 } as const;
 
 export type BudgetGateStage = keyof typeof BUDGET_GATES;
+
+// ── Model Strategy (Multi-Model Council) ─────────────────────────────────────
+
+export const MODEL_STRATEGIES = ["single", "cascade", "council"] as const;
+export type ModelStrategy = (typeof MODEL_STRATEGIES)[number];
+
+export const TASK_IMPORTANCE_LEVELS = ["routine", "standard", "important", "critical"] as const;
+export type TaskImportance = (typeof TASK_IMPORTANCE_LEVELS)[number];
+
+/** Issue labels that trigger critical importance (council mode). */
+export const CRITICAL_TASK_LABELS = [
+  "legal_review",
+  "financial_report",
+  "strategy_memo",
+  "client_deliverable",
+  "compliance_audit",
+] as const;
+
+/** Issue labels that trigger important importance (cascade mode). */
+export const IMPORTANT_TASK_LABELS = [
+  "report",
+  "analysis",
+  "review",
+  "proposal",
+  "budget",
+] as const;
+
+/** Western fallback models for council/cascade strategies. */
+export const WESTERN_COUNCIL_MODELS = {
+  heavy: "devstral-2:cloud",        // Mistral 123B - best Western model
+  medium: "nemotron-3-super:cloud",  // NVIDIA 120B MoE
+  light: "gemma4:31b-cloud",         // Google 31B
+} as const;

@@ -12,6 +12,7 @@ import {
   agentEfficiencyRankings,
   humanOverrideRate,
   systemHealthSummary,
+  councilAnalytics,
 } from "../services/executive-analytics.js";
 import { computeDORAMetrics } from "../services/dora-metrics.js";
 import { getMemoryHealth } from "../services/agent-memory.js";
@@ -363,6 +364,15 @@ export function executiveRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const data = await systemHealthSummary(db, companyId);
+    res.json(data);
+  });
+
+  // -- Council Analytics --
+  router.get("/companies/:companyId/council-analytics", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const periodDays = req.query.periodDays ? Number(req.query.periodDays) : 30;
+    const data = await councilAnalytics(db, companyId, periodDays);
     res.json(data);
   });
 

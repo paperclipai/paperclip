@@ -260,6 +260,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
       patch.runtimeConfig = { ...existingRc, heartbeat: { ...existingHb, ...overlay.heartbeat } };
     }
+    // Model strategy lives at the top of runtimeConfig
+    if (overlay.adapterConfig.modelStrategy !== undefined) {
+      const existingRc = (patch.runtimeConfig ?? agent.runtimeConfig ?? {}) as Record<string, unknown>;
+      patch.runtimeConfig = { ...existingRc, modelStrategy: overlay.adapterConfig.modelStrategy };
+    }
     if (Object.keys(overlay.runtime).length > 0) {
       Object.assign(patch, overlay.runtime);
     }
@@ -743,6 +748,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
+              {/* Model Strategy Selector */}
+              {!isCreate && (
+                <Field label="Model Strategy" hint="How tasks are executed: single model, cascade (retry with fallback), or council (multi-model deliberation). Critical tasks auto-upgrade to council.">
+                  <select
+                    className={cn(inputClass, "h-9")}
+                    value={eff("adapterConfig", "modelStrategy", String(runtimeConfig.modelStrategy ?? "single"))}
+                    onChange={(e) => mark("adapterConfig", "modelStrategy", e.target.value)}
+                  >
+                    <option value="single">Single - one model per task</option>
+                    <option value="cascade">Cascade - retry with fallback if quality is low</option>
+                    <option value="council">Council - run multiple models, pick best response</option>
+                  </select>
+                </Field>
+              )}
+
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>

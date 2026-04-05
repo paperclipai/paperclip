@@ -234,6 +234,102 @@ function OnboardingChecklist({
   );
 }
 
+// ── Model Strategy Card ──────────────────────────────────────────────────────
+
+const STRATEGY_LABELS: Record<string, string> = {
+  single: "Single Model",
+  cascade: "Cascade (Retry with Fallback)",
+  council: "Council (Multi-Model Deliberation)",
+};
+
+const STRATEGY_COLORS: Record<string, string> = {
+  single: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  cascade: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  council: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
+};
+
+function ModelStrategyCard({ agent }: { agent: AgentDetailRecord }) {
+  const ext = agent as unknown as Record<string, unknown>;
+  const runtimeConfig = (ext.runtimeConfig ?? {}) as Record<string, unknown>;
+  const adapterConfig = (ext.adapterConfig ?? {}) as Record<string, unknown>;
+  const modelStrategy = (runtimeConfig.modelStrategy as string) ?? "single";
+  const currentModel = (runtimeConfig.model as string) ?? (adapterConfig.model as string) ?? "kimi-k2.5:cloud";
+  const strategyLabel = STRATEGY_LABELS[modelStrategy] ?? "Single Model";
+  const strategyColor = STRATEGY_COLORS[modelStrategy] ?? STRATEGY_COLORS.single;
+
+  // Fetch recent council activity for this agent
+  const { data: recentActivity } = useQuery({
+    queryKey: ["agents", agent.id, "council-activity"],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/companies/${agent.companyId}/activity?agentId=${agent.id}&action=model_council.completed&limit=5`
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
+    },
+    staleTime: 60_000,
+  });
+
+  const councilEvents = (recentActivity ?? []).slice(0, 3);
+
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Model Strategy</h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <span className="text-xs text-muted-foreground block">Strategy</span>
+          <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium mt-1", strategyColor)}>
+            {strategyLabel}
+          </span>
+        </div>
+        <div>
+          <span className="text-xs text-muted-foreground block">Primary Model</span>
+          <span className="text-sm font-mono mt-1 block truncate">{currentModel}</span>
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Tasks labeled as critical automatically upgrade to council mode. Important tasks upgrade single to cascade.
+      </p>
+      {councilEvents.length > 0 && (
+        <div className="space-y-2 pt-2 border-t border-border">
+          <h4 className="text-xs font-medium text-muted-foreground">Recent Council Results</h4>
+          {councilEvents.map((event: Record<string, unknown>, idx: number) => {
+            const details = (event.details ?? {}) as Record<string, unknown>;
+            const strategy = (details.strategy as string) ?? "unknown";
+            const winningModel = (details.winningModel as string) ?? "unknown";
+            const models = Array.isArray(details.models) ? details.models : [];
+            const winnerScore = models.find(
+              (m: unknown) => (m as Record<string, unknown>).model === winningModel
+            ) as Record<string, unknown> | undefined;
+            const score = typeof winnerScore?.score === "number" ? winnerScore.score : 0;
+            const importance = (details.importance as string) ?? "";
+            return (
+              <div key={idx} className="text-xs text-muted-foreground">
+                <span className={cn("inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium mr-1", STRATEGY_COLORS[strategy] ?? STRATEGY_COLORS.single)}>
+                  {strategy}
+                </span>
+                {importance ? <span className="mr-1">[{importance}]</span> : null}
+                <span className="font-mono">{winningModel.split(":")[0]}</span>
+                {" won"}
+                {score > 0 ? ` (score ${score})` : ""}
+                {models.length > 1 && (
+                  <span className="ml-1">
+                    vs {models.filter((m: unknown) => (m as Record<string, unknown>).model !== winningModel).map((m: unknown) => {
+                      const entry = m as Record<string, unknown>;
+                      return `${String(entry.model ?? "").split(":")[0]} (${entry.score ?? 0})`;
+                    }).join(", ")}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Employment Card ───────────────────────────────────────────────────────────
 
 function EmploymentCard({
@@ -480,6 +576,9 @@ export function AgentDashboard({
 
       {/* Employment */}
       <EmploymentCard agent={agent} companyId={agent.companyId} />
+
+      {/* Model Strategy */}
+      <ModelStrategyCard agent={agent} />
 
       {/* Latest Run */}
       <LatestRunCard runs={runs} agentId={agentRouteId} />

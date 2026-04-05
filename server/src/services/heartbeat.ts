@@ -21,7 +21,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@ironworksai/db";
-import { DEFAULT_ITERATION_LIMITS, DEFAULT_OUTPUT_TOKEN_LIMITS, DEFAULT_SKILL_ALLOWLIST } from "@ironworksai/shared";
+import { DEFAULT_ITERATION_LIMITS, DEFAULT_OUTPUT_TOKEN_LIMITS, DEFAULT_SKILL_ALLOWLIST, WESTERN_COUNCIL_MODELS } from "@ironworksai/shared";
 import type { OutputTokenCategory } from "@ironworksai/shared";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -72,6 +72,16 @@ import {
   shouldEscalateModel,
   logEscalationSignal,
 } from "./model-routing.js";
+import {
+  classifyTaskImportance,
+  resolveModelStrategy,
+  executeSingle,
+  executeCascade,
+  executeCouncil,
+  ROLE_COUNCIL_DEFAULTS,
+  type CouncilConfig,
+  type CouncilResult,
+} from "./model-council.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -3440,19 +3450,162 @@ export function heartbeatService(db: Db) {
           "local agent jwt secret missing or invalid; running without injected IRONWORKS_API_KEY",
         );
       }
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: routedRuntimeConfig,
-        context,
-        onLog,
-        onMeta: onAdapterMeta,
-        onSpawn: async (meta) => {
-          await persistRunProcessMetadata(run.id, meta);
-        },
-        authToken: authToken ?? undefined,
+
+      // ── Multi-Model Council Execution ──────────────────────────────────
+      // Classify task importance and resolve the execution strategy.
+      // Critical tasks auto-upgrade to council; important tasks to cascade.
+      const councilLabels: string[] = [];
+      try {
+        if (typeof context.issueId === "string" && context.issueId.length > 0) {
+          const councilLabelRows = await db
+            .select({ name: labels.name })
+            .from(issueLabels)
+            .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+            .where(eq(issueLabels.issueId, context.issueId as string));
+          for (const r of councilLabelRows) councilLabels.push(r.name);
+        }
+      } catch (_labelErr) {
+        // Best-effort label fetch for council classification
+      }
+
+      const normalizedAgentRole = (typeof agent.role === "string" ? agent.role : "")
+        .toLowerCase()
+        .replace(/[\s_-]+/g, "");
+      // Determine delegation context for importance classification
+      const issueCreatorRole = typeof context.issueCreatorRole === "string" ? context.issueCreatorRole : "";
+      const isHumanAssigned = context.invocationSource === "board" || context.invocationSource === "user";
+      const isRetry = typeof context.retryCount === "number" && context.retryCount > 0;
+      const originKind = typeof context.originKind === "string" ? context.originKind : "";
+
+      const taskImportance = classifyTaskImportance({
+        labels: councilLabels,
+        issueTitle: typeof context.issueTitle === "string" ? context.issueTitle : "",
+        agentRole: normalizedAgentRole,
+        isApprovalRelated: typeof context.approvalId === "string" && context.approvalId.length > 0,
+        assignedByRole: issueCreatorRole,
+        assignedByHuman: isHumanAssigned,
+        isRetry,
+        originKind,
       });
+
+      const roleDefaults = ROLE_COUNCIL_DEFAULTS[normalizedAgentRole];
+      const councilConfig: CouncilConfig = {
+        strategy: (runtimeConfigAny.modelStrategy as string as "single" | "cascade" | "council") ?? roleDefaults?.strategy ?? "single",
+        primaryModel: routedModel || configuredModel || "kimi-k2.5:cloud",
+        cascadeFallback: WESTERN_COUNCIL_MODELS.heavy,
+        councilModels: roleDefaults?.councilModels ?? [WESTERN_COUNCIL_MODELS.heavy, WESTERN_COUNCIL_MODELS.light],
+        qualityThreshold: 60,
+      };
+
+      const resolvedStrategy = resolveModelStrategy(taskImportance, councilConfig);
+
+      // Create adapter executor that runs a given model through the same adapter
+      const executeWithModel = async (modelOverride: string) => {
+        const modelConfig = { ...routedRuntimeConfig, model: modelOverride };
+        return adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: modelConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, meta);
+          },
+          authToken: authToken ?? undefined,
+        });
+      };
+
+      let councilResult: CouncilResult;
+      let adapterResult: AdapterExecutionResult;
+
+      if (resolvedStrategy.strategy === "council" && resolvedStrategy.models.length >= 2) {
+        logger.info(
+          { agentId: agent.id, runId: run.id, importance: taskImportance, strategy: "council", models: resolvedStrategy.models },
+          "[model-council] Running council deliberation",
+        );
+        councilResult = await executeCouncil(executeWithModel, resolvedStrategy.models);
+        // Build a synthetic adapterResult from the winning council response
+        // to avoid re-executing the model unnecessarily.
+        adapterResult = {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: councilResult.winningResponse,
+          model: councilResult.winningModel,
+        };
+      } else if (resolvedStrategy.strategy === "cascade" && resolvedStrategy.models.length >= 2) {
+        logger.info(
+          { agentId: agent.id, runId: run.id, importance: taskImportance, strategy: "cascade", models: resolvedStrategy.models },
+          "[model-council] Running cascade execution",
+        );
+        councilResult = await executeCascade(
+          executeWithModel,
+          resolvedStrategy.models[0],
+          resolvedStrategy.models[1],
+          councilConfig.qualityThreshold,
+        );
+        // Build a synthetic adapterResult from the winning cascade response
+        adapterResult = {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          summary: councilResult.winningResponse,
+          model: councilResult.winningModel,
+        };
+      } else {
+        // Single model execution (existing behavior)
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: routedRuntimeConfig,
+          context,
+          onLog,
+          onMeta: onAdapterMeta,
+          onSpawn: async (meta) => {
+            await persistRunProcessMetadata(run.id, meta);
+          },
+          authToken: authToken ?? undefined,
+        });
+        councilResult = {
+          strategy: "single",
+          winningModel: routedModel || configuredModel || "",
+          winningResponse: adapterResult.summary ?? "",
+          responses: [{
+            model: routedModel || configuredModel || "",
+            response: adapterResult.summary ?? "",
+            qualityScore: 0,
+            latencyMs: 0,
+          }],
+          retryCount: 0,
+          totalTokensUsed: 0,
+        };
+      }
+
+      // Log council result for non-single strategies
+      if (resolvedStrategy.strategy !== "single") {
+        logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: agent.id,
+          agentId: agent.id,
+          runId: run.id,
+          action: "model_council.completed",
+          entityType: "heartbeat_run",
+          entityId: run.id,
+          details: {
+            strategy: resolvedStrategy.strategy,
+            importance: taskImportance,
+            winningModel: councilResult.winningModel,
+            models: councilResult.responses.map((r) => ({ model: r.model, score: r.qualityScore })),
+            retryCount: councilResult.retryCount,
+            totalTokensUsed: councilResult.totalTokensUsed,
+          },
+        }).catch(() => {});
+      }
+      // ── End Multi-Model Council Execution ──────────────────────────────
 
       // ── Confidence-Based Escalation Check ────────────────────────────────
       // Only check when a cheap model was used (routing changed the model).

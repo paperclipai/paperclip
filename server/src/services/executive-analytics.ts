@@ -1533,3 +1533,107 @@ export async function systemHealthSummary(
     lastHeartbeatAt: latestHeartbeat,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Council Analytics
+// ---------------------------------------------------------------------------
+
+export interface CouncilAnalyticsResult {
+  totalCouncils: number;
+  modelWinRates: Record<string, { wins: number; total: number; avgScore: number }>;
+  avgQualityImprovement: number;
+  costMultiplier: number;
+}
+
+/**
+ * Analyze multi-model council performance from activity log entries.
+ * Queries activity_log where action = "model_council.completed".
+ */
+export async function councilAnalytics(
+  db: Db,
+  companyId: string,
+  periodDays = 30,
+): Promise<CouncilAnalyticsResult> {
+  const since = new Date();
+  since.setDate(since.getDate() - periodDays);
+
+  const councilEvents = await db
+    .select({
+      details: activityLog.details,
+    })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "model_council.completed"),
+        gte(activityLog.createdAt, since),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt))
+    .limit(500);
+
+  if (councilEvents.length === 0) {
+    return {
+      totalCouncils: 0,
+      modelWinRates: {},
+      avgQualityImprovement: 0,
+      costMultiplier: 1,
+    };
+  }
+
+  const modelStats = new Map<string, { wins: number; total: number; scoreSum: number }>();
+  let totalQualityDelta = 0;
+  let qualityDeltaCount = 0;
+  let councilRunCount = 0;
+
+  for (const event of councilEvents) {
+    const details = event.details as Record<string, unknown> | null;
+    if (!details) continue;
+
+    councilRunCount++;
+    const winningModel = typeof details.winningModel === "string" ? details.winningModel : null;
+    const models = Array.isArray(details.models) ? details.models : [];
+
+    for (const entry of models) {
+      const m = entry as Record<string, unknown>;
+      const model = typeof m.model === "string" ? m.model : null;
+      const score = typeof m.score === "number" ? m.score : 0;
+      if (!model) continue;
+
+      const stats = modelStats.get(model) ?? { wins: 0, total: 0, scoreSum: 0 };
+      stats.total++;
+      stats.scoreSum += score;
+      if (model === winningModel) stats.wins++;
+      modelStats.set(model, stats);
+    }
+
+    // Compute quality delta (best score minus worst score in the council)
+    if (models.length >= 2) {
+      const scores = models
+        .map((m) => (typeof (m as Record<string, unknown>).score === "number" ? (m as Record<string, unknown>).score as number : 0))
+        .sort((a, b) => b - a);
+      totalQualityDelta += scores[0] - scores[scores.length - 1];
+      qualityDeltaCount++;
+    }
+  }
+
+  const modelWinRates: Record<string, { wins: number; total: number; avgScore: number }> = {};
+  for (const [model, stats] of modelStats) {
+    modelWinRates[model] = {
+      wins: stats.wins,
+      total: stats.total,
+      avgScore: stats.total > 0 ? Math.round(stats.scoreSum / stats.total) : 0,
+    };
+  }
+
+  // Cost multiplier: average number of models run per council
+  const totalModelRuns = [...modelStats.values()].reduce((sum, s) => sum + s.total, 0);
+  const costMultiplier = councilRunCount > 0 ? Math.round((totalModelRuns / councilRunCount) * 100) / 100 : 1;
+
+  return {
+    totalCouncils: councilRunCount,
+    modelWinRates,
+    avgQualityImprovement: qualityDeltaCount > 0 ? Math.round(totalQualityDelta / qualityDeltaCount) : 0,
+    costMultiplier,
+  };
+}
