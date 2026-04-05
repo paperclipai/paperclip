@@ -11,6 +11,7 @@ import {
   buildPaperclipEnv,
   joinPromptSections,
   wrapUntrustedHandoff,
+  renderPaperclipWakePrompt,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -299,7 +300,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const renderedSystemPromptExtension = renderTemplate(systemPromptExtension, templateData);
-  const renderedHeartbeatPrompt = renderTemplate(promptTemplate, templateData);
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+  const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
+  const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const renderedBootstrapPrompt =
     !canResumeSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -307,6 +310,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionHandoffNote = wrapUntrustedHandoff(asString(context.paperclipSessionHandoffMarkdown, ""));
   const userPrompt = joinPromptSections([
     renderedBootstrapPrompt,
+    wakePrompt,
     sessionHandoffNote,
     renderedHeartbeatPrompt,
   ]);
@@ -314,6 +318,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     systemPromptChars: renderedSystemPromptExtension.length,
     promptChars: userPrompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedHeartbeatPrompt.length,
   };
