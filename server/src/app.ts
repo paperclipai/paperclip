@@ -29,6 +29,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -67,6 +68,7 @@ export async function createApp(
     feedbackExportService?: {
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
+        traceId?: string;
         limit?: number;
         now?: Date;
       }): Promise<unknown>;
@@ -152,7 +154,9 @@ export async function createApp(
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService));
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+  }));
   api.use(routineRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
@@ -226,6 +230,7 @@ export async function createApp(
       { workerManager },
     ),
   );
+  api.use(adapterRoutes());
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

@@ -525,7 +525,7 @@ export async function startServer(): Promise<StartedServer> {
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
-    shareClient: createFeedbackTraceShareClientFromConfig(config) ?? undefined,
+    shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const app = await createApp(db as any, {
     uiMode,
@@ -668,6 +668,12 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
   
+  // Wait for external adapters to finish loading before accepting requests.
+  // Without this, adapter type validation (assertKnownAdapterType) would
+  // reject valid external adapter types during the startup loading window.
+  const { waitForExternalAdapters } = await import("./adapters/registry.js");
+  await waitForExternalAdapters();
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

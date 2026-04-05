@@ -120,4 +120,28 @@ describe("CommentThread", () => {
       root.unmount();
     });
   });
+
+  it("replaces the composer with a warning when comments are disabled", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            composerDisabledReason="Workspace is closed."
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Workspace is closed.");
+    expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
+    expect(container.textContent).not.toContain("Comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

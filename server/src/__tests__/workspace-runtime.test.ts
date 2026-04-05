@@ -13,6 +13,7 @@ import {
   createDb,
   executionWorkspaces,
   heartbeatRuns,
+  projectWorkspaces,
   projects,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -30,6 +31,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -48,9 +50,14 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres workspace-runtime tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+const provisionWorktreeScriptPath = new URL("../../../scripts/provision-worktree.sh", import.meta.url);
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
+}
+
+async function runPnpm(cwd: string, args: string[]) {
+  await execFileAsync("pnpm", args, { cwd });
 }
 
 async function createTempRepo(defaultBranch = "main") {
@@ -554,6 +561,110 @@ describe("realizeExecutionWorkspace", () => {
       process.chdir(previousCwd);
     }
   }, 15_000);
+
+  it(
+    "provisions worktree-local pnpm node_modules instead of reusing base-repo links",
+    async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(repoRoot, "packages", "shared"), { recursive: true });
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "workspace-root",
+          private: true,
+          packageManager: "pnpm@9.15.4",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(repoRoot, "pnpm-workspace.yaml"),
+      ["packages:", "  - packages/*", "  - server", ""].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(repoRoot, "packages", "shared", "package.json"),
+      JSON.stringify(
+        {
+          name: "@repo/shared",
+          version: "1.0.0",
+          private: true,
+          type: "module",
+          exports: "./index.js",
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(path.join(repoRoot, "packages", "shared", "index.js"), "export const value = 'shared';\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify(
+        {
+          name: "server",
+          private: true,
+          type: "module",
+          dependencies: {
+            "@repo/shared": "workspace:*",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    await fs.writeFile(path.join(repoRoot, "server", "index.js"), "export {};\n", "utf8");
+    await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
+    await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);
+    await runPnpm(repoRoot, ["install"]);
+    await runGit(repoRoot, ["add", "."]);
+    await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-551",
+        title: "Provision local workspace dependencies",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect((await fs.lstat(path.join(workspace.cwd, "node_modules"))).isSymbolicLink()).toBe(false);
+    expect((await fs.lstat(path.join(workspace.cwd, "server", "node_modules"))).isSymbolicLink()).toBe(false);
+    await expect(fs.realpath(path.join(workspace.cwd, "server", "node_modules", "@repo", "shared"))).resolves.toBe(
+      await fs.realpath(path.join(workspace.cwd, "packages", "shared")),
+    );
+    await expect(fs.realpath(path.join(repoRoot, "server", "node_modules", "@repo", "shared"))).resolves.toBe(
+      await fs.realpath(path.join(repoRoot, "packages", "shared")),
+    );
+    },
+    15_000,
+  );
 
   it("records worktree setup and provision operations when a recorder is provided", async () => {
     const repoRoot = await createTempRepo();
@@ -1416,6 +1527,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -1528,6 +1640,96 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
+  });
+
+  it("marks persisted local services stopped when the registry pid is stale", async () => {
+    const companyId = randomUUID();
+    const runtimeServiceId = randomUUID();
+    const startedAt = new Date("2026-04-04T17:00:00.000Z");
+    const updatedAt = new Date("2026-04-04T17:10:00.000Z");
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime reconcile test",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/tmp/paperclip-primary",
+      isPrimary: true,
+    });
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: null,
+      issueId: null,
+      scopeType: "project_workspace",
+      scopeId: projectWorkspaceId,
+      serviceName: "paperclip-dev",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      provider: "local_process",
+      providerRef: "999999",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: updatedAt,
+      startedAt,
+      stoppedAt: null,
+      stopPolicy: { type: "manual" },
+      healthStatus: "healthy",
+      createdAt: startedAt,
+      updatedAt,
+    });
+    await writeLocalServiceRegistryRecord({
+      version: 1,
+      serviceKey: "workspace-runtime-paperclip-dev-stale",
+      profileKind: "workspace-runtime",
+      serviceName: "paperclip-dev",
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      envFingerprint: "fingerprint",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      pid: 999999,
+      processGroupId: 999999,
+      provider: "local_process",
+      runtimeServiceId,
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      startedAt: startedAt.toISOString(),
+      lastSeenAt: updatedAt.toISOString(),
+      metadata: null,
+    });
+
+    const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+
+    expect(result).toMatchObject({ reconciled: 1, adopted: 0, stopped: 1 });
+    const persisted = await db
+      .select()
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("stopped");
+    expect(persisted?.stoppedAt).not.toBeNull();
   });
 
   it("persists controlled execution workspace stops as stopped", async () => {
