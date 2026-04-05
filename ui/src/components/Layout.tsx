@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Moon, Settings, Sun } from "lucide-react";
+import { BookOpen, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
@@ -39,6 +39,12 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 
 const INSTANCE_SETTINGS_MEMORY_KEY = "paperclip.lastInstanceSettingsPath";
 
+const THEME_ICON = { light: Sun, dark: Moon, system: Monitor } as const;
+function ThemeIcon({ theme }: { theme: keyof typeof THEME_ICON }) {
+  const Icon = THEME_ICON[theme];
+  return <Icon className="h-4 w-4" />;
+}
+
 function readRememberedInstanceSettingsPath(): string {
   if (typeof window === "undefined") return DEFAULT_INSTANCE_SETTINGS_PATH;
   try {
@@ -60,7 +66,7 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, nextTheme, toggleTheme } = useTheme();
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -69,7 +75,6 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
-  const nextTheme = theme === "dark" ? "light" : "dark";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
@@ -342,7 +347,7 @@ export function Layout() {
                   aria-label={`Switch to ${nextTheme} mode`}
                   title={`Switch to ${nextTheme} mode`}
                 >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  {<ThemeIcon theme={theme} />}
                 </Button>
               </div>
             </div>
@@ -400,7 +405,7 @@ export function Layout() {
                   aria-label={`Switch to ${nextTheme} mode`}
                   title={`Switch to ${nextTheme} mode`}
                 >
-                  {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  {<ThemeIcon theme={theme} />}
                 </Button>
               </div>
             </div>
