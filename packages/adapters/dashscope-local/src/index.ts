@@ -16,6 +16,14 @@ export const models = [
   { id: "qwen-math-turbo", label: "Qwen Math Turbo (数学)" },
 ];
 
+/**
+ * List available DashScope models
+ * Can be called dynamically by UI to populate model dropdown
+ */
+export async function listModels() {
+  return models;
+}
+
 export const agentConfigurationDoc = `# dashscope_local agent configuration
 
 Adapter: dashscope_local

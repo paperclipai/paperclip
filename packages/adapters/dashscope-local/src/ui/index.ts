@@ -1,5 +1,5 @@
 // UI components for DashScope adapter
-import type { models } from "../index.js";
+import { models } from "../index.js";
 
 export { models };
 
@@ -50,7 +50,7 @@ export const configFields = [
  * List available DashScope models
  * Can be called dynamically by UI to populate model dropdown
  */
-export async function listModels(): Promise<typeof models> {
+export async function listModels() {
   // Return static list from index.ts
   // In future, could fetch from DashScope API dynamically
   return models;
