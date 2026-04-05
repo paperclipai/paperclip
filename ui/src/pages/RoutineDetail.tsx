@@ -1024,7 +1024,10 @@ export function RoutineDetail() {
             <LiveRunWidget issueId={activeIssueId} companyId={routine.companyId} />
           )}
           {(routineRuns ?? []).length === 0 ? (
-            <p className="text-xs text-muted-foreground">No runs yet.</p>
+            <div className="rounded-lg border border-dashed border-border p-8 text-center">
+              <p className="text-sm text-muted-foreground">No runs yet</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Runs will appear here when triggered by a schedule or webhook</p>
+            </div>
           ) : (
             <div className="border border-border rounded-lg divide-y divide-border">
               {(routineRuns ?? []).map((run) => (

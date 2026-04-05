@@ -111,7 +111,10 @@ export function CommandPalette() {
         onValueChange={setQuery}
       />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>
+          <p className="text-sm">No results found</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">Try searching for issues, agents, or projects by name</p>
+        </CommandEmpty>
 
         <CommandGroup heading="Actions">
           <CommandItem
