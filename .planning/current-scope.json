@@ -1,10 +1,7 @@
 {
   "files": [
-    "server/src/services/workspace-runtime.ts",
+    "server/src/services/heartbeat.ts",
     "server/src/routes/issues.ts",
-    "server/src/__tests__/issue-terminal-workspace-cleanup.test.ts",
-    "server/src/__tests__/workspace-runtime-archive.test.ts",
-    "server/src/__tests__/issue-comment-reopen-routes.test.ts",
-    "server/src/__tests__/issues-goal-context-routes.test.ts"
+    "server/src/__tests__/issue-terminal-workspace-cleanup.test.ts"
   ]
 }

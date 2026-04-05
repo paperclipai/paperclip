@@ -59,12 +59,6 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
-  workspaceOperationService: () => ({
-    createRecorder: vi.fn(() => ({
-      attachExecutionWorkspaceId: vi.fn(async () => undefined),
-      recordOperation: vi.fn(async () => ({})),
-    })),
-  }),
 }));
 
 function createApp() {

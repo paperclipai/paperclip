@@ -42,10 +42,8 @@ import {
   projectService,
   routineService,
   workProductService,
-  workspaceOperationService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { archiveExecutionWorkspaceForTerminalIssue } from "../services/workspace-runtime.js";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
@@ -86,7 +84,6 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const routinesSvc = routineService(db);
   const feedbackExportService = opts?.feedbackExportService;
-  const workspaceOperationsSvc = workspaceOperationService(db);
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -1188,15 +1185,9 @@ export function issueRoutes(
     const wasTerminal = existing.status === "done" || existing.status === "cancelled";
     const isNowTerminal = issue.status === "done" || issue.status === "cancelled";
     if (!wasTerminal && isNowTerminal && issue.executionWorkspaceId) {
-      const archiveRecorder = workspaceOperationsSvc.createRecorder({
-        companyId: issue.companyId,
-        executionWorkspaceId: issue.executionWorkspaceId,
-      });
-      archiveExecutionWorkspaceForTerminalIssue({
-        db,
+      heartbeat.archiveTerminalIssueExecutionWorkspace({
         executionWorkspaceId: issue.executionWorkspaceId,
         companyId: issue.companyId,
-        recorder: archiveRecorder,
         actor: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
       }).catch((err) =>
         logger.warn(

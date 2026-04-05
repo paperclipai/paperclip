@@ -5,18 +5,6 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
 // ---------------------------------------------------------------------------
-// Mock: archiveExecutionWorkspaceForTerminalIssue (workspace-runtime)
-// ---------------------------------------------------------------------------
-
-const mockArchiveExecutionWorkspace = vi.hoisted(() =>
-  vi.fn(async () => ({ archived: true, warnings: [] })),
-);
-
-vi.mock("../services/workspace-runtime.js", () => ({
-  archiveExecutionWorkspaceForTerminalIssue: mockArchiveExecutionWorkspace,
-}));
-
-// ---------------------------------------------------------------------------
 // Mock: issue-assignment-wakeup (imported by issues route)
 // ---------------------------------------------------------------------------
 
@@ -43,19 +31,17 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(async () => []),
 }));
 
+const mockArchiveTerminalIssueExecutionWorkspace = vi.hoisted(() =>
+  vi.fn(async () => ({ archived: true, warnings: [] })),
+);
+
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
+  archiveTerminalIssueExecutionWorkspace: mockArchiveTerminalIssueExecutionWorkspace,
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-
-const mockCreateRecorder = vi.hoisted(() =>
-  vi.fn(() => ({
-    attachExecutionWorkspaceId: vi.fn(async () => undefined),
-    recordOperation: vi.fn(async () => ({})),
-  })),
-);
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -75,9 +61,6 @@ vi.mock("../services/index.js", () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
   workProductService: () => ({}),
-  workspaceOperationService: () => ({
-    createRecorder: mockCreateRecorder,
-  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -139,19 +122,12 @@ describe("issue terminal-state workspace cleanup", () => {
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
-    // Allow the fire-and-forget promise to settle
     await vi.waitFor(() => {
-      expect(mockArchiveExecutionWorkspace).toHaveBeenCalledWith({
-        db: expect.anything(),
+      expect(mockArchiveTerminalIssueExecutionWorkspace).toHaveBeenCalledWith({
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
-        recorder: expect.objectContaining({ recordOperation: expect.any(Function) }),
         actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
-    });
-    expect(mockCreateRecorder).toHaveBeenCalledWith({
-      companyId: "company-1",
-      executionWorkspaceId: WORKSPACE_ID,
     });
   });
 
@@ -166,11 +142,9 @@ describe("issue terminal-state workspace cleanup", () => {
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
-      expect(mockArchiveExecutionWorkspace).toHaveBeenCalledWith({
-        db: expect.anything(),
+      expect(mockArchiveTerminalIssueExecutionWorkspace).toHaveBeenCalledWith({
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
-        recorder: expect.objectContaining({ recordOperation: expect.any(Function) }),
         actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
     });
@@ -186,7 +160,7 @@ describe("issue terminal-state workspace cleanup", () => {
       .send({ status: "done" });
 
     expect(res.status).toBe(200);
-    expect(mockArchiveExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockArchiveTerminalIssueExecutionWorkspace).not.toHaveBeenCalled();
   });
 
   it("PATCH issue to in_progress → no archive triggered", async () => {
@@ -199,7 +173,7 @@ describe("issue terminal-state workspace cleanup", () => {
       .send({ status: "in_progress" });
 
     expect(res.status).toBe(200);
-    expect(mockArchiveExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockArchiveTerminalIssueExecutionWorkspace).not.toHaveBeenCalled();
   });
 
   it("PATCH already-done issue (e.g. add comment) → no re-archive triggered", async () => {
@@ -222,11 +196,11 @@ describe("issue terminal-state workspace cleanup", () => {
       .send({ comment: "follow-up note" });
 
     expect(res.status).toBe(200);
-    expect(mockArchiveExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockArchiveTerminalIssueExecutionWorkspace).not.toHaveBeenCalled();
   });
 
   it("archive failure does not affect HTTP response", async () => {
-    mockArchiveExecutionWorkspace.mockRejectedValueOnce(new Error("cleanup exploded"));
+    mockArchiveTerminalIssueExecutionWorkspace.mockRejectedValueOnce(new Error("cleanup exploded"));
     const existing = makeIssue({ status: "in_progress" });
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue({ ...existing, status: "done" });
