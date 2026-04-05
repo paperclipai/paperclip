@@ -221,9 +221,9 @@ export function Documents() {
       </div>
 
       {/* Content area: list + optional preview panel */}
-      <div className="flex gap-4 min-w-0">
+      <div className="flex gap-4 min-w-0 items-start">
         {/* Document list */}
-        <div className="flex-1 min-w-0">
+        <div className={selected ? "w-1/2 min-w-0" : "flex-1 min-w-0"}>
           {filteredDocuments.length === 0 ? (
             <EmptyState
               icon={FileText}
@@ -255,7 +255,7 @@ export function Documents() {
 
         {/* Preview panel */}
         {selected && (
-          <div className="w-[480px] shrink-0 border border-border rounded-md overflow-hidden flex flex-col">
+          <div className="w-1/2 min-w-0 border border-border rounded-md overflow-hidden flex flex-col">
             <div className="flex items-start justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30 shrink-0">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
