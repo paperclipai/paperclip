@@ -1065,6 +1065,12 @@ function resolveNextSessionState(input: {
   };
 }
 
+// Module-level Set shared across all heartbeatService() call-sites.
+// Prevents a race condition where the reaper (running in the scheduler's
+// heartbeatService instance) cannot see runs tracked by the executor's
+// separate heartbeatService instance, causing active runs to be reaped.
+const activeRunExecutions = new Set<string>();
+
 export function heartbeatService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -1077,7 +1083,6 @@ export function heartbeatService(db: Db) {
   const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
