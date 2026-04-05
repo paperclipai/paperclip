@@ -8,6 +8,8 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { fixMulterFilename } from "../utils/filename.js";
+
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -161,7 +163,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: `assets/${namespaceSuffix}`,
-      originalFilename: file.originalname || null,
+      originalFilename: file.originalname ? fixMulterFilename(file.originalname) : null,
       contentType,
       body: fileBody,
     });
@@ -259,7 +261,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const stored = await storage.putFile({
       companyId,
       namespace: "assets/companies",
-      originalFilename: file.originalname || null,
+      originalFilename: file.originalname ? fixMulterFilename(file.originalname) : null,
       contentType,
       body: fileBody,
     });
