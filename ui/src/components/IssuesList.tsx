@@ -584,9 +584,19 @@ export function IssuesList({
                 onSearchChange?.(e.target.value);
               }}
               placeholder="Search issues..."
-              className="pl-7 text-xs sm:text-sm"
+              className="pl-7 pr-7 text-xs sm:text-sm"
               aria-label="Search issues"
             />
+            {issueSearch.length > 0 && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => { setIssueSearch(""); onSearchChange?.(""); }}
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
