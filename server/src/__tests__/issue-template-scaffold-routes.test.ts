@@ -49,6 +49,10 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({
     listForIssue: vi.fn(async () => []),
   }),
+  feedbackService: () => ({}),
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => null),
+  }),
 }));
 
 vi.mock("../services/issue-assignment-wakeup.js", () => ({

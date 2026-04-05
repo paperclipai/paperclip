@@ -166,9 +166,15 @@ export function normalizeForkEntrypoint(
   modulePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string | URL {
-  return platform === "win32" && /^[A-Za-z]:[/\\]/.test(modulePath)
-    ? pathToFileURL(modulePath) // URL object — NOT .href string
-    : modulePath;
+  if (platform === "win32" && /^[A-Za-z]:[/\\]/.test(modulePath)) {
+    // On non-Windows hosts pathToFileURL misinterprets drive-letter paths,
+    // so build the file URL manually when cross-platform testing.
+    if (process.platform === "win32") {
+      return pathToFileURL(modulePath);
+    }
+    return "file:///" + modulePath.replace(/\\/g, "/");
+  }
+  return modulePath;
 }
 
 /**
