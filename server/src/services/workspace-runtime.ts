@@ -12,6 +12,8 @@ import { asNumber, asString, parseObject, renderTemplate } from "../adapters/uti
 import { resolveHomeAwarePath } from "../home-paths.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -1581,6 +1583,7 @@ export async function archiveExecutionWorkspaceForTerminalIssue(input: {
   executionWorkspaceId: string;
   companyId: string;
   recorder?: WorkspaceOperationRecorder | null;
+  actor?: { actorType: "agent" | "user" | "system"; actorId: string; agentId?: string | null; runId?: string | null };
 }): Promise<{ archived: boolean; warnings: string[] }> {
   const { db } = input;
 
@@ -1610,73 +1613,111 @@ export async function archiveExecutionWorkspaceForTerminalIssue(input: {
     .set({ status: "archived", closedAt, cleanupReason: null, updatedAt: closedAt })
     .where(eq(executionWorkspaces.id, workspace.id));
 
-  await stopRuntimeServicesForExecutionWorkspace({
-    db,
-    executionWorkspaceId: workspace.id,
-    workspaceCwd: workspace.cwd,
-  });
+  let cleanupWarnings: string[] = [];
+  try {
+    await stopRuntimeServicesForExecutionWorkspace({
+      db,
+      executionWorkspaceId: workspace.id,
+      workspaceCwd: workspace.cwd,
+    });
 
-  const projectWorkspace = workspace.projectWorkspaceId
-    ? await db
-        .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
-        .from(projectWorkspaces)
-        .where(
-          and(
-            eq(projectWorkspaces.id, workspace.projectWorkspaceId),
-            eq(projectWorkspaces.companyId, input.companyId),
-          ),
-        )
-        .then((rows) => rows[0] ?? null)
-    : null;
+    const projectWorkspace = workspace.projectWorkspaceId
+      ? await db
+          .select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.id, workspace.projectWorkspaceId),
+              eq(projectWorkspaces.companyId, input.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null)
+      : null;
 
-  const projectPolicy = workspace.projectId
-    ? await db
-        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-        .from(projects)
-        .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, input.companyId)))
-        .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-    : null;
+    const projectPolicy = workspace.projectId
+      ? await db
+          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+          .from(projects)
+          .where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, input.companyId)))
+          .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+      : null;
 
-  const teardownCommand = projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+    const teardownCommand = projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
 
-  const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-    workspace: {
-      id: workspace.id,
-      cwd: workspace.cwd,
-      providerType: workspace.providerType,
-      providerRef: workspace.providerRef,
-      branchName: workspace.branchName,
-      repoUrl: workspace.repoUrl,
-      baseRef: workspace.baseRef,
-      projectId: workspace.projectId,
-      projectWorkspaceId: workspace.projectWorkspaceId,
-      sourceIssueId: workspace.sourceIssueId,
-      metadata: workspace.metadata as Record<string, unknown> | null,
-    },
-    projectWorkspace,
-    teardownCommand,
-    recorder: input.recorder ?? null,
-  });
+    const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: workspace.id,
+        cwd: workspace.cwd,
+        providerType: workspace.providerType,
+        providerRef: workspace.providerRef,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.baseRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.projectWorkspaceId,
+        sourceIssueId: workspace.sourceIssueId,
+        metadata: workspace.metadata as Record<string, unknown> | null,
+      },
+      projectWorkspace,
+      teardownCommand,
+      recorder: input.recorder ?? null,
+    });
 
-  if (!cleanupResult.cleaned) {
+    cleanupWarnings = cleanupResult.warnings;
+
+    if (!cleanupResult.cleaned) {
+      await db
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          closedAt,
+          cleanupReason: cleanupResult.warnings.join(" | ") || "cleanup failed",
+          updatedAt: new Date(),
+        })
+        .where(eq(executionWorkspaces.id, workspace.id));
+    } else if (cleanupResult.warnings.length > 0) {
+      await db
+        .update(executionWorkspaces)
+        .set({
+          cleanupReason: cleanupResult.warnings.join(" | "),
+          updatedAt: new Date(),
+        })
+        .where(eq(executionWorkspaces.id, workspace.id));
+    }
+  } catch (error) {
+    const failureReason = error instanceof Error ? error.message : String(error);
     await db
       .update(executionWorkspaces)
       .set({
         status: "cleanup_failed",
         closedAt,
-        cleanupReason: cleanupResult.warnings.join(" | ") || "cleanup failed",
+        cleanupReason: failureReason,
         updatedAt: new Date(),
       })
       .where(eq(executionWorkspaces.id, workspace.id));
-  } else if (cleanupResult.warnings.length > 0) {
-    await db
-      .update(executionWorkspaces)
-      .set({
-        cleanupReason: cleanupResult.warnings.join(" | "),
-        updatedAt: new Date(),
-      })
-      .where(eq(executionWorkspaces.id, workspace.id));
+    cleanupWarnings = [failureReason];
+    logger.warn(
+      { err: error, executionWorkspaceId: workspace.id },
+      "archiveExecutionWorkspaceForTerminalIssue: cleanup threw, set cleanup_failed",
+    );
   }
 
-  return { archived: true, warnings: cleanupResult.warnings };
+  if (input.actor) {
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId ?? null,
+      runId: input.actor.runId ?? null,
+      action: "execution_workspace.updated",
+      entityType: "execution_workspace",
+      entityId: workspace.id,
+      details: {
+        trigger: "terminal_issue_transition",
+        ...(cleanupWarnings.length > 0 ? { cleanupWarnings } : {}),
+      },
+    });
+  }
+
+  return { archived: true, warnings: cleanupWarnings };
 }

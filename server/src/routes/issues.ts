@@ -1190,6 +1190,7 @@ export function issueRoutes(
         db,
         executionWorkspaceId: issue.executionWorkspaceId,
         companyId: issue.companyId,
+        actor: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
       }).catch((err) =>
         logger.warn(
           { err, issueId: issue.id, executionWorkspaceId: issue.executionWorkspaceId },

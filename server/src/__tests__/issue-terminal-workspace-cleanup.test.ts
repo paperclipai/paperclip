@@ -135,6 +135,7 @@ describe("issue terminal-state workspace cleanup", () => {
         db: expect.anything(),
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
+        actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
     });
   });
@@ -154,6 +155,7 @@ describe("issue terminal-state workspace cleanup", () => {
         db: expect.anything(),
         executionWorkspaceId: WORKSPACE_ID,
         companyId: "company-1",
+        actor: { actorType: "user", actorId: "local-board", agentId: null, runId: null },
       });
     });
   });
