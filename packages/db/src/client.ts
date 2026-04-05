@@ -1,9 +1,13 @@
-import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import {
+  computeMigrationHash,
+  normalizeMigrationContent,
+  splitMigrationStatements,
+} from "./migration-utils.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -25,13 +29,6 @@ function quoteIdentifier(value: string): string {
 
 function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
-}
-
-function splitMigrationStatements(content: string): string[] {
-  return content
-    .split("--> statement-breakpoint")
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0);
 }
 
 export type MigrationState =
@@ -107,7 +104,8 @@ async function listJournalMigrationFiles(): Promise<string[]> {
 }
 
 async function readMigrationFileContent(migrationFile: string): Promise<string> {
-  return readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  const content = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
+  return normalizeMigrationContent(content);
 }
 
 async function orderMigrationsByJournal(migrationFiles: string[]): Promise<string[]> {
@@ -249,7 +247,7 @@ async function applyPendingMigrationsManually(
 
     for (const migrationFile of orderedPendingMigrations) {
       const migrationContent = await readMigrationFileContent(migrationFile);
-      const hash = createHash("sha256").update(migrationContent).digest("hex");
+      const hash = computeMigrationHash(migrationContent);
       const existingEntry = await migrationHistoryEntryExists(
         sql,
         qualifiedTable,
@@ -261,7 +259,10 @@ async function applyPendingMigrationsManually(
 
       await runInTransaction(sql, async () => {
         for (const statement of splitMigrationStatements(migrationContent)) {
-          await sql.unsafe(statement);
+          const alreadyApplied = await migrationStatementAlreadyApplied(sql, statement);
+          if (!alreadyApplied) {
+            await sql.unsafe(statement);
+          }
         }
 
         await recordMigrationHistoryEntry(
@@ -285,7 +286,7 @@ async function mapHashesToMigrationFiles(migrationFiles: string[]): Promise<Map<
   await Promise.all(
     migrationFiles.map(async (migrationFile) => {
       const content = await readMigrationFileContent(migrationFile);
-      const hash = createHash("sha256").update(content).digest("hex");
+      const hash = computeMigrationHash(content);
       mapped.set(hash, migrationFile);
     }),
   );
@@ -377,7 +378,12 @@ async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  // Strip SQL line comments before normalizing — statement chunks from
+  // splitMigrationStatements may include leading rollback comments that
+  // prevent the DDL-detection regexes from matching.
+  // Only strip comments that start at the beginning of a line (or after
+  // whitespace) to avoid false positives inside quoted identifiers.
+  const normalized = statement.replace(/(?:^|(?<=\s))--[^\n]*/g, " ").replace(/\s+/g, " ").trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
@@ -510,7 +516,7 @@ export async function reconcilePendingMigrationHistory(
       const alreadyApplied = await migrationContentAlreadyApplied(sql, migrationContent);
       if (!alreadyApplied) break;
 
-      const hash = createHash("sha256").update(migrationContent).digest("hex");
+      const hash = computeMigrationHash(migrationContent);
       const folderMillis = folderMillisByFile.get(migrationFile) ?? Date.now();
       const existingByHash = columnNames.has("hash")
         ? await sql.unsafe<{ created_at: string | number | null }[]>(
@@ -661,6 +667,21 @@ export async function applyPendingMigrations(url: string): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
+  // --- Phase 1: Pre-reconcile (pending-migrations only) ---
+  // When the migration journal exists but some entries have stale hashes
+  // (e.g. CRLF vs LF), reconcile marks already-applied migrations in the
+  // journal *before* Drizzle tries to re-run them. We capture the result
+  // in postReconcileState to avoid a redundant inspectMigrations call later.
+  let postReconcileState: MigrationState | null = null;
+  if (initialState.status === "needsMigrations" && initialState.reason === "pending-migrations") {
+    const preRepair = await reconcilePendingMigrationHistory(url);
+    if (preRepair.repairedMigrations.length > 0) {
+      postReconcileState = await inspectMigrations(url);
+      if (postReconcileState.status === "upToDate") return;
+    }
+  }
+
+  // --- Phase 2: Bootstrap (empty DB) ---
   if (initialState.reason === "no-migration-journal-empty-db") {
     const sql = createUtilitySql(url);
     try {
@@ -688,20 +709,18 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     );
   }
 
+  // --- Phase 3: Unsafe state (tables exist, no journal) ---
   if (initialState.reason === "no-migration-journal-non-empty-db") {
     throw new Error(
       "Database has tables but no migration journal; automatic migration is unsafe. Initialize migration history manually.",
     );
   }
 
-  let state = await inspectMigrations(url);
+  // --- Phase 4: Apply remaining pending migrations ---
+  // Reuse the post-reconcile state from Phase 1 if available (avoids a
+  // redundant DB round-trip); otherwise re-inspect from scratch.
+  const state = postReconcileState ?? await inspectMigrations(url);
   if (state.status === "upToDate") return;
-
-  const repair = await reconcilePendingMigrationHistory(url);
-  if (repair.repairedMigrations.length > 0) {
-    state = await inspectMigrations(url);
-    if (state.status === "upToDate") return;
-  }
 
   if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
     throw new Error("Migrations are still pending after migration-history reconciliation; run inspectMigrations for details.");
