@@ -1590,12 +1590,16 @@ export async function archiveExecutionWorkspaceForTerminalIssue(input: {
   const workspace = await db
     .select()
     .from(executionWorkspaces)
-    .where(eq(executionWorkspaces.id, input.executionWorkspaceId))
+    .where(
+      and(
+        eq(executionWorkspaces.id, input.executionWorkspaceId),
+        eq(executionWorkspaces.companyId, input.companyId),
+      ),
+    )
     .then((rows) => rows[0] ?? null);
 
   if (!workspace) return { archived: false, warnings: ["workspace not found"] };
   if (workspace.status === "archived") return { archived: false, warnings: [] };
-  if (workspace.companyId !== input.companyId) return { archived: false, warnings: ["company mismatch"] };
 
   const linkedIssues = await db
     .select({ id: issues.id, status: issues.status })
