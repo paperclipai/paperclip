@@ -1589,7 +1589,19 @@ export function Inbox() {
   const canMarkAllRead = unreadIssueIds.length > 0;
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-2">
+        {/* Search — full-width row on mobile, inline on desktop */}
+        <div className="relative sm:hidden">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search inbox…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 w-full pl-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
             items={[
@@ -1608,14 +1620,14 @@ export function Inbox() {
         </Tabs>
 
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative hidden sm:block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
               placeholder="Search inbox…"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-8 w-[180px] pl-8 text-xs sm:w-[220px]"
+              className="h-8 w-[220px] pl-8 text-xs"
             />
           </div>
           <DropdownMenu>
@@ -1624,7 +1636,7 @@ export function Inbox() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                className="hidden h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground sm:inline-flex"
               >
                 <Columns3 className="mr-1 h-3.5 w-3.5" />
                 Show / hide columns
@@ -1707,6 +1719,7 @@ export function Inbox() {
               </Dialog>
             </>
           )}
+        </div>
         </div>
       </div>
 
