@@ -24,6 +24,8 @@ export interface LiveRunForIssue {
   agentName: string;
   adapterType: string;
   issueId?: string | null;
+  /** Tail of the run's stdout log captured during execution. Used to hydrate the live feed when the panel mounts mid-run. */
+  stdoutExcerpt?: string | null;
 }
 
 export const heartbeatsApi = {

@@ -88,6 +88,40 @@ export function useLiveRunTranscripts({
     [runs],
   );
 
+  // Seed chunksByRun from stdoutExcerpt the moment runs arrive so the panel never shows
+  // "Waiting for output..." for runs that were already in progress when it mounted.
+  // The log-polling effect below will then take over with full persisted content.
+  const seededRunIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const newSeeds: Array<{ runId: string; chunks: Array<RunLogChunk & { dedupeKey: string }> }> = [];
+    for (const run of runs) {
+      if (seededRunIdsRef.current.has(run.id)) continue;
+      const excerpt = (run as unknown as { stdoutExcerpt?: string | null }).stdoutExcerpt;
+      if (!excerpt) continue;
+      seededRunIdsRef.current.add(run.id);
+      const parsed = parsePersistedLogContent(run.id, excerpt, new Map());
+      if (parsed.length > 0) {
+        newSeeds.push({ runId: run.id, chunks: parsed });
+      }
+    }
+    if (newSeeds.length === 0) return;
+    setChunksByRun((prev) => {
+      const next = new Map(prev);
+      for (const { runId, chunks } of newSeeds) {
+        if (next.has(runId)) continue; // already have real data, skip
+        const fresh: RunLogChunk[] = [];
+        for (const c of chunks) {
+          if (seenChunkKeysRef.current.has(c.dedupeKey)) continue;
+          seenChunkKeysRef.current.add(c.dedupeKey);
+          fresh.push({ ts: c.ts, stream: c.stream, chunk: c.chunk });
+        }
+        if (fresh.length > 0) next.set(runId, fresh.slice(-maxChunksPerRun));
+      }
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runIdsKey]);
+
   const appendChunks = (runId: string, chunks: Array<RunLogChunk & { dedupeKey: string }>) => {
     if (chunks.length === 0) return;
     setChunksByRun((prev) => {

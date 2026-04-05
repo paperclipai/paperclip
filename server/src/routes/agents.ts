@@ -2229,6 +2229,7 @@ export function agentRoutes(db: Db) {
       agentName: agentsTable.name,
       adapterType: agentsTable.adapterType,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
     };
 
     const liveRuns = await db
@@ -2395,6 +2396,7 @@ export function agentRoutes(db: Db) {
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
         adapterType: agentsTable.adapterType,
+        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
       })
       .from(heartbeatRuns)
       .innerJoin(agentsTable, eq(heartbeatRuns.agentId, agentsTable.id))
