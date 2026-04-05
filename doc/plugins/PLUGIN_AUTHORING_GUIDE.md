@@ -153,3 +153,57 @@ pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+---
+
+## Agent Identity System
+
+Paperclip agents can define their behavior using version-controlled identity files. This is the recommended approach for agent configuration.
+
+### Folder Structure
+
+Each agent gets a dedicated folder:
+
+```
+cowork/
+  agents/
+    {agent-name}/
+      AGENTS.md       # Role, responsibilities, delegation rules, tools
+      SOUL.md         # Personality, communication style, values
+      TOOLS.md        # Tool registry, usage patterns, API references
+      HEARTBEAT.md    # Execution checklist (wake → triage → work → exit)
+      memory/         # Per-agent daily notes and knowledge graph
+  _shared/
+    INBOX.md          # Lightweight inter-agent signaling channel
+    HARNESS-TASK.md   # Universal CoWork task body template
+```
+
+### File Responsibilities
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | The agent's system prompt — role, responsibilities, delegation rules, guardrails |
+| `SOUL.md` | Personality and voice — strategic posture, communication style |
+| `TOOLS.md` | Tool registry — available tools, key commands, usage patterns |
+| `HEARTBEAT.md` | Execution checklist — step-by-step procedure run on every heartbeat |
+
+### Wiring an Agent
+
+To connect an agent's identity folder to Paperclip:
+
+```bash
+PATCH /api/agents/{agentId}/instructions-path
+{
+  "path": "/absolute/path/to/cowork/agents/{agent-name}/AGENTS.md"
+}
+```
+
+The `AGENTS.md` file becomes the agent's `instructionsFilePath`. The agent reads it on every heartbeat run as its primary system context.
+
+### Adding a New Agent
+
+1. Create `cowork/agents/{agent-name}/` with the four identity files.
+2. Update the agent's `instructionsFilePath` to point to the new `AGENTS.md`.
+3. Add a CoWork scheduled task using the template in `cowork/_shared/HARNESS-TASK.md`.
+
+No Paperclip database changes are required beyond the `instructionsFilePath` update.
