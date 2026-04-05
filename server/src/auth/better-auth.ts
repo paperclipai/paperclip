@@ -11,6 +11,7 @@ import {
   authVerifications,
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
+import { pixelportHandoffPlugin } from "./pixelport-handoff.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -86,6 +87,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         verification: authVerifications,
       },
     }),
+    plugins: [pixelportHandoffPlugin(db)],
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
