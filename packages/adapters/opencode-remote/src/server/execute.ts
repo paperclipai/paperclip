@@ -305,7 +305,15 @@ export async function execute(
           {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ title: sessionTitle }),
+            body: JSON.stringify({
+              title: sessionTitle,
+              // Grant session-scoped permissions so the agent can run tools
+              // without interactive prompts (same as opencode_local's
+              // dangerouslySkipPermissions runtime config injection).
+              permission: [
+                { permission: "external_directory", pattern: "*", action: "allow" },
+              ],
+            }),
             timeoutMs: 30000,
           },
         );
