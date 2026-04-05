@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUpRight, FileText, Search, X } from "lucide-react";
+import { ArrowUpRight, FileText, History, Search, X } from "lucide-react";
 import type { IssueDocumentSummary, Issue, Agent } from "@paperclipai/shared";
 
 type DocumentEntry = {
@@ -40,13 +40,13 @@ export function Documents() {
     setBreadcrumbs([{ label: "Documents" }]);
   }, [setBreadcrumbs]);
 
-  const { data: issues, isLoading: issuesLoading } = useQuery({
+  const { data: issues, isLoading: issuesLoading, error: issuesError } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: allDocs, isLoading: docsLoading } = useQuery({
+  const { data: allDocs, isLoading: docsLoading, error: docsError } = useQuery({
     queryKey: queryKeys.documents.list(selectedCompanyId!),
     queryFn: () => issuesApi.listCompanyDocuments(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -129,6 +129,19 @@ export function Documents() {
     setSearch("");
     setKeyFilter("all");
     setAgentFilter("all");
+  }
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={History} message="Select a company to view documents." />;
+  }
+
+  const loadError = issuesError ?? docsError;
+  if (loadError) {
+    return (
+      <p className="text-sm text-destructive">
+        {loadError instanceof Error ? loadError.message : "Failed to load documents."}
+      </p>
+    );
   }
 
   if (issuesLoading || docsLoading) {
