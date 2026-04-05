@@ -1,4 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -49,6 +50,7 @@ import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+import { buildAuthRedirectPath } from "./lib/auth-redirect";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -93,6 +95,17 @@ function CloudAccessGate() {
     retry: false,
   });
 
+  const authRedirectPath = isAuthenticatedMode && !sessionQuery.isLoading && !sessionQuery.data
+    ? buildAuthRedirectPath(location.pathname, location.search)
+    : null;
+
+  useEffect(() => {
+    if (!authRedirectPath) return;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === authRedirectPath) return;
+    window.location.replace(authRedirectPath);
+  }, [authRedirectPath]);
+
   if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
@@ -109,9 +122,8 @@ function CloudAccessGate() {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
-    const next = encodeURIComponent(`${location.pathname}${location.search}`);
-    return <Navigate to={`/auth?next=${next}`} replace />;
+  if (authRedirectPath) {
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Redirecting to sign in...</div>;
   }
 
   return <Outlet />;
