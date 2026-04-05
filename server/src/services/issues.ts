@@ -1628,7 +1628,7 @@ export function issueService(db: Db) {
         limit?: number | null;
       },
     ) => {
-      const order = opts?.order === "asc" ? "asc" : "desc";
+      const order = opts?.order === "desc" ? "desc" : "asc";
       const afterCommentId = opts?.afterCommentId?.trim() || null;
       const limit =
         opts?.limit && opts.limit > 0

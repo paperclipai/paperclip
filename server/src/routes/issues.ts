@@ -1515,9 +1515,9 @@ export function issueRoutes(
           ? req.query.afterCommentId.trim()
           : null;
     const order =
-      typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "asc"
-        ? "asc"
-        : "desc";
+      typeof req.query.order === "string" && req.query.order.trim().toLowerCase() === "desc"
+        ? "desc"
+        : "asc";
     const limitRaw =
       typeof req.query.limit === "string" && req.query.limit.trim().length > 0
         ? Number(req.query.limit)
