@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "../index.js";
 import { parseCursorJsonl } from "./parse.js";
+import { ensureUserLocalBinOnPath } from "./local-bin-path.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -118,7 +119,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensureUserLocalBinOnPath(ensurePathInEnv({ ...process.env, ...env }));
   try {
     await ensureCommandResolvable(command, cwd, runtimeEnv);
     checks.push({
@@ -192,13 +193,18 @@ export async function testEnvironment(
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("Respond with hello.");
 
+      const probeEnv = Object.fromEntries(
+        Object.entries(runtimeEnv).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
       const probe = await runChildProcess(
         `cursor-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         command,
         args,
         {
           cwd,
-          env,
+          env: probeEnv,
           timeoutSec: 45,
           graceSec: 5,
           onLog: async () => {},
