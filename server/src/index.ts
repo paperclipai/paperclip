@@ -262,6 +262,12 @@ export async function startServer(): Promise<StartedServer> {
     | { mode: "embedded-postgres"; dataDir: string; port: number };
   if (config.databaseUrl) {
     migrationSummary = await ensureMigrations(config.databaseUrl, "PostgreSQL");
+    if (migrationSummary === "pending migrations skipped") {
+      throw new Error(
+        "Cannot start with pending migrations — queries will fail against missing tables. " +
+        "Run `pnpm db:migrate` to apply pending migrations, then restart."
+      );
+    }
   
     db = createDb(config.databaseUrl);
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
@@ -416,14 +422,15 @@ export async function startServer(): Promise<StartedServer> {
     }
   
     const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-    const shouldAutoApplyFirstRunMigrations = !clusterAlreadyInitialized || dbStatus === "created";
-    if (shouldAutoApplyFirstRunMigrations) {
+    const shouldAutoApplyMigrations = true; // Always auto-apply for embedded Postgres — it's local and managed by Paperclip
+    if (!clusterAlreadyInitialized || dbStatus === "created") {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
+    } else {
+      logger.info("Embedded PostgreSQL: auto-applying any pending migrations");
     }
     migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
-      autoApply: shouldAutoApplyFirstRunMigrations,
+      autoApply: shouldAutoApplyMigrations,
     });
-  
     db = createDb(embeddedConnectionString);
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
