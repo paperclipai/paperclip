@@ -15,6 +15,8 @@
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
 
+import path from "node:path";
+
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
@@ -28,6 +30,45 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "text/csv",
   "text/html",
 ];
+
+/**
+ * Map of file extensions to their canonical MIME types.
+ * Used when the browser sends a generic type like application/octet-stream.
+ */
+export const EXTENSION_TO_MIME_TYPE: Record<string, string> = {
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".txt": "text/plain",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".html": "text/html",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+/**
+ * Infer the content type from a filename when the browser sends a generic type.
+ * Returns the inferred MIME type if the extension is known, otherwise returns the original.
+ */
+export function inferContentType(
+  filename: string | null | undefined,
+  reportedMimeType: string,
+): string {
+  // Only infer when the browser sends a generic binary type
+  if (reportedMimeType.toLowerCase() !== "application/octet-stream") {
+    return reportedMimeType;
+  }
+  if (!filename) {
+    return reportedMimeType;
+  }
+  const ext = path.extname(filename).toLowerCase();
+  const inferred = EXTENSION_TO_MIME_TYPE[ext];
+  return inferred || reportedMimeType;
+}
 
 /**
  * Parse a comma-separated list of MIME type patterns into a normalised array.

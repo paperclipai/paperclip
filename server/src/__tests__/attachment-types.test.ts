@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseAllowedTypes,
   matchesContentType,
+  inferContentType,
   DEFAULT_ALLOWED_TYPES,
 } from "../attachment-types.js";
 
@@ -93,5 +94,47 @@ describe("matchesContentType", () => {
     expect(matchesContentType("application/pdf", patterns)).toBe(true);
     expect(matchesContentType("text/plain", patterns)).toBe(true);
     expect(matchesContentType("application/zip", patterns)).toBe(true);
+  });
+});
+
+describe("inferContentType", () => {
+  it("returns original mime type when not application/octet-stream", () => {
+    expect(inferContentType("test.md", "text/markdown")).toBe("text/markdown");
+    expect(inferContentType("test.png", "image/png")).toBe("image/png");
+  });
+
+  it("infers text/markdown from .md extension", () => {
+    expect(inferContentType("readme.md", "application/octet-stream")).toBe("text/markdown");
+    expect(inferContentType("README.MD", "application/octet-stream")).toBe("text/markdown");
+    expect(inferContentType("docs/guide.md", "application/octet-stream")).toBe("text/markdown");
+  });
+
+  it("infers text/markdown from .markdown extension", () => {
+    expect(inferContentType("readme.markdown", "application/octet-stream")).toBe("text/markdown");
+  });
+
+  it("infers text/plain from .txt extension", () => {
+    expect(inferContentType("notes.txt", "application/octet-stream")).toBe("text/plain");
+  });
+
+  it("infers application/json from .json extension", () => {
+    expect(inferContentType("data.json", "application/octet-stream")).toBe("application/json");
+  });
+
+  it("returns original mime type for unknown extensions", () => {
+    expect(inferContentType("file.xyz", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("file.unknown", "application/octet-stream")).toBe("application/octet-stream");
+  });
+
+  it("returns original mime type when filename is null or undefined", () => {
+    expect(inferContentType(null, "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType(undefined, "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("", "application/octet-stream")).toBe("application/octet-stream");
+  });
+
+  it("returns original mime type for filenames with no extension", () => {
+    expect(inferContentType("nodotfile", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("Makefile", "application/octet-stream")).toBe("application/octet-stream");
+    expect(inferContentType("README", "application/octet-stream")).toBe("application/octet-stream");
   });
 });
