@@ -62,6 +62,8 @@ interface MarkdownEditorProps {
   contentClassName?: string;
   onBlur?: () => void;
   imageUploadHandler?: (file: File) => Promise<string>;
+  /** Called when a non-image file is dropped onto the editor (e.g. .zip). */
+  onDropFile?: (file: File) => Promise<void>;
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
@@ -314,6 +316,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   contentClassName,
   onBlur,
   imageUploadHandler,
+  onDropFile,
   bordered = true,
   mentions,
   onSubmit,
@@ -668,6 +671,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }
 
   const canDropImage = Boolean(imageUploadHandler);
+  const canDropFile = Boolean(imageUploadHandler || onDropFile);
   const handlePasteCapture = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const clipboard = event.clipboardData;
     if (!clipboard || !ref.current) return;
@@ -747,23 +751,41 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onDragEnter={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(evt) => {
-        if (!canDropImage || !hasFilePayload(evt)) return;
+        if (!canDropFile || !hasFilePayload(evt)) return;
         evt.preventDefault();
         evt.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={() => {
-        if (!canDropImage) return;
+        if (!canDropFile) return;
         dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
-      onDrop={() => {
+      onDrop={(evt) => {
         dragDepthRef.current = 0;
         setIsDragOver(false);
+        if (!onDropFile) return;
+        const files = evt.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+        const allFiles = Array.from(files);
+        const nonImageFiles = allFiles.filter(
+          (f) => !f.type.startsWith("image/"),
+        );
+        if (nonImageFiles.length === 0) return;
+        // If all dropped files are non-image, prevent default so MDXEditor
+        // doesn't try to handle them. If mixed, let images flow through to
+        // the image plugin and only handle the non-image files ourselves.
+        if (nonImageFiles.length === allFiles.length) {
+          evt.preventDefault();
+          evt.stopPropagation();
+        }
+        for (const file of nonImageFiles) {
+          void onDropFile(file);
+        }
       }}
       onPasteCapture={handlePasteCapture}
     >
@@ -854,14 +876,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           document.body,
         )}
 
-      {isDragOver && canDropImage && (
+      {isDragOver && canDropFile && (
         <div
           className={cn(
             "pointer-events-none absolute inset-1 z-40 flex items-center justify-center rounded-md border border-dashed border-primary/80 bg-primary/10 text-xs font-medium text-primary",
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop image to upload
+          Drop file to upload
         </div>
       )}
       {uploadError && (
