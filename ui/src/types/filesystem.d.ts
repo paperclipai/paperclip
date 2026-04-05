@@ -3,11 +3,6 @@
 interface FileSystemHandle {
   kind: "file" | "directory";
   name: string;
-  getFile(): Promise<File>;
-  getDirectoryHandle(
-    name: string,
-    options?: FileSystemHandleCreateOptions,
-  ): Promise<FileSystemDirectoryHandle>;
 }
 
 interface FileSystemHandleCreateOptions {
@@ -16,7 +11,7 @@ interface FileSystemHandleCreateOptions {
 
 interface FileSystemDirectoryHandle extends FileSystemHandle {
   kind: "directory";
-  values(): AsyncIterableIterator<FileSystemHandle>;
+  values(): AsyncIterableIterator<FileSystemDirectoryHandle>;
   getDirectoryHandle(
     name: string,
     options?: FileSystemHandleCreateOptions,
@@ -25,6 +20,7 @@ interface FileSystemDirectoryHandle extends FileSystemHandle {
 
 interface FileSystemFileHandle extends FileSystemHandle {
   kind: "file";
+  getFile(): Promise<File>;
 }
 
 interface FileSystemWritableFileStream extends WritableStream {

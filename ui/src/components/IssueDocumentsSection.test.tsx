@@ -218,10 +218,23 @@ function createIssue(): Issue {
 describe("IssueDocumentsSection", () => {
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  const localStorageMock = {
+  data: {} as Record<string, string>,
+  clear: vi.fn(() => { localStorageMock.data = {}; }),
+  getItem: vi.fn((key: string) => localStorageMock.data[key] ?? null),
+  setItem: vi.fn((key: string, value: string) => { localStorageMock.data[key] = value; }),
+  removeItem: vi.fn((key: string) => { delete localStorageMock.data[key]; }),
+  key: vi.fn(),
+  get length() { return Object.keys(localStorageMock.data).length; },
+};
+
+Object.defineProperty(window, "localStorage", { value: localStorageMock, writable: true });
+
+beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    window.localStorage.clear();
+    localStorageMock.data = {};
+    localStorageMock.clear.mockClear();
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
   });

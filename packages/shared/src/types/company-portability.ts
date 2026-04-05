@@ -306,7 +306,6 @@ export interface CompanyPortabilityDefaultAgentConfig {
 
 export interface CompanyPortabilityImportRequest extends CompanyPortabilityPreviewRequest {
   adapterOverrides?: Record<string, CompanyPortabilityAdapterOverride>;
-  defaultAgentConfig?: CompanyPortabilityDefaultAgentConfig;
 }
 
 export interface CompanyPortabilityImportResult {

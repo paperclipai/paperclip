@@ -225,6 +225,7 @@ describe("createZipArchive", () => {
 
     await expect(readZipArchive(archive)).resolves.toEqual({
       rootPath: "paperclip-demo",
+      warnings: [],
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
@@ -247,6 +248,7 @@ describe("createZipArchive", () => {
 
     await expect(readZipArchive(archive)).resolves.toEqual({
       rootPath: "paperclip-demo",
+      warnings: [],
       files: {
         "images/company-logo.png": {
           encoding: "base64",
@@ -268,6 +270,7 @@ describe("createZipArchive", () => {
 
     await expect(readZipArchive(archive)).resolves.toEqual({
       rootPath: "paperclip-demo",
+      warnings: [],
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",
@@ -280,6 +283,7 @@ describe("createZipArchive", () => {
 
     await expect(readZipArchive(archive)).resolves.toEqual({
       rootPath: "paperclip-demo",
+      warnings: [],
       files: {
         "COMPANY.md": "# Company\n",
         "agents/ceo/AGENTS.md": "# CEO\n",

@@ -785,8 +785,7 @@ async function readLocalDirectory(): Promise<{
       if (entry.kind === "directory") {
         // Skip macOS resource fork directories and .DS_Store
         if (entry.name === "._" || entry.name === ".DS_Store") continue;
-        const subDir = await handle.getDirectoryHandle(entry.name);
-        yield* walkDir(subDir, `${dirPath}/${entry.name}`);
+        yield* walkDir(entry as FileSystemDirectoryHandle, `${dirPath}/${entry.name}`);
       } else if (entry.kind === "file") {
         // Skip macOS resource fork files and .DS_Store
         if (entry.name.startsWith("._") || entry.name === ".DS_Store") continue;
@@ -801,10 +800,7 @@ async function readLocalDirectory(): Promise<{
 
   for await (const { path, file } of walkDir(dirHandle, "")) {
     // Normalize path: remove leading slash, convert backslashes
-    const normalizedPath = path
-      .replace(/^/, "")
-      .replace(/\\/g, "/")
-      .replace(/^\//, "");
+    const normalizedPath = path.replace(/\\/g, "/").replace(/^\//, "");
 
     try {
       // Determine if binary based on content type or extension
@@ -876,6 +872,8 @@ export function CompanyImport() {
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  const supportsDirectoryPicker = typeof window.showDirectoryPicker === "function";
 
   // Source state
   const [sourceMode, setSourceMode] = useState<
@@ -1490,10 +1488,10 @@ export function CompanyImport() {
           {(
             [
               { key: "github", icon: Github, label: "GitHub repo" },
-              { key: "directory", icon: FolderOpen, label: "Local folder" },
+              { key: "directory", icon: FolderOpen, label: "Local folder", supported: supportsDirectoryPicker },
               { key: "local", icon: Upload, label: "Local zip" },
             ] as const
-          ).map(({ key, icon: Icon, label }) => (
+          ).filter(({ key, supported }) => key !== "directory" || supported).map(({ key, icon: Icon, label, supported }) => (
             <button
               key={key}
               type="button"
@@ -1502,8 +1500,10 @@ export function CompanyImport() {
                 sourceMode === key
                   ? "border-foreground bg-accent"
                   : "border-border hover:bg-accent/50",
+                key === "directory" && !supported ? "opacity-50 cursor-not-allowed" : "",
               )}
               onClick={() => {
+                if (key === "directory" && !supported) return;
                 setSourceMode(key);
                 setImportPreview(null);
               }}
