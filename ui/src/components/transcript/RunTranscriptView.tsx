@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
@@ -26,6 +26,8 @@ interface RunTranscriptViewProps {
   emptyMessage?: string;
   className?: string;
   thinkingClassName?: string;
+  /** Automatically scroll to bottom when new entries arrive, as long as the user hasn't scrolled up. */
+  autoScroll?: boolean;
 }
 
 type TranscriptBlock =
@@ -1385,6 +1387,102 @@ function RawTranscriptView({
   );
 }
 
+/**
+ * Find the nearest ancestor that is a scroll container (overflow-y auto/scroll/overlay
+ * and content taller than viewport). Returns null when nothing overflows yet.
+ */
+function findScrollAncestor(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (
+      (overflowY === "auto" || overflowY === "scroll") &&
+      node.scrollHeight > node.clientHeight + 1
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/**
+ * Sticky auto-scroll: scrolls the nearest scrollable ancestor to keep the
+ * bottom sentinel visible whenever `deps` change — but only while the user
+ * is near the bottom (within `threshold` px). Scrolling up to read history
+ * disengages the behaviour; scrolling back down re-engages it.
+ *
+ * The scroll ancestor is re-resolved on every deps change so it works even
+ * when the container starts without overflow and gains it as entries stream in.
+ */
+function useAutoScroll(
+  bottomRef: React.RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  deps: unknown[],
+  threshold = 80,
+) {
+  const isNearBottom = useRef(true);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const listenerRef = useRef<(() => void) | null>(null);
+
+  const updateNearBottom = (scroller: HTMLElement) => {
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    isNearBottom.current = distance <= threshold;
+  };
+
+  // 1. Seed isNearBottom synchronously (useLayoutEffect) BEFORE the scroll
+  //    effect fires, so the scroll decision always uses the current ancestor.
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const sentinel = bottomRef.current;
+    if (!sentinel) return;
+
+    const scroller = findScrollAncestor(sentinel);
+    if (scroller) {
+      updateNearBottom(scroller);
+    } else {
+      // No overflow yet — treat as "at bottom".
+      isNearBottom.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ...deps]);
+
+  // 2. Scroll to sentinel (also useLayoutEffect, but declared after the seed
+  //    above so React processes it second in the same commit).
+  useLayoutEffect(() => {
+    if (!enabled || !isNearBottom.current) return;
+    bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ...deps]);
+
+  // 3. (Re-)attach the passive scroll listener so isNearBottom stays current
+  //    between entry updates. Re-runs on deps change to pick up new ancestors.
+  useEffect(() => {
+    if (!enabled) return;
+    const sentinel = bottomRef.current;
+    if (!sentinel) return;
+
+    // Detach previous listener if the scroller element changed.
+    if (listenerRef.current && scrollerRef.current) {
+      scrollerRef.current.removeEventListener("scroll", listenerRef.current);
+    }
+
+    const scroller = findScrollAncestor(sentinel);
+    scrollerRef.current = scroller;
+
+    if (!scroller) {
+      listenerRef.current = null;
+      return;
+    }
+
+    const onScroll = () => updateNearBottom(scroller);
+    listenerRef.current = onScroll;
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ...deps]);
+}
+
 export function RunTranscriptView({
   entries,
   mode = "nice",
@@ -1395,10 +1493,14 @@ export function RunTranscriptView({
   emptyMessage = "No transcript yet.",
   className,
   thinkingClassName,
+  autoScroll = false,
 }: RunTranscriptViewProps) {
   const blocks = useMemo(() => normalizeTranscript(entries, streaming), [entries, streaming]);
   const visibleBlocks = limit ? blocks.slice(-limit) : blocks;
   const visibleEntries = limit ? entries.slice(-limit) : entries;
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useAutoScroll(bottomRef, autoScroll, [entries.length, visibleBlocks.length]);
 
   if (entries.length === 0) {
     return (
@@ -1412,6 +1514,7 @@ export function RunTranscriptView({
     return (
       <div className={className}>
         <RawTranscriptView entries={visibleEntries} density={density} />
+        <div ref={bottomRef} />
       </div>
     );
   }
@@ -1440,6 +1543,7 @@ export function RunTranscriptView({
           {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
         </div>
       ))}
+      <div ref={bottomRef} />
     </div>
   );
 }

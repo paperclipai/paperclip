@@ -147,6 +147,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                   density="compact"
                   limit={8}
                   streaming={isActive}
+                  autoScroll={isActive}
                   collapseStdout
                   emptyMessage={hasOutputForRun(run.id) ? "Waiting for transcript parsing..." : "Waiting for run output..."}
                 />

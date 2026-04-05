@@ -146,6 +146,7 @@ function AgentRunCard({
           density="compact"
           limit={5}
           streaming={isActive}
+          autoScroll={isActive}
           collapseStdout
           thinkingClassName="!text-[10px] !leading-4"
           emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
