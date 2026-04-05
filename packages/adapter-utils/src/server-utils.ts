@@ -37,6 +37,32 @@ type ChildProcessWithEvents = ChildProcess & {
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+
+/**
+ * Default retry settings for rate-limit (429) backoff.
+ * maxRetries: number of additional attempts after the first failure.
+ * baseDelayMs: initial delay; doubled on each subsequent retry with jitter.
+ */
+export const RATE_LIMIT_RETRY_DEFAULTS = {
+  maxRetries: 3,
+  baseDelayMs: 5_000,
+} as const;
+
+/** Sleep for `ms` milliseconds. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Compute backoff delay with jitter for retry attempt `attempt` (0-indexed).
+ * Formula: baseDelayMs * 2^attempt + random jitter (0–50% of base).
+ */
+export function rateLimitBackoffMs(attempt: number, baseDelayMs = RATE_LIMIT_RETRY_DEFAULTS.baseDelayMs): number {
+  const exponential = baseDelayMs * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * baseDelayMs * 0.5);
+  return exponential + jitter;
+}
+
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",

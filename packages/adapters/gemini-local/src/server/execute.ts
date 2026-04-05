@@ -25,11 +25,15 @@ import {
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
   runChildProcess,
+  sleep,
+  rateLimitBackoffMs,
+  RATE_LIMIT_RETRY_DEFAULTS,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -437,7 +441,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: attempt.proc.signal,
       timedOut: false,
       errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && authMeta.requiresAuth ? "gemini_auth_required" : null,
+      errorCode: (attempt.proc.exitCode ?? 0) !== 0
+        ? (authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : detectGeminiQuotaExhausted({
+              parsed: attempt.parsed.resultEvent,
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+            }).exhausted
+            ? "rate_limit_exhausted"
+            : null)
+        : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -457,7 +471,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const isRateLimited = (attempt: { proc: { exitCode: number | null; timedOut: boolean; stdout: string; stderr: string }; parsed: ReturnType<typeof parseGeminiJsonl> }): boolean => {
+    if (attempt.proc.timedOut || (attempt.proc.exitCode ?? 0) === 0) return false;
+    return detectGeminiQuotaExhausted({
+      parsed: attempt.parsed.resultEvent,
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+    }).exhausted;
+  };
+
   const initial = await runAttempt(sessionId);
+
+  // Handle unknown session error — retry once with fresh session
   if (
     sessionId &&
     !initial.proc.timedOut &&
@@ -470,6 +495,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const retry = await runAttempt(null);
     return toResult(retry, true, true);
+  }
+
+  // Handle rate-limit (429) — retry with exponential backoff
+  if (isRateLimited(initial)) {
+    let lastAttempt = initial;
+    for (let i = 0; i < RATE_LIMIT_RETRY_DEFAULTS.maxRetries; i++) {
+      const delayMs = rateLimitBackoffMs(i);
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini returned 429/rate-limit. Retrying in ${Math.round(delayMs / 1000)}s (attempt ${i + 2}/${RATE_LIMIT_RETRY_DEFAULTS.maxRetries + 1}).\n`,
+      );
+      await sleep(delayMs);
+      lastAttempt = await runAttempt(sessionId);
+      if (!isRateLimited(lastAttempt)) {
+        return toResult(lastAttempt);
+      }
+    }
+    return toResult(lastAttempt);
   }
 
   return toResult(initial);

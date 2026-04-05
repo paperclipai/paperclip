@@ -22,8 +22,11 @@ import {
   stringifyPaperclipWakePayload,
   joinPromptSections,
   runChildProcess,
+  sleep,
+  rateLimitBackoffMs,
+  RATE_LIMIT_RETRY_DEFAULTS,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { parseCodexJsonl, isCodexUnknownSessionError, detectCodexRateLimit } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
@@ -589,6 +592,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
 
+    const rateLimitCheck = detectCodexRateLimit({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: attempt.parsed.errorMessage,
+    });
+
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
@@ -597,6 +606,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode: (attempt.proc.exitCode ?? 0) !== 0 && rateLimitCheck.rateLimited ? "rate_limit_exhausted" : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -615,7 +625,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  const isRateLimited = (attempt: { proc: { exitCode: number | null; timedOut: boolean; stdout: string; stderr: string }; parsed: ReturnType<typeof parseCodexJsonl> }): boolean => {
+    if (attempt.proc.timedOut || (attempt.proc.exitCode ?? 0) === 0) return false;
+    return detectCodexRateLimit({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      errorMessage: attempt.parsed.errorMessage,
+    }).rateLimited;
+  };
+
   const initial = await runAttempt(sessionId);
+
+  // Handle unknown session error — retry once with fresh session
   if (
     sessionId &&
     !initial.proc.timedOut &&
@@ -628,6 +649,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const retry = await runAttempt(null);
     return toResult(retry, true);
+  }
+
+  // Handle rate-limit (429) — retry with exponential backoff
+  if (isRateLimited(initial)) {
+    let lastAttempt = initial;
+    for (let i = 0; i < RATE_LIMIT_RETRY_DEFAULTS.maxRetries; i++) {
+      const delayMs = rateLimitBackoffMs(i);
+      await onLog(
+        "stdout",
+        `[paperclip] Codex returned 429/rate-limit. Retrying in ${Math.round(delayMs / 1000)}s (attempt ${i + 2}/${RATE_LIMIT_RETRY_DEFAULTS.maxRetries + 1}).\n`,
+      );
+      await sleep(delayMs);
+      lastAttempt = await runAttempt(sessionId);
+      if (!isRateLimited(lastAttempt)) {
+        return toResult(lastAttempt);
+      }
+    }
+    return toResult(lastAttempt);
   }
 
   return toResult(initial);

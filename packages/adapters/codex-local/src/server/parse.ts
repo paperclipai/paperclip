@@ -61,6 +61,23 @@ export function parseCodexJsonl(stdout: string) {
   };
 }
 
+const CODEX_RATE_LIMIT_RE = /(?:rate.limit|rate_limit|too.many.requests|\b429\b|resource.exhausted|over.?capacity|overloaded)/i;
+
+export function detectCodexRateLimit(input: {
+  stdout: string;
+  stderr: string;
+  errorMessage: string | null;
+}): { rateLimited: boolean } {
+  const messages = [input.errorMessage ?? "", input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const rateLimited = messages.some((line) => CODEX_RATE_LIMIT_RE.test(line));
+  return { rateLimited };
+}
+
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
