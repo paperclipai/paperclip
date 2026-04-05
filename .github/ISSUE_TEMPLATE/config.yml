@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/paperclipai/paperclip/security/advisories/new
+    about: Report security issues privately — do NOT open a public issue
+  - name: Discord Community
+    url: https://discord.gg/m4HZY7xNG3
+    about: Chat with other users and get help
