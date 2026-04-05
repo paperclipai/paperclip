@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus } from "lucide-react";
+import { ChevronRight, Pause, Plus } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -117,10 +117,17 @@ export function SidebarAgents() {
               >
                 <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
                 <span className="flex-1 truncate">{agent.name}</span>
-                {(agent.pauseReason === "budget" || runCount > 0) && (
+                {(agent.pauseReason || runCount > 0) && (
                   <span className="ml-auto flex items-center gap-1.5 shrink-0">
                     {agent.pauseReason === "budget" ? (
                       <BudgetSidebarMarker title="Agent paused by budget" />
+                    ) : agent.pauseReason ? (
+                      <span
+                        title={`Agent paused (${agent.pauseReason})`}
+                        aria-label={`Agent paused (${agent.pauseReason})`}
+                      >
+                        <Pause className="h-3.5 w-3.5 text-amber-500/60 dark:text-amber-400/60" />
+                      </span>
                     ) : null}
                     {runCount > 0 ? (
                       <span className="relative flex h-2 w-2">
