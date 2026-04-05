@@ -12,6 +12,7 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   timeout: 60_000,
   retries: 0,
+  workers: Number(process.env.PAPERCLIP_E2E_WORKERS ?? 1),
   use: {
     baseURL: BASE_URL,
     headless: true,

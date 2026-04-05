@@ -62,6 +62,9 @@ describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockImplementation(
+      async (_companyId, payload) => payload,
+    );
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
       {
         id: "issue-1",
@@ -153,6 +156,64 @@ describe("approval routes idempotent retries", () => {
           issueIdentifier: "HER-1",
           wakeReason: "approval_rejected",
           decisionNote: "Not yet",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the requesting agent with hire payload summary when an approval is approved", async () => {
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        decisionNote: "Approved",
+        payload: {
+          name: "Hermes Manager",
+          role: "engineer",
+          agentId: "11111111-1111-4111-8111-111111111111",
+          reportsTo: "22222222-2222-4222-8222-222222222222",
+          adapterType: "hermes_local",
+          desiredSkills: ["company:verification-before-completion"],
+          adapterConfig: {
+            apiKey: "secret-value",
+          },
+        },
+        requestedByAgentId: "agent-1",
+      },
+      applied: true,
+    });
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-1/approve")
+      .send({ decisionNote: "Approved" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({
+          approvalId: "approval-1",
+          approvalStatus: "approved",
+          approvalType: "hire_agent",
+          approvalPayloadName: "Hermes Manager",
+          approvalPayloadRole: "engineer",
+          approvalPayloadAgentId: "11111111-1111-4111-8111-111111111111",
+          approvalPayloadReportsTo: "22222222-2222-4222-8222-222222222222",
+          approvalPayloadAdapterType: "hermes_local",
+          approvalPayloadDesiredSkills: ["company:verification-before-completion"],
+        }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "approval_approved",
+          approvalType: "hire_agent",
+          approvalPayloadName: "Hermes Manager",
+          approvalPayloadRole: "engineer",
+          approvalPayloadAgentId: "11111111-1111-4111-8111-111111111111",
+          approvalPayloadReportsTo: "22222222-2222-4222-8222-222222222222",
+          approvalPayloadAdapterType: "hermes_local",
+          approvalPayloadDesiredSkills: ["company:verification-before-completion"],
         }),
       }),
     );
@@ -250,5 +311,123 @@ describe("approval routes idempotent retries", () => {
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("merges and validates hire approval resubmits before persisting them", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "11111111-1111-4111-8111-111111111111",
+      status: "revision_requested",
+      payload: {
+        name: "Hermes Worker",
+        role: "engineer",
+        reportsTo: "11111111-1111-4111-8111-111111111111",
+        adapterType: "hermes_local",
+        capabilities: "Initial scope",
+        adapterConfig: { model: "gpt-4o", persistSession: true },
+        runtimeConfig: { cwd: "/tmp/worker" },
+        desiredSkills: ["paperclip"],
+        budgetMonthlyCents: 0,
+        metadata: { source: "hire" },
+        agentId: "22222222-2222-4222-8222-222222222222",
+        requestedConfigurationSnapshot: {
+          adapterType: "hermes_local",
+          adapterConfig: { model: "gpt-4o", persistSession: true },
+          runtimeConfig: { cwd: "/tmp/worker" },
+          desiredSkills: ["paperclip"],
+        },
+      },
+    });
+    mockApprovalService.resubmit.mockImplementation(async (_id, payload) => ({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "11111111-1111-4111-8111-111111111111",
+      status: "pending",
+      payload,
+    }));
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-1/resubmit")
+      .send({
+        payload: {
+          capabilities: "Revised scope",
+          reportsTo: "$PAPERCLIP_AGENT_ID",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "Hermes Worker",
+        role: "engineer",
+        reportsTo: "11111111-1111-4111-8111-111111111111",
+        capabilities: "Revised scope",
+        adapterType: "hermes_local",
+        adapterConfig: { model: "gpt-4o", persistSession: true },
+        runtimeConfig: { cwd: "/tmp/worker" },
+        desiredSkills: ["paperclip"],
+        agentId: "22222222-2222-4222-8222-222222222222",
+        requestedConfigurationSnapshot: {
+          adapterType: "hermes_local",
+          adapterConfig: { model: "gpt-4o", persistSession: true },
+          runtimeConfig: { cwd: "/tmp/worker" },
+          desiredSkills: ["paperclip"],
+        },
+      }),
+      { strictMode: false },
+    );
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith(
+      "approval-1",
+      expect.objectContaining({
+        reportsTo: "11111111-1111-4111-8111-111111111111",
+        capabilities: "Revised scope",
+      }),
+    );
+  });
+
+  it("rejects invalid hire approval resubmit identifiers instead of masking them as missing approvals", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "11111111-1111-4111-8111-111111111111",
+      status: "revision_requested",
+      payload: {
+        name: "Hermes Worker",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: { model: "gpt-4o" },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+      },
+    });
+
+    const res = await request(createApp())
+      .post("/api/approvals/approval-1/resubmit")
+      .send({
+        payload: {
+          reportsTo: "CEO",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Invalid hire approval resubmit payload");
+    expect(mockSecretService.normalizeHireApprovalPayloadForPersistence).not.toHaveBeenCalled();
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("does not collapse nested invalid identifiers during approve into a false approval 404", async () => {
+    mockApprovalService.approve.mockRejectedValue(INVALID_UUID_ERROR);
+
+    const res = await request(createApp())
+      .post("/api/approvals/11111111-1111-4111-8111-111111111111/approve")
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Approval payload contains an invalid identifier");
   });
 });

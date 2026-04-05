@@ -1,6 +1,6 @@
 
 import path from 'node:path';
-import { CLI_PROVIDER_FLAG_VALUES, DEFAULT_GRACE_SEC, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SEC, HERMES_DEFAULT_COMMAND } from '../shared/constants.js';
+import { CLI_PROVIDER_FLAG_VALUES, DEFAULT_GRACE_SEC, DEFAULT_MODEL, DEFAULT_NONINTERACTIVE_TOOLSETS, DEFAULT_PROVIDER, DEFAULT_REASONING_EFFORT, DEFAULT_TIMEOUT_SEC, HERMES_DEFAULT_COMMAND } from '../shared/constants.js';
 import { asBoolean, asNumber, asRecord, asStringArray, asTrimmedString, joinPromptSections, mergeRuntimeEnv, normalizeEnvBindings, ensureDir, resolveHermesHome } from '../shared/utils.js';
 import { detectModel, resolveProvider } from './detect-model.js';
 import { buildPrompt } from './prompt.js';
@@ -42,7 +42,10 @@ export async function createHermesExecutionPlan(ctx) {
   const verbose = asBoolean(config.verbose, false);
   const quiet = asBoolean(config.quiet, false);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
-  const toolsets = asTrimmedString(config.toolsets) || asStringArray(config.enabledToolsets).join(',');
+  const toolsets =
+    asTrimmedString(config.toolsets) ||
+    asStringArray(config.enabledToolsets).join(',') ||
+    DEFAULT_NONINTERACTIVE_TOOLSETS;
   const extraArgs = asStringArray(config.extraArgs);
   const instructions = await buildInstructionsPrefix(config, cwd);
 
@@ -303,6 +306,9 @@ export function buildExecutionEnv(ctx, config, cwd, context, providerResolution 
     ),
     TERMINAL_CWD: cwd,
     HERMES_SESSION_SOURCE: 'tool',
+    // Hermes exposes cronjob/approval helper surfaces in headless runs only
+    // when an execution-session env flag is present.
+    HERMES_EXEC_ASK: '1',
   };
 
   const taskId = asTrimmedString(context.taskId) || asTrimmedString(context.issueId);
@@ -310,16 +316,40 @@ export function buildExecutionEnv(ctx, config, cwd, context, providerResolution 
   const wakeCommentId = asTrimmedString(context.wakeCommentId) || asTrimmedString(context.commentId);
   const approvalId = asTrimmedString(context.approvalId);
   const approvalStatus = asTrimmedString(context.approvalStatus);
+  const approvalType = asTrimmedString(context.approvalType);
+  const approvalPayloadName = asTrimmedString(context.approvalPayloadName);
+  const approvalPayloadRole = asTrimmedString(context.approvalPayloadRole);
+  const approvalPayloadAgentId = asTrimmedString(context.approvalPayloadAgentId);
+  const approvalPayloadReportsTo = asTrimmedString(context.approvalPayloadReportsTo);
+  const approvalPayloadAdapterType = asTrimmedString(context.approvalPayloadAdapterType);
+  const approvalPayloadDesiredSkills = Array.isArray(context.approvalPayloadDesiredSkills)
+    ? context.approvalPayloadDesiredSkills.filter((value) => typeof value === 'string' && value.trim()).join(',')
+    : '';
   const linkedIssueIds = Array.isArray(context.issueIds)
     ? context.issueIds.filter((value) => typeof value === 'string' && value.trim()).join(',')
     : '';
+  const childIssueId = asTrimmedString(context.childIssueId);
+  const childIssueIdentifier = asTrimmedString(context.childIssueIdentifier);
+  const childIssueTitle = asTrimmedString(context.childIssueTitle);
+  const childIssueStatus = asTrimmedString(context.childIssueStatus);
 
   if (taskId) env.PAPERCLIP_TASK_ID = taskId;
   if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
   if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
   if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  if (approvalType) env.PAPERCLIP_APPROVAL_TYPE = approvalType;
+  if (approvalPayloadName) env.PAPERCLIP_APPROVAL_PAYLOAD_NAME = approvalPayloadName;
+  if (approvalPayloadRole) env.PAPERCLIP_APPROVAL_PAYLOAD_ROLE = approvalPayloadRole;
+  if (approvalPayloadAgentId) env.PAPERCLIP_APPROVAL_PAYLOAD_AGENT_ID = approvalPayloadAgentId;
+  if (approvalPayloadReportsTo) env.PAPERCLIP_APPROVAL_PAYLOAD_REPORTS_TO = approvalPayloadReportsTo;
+  if (approvalPayloadAdapterType) env.PAPERCLIP_APPROVAL_PAYLOAD_ADAPTER_TYPE = approvalPayloadAdapterType;
+  if (approvalPayloadDesiredSkills) env.PAPERCLIP_APPROVAL_PAYLOAD_DESIRED_SKILLS = approvalPayloadDesiredSkills;
   if (linkedIssueIds) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds;
+  if (childIssueId) env.PAPERCLIP_CHILD_ISSUE_ID = childIssueId;
+  if (childIssueIdentifier) env.PAPERCLIP_CHILD_ISSUE_IDENTIFIER = childIssueIdentifier;
+  if (childIssueTitle) env.PAPERCLIP_CHILD_ISSUE_TITLE = childIssueTitle;
+  if (childIssueStatus) env.PAPERCLIP_CHILD_ISSUE_STATUS = childIssueStatus;
   if (context.paperclipWake && typeof context.paperclipWake === 'object') {
     try {
       env.PAPERCLIP_WAKE_PAYLOAD_JSON = JSON.stringify(context.paperclipWake);

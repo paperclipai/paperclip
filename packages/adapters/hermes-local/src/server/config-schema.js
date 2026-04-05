@@ -56,7 +56,7 @@ export async function getHermesConfigSchema() {
         label: 'Toolsets',
         type: 'text',
         required: false,
-        hint: 'Comma-separated Hermes toolsets such as web,terminal,skills.',
+        hint: 'Comma-separated Hermes toolsets such as web,terminal,skills. When blank, Paperclip uses a safe default that excludes clarify so child runs do not block on interactive questions.',
       },
       {
         key: 'instructionsFilePath',

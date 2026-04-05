@@ -12,20 +12,43 @@ export const UNKNOWN_SESSION_PATTERNS = [
   /resume .* failed/i,
 ];
 
-const HERMES_BANNER_HEADER_REGEX = /^╭[─\s]*Hermes Agent v/i;
-const HERMES_PANEL_HEADER_REGEX = /^╭─\s*⚕\s*Hermes\b/i;
+const HERMES_BANNER_HEADER_REGEX = /^╭[─\s]*.+\sv\d+(?:\.\d+)+(?:\s*\([^)]+\))?\s*[─\s]*╮$/iu;
 const HERMES_BORDER_FOOTER_REGEX = /^╰[─]+╯$/;
+const HERMES_COMPACT_BANNER_TOP_REGEX = /^╔═+╗$/u;
+const HERMES_COMPACT_BANNER_BOTTOM_REGEX = /^╚═+╝$/u;
+const HERMES_COMPACT_BANNER_LINE_REGEX = /(?:NOUS HERMES|Messenger of the Digital Gods)/iu;
+const HERMES_REASONING_HEADER_REGEX = /^┌─\s*Reasoning\s*─*┐$/i;
+const HERMES_REASONING_FOOTER_REGEX = /^└─+┘$/;
+const HERMES_THINKING_PREVIEW_REGEX = /^\[thinking\]\s*(.*)$/i;
 const HERMES_SEPARATOR_REGEX = /^─{8,}$/;
+const HERMES_TOOL_SPINNER_REGEX = /^\[tool\]\s+/i;
 const HERMES_QUERY_HEADER_REGEX = /^Query:\s*/i;
 const HERMES_INIT_LINE_REGEX = /^Initializing agent\.\.\.$/i;
 const HERMES_RESUME_HEADER_REGEX = /^Resume this session with:$/i;
 const HERMES_RESUME_COMMAND_REGEX = /^hermes --resume\b/i;
-const HERMES_SESSION_SUMMARY_REGEX = /^(?:Session|Duration|Messages):\s+/i;
+const HERMES_RESUME_TITLE_COMMAND_REGEX = /^hermes\s+-c\b/i;
+const HERMES_SESSION_SUMMARY_REGEX = /^(?:Session|Title|Duration|Messages):\s+/i;
+const HERMES_HONCHO_SESSION_REGEX = /^Honcho session:/i;
+const HERMES_CONTEXT_PRESSURE_REGEX = /^\S?.*context .* to compaction/i;
+const HERMES_CONTEXT_STATUS_REGEX = /^\[@ context:\s+\d+\s+ref\(s\),\s+\d+\s+tokens\]$/i;
+const HERMES_WARNING_STATUS_REGEX = /^⚠(?:️)?\s+/u;
+const HERMES_INIT_FAILURE_REGEX = /^Failed to initialize agent:/i;
+const HERMES_SESSION_NOT_FOUND_REGEX = /^Session not found:/i;
+const HERMES_SESSION_HINT_REGEX = /^Use a session ID from a previous CLI run/i;
 const HERMES_DIFF_FILE_HEADER_REGEX = /^(.+?)\s+→\s+(.+)$/u;
 const HERMES_DIFF_TRUNCATION_REGEX = /^… omitted \d+ diff line\(s\)/u;
 const HERMES_TOOL_DURATION_REGEX = /\s+(\d+(?:\.\d+)?s)\s*(?:\(([\d.]+s)\))?\s*$/i;
 const HERMES_TOOL_FAILURE_REGEX = /\s+\[(error|full|exit \d+)\]\s*$/i;
-const HERMES_PREPARING_TOOL_REGEX = /^preparing\s+([a-z0-9_:-]+)…$/i;
+const HERMES_PREPARING_TOOL_REGEX = /^preparing\s+([a-z0-9_:-]+)(?:…|\.{3})$/i;
+const HERMES_BARE_BANNER_ROW_REGEXES = [
+  /^Available Tools$/i,
+  /^MCP Servers$/i,
+  /^Available Skills$/i,
+  /^No skills installed$/i,
+  /^Profile:\s+.+$/i,
+  /^\d+\s+tools\b.*\/help for commands\b/i,
+  /^⚠\s+\d+\s+commits?\s+behind\b/i,
+];
 
 function normalizeHermesLine(value) {
   return stripAnsi(value).replace(/\r/g, '').trimEnd();
@@ -36,15 +59,39 @@ function isHermesBannerHeader(line) {
 }
 
 function isHermesPanelHeader(line) {
-  return HERMES_PANEL_HEADER_REGEX.test(line);
+  return line.startsWith('╭─') && line.endsWith('╮') && !isHermesBannerHeader(line);
 }
 
 function isHermesPanelFooter(line) {
   return HERMES_BORDER_FOOTER_REGEX.test(line);
 }
 
+function isHermesCompactBannerTop(line) {
+  return HERMES_COMPACT_BANNER_TOP_REGEX.test(line);
+}
+
+function isHermesCompactBannerBottom(line) {
+  return HERMES_COMPACT_BANNER_BOTTOM_REGEX.test(line);
+}
+
+function isHermesCompactBannerLine(line) {
+  return HERMES_COMPACT_BANNER_LINE_REGEX.test(line);
+}
+
+function isHermesReasoningHeader(line) {
+  return HERMES_REASONING_HEADER_REGEX.test(line);
+}
+
+function isHermesReasoningFooter(line) {
+  return HERMES_REASONING_FOOTER_REGEX.test(line);
+}
+
 function isHermesSessionIdLine(line) {
   return SESSION_ID_REGEX.test(line);
+}
+
+function isHermesThinkingPreviewLine(line) {
+  return HERMES_THINKING_PREVIEW_REGEX.test(line);
 }
 
 function isHermesSessionSummaryLine(line) {
@@ -57,6 +104,10 @@ function isHermesResumeHeader(line) {
 
 function isHermesResumeCommand(line) {
   return HERMES_RESUME_COMMAND_REGEX.test(line);
+}
+
+function isHermesResumeTitleCommand(line) {
+  return HERMES_RESUME_TITLE_COMMAND_REGEX.test(line);
 }
 
 function isHermesQueryHeader(line) {
@@ -76,10 +127,18 @@ function isHermesSuppressedMetadataLine(line) {
     isHermesSessionIdLine(line)
     || isHermesResumeHeader(line)
     || isHermesResumeCommand(line)
+    || isHermesResumeTitleCommand(line)
     || isHermesSessionSummaryLine(line)
     || isHermesInitLine(line)
     || isHermesSeparatorLine(line)
+    || isHermesCompactBannerLine(line)
+    || HERMES_HONCHO_SESSION_REGEX.test(line)
+    || HERMES_CONTEXT_PRESSURE_REGEX.test(line)
   );
+}
+
+function isHermesBareBannerRow(line) {
+  return HERMES_BARE_BANNER_ROW_REGEXES.some((pattern) => pattern.test(line));
 }
 
 function isHermesQueryTerminator(line) {
@@ -87,6 +146,7 @@ function isHermesQueryTerminator(line) {
     isHermesInitLine(line)
     || isHermesSeparatorLine(line)
     || isHermesPanelHeader(line)
+    || isHermesReasoningHeader(line)
     || isHermesResumeHeader(line)
     || isHermesSessionIdLine(line)
     || parseToolCompletionLine(line) !== null
@@ -124,6 +184,7 @@ function extractHermesResponseBlocks(stdout) {
   const lines = stripAnsi(stdout).replace(/\r/g, '').split('\n');
   const blocks = [];
   let inBanner = false;
+  let inCompactBanner = false;
   let inQuery = false;
   let inResponsePanel = false;
   let currentBlock = [];
@@ -148,8 +209,22 @@ function extractHermesResponseBlocks(stdout) {
       continue;
     }
 
+    if (inCompactBanner) {
+      if (isHermesCompactBannerBottom(trimmed)) inCompactBanner = false;
+      continue;
+    }
+
     if (isHermesBannerHeader(trimmed)) {
       inBanner = true;
+      continue;
+    }
+
+    if (isHermesCompactBannerTop(trimmed)) {
+      inCompactBanner = true;
+      continue;
+    }
+
+    if (isHermesCompactBannerLine(trimmed)) {
       continue;
     }
 
@@ -197,21 +272,73 @@ function extractHermesResponseBlocks(stdout) {
 }
 
 function fallbackCleanResponse(value) {
-  return stripAnsi(value)
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      if (trimmed.startsWith('[tool]')) return false;
-      if (trimmed.startsWith('[hermes]')) return false;
-      if (trimmed.startsWith('[paperclip]')) return false;
-      if (trimmed.startsWith('session_id:')) return false;
-      if (/^\[\d{4}-\d{2}-\d{2}T/.test(trimmed)) return false;
-      if (/^\[done\]\s*┊/.test(trimmed)) return false;
-      if (/^┊\s*[^\w\s]/u.test(trimmed) && !/^┊\s*💬/.test(trimmed)) return false;
-      return true;
-    })
-    .map((line) => line.replace(/^\s*┊\s*💬\s*/, '').replace(/^\[done\]\s*/, '').trim())
+  const normalizedLines = stripAnsi(value).replace(/\r/g, '').split('\n');
+  const kept = [];
+  let inCompactBanner = false;
+  let inReasoningBox = false;
+  let inThinkingPreview = false;
+
+  for (const rawLine of normalizedLines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed) {
+      inThinkingPreview = false;
+      kept.push('');
+      continue;
+    }
+    if (inCompactBanner) {
+      if (isHermesCompactBannerBottom(trimmed)) inCompactBanner = false;
+      continue;
+    }
+    if (inReasoningBox) {
+      if (isHermesReasoningFooter(trimmed)) inReasoningBox = false;
+      continue;
+    }
+    if (inThinkingPreview) {
+      if (
+        isHermesPanelHeader(trimmed)
+        || isHermesReasoningHeader(trimmed)
+        || isHermesResumeHeader(trimmed)
+        || isHermesSessionIdLine(trimmed)
+        || parseToolCompletionLine(trimmed)
+        || isHermesPreparingToolLine(trimmed)
+      ) {
+        inThinkingPreview = false;
+      } else {
+        continue;
+      }
+    }
+    if (trimmed.startsWith('[tool]')) continue;
+    if (trimmed.startsWith('[hermes]')) continue;
+    if (trimmed.startsWith('[paperclip]')) continue;
+    if (trimmed.startsWith('session_id:')) continue;
+    if (/^\[\d{4}-\d{2}-\d{2}T/.test(trimmed)) continue;
+    if (isHermesCompactBannerTop(trimmed)) {
+      inCompactBanner = true;
+      continue;
+    }
+    if (isHermesCompactBannerLine(trimmed)) continue;
+    if (isHermesReasoningHeader(trimmed)) {
+      inReasoningBox = true;
+      continue;
+    }
+    if (isHermesThinkingPreviewLine(trimmed)) {
+      inThinkingPreview = true;
+      continue;
+    }
+    if (isHermesReasoningFooter(trimmed)) continue;
+    if (isHermesBareBannerRow(trimmed)) continue;
+    if (isHermesToolDiffHeader(trimmed)) continue;
+    if (isHermesInlineAssistantLine(trimmed)) {
+      kept.push(extractHermesInlineAssistantText(trimmed));
+      continue;
+    }
+    if (parseToolCompletionLine(trimmed)) continue;
+    if (isHermesPreparingToolLine(trimmed)) continue;
+    kept.push(trimmed);
+  }
+
+  return kept
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -283,8 +410,9 @@ export function isUnknownSessionError(stdout, stderr) {
 
 function stripHermesToolPrefix(line) {
   let cleaned = line.replace(/^\[done\]\s*/i, '').trim();
-  if (!cleaned.includes('┊')) return null;
-  cleaned = cleaned.slice(cleaned.indexOf('┊') + 1).trim();
+  const toolFeed = splitHermesToolFeedLine(cleaned);
+  if (!toolFeed) return null;
+  cleaned = toolFeed.display;
   if (!cleaned) return null;
 
   const failureMatch = cleaned.match(HERMES_TOOL_FAILURE_REGEX);
@@ -305,11 +433,15 @@ function stripHermesToolPrefix(line) {
     duration,
     hasError: Boolean(failureLabel),
     failureLabel,
+    hasTimingOrFailure: Boolean(durationMatch || failureMatch),
   };
 }
 
 function parseHermesToolLabel(display) {
   const matchers = [
+    { pattern: /^search\s+(.*)$/i, name: 'search', buildInput: (detail) => ({ query: detail }) },
+    { pattern: /^fetch\s+(.*)$/i, name: 'fetch', buildInput: (detail) => ({ target: detail }) },
+    { pattern: /^crawl\s+(.*)$/i, name: 'crawl', buildInput: (detail) => ({ url: detail }) },
     { pattern: /^\$\s+(.*)$/i, name: 'shell', buildInput: (detail) => ({ command: detail }) },
     { pattern: /^proc\s+(.*)$/i, name: 'process', buildInput: (detail) => ({ target: detail }) },
     { pattern: /^read\s+(.*)$/i, name: 'read', buildInput: (detail) => ({ path: detail }) },
@@ -317,11 +449,17 @@ function parseHermesToolLabel(display) {
     { pattern: /^patch\s+(.*)$/i, name: 'patch', buildInput: (detail) => ({ path: detail }) },
     { pattern: /^(?:grep|find)\s+(.*)$/i, name: 'search', buildInput: (detail) => ({ pattern: detail }) },
     { pattern: /^navigate\s+(.*)$/i, name: 'browser', buildInput: (detail) => ({ url: detail }) },
-    { pattern: /^(?:snapshot|click|scroll|back|press|close|images|vision)\b(?:\s+(.*))?$/i, name: 'browser', buildInput: (detail) => ({ target: detail || 'browser' }) },
+    { pattern: /^snapshot\b(?:\s+(.*))?$/i, name: 'browser', buildInput: (detail) => ({ target: detail || 'snapshot' }) },
+    { pattern: /^click\b(?:\s+(.*))?$/i, name: 'browser', buildInput: (detail) => ({ target: detail || 'click' }) },
     { pattern: /^type\s+(.*)$/i, name: 'browser', buildInput: (detail) => ({ text: detail }) },
+    { pattern: /^scroll\b(?:\s+(.*))?$/i, name: 'browser', buildInput: (detail) => ({ target: detail || 'scroll' }) },
+    { pattern: /^(?:back|press|close|images)\b(?:\s+(.*))?$/i, name: 'browser', buildInput: (detail) => ({ target: detail || 'browser' }) },
+    { pattern: /^vision\s+analyzing page$/i, name: 'browser', buildInput: () => ({ target: 'vision' }) },
+    { pattern: /^vision\b(?:\s+(.*))?$/i, name: 'vision', buildInput: (detail) => ({ question: detail || 'vision' }) },
     { pattern: /^plan\b(?:\s+(.*))?$/i, name: 'plan', buildInput: (detail) => ({ target: detail || 'plan' }) },
     { pattern: /^recall\s+(.*)$/i, name: 'recall', buildInput: (detail) => ({ query: detail }) },
     { pattern: /^memory\b(?:\s+(.*))?$/i, name: 'memory', buildInput: (detail) => ({ target: detail || 'memory' }) },
+    { pattern: /^skills\s+(.*)$/i, name: 'skills', buildInput: (detail) => ({ target: detail }) },
     { pattern: /^skills?\s+(.*)$/i, name: 'skill', buildInput: (detail) => ({ name: detail }) },
     { pattern: /^create\s+(.*)$/i, name: 'image', buildInput: (detail) => ({ prompt: detail }) },
     { pattern: /^speak\s+(.*)$/i, name: 'speech', buildInput: (detail) => ({ text: detail }) },
@@ -373,6 +511,7 @@ export function parseToolCompletionLine(line) {
   const stripped = stripHermesToolPrefix(normalized);
   if (!stripped?.display) return null;
   if (HERMES_PREPARING_TOOL_REGEX.test(stripped.display)) return null;
+  if (!stripped.hasTimingOrFailure) return null;
 
   const parsed = parseHermesToolLabel(stripped.display);
   if (!parsed) return null;
@@ -393,6 +532,39 @@ export function parseToolCompletionLine(line) {
     detailWithDuration: resultLines.join('\n').trim(),
     hasError: stripped.hasError,
   };
+}
+
+function splitHermesToolFeedLine(line) {
+  const match = line.match(/^(\S+)\s+(.*)$/u);
+  if (!match) return null;
+  const prefix = match[1];
+  const display = (match[2] || '').trim();
+  if (!isHermesToolPrefix(prefix) || !display) return null;
+  return { prefix, display };
+}
+
+function isHermesToolPrefix(prefix) {
+  return prefix.length > 0 && prefix.length <= 4 && /[^\p{L}\p{N}_$]/u.test(prefix);
+}
+
+function isHermesPreparingToolLine(line) {
+  return Boolean(stripHermesToolPrefix(line)?.display.match(HERMES_PREPARING_TOOL_REGEX));
+}
+
+function isHermesToolDiffHeader(line) {
+  const stripped = stripHermesToolPrefix(line);
+  return Boolean(stripped?.display && /^review diff$/i.test(stripped.display));
+}
+
+function isHermesInlineAssistantLine(line) {
+  const stripped = stripHermesToolPrefix(line);
+  return Boolean(stripped?.display && stripped.display.startsWith('💬'));
+}
+
+function extractHermesInlineAssistantText(line) {
+  const stripped = stripHermesToolPrefix(line);
+  if (!stripped?.display) return line.trim();
+  return stripped.display.replace(/^💬\s*/, '').trim();
 }
 
 function parseHermesDiffLine(line, ts) {
@@ -418,7 +590,10 @@ function parseHermesDiffLine(line, ts) {
 
 export function createHermesStdoutParser() {
   let inBanner = false;
+  let inCompactBanner = false;
   let inQuery = false;
+  let inReasoningBox = false;
+  let inThinkingPreview = false;
   let inResponsePanel = false;
   let inResumeHint = false;
   let inDiffPreview = false;
@@ -434,8 +609,49 @@ export function createHermesStdoutParser() {
         return [];
       }
 
+      if (inCompactBanner) {
+        if (isHermesCompactBannerBottom(trimmed)) inCompactBanner = false;
+        return [];
+      }
+
+      if (inReasoningBox) {
+        if (isHermesReasoningFooter(trimmed)) {
+          inReasoningBox = false;
+          return [];
+        }
+        return [{ kind: 'thinking', ts, text: normalizeHermesPanelContent(normalized) }];
+      }
+
+      if (inThinkingPreview) {
+        if (
+          isHermesPanelHeader(trimmed)
+          || isHermesReasoningHeader(trimmed)
+          || isHermesResumeHeader(trimmed)
+          || isHermesSessionIdLine(trimmed)
+          || isHermesSuppressedMetadataLine(trimmed)
+        ) {
+          inThinkingPreview = false;
+        } else {
+          const tool = parseToolCompletionLine(trimmed);
+          if (tool || isHermesPreparingToolLine(trimmed)) {
+            inThinkingPreview = false;
+          } else {
+            return [{ kind: 'thinking', ts, text: trimmed }];
+          }
+        }
+      }
+
       if (isHermesBannerHeader(trimmed)) {
         inBanner = true;
+        return [];
+      }
+
+      if (isHermesCompactBannerTop(trimmed)) {
+        inCompactBanner = true;
+        return [];
+      }
+
+      if (isHermesCompactBannerLine(trimmed)) {
         return [];
       }
 
@@ -468,7 +684,11 @@ export function createHermesStdoutParser() {
       }
 
       if (inResumeHint) {
-        if (isHermesResumeCommand(trimmed) || isHermesSessionSummaryLine(trimmed)) {
+        if (
+          isHermesResumeCommand(trimmed)
+          || isHermesResumeTitleCommand(trimmed)
+          || isHermesSessionSummaryLine(trimmed)
+        ) {
           return [];
         }
         inResumeHint = false;
@@ -485,7 +705,7 @@ export function createHermesStdoutParser() {
           if (isHermesResumeHeader(trimmed)) inResumeHint = true;
           return [];
         }
-        if (trimmed.startsWith('┊ review diff')) {
+        if (isHermesToolDiffHeader(trimmed)) {
           return [];
         }
         return [parseHermesDiffLine(trimmed, ts)];
@@ -495,13 +715,47 @@ export function createHermesStdoutParser() {
         return [{ kind: 'system', ts, text: trimmed }];
       }
 
+      if (HERMES_CONTEXT_STATUS_REGEX.test(trimmed)) {
+        return [{ kind: 'system', ts, text: trimmed }];
+      }
+
+      if (HERMES_TOOL_SPINNER_REGEX.test(trimmed)) {
+        return [];
+      }
+
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(trimmed)) {
+        return [{ kind: 'stderr', ts, text: trimmed }];
+      }
+
+      if (HERMES_CONTEXT_PRESSURE_REGEX.test(trimmed)) {
+        return [];
+      }
+
+      if (
+        HERMES_INIT_FAILURE_REGEX.test(trimmed)
+        || HERMES_SESSION_NOT_FOUND_REGEX.test(trimmed)
+        || HERMES_SESSION_HINT_REGEX.test(trimmed)
+        || HERMES_WARNING_STATUS_REGEX.test(trimmed)
+      ) {
         return [{ kind: 'stderr', ts, text: trimmed }];
       }
 
       if (isHermesPanelHeader(trimmed)) {
         inResponsePanel = true;
         return [];
+      }
+
+      if (isHermesReasoningHeader(trimmed)) {
+        inReasoningBox = true;
+        return [];
+      }
+
+      const thinkingPreview = trimmed.match(HERMES_THINKING_PREVIEW_REGEX);
+      if (thinkingPreview) {
+        inThinkingPreview = true;
+        return thinkingPreview[1]
+          ? [{ kind: 'thinking', ts, text: thinkingPreview[1] }]
+          : [];
       }
 
       if (isHermesQueryHeader(trimmed)) {
@@ -518,17 +772,16 @@ export function createHermesStdoutParser() {
         return [];
       }
 
-      if (/^┊\s*review diff$/i.test(trimmed) || /^\[done\]\s*┊\s*review diff$/i.test(trimmed)) {
+      if (isHermesToolDiffHeader(trimmed)) {
         inDiffPreview = true;
         return [];
       }
 
-      if (/^┊\s*💬/.test(trimmed)) {
-        return [{ kind: 'assistant', ts, text: trimmed.replace(/^┊\s*💬\s*/, '') }];
+      if (isHermesInlineAssistantLine(trimmed)) {
+        return [{ kind: 'assistant', ts, text: extractHermesInlineAssistantText(trimmed) }];
       }
 
-      const preparing = stripHermesToolPrefix(trimmed)?.display.match(HERMES_PREPARING_TOOL_REGEX);
-      if (preparing) {
+      if (isHermesPreparingToolLine(trimmed)) {
         return [];
       }
 
@@ -549,7 +802,10 @@ export function createHermesStdoutParser() {
     },
     reset() {
       inBanner = false;
+      inCompactBanner = false;
       inQuery = false;
+      inReasoningBox = false;
+      inThinkingPreview = false;
       inResponsePanel = false;
       inResumeHint = false;
       inDiffPreview = false;

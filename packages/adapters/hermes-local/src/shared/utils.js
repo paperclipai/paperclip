@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+const MEANINGLESS_PLACEHOLDER_STRINGS = new Set(['none', 'null', 'undefined']);
+
 /** @param {unknown} value */
 export function asString(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
@@ -12,7 +14,11 @@ export function asString(value, fallback = '') {
 
 /** @param {unknown} value */
 export function asTrimmedString(value, fallback = '') {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  if (MEANINGLESS_PLACEHOLDER_STRINGS.has(trimmed.toLowerCase())) return fallback;
+  return trimmed;
 }
 
 /** @param {unknown} value */

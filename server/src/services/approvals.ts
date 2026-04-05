@@ -1,12 +1,16 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+
+const PLACEHOLDER_ID_LITERALS = new Set(["none", "null", "undefined"]);
+const PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_AGENT_ID\}?$/;
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -22,6 +26,35 @@ export function approvalService(db: Db) {
       ...comment,
       body: redactCurrentUserText(comment.body, { enabled: censorUsernameInLogs }),
     };
+  }
+
+  function asMeaningfulString(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (PLACEHOLDER_ID_LITERALS.has(trimmed.toLowerCase())) return null;
+    return trimmed;
+  }
+
+  function normalizeUuidReference(
+    value: unknown,
+    fallback: string | null = null,
+  ): string | null {
+    const trimmed = asMeaningfulString(value);
+    if (!trimmed) return fallback;
+    return isUuidLike(trimmed) ? trimmed : null;
+  }
+
+  function normalizeReportsToReference(
+    value: unknown,
+    requestedByAgentId: string | null,
+  ): string | null {
+    const trimmed = asMeaningfulString(value);
+    if (!trimmed) return null;
+    if (PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX.test(trimmed)) {
+      return normalizeUuidReference(requestedByAgentId);
+    }
+    return normalizeUuidReference(trimmed);
   }
 
   async function getExistingApproval(id: string) {
@@ -78,6 +111,34 @@ export function approvalService(db: Db) {
     );
   }
 
+  function buildApprovedHireAgentPatch(
+    payload: Record<string, unknown>,
+    requestedByAgentId: string | null,
+  ) {
+    return {
+      name: typeof payload.name === "string" ? payload.name : undefined,
+      role: typeof payload.role === "string" ? payload.role : undefined,
+      title: typeof payload.title === "string" ? payload.title : null,
+      reportsTo: normalizeReportsToReference(payload.reportsTo, requestedByAgentId),
+      capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
+      adapterType: typeof payload.adapterType === "string" ? payload.adapterType : undefined,
+      adapterConfig:
+        typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+          ? (payload.adapterConfig as Record<string, unknown>)
+          : {},
+      runtimeConfig:
+        typeof payload.runtimeConfig === "object" && payload.runtimeConfig !== null
+          ? (payload.runtimeConfig as Record<string, unknown>)
+          : {},
+      budgetMonthlyCents:
+        typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0,
+      metadata:
+        typeof payload.metadata === "object" && payload.metadata !== null
+          ? (payload.metadata as Record<string, unknown>)
+          : null,
+    };
+  }
+
   return {
     list: (companyId: string, status?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
@@ -111,16 +172,20 @@ export function approvalService(db: Db) {
       const now = new Date();
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+        const payloadAgentId = normalizeUuidReference(payload.agentId);
         if (payloadAgentId) {
           await agentsSvc.activatePendingApproval(payloadAgentId);
+          await agentsSvc.update(
+            payloadAgentId,
+            buildApprovedHireAgentPatch(payload, updated.requestedByAgentId),
+          );
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {
             name: String(payload.name ?? "New Agent"),
             role: String(payload.role ?? "general"),
             title: typeof payload.title === "string" ? payload.title : null,
-            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
+            reportsTo: normalizeReportsToReference(payload.reportsTo, updated.requestedByAgentId),
             capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
             adapterType: String(payload.adapterType ?? "process"),
             adapterConfig:
@@ -178,7 +243,7 @@ export function approvalService(db: Db) {
 
       if (applied && updated.type === "hire_agent") {
         const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+        const payloadAgentId = normalizeUuidReference(payload.agentId);
         if (payloadAgentId) {
           await agentsSvc.terminate(payloadAgentId);
         }

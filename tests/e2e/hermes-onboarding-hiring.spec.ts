@@ -4,12 +4,24 @@ import path from "node:path";
 import { test, expect } from "@playwright/test";
 
 const HERMES_MODEL = process.env.PAPERCLIP_E2E_HERMES_MODEL ?? "gpt-4o";
-const HERMES_NOTIFICATION_DIR = path.join(
-  os.homedir(),
-  ".hermes",
-  "paperclip-notifications",
-  "hire-approved",
-);
+
+function resolveHermesHomeCandidatesForTests() {
+  return Array.from(
+    new Set(
+      [
+        process.env.HERMES_HOME,
+        process.env.PAPERCLIP_E2E_HERMES_HOME,
+        process.env.PAPERCLIP_E2E_HOME
+          ? path.join(process.env.PAPERCLIP_E2E_HOME, "hermes")
+          : null,
+        process.env.PAPERCLIP_E2E_HOME,
+        path.join(os.homedir(), ".hermes"),
+      ]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => path.resolve(value)),
+    ),
+  );
+}
 
 async function listFilesSafe(dirPath: string) {
   try {
@@ -31,15 +43,50 @@ test.describe("Hermes onboarding and hiring flow", () => {
     const ceoTaskTitle = `Hire ${workerName}`;
     const workerTaskTitle = `Smoke test ${workerName}`;
     const approvalDecisionNote = "Approved by Playwright";
-    const notificationFilesBefore = new Set(await listFilesSafe(HERMES_NOTIFICATION_DIR));
+    const notificationDirs = resolveHermesHomeCandidatesForTests().map((home) =>
+      path.join(home, "paperclip-notifications", "hire-approved"),
+    );
+    const notificationFilesBefore = new Set(
+      (await Promise.all(notificationDirs.map((dir) => listFilesSafe(dir)))).flat(),
+    );
 
     await page.goto("/");
 
     const wizardHeading = page.locator("h3", { hasText: "Name your company" });
     const newCompanyButton = page.getByRole("button", { name: "New Company" });
-    await expect(wizardHeading.or(newCompanyButton)).toBeVisible({ timeout: 15_000 });
-    if (await newCompanyButton.isVisible()) {
-      await newCompanyButton.click();
+    const addCompanyButton = page.getByRole("button", { name: "Add company" });
+
+    const isVisible = async (locator: ReturnType<Page["locator"]>) => {
+      try {
+        return await locator.isVisible();
+      } catch {
+        return false;
+      }
+    };
+
+    if (
+      !(await isVisible(wizardHeading)) &&
+      !(await isVisible(newCompanyButton)) &&
+      !(await isVisible(addCompanyButton))
+    ) {
+      await page.goto("/companies");
+    }
+
+    await expect
+      .poll(
+        async () =>
+          (await isVisible(wizardHeading)) ||
+          (await isVisible(newCompanyButton)) ||
+          (await isVisible(addCompanyButton)),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+
+    if (!(await isVisible(wizardHeading))) {
+      const createCompanyButton =
+        (await isVisible(newCompanyButton)) ? newCompanyButton : addCompanyButton;
+      await expect(createCompanyButton).toBeVisible({ timeout: 15_000 });
+      await createCompanyButton.click();
     }
 
     await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
@@ -216,7 +263,7 @@ test.describe("Hermes onboarding and hiring flow", () => {
     await expect
       .poll(
         async () => {
-          const files = await listFilesSafe(HERMES_NOTIFICATION_DIR);
+          const files = (await Promise.all(notificationDirs.map((dir) => listFilesSafe(dir)))).flat();
           return files.find((fileName) => !notificationFilesBefore.has(fileName)) ?? "";
         },
         {

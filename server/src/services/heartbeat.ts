@@ -353,7 +353,11 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 }
 
 function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (["none", "null", "undefined"].includes(trimmed.toLowerCase())) return null;
+  return trimmed;
 }
 
 function normalizeLedgerBillingType(value: unknown): BillingType {
@@ -667,6 +671,7 @@ export function shouldResetTaskSessionForWake(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return true;
+  if (wakeReason === "child_issue_completed") return true;
   return false;
 }
 
@@ -684,6 +689,7 @@ function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "child_issue_completed") return "wake reason is child_issue_completed";
   return null;
 }
 
@@ -3557,8 +3563,12 @@ export function heartbeatService(db: Db) {
             Boolean(wakeCommentId) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const canCoalesceIntoQueuedIssueRun =
+            isSameExecutionAgent &&
+            activeExecutionRun.status === "queued" &&
+            !shouldQueueFollowupForCommentWake;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (canCoalesceIntoQueuedIssueRun) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,

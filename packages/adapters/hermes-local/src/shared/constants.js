@@ -19,6 +19,25 @@ export const DEFAULT_PROVIDER = 'auto';
 export const DEFAULT_MODEL = 'anthropic/claude-sonnet-4';
 export const MODELS_CACHE_TTL_MS = 60_000;
 export const MODEL_DISCOVERY_TIMEOUT_SEC = 20;
+export const DEFAULT_NONINTERACTIVE_TOOLSETS = [
+  'web',
+  'browser',
+  'terminal',
+  'file',
+  'code_execution',
+  'vision',
+  'image_gen',
+  'moa',
+  'tts',
+  'skills',
+  'todo',
+  'memory',
+  'session_search',
+  'delegation',
+  'cronjob',
+  'rl',
+  'homeassistant',
+].join(',');
 
 export const VALID_PROVIDERS = [
   'auto',
@@ -143,6 +162,7 @@ export const TOOL_NAME_MAP = {
   browser_vision: 'browser',
   web_search: 'search',
   web_extract: 'fetch',
+  skill_man: 'skill_manage',
   session_search: 'recall',
   memory: 'memory',
   recall: 'recall',
@@ -165,6 +185,7 @@ This adapter runs Hermes Agent as a local Paperclip employee runtime.
 - worktreeMode: pass --worktree to Hermes.
 - checkpoints: pass --checkpoints to Hermes.
 - toolsets: comma-separated Hermes toolsets.
+- When omitted, the adapter uses a non-interactive-safe default toolset list that excludes clarify.
 - extraArgs: raw extra Hermes CLI args.
 - env: extra environment variables merged into the child process.
 - instructionsFilePath: optional agent instructions file injected ahead of the wake prompt.

@@ -2,7 +2,9 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
+  createAgentSchema,
   createApprovalSchema,
+  isUuidLike,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
@@ -19,11 +21,90 @@ import {
 import { buildIssueWakeContextSnapshot } from "../services/issue-assignment-wakeup.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { unprocessable } from "../errors.js";
+
+const PLACEHOLDER_ID_LITERALS = new Set(["none", "null", "undefined"]);
+const PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_AGENT_ID\}?$/;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergePlainRecords(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (isPlainRecord(value) && isPlainRecord(merged[key])) {
+      merged[key] = mergePlainRecords(merged[key] as Record<string, unknown>, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
+function asMeaningfulString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (PLACEHOLDER_ID_LITERALS.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+}
+
+function normalizeUuidReference(
+  value: unknown,
+  fallback: string | null = null,
+): string | null {
+  const trimmed = asMeaningfulString(value);
+  if (!trimmed) return fallback;
+  return isUuidLike(trimmed) ? trimmed : null;
+}
+
+function normalizeReportsToReference(
+  value: unknown,
+  requestedByAgentId: string | null,
+): string | null {
+  const trimmed = asMeaningfulString(value);
+  if (!trimmed) return null;
+  if (PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX.test(trimmed)) {
+    return normalizeUuidReference(requestedByAgentId);
+  }
+  return trimmed;
+}
+
+function normalizeDesiredSkills(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const skills = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return skills.length > 0 ? skills : [];
+}
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
     ...approval,
     payload: redactEventPayload(approval.payload) ?? {},
+  };
+}
+
+function buildApprovalWakeMetadata(approval: {
+  type: string;
+  payload: Record<string, unknown>;
+}) {
+  const redacted = redactApprovalPayload(approval);
+  const payload = isPlainRecord(redacted.payload) ? redacted.payload : {};
+
+  return {
+    approvalType: approval.type,
+    approvalPayloadName: asMeaningfulString(payload.name),
+    approvalPayloadRole: asMeaningfulString(payload.role),
+    approvalPayloadAgentId: normalizeUuidReference(payload.agentId),
+    approvalPayloadReportsTo: normalizeUuidReference(payload.reportsTo),
+    approvalPayloadAdapterType: asMeaningfulString(payload.adapterType),
+    approvalPayloadDesiredSkills: normalizeDesiredSkills(payload.desiredSkills),
   };
 }
 
@@ -47,21 +128,95 @@ export function approvalRoutes(db: Db) {
       return await svc.getById(id);
     } catch (error) {
       if (isInvalidUuidError(error)) {
+        if (isUuidLike(id)) {
+          throw unprocessable("Approval payload contains an invalid identifier");
+        }
         return null;
       }
       throw error;
     }
   }
 
-  async function runApprovalMutationOrNull<T>(operation: () => Promise<T>) {
+  async function runApprovalMutationOrNull<T>(id: string, operation: () => Promise<T>) {
     try {
       return await operation();
     } catch (error) {
       if (isInvalidUuidError(error)) {
+        if (isUuidLike(id)) {
+          throw unprocessable("Approval payload contains an invalid identifier");
+        }
         return null;
       }
       throw error;
     }
+  }
+
+  function buildValidatedHireResubmitPayload(
+    existing: {
+      payload: Record<string, unknown>;
+      requestedByAgentId: string | null;
+    },
+    patch: Record<string, unknown>,
+  ) {
+    const existingPayload = isPlainRecord(existing.payload) ? existing.payload : {};
+    const merged = mergePlainRecords(existingPayload, patch);
+    const fallbackRequestedByAgentId = normalizeUuidReference(existing.requestedByAgentId);
+    const requestedConfigurationSnapshot = isPlainRecord(merged.requestedConfigurationSnapshot)
+      ? merged.requestedConfigurationSnapshot
+      : {};
+
+    const parsed = createAgentSchema.safeParse({
+      name: merged.name,
+      role: merged.role,
+      title: merged.title ?? null,
+      icon: merged.icon ?? null,
+      reportsTo: normalizeReportsToReference(merged.reportsTo, fallbackRequestedByAgentId),
+      capabilities: merged.capabilities ?? null,
+      desiredSkills: normalizeDesiredSkills(merged.desiredSkills),
+      adapterType: merged.adapterType,
+      adapterConfig: isPlainRecord(merged.adapterConfig) ? merged.adapterConfig : {},
+      runtimeConfig: isPlainRecord(merged.runtimeConfig) ? merged.runtimeConfig : {},
+      budgetMonthlyCents:
+        typeof merged.budgetMonthlyCents === "number"
+          ? merged.budgetMonthlyCents
+          : 0,
+      metadata:
+        isPlainRecord(merged.metadata) || merged.metadata === null
+          ? merged.metadata
+          : null,
+    });
+    if (!parsed.success) {
+      throw unprocessable("Invalid hire approval resubmit payload", parsed.error.flatten());
+    }
+
+    return {
+      ...merged,
+      ...parsed.data,
+      title: parsed.data.title ?? null,
+      icon: parsed.data.icon ?? null,
+      reportsTo: parsed.data.reportsTo ?? null,
+      capabilities: parsed.data.capabilities ?? null,
+      desiredSkills: parsed.data.desiredSkills ?? null,
+      adapterConfig: parsed.data.adapterConfig ?? {},
+      runtimeConfig: parsed.data.runtimeConfig ?? {},
+      budgetMonthlyCents: parsed.data.budgetMonthlyCents,
+      metadata: parsed.data.metadata ?? null,
+      agentId: normalizeUuidReference(
+        merged.agentId,
+        normalizeUuidReference(existingPayload.agentId),
+      ),
+      requestedByAgentId: normalizeUuidReference(
+        merged.requestedByAgentId,
+        fallbackRequestedByAgentId,
+      ),
+      requestedConfigurationSnapshot: {
+        ...requestedConfigurationSnapshot,
+        adapterType: parsed.data.adapterType,
+        adapterConfig: parsed.data.adapterConfig ?? {},
+        runtimeConfig: parsed.data.runtimeConfig ?? {},
+        desiredSkills: parsed.data.desiredSkills ?? null,
+      },
+    };
   }
 
   async function queueRequesterApprovalWakeup(input: {
@@ -69,6 +224,8 @@ export function approvalRoutes(db: Db) {
       id: string;
       companyId: string;
       status: string;
+      type: string;
+      payload: Record<string, unknown>;
       requestedByAgentId: string | null;
       decisionNote?: string | null;
     };
@@ -89,6 +246,7 @@ export function approvalRoutes(db: Db) {
     const linkedIssueIds = linkedIssues.map((issue) => issue.id);
     const primaryIssue = linkedIssues[0] ?? null;
     const primaryIssueId = primaryIssue?.id ?? null;
+    const wakeMetadata = buildApprovalWakeMetadata(approval);
     const baseContextSnapshot = primaryIssue
       ? buildIssueWakeContextSnapshot(primaryIssue, action, { issueIds: linkedIssueIds })
       : {
@@ -110,6 +268,7 @@ export function approvalRoutes(db: Db) {
           issueIds: linkedIssueIds,
           decisionNote: approval.decisionNote ?? null,
           wakeReason,
+          ...wakeMetadata,
         },
         requestedByActorType: "user",
         requestedByActorId: actorUserId,
@@ -119,6 +278,7 @@ export function approvalRoutes(db: Db) {
           approvalStatus: approval.status,
           decisionNote: approval.decisionNote ?? null,
           wakeReason,
+          ...wakeMetadata,
         },
       });
 
@@ -251,7 +411,7 @@ export function approvalRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const actorUserId = req.actor.userId ?? "board";
-    const resolved = await runApprovalMutationOrNull(() =>
+    const resolved = await runApprovalMutationOrNull(id, () =>
       svc.approve(
         id,
         req.body.decidedByUserId ?? "board",
@@ -297,7 +457,7 @@ export function approvalRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const actorUserId = req.actor.userId ?? "board";
-    const resolved = await runApprovalMutationOrNull(() =>
+    const resolved = await runApprovalMutationOrNull(id, () =>
       svc.reject(
         id,
         req.body.decidedByUserId ?? "board",
@@ -344,7 +504,7 @@ export function approvalRoutes(db: Db) {
       assertBoard(req);
       const id = req.params.id as string;
       const actorUserId = req.actor.userId ?? "board";
-      const approval = await runApprovalMutationOrNull(() =>
+      const approval = await runApprovalMutationOrNull(id, () =>
         svc.requestRevision(
           id,
           req.body.decidedByUserId ?? "board",
@@ -400,12 +560,12 @@ export function approvalRoutes(db: Db) {
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
-            req.body.payload,
+            buildValidatedHireResubmitPayload(existing, req.body.payload),
             { strictMode: strictSecretsMode },
           )
         : req.body.payload
       : undefined;
-    const approval = await runApprovalMutationOrNull(() => svc.resubmit(id, normalizedPayload));
+    const approval = await runApprovalMutationOrNull(id, () => svc.resubmit(id, normalizedPayload));
     if (!approval) {
       res.status(404).json({ error: "Approval not found" });
       return;

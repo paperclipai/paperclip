@@ -72,6 +72,8 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 
 export function agentRoutes(db: Db) {
+  const PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_AGENT_ID\}?$/;
+  const PAPERCLIP_TASK_ID_PLACEHOLDER_REGEX = /^\$?\{?PAPERCLIP_TASK_ID\}?$/;
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
     codex_local: "instructionsFilePath",
@@ -385,11 +387,144 @@ export function agentRoutes(db: Db) {
     sourceIssueIds?: string[];
   }): string[] {
     const values: string[] = [];
-    if (Array.isArray(input.sourceIssueIds)) values.push(...input.sourceIssueIds);
-    if (typeof input.sourceIssueId === "string" && input.sourceIssueId.length > 0) {
-      values.push(input.sourceIssueId);
+    if (Array.isArray(input.sourceIssueIds)) {
+      values.push(...input.sourceIssueIds.map((value) => asNonEmptyString(value)).filter((value): value is string => Boolean(value)));
     }
+    const sourceIssueId = asNonEmptyString(input.sourceIssueId);
+    if (sourceIssueId) values.push(sourceIssueId);
     return Array.from(new Set(values));
+  }
+
+  function normalizeHireReportsToReference(
+    value: unknown,
+    actorAgentId: string | null,
+  ): string | null {
+    const trimmed = asNonEmptyString(value);
+    if (!trimmed) return null;
+    if (PAPERCLIP_AGENT_ID_PLACEHOLDER_REGEX.test(trimmed)) {
+      return actorAgentId;
+    }
+    return isUuidLike(trimmed) ? trimmed : null;
+  }
+
+  function normalizeHireSourceIssueReferences(
+    input: {
+      sourceIssueId?: string | null;
+      sourceIssueIds?: string[];
+    },
+    inferredSourceIssueIds: string[],
+  ): string[] {
+    const normalized = new Set<string>();
+    const rawValues = [
+      ...(Array.isArray(input.sourceIssueIds) ? input.sourceIssueIds : []),
+      ...(typeof input.sourceIssueId === "string" ? [input.sourceIssueId] : []),
+    ];
+
+    for (const rawValue of rawValues) {
+      const trimmed = asNonEmptyString(rawValue);
+      if (!trimmed) continue;
+      if (PAPERCLIP_TASK_ID_PLACEHOLDER_REGEX.test(trimmed)) {
+        for (const inferred of inferredSourceIssueIds) normalized.add(inferred);
+        continue;
+      }
+      if (isUuidLike(trimmed)) {
+        normalized.add(trimmed);
+      }
+    }
+
+    return Array.from(normalized);
+  }
+
+  function matchesRequestingActor(
+    actor: ReturnType<typeof getActorInfo>,
+    approval: {
+      requestedByAgentId?: string | null;
+      requestedByUserId?: string | null;
+    },
+  ) {
+    if (actor.actorType === "agent") {
+      return approval.requestedByAgentId === actor.actorId;
+    }
+    return approval.requestedByUserId === actor.actorId;
+  }
+
+  function matchesHireReuseCandidate(
+    input: {
+      requestedName: string | null;
+      requestedReportsTo: string | null;
+      requestedAdapterType: string | null;
+    },
+    approvalPayload: unknown,
+  ) {
+    const payload = asRecord(approvalPayload);
+    if (!payload) return false;
+
+    return (
+      asNonEmptyString(payload.name) === input.requestedName &&
+      asNonEmptyString(payload.reportsTo) === input.requestedReportsTo &&
+      asNonEmptyString(payload.adapterType) === input.requestedAdapterType
+    );
+  }
+
+  async function findReusableHireRequest(input: {
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    sourceIssueIds: string[];
+    requestedName: string | null;
+    requestedReportsTo: string | null;
+    requestedAdapterType: string | null;
+  }) {
+    if (!input.requestedName || !input.requestedAdapterType) {
+      return null;
+    }
+
+    const seenApprovalIds = new Set<string>();
+    const candidateApprovalLists: Array<Array<Awaited<ReturnType<typeof issueApprovalsSvc.listApprovalsForIssue>>[number]>> = [];
+
+    for (const issueId of input.sourceIssueIds) {
+      candidateApprovalLists.push(await issueApprovalsSvc.listApprovalsForIssue(issueId));
+    }
+
+    if (candidateApprovalLists.length === 0) {
+      candidateApprovalLists.push(await approvalsSvc.list(input.companyId));
+    } else {
+      const companyApprovals = await approvalsSvc.list(input.companyId);
+      candidateApprovalLists.push(companyApprovals);
+    }
+
+    for (const approvals of candidateApprovalLists) {
+      for (const approval of approvals) {
+        if (seenApprovalIds.has(approval.id)) continue;
+        seenApprovalIds.add(approval.id);
+
+        if (approval.type !== "hire_agent") continue;
+        if (!["pending", "revision_requested", "approved"].includes(approval.status)) continue;
+        if (!matchesRequestingActor(input.actor, approval)) continue;
+        if (
+          !matchesHireReuseCandidate(
+            {
+              requestedName: input.requestedName,
+              requestedReportsTo: input.requestedReportsTo,
+              requestedAdapterType: input.requestedAdapterType,
+            },
+            approval.payload,
+          )
+        ) {
+          continue;
+        }
+
+        const payload = asRecord(approval.payload);
+        const agentId = asNonEmptyString(payload?.agentId);
+        if (!agentId) continue;
+
+        const agent = await svc.getById(agentId);
+        if (!agent) continue;
+
+        return { approval, agent };
+      }
+    }
+
+    return null;
   }
 
   function asRecord(value: unknown): Record<string, unknown> | null {
@@ -400,7 +535,42 @@ export function agentRoutes(db: Db) {
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    if (trimmed.length === 0) return null;
+    if (["none", "null", "undefined"].includes(trimmed.toLowerCase())) return null;
+    return trimmed;
+  }
+
+  async function inferSourceIssueIdsFromActorRun(
+    companyId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ): Promise<string[]> {
+    if (actor.actorType !== "agent") return [];
+    const runId = asNonEmptyString(actor.runId);
+    if (!runId) return [];
+
+    const [run] = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, actor.actorId),
+        ),
+      );
+
+    const context = asRecord(run?.contextSnapshot);
+    const inferredIssueId = asNonEmptyString(context?.issueId) ?? asNonEmptyString(context?.taskId);
+    if (!inferredIssueId) return [];
+
+    const [issue] = await db
+      .select({ id: issuesTable.id })
+      .from(issuesTable)
+      .where(and(eq(issuesTable.id, inferredIssueId), eq(issuesTable.companyId, companyId)));
+
+    return issue?.id ? [issue.id] : [];
   }
 
   function preserveInstructionsBundleConfig(
@@ -627,6 +797,7 @@ export function agentRoutes(db: Db) {
   const ADAPTERS_REQUIRING_MATERIALIZED_RUNTIME_SKILLS = new Set([
     "cursor",
     "gemini_local",
+    "hermes_local",
     "opencode_local",
     "pi_local",
   ]);
@@ -1277,7 +1448,13 @@ export function agentRoutes(db: Db) {
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
-    const sourceIssueIds = parseSourceIssueIds(req.body);
+    const actor = getActorInfo(req);
+    const inferredSourceIssueIds = await inferSourceIssueIdsFromActorRun(companyId, actor);
+    const explicitSourceIssueIds = normalizeHireSourceIssueReferences(
+      req.body,
+      inferredSourceIssueIds,
+    );
+    const sourceIssueIds = Array.from(new Set([...explicitSourceIssueIds, ...inferredSourceIssueIds]));
     const {
       desiredSkills: requestedDesiredSkills,
       sourceIssueId: _sourceIssueId,
@@ -1307,8 +1484,65 @@ export function agentRoutes(db: Db) {
     );
     const normalizedHireInput = {
       ...hireInput,
+      reportsTo: normalizeHireReportsToReference(
+        hireInput.reportsTo,
+        actor.actorType === "agent" ? actor.actorId : null,
+      ),
       adapterConfig: normalizedAdapterConfig,
     };
+
+    if (asNonEmptyString(hireInput.reportsTo) && !normalizedHireInput.reportsTo) {
+      throw unprocessable("reportsTo must resolve to a valid manager UUID");
+    }
+
+    const rawSourceIssueIds = parseSourceIssueIds(req.body);
+    if (rawSourceIssueIds.length > 0 && explicitSourceIssueIds.length === 0) {
+      throw unprocessable("sourceIssueId must resolve to a valid issue UUID");
+    }
+
+    const reusableHire = await findReusableHireRequest({
+      companyId,
+      actor,
+      sourceIssueIds,
+      requestedName: asNonEmptyString(normalizedHireInput.name),
+      requestedReportsTo: asNonEmptyString(normalizedHireInput.reportsTo),
+      requestedAdapterType: asNonEmptyString(normalizedHireInput.adapterType),
+    });
+
+    if (reusableHire) {
+      if (sourceIssueIds.length > 0) {
+        await issueApprovalsSvc.linkManyForApproval(reusableHire.approval.id, sourceIssueIds, {
+          agentId: actor.actorType === "agent" ? actor.actorId : null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        });
+      }
+
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.hire_reused",
+        entityType: "approval",
+        entityId: reusableHire.approval.id,
+        details: {
+          agentId: reusableHire.agent.id,
+          issueIds: sourceIssueIds,
+          requestedName: normalizedHireInput.name,
+          requestedAdapterType: normalizedHireInput.adapterType,
+          approvalStatus: reusableHire.approval.status,
+        },
+      });
+
+      res.status(200).json({
+        agent: reusableHire.agent,
+        approval: reusableHire.approval,
+        reused: true,
+        message: "Reused an existing hire request for this requester and source issue.",
+      });
+      return;
+    }
 
     const company = await db
       .select()
@@ -1331,7 +1565,6 @@ export function agentRoutes(db: Db) {
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
