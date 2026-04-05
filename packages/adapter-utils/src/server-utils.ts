@@ -219,9 +219,10 @@ const UNTRUSTED_HANDOFF_PREAMBLE =
 export function wrapUntrustedHandoff(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return "";
+  const expectedSuffix = `${UNTRUSTED_HANDOFF_TAIL}\n${UNTRUSTED_HANDOFF_CLOSE}`;
   if (
     trimmed.startsWith(UNTRUSTED_HANDOFF_OPEN) &&
-    trimmed.endsWith(UNTRUSTED_HANDOFF_CLOSE)
+    trimmed.endsWith(expectedSuffix)
   ) {
     return `${UNTRUSTED_HANDOFF_PREAMBLE}\n\n${trimmed}`;
   }
