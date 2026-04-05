@@ -16,7 +16,9 @@ import fs from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { Router } from "express";
+import { Router, type Request } from "express";
+import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
 import {
   listServerAdapters,
   findServerAdapter,
@@ -41,7 +43,8 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoard } from "./authz.js";
+import { logActivity } from "../services/activity-log.js";
+import { assertBoard, getActorInfo } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -160,10 +163,43 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 }
 
 // ---------------------------------------------------------------------------
+// Activity logging helper (instance-level → broadcast to all companies)
+// ---------------------------------------------------------------------------
+
+async function logAdapterActivity(
+  db: Db,
+  req: Request,
+  action: string,
+  entityId: string,
+  details?: Record<string, unknown> | null,
+) {
+  const actor = getActorInfo(req);
+  const companyIds = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .then((rows) => rows.map((r) => r.id));
+  await Promise.all(
+    companyIds.map((companyId) =>
+      logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action,
+        entityType: "adapter",
+        entityId,
+        details,
+      }),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes() {
+export function adapterRoutes(db: Db) {
   const router = Router();
 
   /**
@@ -303,6 +339,13 @@ export function adapterRoutes() {
         "External adapter installed and registered",
       );
 
+      await logAdapterActivity(db, req, "adapter.installed", adapterModule.type, {
+        packageName: canonicalName,
+        version: installedVersion ?? explicitVersion,
+        isLocalPath: !!moduleLocalPath,
+        isReinstall,
+      });
+
       res.status(201).json({
         type: adapterModule.type,
         packageName: canonicalName,
@@ -353,6 +396,7 @@ export function adapterRoutes() {
 
     if (changed) {
       logger.info({ type: adapterType, disabled }, "Adapter enabled/disabled");
+      await logAdapterActivity(db, req, disabled ? "adapter.disabled" : "adapter.enabled", adapterType);
     }
 
     res.json({ type: adapterType, disabled, changed });
@@ -385,6 +429,10 @@ export function adapterRoutes() {
     const changed = setOverridePaused(adapterType, paused);
 
     logger.info({ type: adapterType, paused, changed }, "Adapter override toggle");
+
+    if (changed) {
+      await logAdapterActivity(db, req, paused ? "adapter.override_paused" : "adapter.override_resumed", adapterType);
+    }
 
     res.json({ type: adapterType, paused, changed });
   });
@@ -458,6 +506,10 @@ export function adapterRoutes() {
 
     logger.info({ type: adapterType }, "External adapter unregistered and removed");
 
+    await logAdapterActivity(db, req, "adapter.removed", adapterType, {
+      packageName: externalRecord.packageName,
+    });
+
     res.json({ type: adapterType, removed: true });
   });
 
@@ -506,6 +558,8 @@ export function adapterRoutes() {
       }
 
       logger.info({ type, version: newVersion }, "External adapter reloaded at runtime");
+
+      await logAdapterActivity(db, req, "adapter.reloaded", type, { version: newVersion });
 
       res.json({ type, version: newVersion, reloaded: true });
     } catch (err) {
@@ -574,6 +628,11 @@ export function adapterRoutes() {
       }
 
       logger.info({ type, version: newVersion }, "Adapter reinstalled from npm");
+
+      await logAdapterActivity(db, req, "adapter.reinstalled", type, {
+        packageName: record.packageName,
+        version: newVersion,
+      });
 
       res.json({ type, version: newVersion, reinstalled: true });
     } catch (err) {

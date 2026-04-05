@@ -1,11 +1,15 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { setOverridePaused } from "../adapters/registry.js";
 import { adapterRoutes } from "../routes/adapters.js";
 import { errorHandler } from "../middleware/index.js";
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn().mockResolvedValue(undefined),
+}));
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -41,7 +45,8 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", adapterRoutes());
+  const mockDb = { select: () => ({ from: () => Promise.resolve([]) }) } as any;
+  app.use("/api", adapterRoutes(mockDb));
   app.use(errorHandler);
   return app;
 }

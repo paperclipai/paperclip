@@ -237,7 +237,7 @@ export async function createApp(
       { workerManager },
     ),
   );
-  api.use(adapterRoutes());
+  api.use(adapterRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
