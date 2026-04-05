@@ -64,6 +64,8 @@ export function Sidebar() {
           size="icon-sm"
           className="text-muted-foreground shrink-0"
           onClick={openSearch}
+          title="Search (⌘K)"
+          aria-label="Search agents, issues, and projects (⌘K)"
         >
           <Search className="h-4 w-4" />
         </Button>
