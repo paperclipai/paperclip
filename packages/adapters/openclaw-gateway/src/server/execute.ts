@@ -138,11 +138,16 @@ function resolveSessionKey(input: {
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  agentId?: string | null;
 }): string {
   const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  let baseKey: string;
+  if (input.strategy === "run") baseKey = `paperclip:run:${input.runId}`;
+  else if (input.strategy === "issue" && input.issueId) baseKey = `paperclip:issue:${input.issueId}`;
+  else baseKey = fallback;
+
+  if (input.agentId) return `agent:${input.agentId}:${baseKey}`;
+  return baseKey;
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -1097,11 +1102,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    agentId: configuredAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
@@ -1117,7 +1124,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   agentParams.paperclip = paperclipPayload;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
   }
