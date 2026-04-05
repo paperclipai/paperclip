@@ -23,6 +23,26 @@ Do not use it as canonical grounding.
   - `queryGrokWeb(prompt, options)`
   - `generateGrokImage(prompt, options)`
 
+## Current image-capture contract
+
+For hero/editorial image use, the canonical Grok path is now:
+
+- submit the prompt and verify the submitted payload matches the intended prompt
+- wait for generated candidates on `Imagine`
+- click a generated candidate
+- move into `/imagine/post/...`
+- switch to `이미지` mode when needed
+- save the final selected image from the post view
+
+Do not treat the first preview tile on `Imagine` as the final image.
+
+If any of the following happen, fail closed and fall back rather than publishing the result:
+
+- prompt submission mismatch
+- preview-only image capture
+- final selected image not materialized
+- low-resolution result
+
 ## Research Lead artifact step
 
 Use after RSS shortlist and before NotebookLM grounding:
@@ -54,6 +74,11 @@ For visuals, Grok is the preferred provider for:
 - hero
 - editorial cover
 - photoreal or atmospheric framing
+
+Operational note:
+
+- Grok hero generation is now viable for live use only because the sidecar can complete candidate selection and post-view final-image capture.
+- `jobId` tracking remains secondary diagnostic metadata; successful capture does not currently depend on `jobId`.
 
 Gemini remains the preferred provider for:
 

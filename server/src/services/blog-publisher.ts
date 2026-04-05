@@ -47,6 +47,24 @@ export type BlogPublishRequest = {
   supportingMedia?: UploadedMediaInput[];
 };
 
+export type QuarantineMode = "dry_run" | "live_run" | "replay";
+export type QuarantineAction = "set_private" | "move_to_trash" | "redirect_to_404";
+
+export type QuarantinePostRequest = {
+  blogRunId: string;
+  companyId: string;
+  mode: QuarantineMode;
+  approvalArtifactRef: string;
+  approvalIssueIdentifier: string;
+  requestedByIssueIdentifier: string;
+  postId: number;
+  expectedSlug: string;
+  expectedPublicUrl: string;
+  expectedPreMutationStatus?: "publish" | "private" | "draft" | "pending" | "unknown";
+  quarantineAction?: QuarantineAction;
+  verifiedAgainstReceiptId?: string;
+};
+
 export type BlogPublisherServiceDeps = {
   fetchImpl?: FetchLike;
   env?: NodeJS.ProcessEnv;
@@ -61,6 +79,7 @@ type WordPressPost = {
   id?: number;
   status?: string;
   link?: string;
+  slug?: string;
   title?: { rendered?: string };
   featured_media?: number;
   content?: { rendered?: string };
@@ -141,6 +160,32 @@ function buildSupportingHtml(title: string, media: Array<{ sourceUrl: string }>)
   return media
     .map((item) => `<figure class="supporting-image"><img src="${item.sourceUrl}" alt="${title}" /></figure>`)
     .join("");
+}
+
+function makeQuarantineReceiptId(mode: QuarantineMode, postId: number) {
+  return `quarantine-receipt-${mode}-post-${postId}-${Date.now()}`;
+}
+
+function normalizePublicSiteBase(siteId: string) {
+  const raw = String(siteId || "").trim();
+  if (!raw) return "";
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const url = new URL(withProtocol);
+  return `${url.origin}`.replace(/\/+$/, "");
+}
+
+function extractSlugValue(candidate: unknown) {
+  return String(candidate ?? "").trim().replace(/^\/+|\/+$/g, "");
+}
+
+function buildCanonicalPublicUrl(siteId: string, slug: unknown, fallbackLink?: unknown) {
+  const normalizedSlug = extractSlugValue(slug);
+  if (normalizedSlug) {
+    const base = normalizePublicSiteBase(siteId);
+    if (base) return `${base}/posts/${normalizedSlug}`;
+  }
+  const fallback = String(fallbackLink ?? "").trim();
+  return fallback || null;
 }
 
 export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}) {
@@ -236,6 +281,110 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
     return results;
   }
 
+  async function fetchExistingPost(config: Required<BlogPublishConfig>, postId: number) {
+    return wpRequest<WordPressPost>(config, "GET", `/posts/${postId}?context=edit`);
+  }
+
+  async function quarantinePost(input: QuarantinePostRequest, configOverride: BlogPublishConfig = {}) {
+    const config = resolveWordPressConfig(env, configOverride);
+    const quarantineAction = input.quarantineAction ?? "set_private";
+    const observedAt = new Date().toISOString();
+
+    if (input.mode === "dry_run") {
+      return {
+        receipt: {
+          schemaVersion: "1.0",
+          receiptId: makeQuarantineReceiptId("dry_run", input.postId),
+          stepId: "quarantine-post",
+          stepRunId: input.blogRunId,
+          mode: "dry_run",
+          target: "cms.production.existing_post",
+          lifecycle: "suppressed",
+          approvalArtifactRef: input.approvalArtifactRef,
+          approvalIssueIdentifier: input.approvalIssueIdentifier,
+          requestedByIssueIdentifier: input.requestedByIssueIdentifier,
+          postId: input.postId,
+          expectedSlug: input.expectedSlug,
+          finalStatus: "unknown",
+          publicUrl: input.expectedPublicUrl,
+          httpObservation: "dry_run_suppressed",
+          message: "Dry run suppressed the quarantine mutation.",
+          observedAt,
+        },
+      };
+    }
+
+    const existing = await fetchExistingPost(config, input.postId);
+    const observedSlug = String(existing.slug ?? "").trim();
+    if (observedSlug && observedSlug !== input.expectedSlug) {
+      throw unprocessable(`quarantine_post_slug_mismatch:${observedSlug}`);
+    }
+    if (input.expectedPreMutationStatus && input.expectedPreMutationStatus !== "unknown") {
+      const currentStatus = String(existing.status ?? "").trim().toLowerCase();
+      if (currentStatus && currentStatus !== input.expectedPreMutationStatus) {
+        throw unprocessable(`quarantine_post_status_mismatch:${currentStatus}`);
+      }
+    }
+
+    if (input.mode === "replay") {
+      return {
+        receipt: {
+          schemaVersion: "1.0",
+          receiptId: makeQuarantineReceiptId("replay", input.postId),
+          stepId: "quarantine-post",
+          stepRunId: input.blogRunId,
+          mode: "replay",
+          target: "cms.production.existing_post",
+          lifecycle: "verified",
+          approvalArtifactRef: input.approvalArtifactRef,
+          approvalIssueIdentifier: input.approvalIssueIdentifier,
+          requestedByIssueIdentifier: input.requestedByIssueIdentifier,
+          postId: input.postId,
+          expectedSlug: input.expectedSlug,
+          finalStatus: String(existing.status ?? "unknown").trim().toLowerCase() || "unknown",
+          publicUrl: String(existing.link ?? input.expectedPublicUrl).trim() || input.expectedPublicUrl,
+          httpObservation: "replay_verified",
+          verifiedAgainstReceiptId: input.verifiedAgainstReceiptId,
+          message: "Replay verified the original quarantine receipt without issuing a second mutation.",
+          observedAt,
+        },
+      };
+    }
+
+    let mutated: WordPressPost;
+    if (quarantineAction === "set_private") {
+      mutated = await wpRequest<WordPressPost>(config, "POST", `/posts/${input.postId}`, {
+        status: "private",
+      });
+    } else if (quarantineAction === "move_to_trash") {
+      mutated = await wpRequest<WordPressPost>(config, "DELETE", `/posts/${input.postId}?force=false`);
+    } else {
+      throw unprocessable(`quarantine_action_unsupported:${quarantineAction}`);
+    }
+
+    return {
+      receipt: {
+        schemaVersion: "1.0",
+        receiptId: makeQuarantineReceiptId("live_run", input.postId),
+        stepId: "quarantine-post",
+        stepRunId: input.blogRunId,
+        mode: "live_run",
+        target: "cms.production.existing_post",
+        lifecycle: "executed",
+        approvalArtifactRef: input.approvalArtifactRef,
+        approvalIssueIdentifier: input.approvalIssueIdentifier,
+        requestedByIssueIdentifier: input.requestedByIssueIdentifier,
+        postId: input.postId,
+        expectedSlug: input.expectedSlug,
+        finalStatus: String(mutated.status ?? "unknown").trim().toLowerCase() || "unknown",
+        publicUrl: String(mutated.link ?? input.expectedPublicUrl).trim() || input.expectedPublicUrl,
+        httpObservation: "mutation_executed",
+        message: "Approved quarantine mutation executed against the existing post identity.",
+        observedAt,
+      },
+    };
+  }
+
   async function publish(input: BlogPublishRequest, configOverride: BlogPublishConfig = {}) {
     if (!input.approvalId) throw unprocessable("Publish approval is required");
     if (!input.publishIdempotencyKey) throw unprocessable("Publish idempotency key is required");
@@ -249,11 +398,13 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
       .then((rows) => rows[0] ?? null);
 
     if (existing) {
+      const existingPost = (existing.resultJson ?? {}) as Record<string, unknown>;
       return {
         reusedExecution: true,
         execution: existing,
         authenticatedUser: "unknown",
-        post: existing.resultJson as Record<string, unknown> | null,
+        post: existingPost,
+        publicUrl: String(existing.publishedUrl ?? existingPost.link ?? "").trim() || null,
         featuredMedia: null,
         supportingMedia: [],
       };
@@ -288,6 +439,12 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
       });
     }
 
+    const canonicalPublicUrl = buildCanonicalPublicUrl(
+      input.siteId,
+      post.slug ?? input.targetSlug,
+      post.link,
+    );
+
     const execution = await db
       .insert(blogPublishExecutions)
       .values({
@@ -298,7 +455,7 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
         targetSlug: input.targetSlug ?? "",
         publishIdempotencyKey: input.publishIdempotencyKey,
         wordpressPostId: post.id ?? null,
-        publishedUrl: post.link ?? null,
+        publishedUrl: canonicalPublicUrl,
         resultJson: post as Record<string, unknown>,
       })
       .returning()
@@ -309,6 +466,7 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
       execution,
       authenticatedUser: me.name || me.slug || "unknown",
       post,
+      publicUrl: canonicalPublicUrl,
       featuredMedia,
       supportingMedia,
     };
@@ -320,6 +478,7 @@ export function blogPublisherService(db: Db, deps: BlogPublisherServiceDeps = {}
       publish({ ...input, status: "draft" }, config),
     publishPost: (input: Omit<BlogPublishRequest, "status">, config?: BlogPublishConfig) =>
       publish({ ...input, status: "publish" }, config),
+    quarantinePost,
     attachFeaturedMedia,
     uploadSupportingMedia,
   };

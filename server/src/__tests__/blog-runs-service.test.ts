@@ -87,6 +87,27 @@ describeEmbeddedPostgres("blog run service", () => {
     expect(detail?.artifacts).toEqual([]);
   });
 
+  it("persists the run topic into contextJson for legacy research compatibility", async () => {
+    const { companyId, projectId } = await seedProject();
+    const svc = blogRunService(db);
+
+    const created = await svc.create({
+      companyId,
+      projectId,
+      topic: "Nemotron throughput topic",
+      lane: "publish",
+      publishMode: "dry_run",
+      contextJson: {
+        title: "Nemotron throughput topic",
+      },
+    });
+
+    expect(created?.contextJson).toMatchObject({
+      topic: "Nemotron throughput topic",
+      title: "Nemotron throughput topic",
+    });
+  });
+
   it("defaults live publish runs to strict public verify contract mode", async () => {
     const { companyId, projectId } = await seedProject();
     const svc = blogRunService(db);

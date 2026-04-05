@@ -33,6 +33,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "../components/Inl
 import { MarkdownEditor, type MarkdownEditorRef } from "../components/MarkdownEditor";
 import { ScheduleEditor, describeSchedule } from "../components/ScheduleEditor";
 import { RunButton } from "../components/AgentActionButtons";
+import { ReleaseResponsibilityCard } from "../components/ReleaseResponsibilityCard";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -582,6 +583,7 @@ export function RoutineDetail() {
   );
   const currentAssignee = editDraft.assigneeAgentId ? agentById.get(editDraft.assigneeAgentId) ?? null : null;
   const currentProject = editDraft.projectId ? projectById.get(editDraft.projectId) ?? null : null;
+  const showReleaseResponsibility = Boolean(currentProject?.name?.startsWith("Blog OS -"));
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Repeat} message="Select a company to view routines." />;
@@ -607,6 +609,11 @@ export function RoutineDetail() {
     : automationEnabled
       ? "text-emerald-400"
       : "text-muted-foreground";
+  const releaseApprovalSummary = routine.activeIssue?.id
+    ? `Active execution issue ${routine.activeIssue.identifier ?? routine.activeIssue.id.slice(0, 8)} is carrying this release line`
+    : routine.status === "paused"
+      ? "Automation paused"
+      : "No active execution issue right now";
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -782,6 +789,10 @@ export function RoutineDetail() {
           />
         </div>
       </div>
+
+      {showReleaseResponsibility ? (
+        <ReleaseResponsibilityCard approvalSummary={releaseApprovalSummary} compact />
+      ) : null}
 
       {/* Instructions */}
       <MarkdownEditor

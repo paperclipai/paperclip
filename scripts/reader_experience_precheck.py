@@ -37,10 +37,42 @@ def html_source(draft: dict[str, Any]) -> str:
     return article_html if isinstance(article_html, str) else ""
 
 
+def heading_lines(markdown: str, article_html: str) -> list[str]:
+    headings: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("##"):
+            headings.append(re.sub(r"^#+\s*", "", stripped))
+    if not headings and article_html:
+        headings.extend(
+            re.findall(r"<h[1-6][^>]*>(.*?)</h[1-6]>", article_html, flags=re.I | re.S),
+        )
+    cleaned = []
+    for heading in headings:
+        text = re.sub(r"<[^>]+>", " ", heading)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def has_reader_question_structure(headings: list[str]) -> bool:
+    if len(headings) < 3:
+        return False
+    tokens = ["왜", "무엇", "누가", "어떻게", "지금", "what", "why", "who", "how", "now"]
+    matched = 0
+    for heading in headings:
+        lowered = heading.lower()
+        if any(token in heading or token in lowered for token in tokens):
+            matched += 1
+    return matched >= 2
+
+
 def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     markdown = draft_text(draft)
     article_html = html_source(draft)
     parts = paragraphs(markdown)
+    headings = heading_lines(markdown, article_html)
     first_dropoff = None
     if len(parts) >= 3 and len(parts[0]) + len(parts[1]) > 900:
         first_dropoff = "intro_paragraph_3"
@@ -69,6 +101,8 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     table_or_comparison_present = any(token in markdown.lower() for token in ["비교", "|"]) or "<table" in article_html.lower() or "before vs after" in markdown.lower()
     early_numbered_promise_visible = any(token in markdown.lower() for token in ["3가지", "세 가지", "핵심 요약"]) or "3가지" in article_html or "세 가지" in article_html
     dense_article = len(parts) >= 5 or len(markdown) >= 1800
+    toc_present = any(token in markdown.lower() for token in ["## 목차", "목차", "[toc]", "on this page"]) or "reader-toc" in article_html or "on this page" in article_html.lower()
+    reader_question_structure_present = has_reader_question_structure(headings)
 
     reasons: list[str] = []
     if first_dropoff:
@@ -85,6 +119,10 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
         reasons.append("checklist_or_next_steps_missing")
     if dense_article and not table_or_comparison_present:
         reasons.append("table_or_comparison_missing")
+    if dense_article and not toc_present:
+        reasons.append("toc_missing_for_long_article")
+    if dense_article and not reader_question_structure_present:
+        reasons.append("section_question_structure_missing")
     if not early_numbered_promise_visible:
         reasons.append("numbered_promise_missing")
 
@@ -102,6 +140,9 @@ def evaluate_reader(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
         "quick_scan_present": quick_scan_present,
         "checklist_present": checklist_present,
         "table_or_comparison_present": table_or_comparison_present,
+        "toc_present": toc_present,
+        "reader_question_structure_present": reader_question_structure_present,
+        "heading_count": len(headings),
         "early_numbered_promise_visible": early_numbered_promise_visible,
         "artifacts_used": [source_path],
         "summary": "reader experience passed" if ok else f"reader experience failed: {', '.join(reasons)}",

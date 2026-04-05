@@ -31,6 +31,7 @@ import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { ReleaseResponsibilityCard } from "../components/ReleaseResponsibilityCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -387,6 +388,20 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+  const currentProject = useMemo(
+    () => orderedProjects.find((project) => project.id === issue?.projectId) ?? null,
+    [orderedProjects, issue?.projectId],
+  );
+  const showReleaseResponsibility = Boolean(currentProject?.name?.startsWith("Blog OS -"));
+  const releaseApprovalSummary = useMemo(() => {
+    if (!linkedApprovals || linkedApprovals.length === 0) return null;
+    const pendingCount = linkedApprovals.filter((approval) => approval.status === "pending").length;
+    const approvedCount = linkedApprovals.filter((approval) => approval.status === "approved").length;
+    if (pendingCount > 0) {
+      return `${pendingCount} pending approval${pendingCount === 1 ? "" : "s"} linked to this issue`;
+    }
+    return `${approvedCount} approved item${approvedCount === 1 ? "" : "s"} linked to this issue`;
+  }, [linkedApprovals]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -1201,9 +1216,13 @@ export function IssueDetail() {
         </div>
       ) : null}
 
+      {showReleaseResponsibility ? (
+        <ReleaseResponsibilityCard approvalSummary={releaseApprovalSummary} />
+      ) : null}
+
       <IssueWorkspaceCard
         issue={issue}
-        project={orderedProjects.find((p) => p.id === issue.projectId) ?? null}
+        project={currentProject}
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 

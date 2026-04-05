@@ -143,8 +143,11 @@ describe("blogPublisherService", () => {
       approvalId: "approval-1",
       publishIdempotencyKey: "idem-1",
       wordpressPostId: 321,
-      publishedUrl: "https://fluxaivory.com/test-post/",
+      publishedUrl: "https://fluxaivory.com/posts/draft-title",
     }));
+    expect(result).toMatchObject({
+      publicUrl: "https://fluxaivory.com/posts/draft-title",
+    });
   });
 
   it("uploads featured and supporting media for a publish run", async () => {
@@ -191,6 +194,7 @@ describe("blogPublisherService", () => {
     });
 
     expect(result.post).toMatchObject({ id: 321, status: "publish" });
+    expect(result.publicUrl).toBe("https://fluxaivory.com/posts/publish-title");
     expect(result.featuredMedia).toMatchObject({ mediaId: 77, postFeaturedMedia: 77 });
     expect(result.supportingMedia).toHaveLength(1);
     expect(fetchImpl).toHaveBeenCalledTimes(6);
@@ -224,6 +228,7 @@ describe("blogPublisherService", () => {
 
     expect(result.reusedExecution).toBe(true);
     expect(result.execution).toMatchObject(existing);
+    expect(result.publicUrl).toBe("https://fluxaivory.com/existing/");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -267,5 +272,136 @@ describe("blogPublisherService", () => {
       status: 422,
       message: "Publish idempotency key is required",
     });
+  });
+
+  it("emits a suppressed quarantine receipt without mutating WordPress on dry run", async () => {
+    const { db } = createDbStub();
+    const service = blogPublisherService(db as any, {
+      fetchImpl,
+      env: {
+        WP_API_URL: "https://fluxaivory.com/wp-json/wp/v2",
+        WP_USER: "publisher",
+        WP_APP_PASSWORD: "app-pass",
+      },
+    });
+
+    const result = await service.quarantinePost({
+      blogRunId: "run-5",
+      companyId: "company-1",
+      mode: "dry_run",
+      approvalArtifactRef: "/FLU/issues/FLU-60#document-quarantine-execution-path",
+      approvalIssueIdentifier: "FLU-60",
+      requestedByIssueIdentifier: "FLU-57",
+      postId: 986,
+      expectedSlug: "post-986",
+      expectedPublicUrl: "https://fluxaivory.com/post-986/",
+    });
+
+    expect(result.receipt).toMatchObject({
+      schemaVersion: "1.0",
+      stepId: "quarantine-post",
+      mode: "dry_run",
+      lifecycle: "suppressed",
+      postId: 986,
+      approvalIssueIdentifier: "FLU-60",
+      requestedByIssueIdentifier: "FLU-57",
+      publicUrl: "https://fluxaivory.com/post-986/",
+      finalStatus: "unknown",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("quarantines an exact existing post and emits a live-run receipt", async () => {
+    const { db } = createDbStub();
+    fetchImpl
+      .mockResolvedValueOnce(createJsonResponse(200, {
+        id: 986,
+        status: "publish",
+        link: "https://fluxaivory.com/post-986/",
+        slug: "post-986",
+      }))
+      .mockResolvedValueOnce(createJsonResponse(200, {
+        id: 986,
+        status: "private",
+        link: "https://fluxaivory.com/post-986/",
+        slug: "post-986",
+      }));
+
+    const service = blogPublisherService(db as any, {
+      fetchImpl,
+      env: {
+        WP_API_URL: "https://fluxaivory.com/wp-json/wp/v2",
+        WP_USER: "publisher",
+        WP_APP_PASSWORD: "app-pass",
+      },
+    });
+
+    const result = await service.quarantinePost({
+      blogRunId: "run-6",
+      companyId: "company-1",
+      mode: "live_run",
+      approvalArtifactRef: "/FLU/issues/FLU-60#document-quarantine-execution-path",
+      approvalIssueIdentifier: "FLU-60",
+      requestedByIssueIdentifier: "FLU-57",
+      postId: 986,
+      expectedSlug: "post-986",
+      expectedPublicUrl: "https://fluxaivory.com/post-986/",
+      expectedPreMutationStatus: "publish",
+      quarantineAction: "set_private",
+    });
+
+    expect(result.receipt).toMatchObject({
+      schemaVersion: "1.0",
+      stepId: "quarantine-post",
+      mode: "live_run",
+      lifecycle: "executed",
+      postId: 986,
+      finalStatus: "private",
+      publicUrl: "https://fluxaivory.com/post-986/",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays quarantine verification without issuing a second mutation", async () => {
+    const { db } = createDbStub();
+    fetchImpl.mockResolvedValueOnce(createJsonResponse(200, {
+      id: 986,
+      status: "private",
+      link: "https://fluxaivory.com/post-986/",
+      slug: "post-986",
+    }));
+
+    const service = blogPublisherService(db as any, {
+      fetchImpl,
+      env: {
+        WP_API_URL: "https://fluxaivory.com/wp-json/wp/v2",
+        WP_USER: "publisher",
+        WP_APP_PASSWORD: "app-pass",
+      },
+    });
+
+    const result = await service.quarantinePost({
+      blogRunId: "run-7",
+      companyId: "company-1",
+      mode: "replay",
+      approvalArtifactRef: "/FLU/issues/FLU-60#document-quarantine-execution-path",
+      approvalIssueIdentifier: "FLU-60",
+      requestedByIssueIdentifier: "FLU-57",
+      postId: 986,
+      expectedSlug: "post-986",
+      expectedPublicUrl: "https://fluxaivory.com/post-986/",
+      verifiedAgainstReceiptId: "quarantine-receipt-live-run-post-986-20260405",
+    });
+
+    expect(result.receipt).toMatchObject({
+      schemaVersion: "1.0",
+      stepId: "quarantine-post",
+      mode: "replay",
+      lifecycle: "verified",
+      postId: 986,
+      finalStatus: "private",
+      verifiedAgainstReceiptId: "quarantine-receipt-live-run-post-986-20260405",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

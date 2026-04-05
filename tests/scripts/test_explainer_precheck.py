@@ -41,6 +41,17 @@ class ExplainerPrecheckTests(unittest.TestCase):
         result = self.run_script({"markdown": "what changed why it matters who should care\n\nPut simply, MCP is a common connection rule for AI tools.\n\nFor example, an AI assistant could connect documents and calendars more naturally."})
         self.assertTrue(result["ok"])
 
+    def test_fails_long_form_when_only_one_example_exists(self):
+        markdown = (
+            "what changed why it matters who should care\n\n"
+            "Put simply, MCP is a shared connection rule for AI tools.\n\n"
+            + ("설명 문장 " * 250)
+            + "\n\nFor example, a team assistant can connect calendars and documents."
+        )
+        result = self.run_script({"markdown": markdown})
+        self.assertFalse(result["ok"])
+        self.assertIn("concrete_example_count_low", result["reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

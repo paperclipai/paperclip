@@ -63,6 +63,21 @@ def contains_concrete_example(text: str) -> bool:
     return any(marker in lowered or marker in text for marker in markers)
 
 
+def count_concrete_examples(text: str) -> int:
+    lowered = text.lower()
+    markers = [
+        "예를 들어",
+        "가령",
+        "대표적으로",
+        "실제로는",
+        "for example",
+        "for instance",
+        "in practice",
+        "for a typical user",
+    ]
+    return sum(1 for marker in markers if marker in lowered or marker in text)
+
+
 def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any]:
     opening = first_screen_text(draft)
     lowered = opening.lower()
@@ -97,6 +112,8 @@ def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any
     if any(term.lower() in full_text.lower() for term in jargon_terms):
       term_explanation_ok = contains_plain_language_bridge(full_text)
     concrete_example_present = contains_concrete_example(full_text)
+    concrete_example_count = count_concrete_examples(full_text)
+    long_form = len(full_text) >= 1400
 
     reasons: list[str] = []
     if not opening_complete:
@@ -113,6 +130,8 @@ def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any
         reasons.append("uncertainty_loss_risk_high")
     if not concrete_example_present:
         reasons.append("concrete_example_missing")
+    if long_form and concrete_example_count < 2:
+        reasons.append("concrete_example_count_low")
 
     ok = len(reasons) == 0
     return {
@@ -128,6 +147,8 @@ def evaluate_explainer(draft: dict[str, Any], source_path: str) -> dict[str, Any
         "analogy_risk": analogy_risk,
         "uncertainty_loss_risk": uncertainty_loss_risk,
         "concrete_example_present": concrete_example_present,
+        "concrete_example_count": concrete_example_count,
+        "long_form": long_form,
         "artifacts_used": [source_path],
         "summary": "explainer quality passed" if ok else f"explainer quality failed: {', '.join(reasons)}",
     }

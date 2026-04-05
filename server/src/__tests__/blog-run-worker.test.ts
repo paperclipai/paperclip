@@ -149,6 +149,40 @@ describe("blog run worker", () => {
     expect(result).toMatchObject({ run: { status: "research_ready" } });
   });
 
+  it("injects run.topic into the research input context when reused runs are missing contextJson.topic", async () => {
+    const runService = {
+      getById: vi.fn().mockResolvedValue(createRun({
+        topic: "New NVIDIA Nemotron 3 Super Delivers 5x Higher Throughput for Agentic AI",
+        contextJson: {
+          title: "New NVIDIA Nemotron 3 Super Delivers 5x Higher Throughput for Agentic AI",
+        },
+      })),
+      getDetail: vi.fn().mockResolvedValue({ ok: true }),
+      claimNextStep: vi.fn().mockResolvedValue(createClaim({
+        topic: "New NVIDIA Nemotron 3 Super Delivers 5x Higher Throughput for Agentic AI",
+        contextJson: {
+          title: "New NVIDIA Nemotron 3 Super Delivers 5x Higher Throughput for Agentic AI",
+        },
+      })),
+      completeStep: vi.fn().mockResolvedValue({ run: { status: "research_ready", currentStep: "draft" } }),
+      failStep: vi.fn(),
+    };
+    const runResearchStep = vi.fn().mockResolvedValue({ research: "ok" });
+    const worker = blogRunWorkerService({} as any, {
+      runService: runService as any,
+      runResearchStep,
+      runGrokArtifactStep: vi.fn().mockResolvedValue({ ok: true, source: "grok-web-artifact-step" }),
+    });
+
+    await worker.runNext("run-1");
+
+    expect(runResearchStep).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        topic: "New NVIDIA Nemotron 3 Super Delivers 5x Higher Throughput for Agentic AI",
+      }),
+    }));
+  });
+
   it("attaches quality gate artifacts after content steps", async () => {
     const runService = {
       getById: vi.fn().mockResolvedValue(createRun()),
