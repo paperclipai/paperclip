@@ -139,6 +139,10 @@ export function detectClaudeLoginRequired(input: {
 }
 
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {
+  if (isClaudeSuccessResult(parsed)) {
+    return null;
+  }
+
   const subtype = asString(parsed.subtype, "");
   const resultText = asString(parsed.result, "").trim();
   const errors = extractClaudeErrorMessages(parsed);
@@ -152,6 +156,21 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   if (subtype) parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
+}
+
+export function isClaudeSuccessResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  if (parsed.is_error === true) return false;
+
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype === "success") return true;
+  if (subtype === "error" || subtype === "failed" || subtype.startsWith("error_")) return false;
+
+  const status = asString(parsed.status, "").trim().toLowerCase();
+  if (status === "success" || status === "succeeded" || status === "ok") return true;
+  if (status === "error" || status === "failed") return false;
+
+  return false;
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
