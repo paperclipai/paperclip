@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { appendStderrExcerpt, formatWorkerFailureMessage } from "../services/plugin-worker-manager.js";
+import {
+  appendStderrExcerpt,
+  formatWorkerFailureMessage,
+  normalizeForkEntrypoint,
+} from "../services/plugin-worker-manager.js";
 
 describe("plugin-worker-manager stderr failure context", () => {
   it("appends worker stderr context to failure messages", () => {
@@ -39,5 +43,17 @@ describe("plugin-worker-manager stderr failure context", () => {
     expect(excerpt).not.toContain("first line");
     expect(excerpt).not.toContain("second line");
     expect(excerpt.length).toBeLessThanOrEqual(8_000);
+  });
+});
+
+describe("normalizeForkEntrypoint", () => {
+  it("converts absolute Windows paths to file URLs", () => {
+    expect(normalizeForkEntrypoint("C:\\plugins\\decision-surface\\dist\\worker.js", "win32"))
+      .toBe("file:///C:/plugins/decision-surface/dist/worker.js");
+  });
+
+  it("keeps non-Windows paths unchanged", () => {
+    expect(normalizeForkEntrypoint("/tmp/plugin/dist/worker.js"))
+      .toBe("/tmp/plugin/dist/worker.js");
   });
 });
