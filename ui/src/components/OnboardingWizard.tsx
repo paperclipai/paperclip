@@ -48,6 +48,7 @@ import {
   Rocket,
   ArrowLeft,
   ArrowRight,
+  Globe,
   Check,
   Loader2,
   ChevronDown,
@@ -203,7 +204,7 @@ export function OnboardingWizard() {
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+    const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
     const all = listUIAdapters()
       .filter((a) => !SYSTEM_ADAPTER_TYPES.has(a.type) && !disabledTypes.has(a.type))
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
