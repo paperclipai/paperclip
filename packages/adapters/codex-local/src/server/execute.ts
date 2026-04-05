@@ -398,6 +398,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (fromExtraArgs.length > 0) return fromExtraArgs;
     return asStringArray(config.args);
   })();
+  const codexExtraArgs = extraArgs.includes("--skip-git-repo-check")
+    ? extraArgs
+    : [...extraArgs, "--skip-git-repo-check"];
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -486,7 +489,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
     if (model) args.push("--model", model);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (codexExtraArgs.length > 0) args.push(...codexExtraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");
     else args.push("-");
     return args;

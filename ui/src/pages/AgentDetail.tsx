@@ -3666,14 +3666,43 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   }).data?.censorUsernameInLogs === true;
 
   const adapterInvokePayload = useMemo(() => {
-    const evt = events.find((e) => e.eventType === "adapter.invoke");
+    const evt = [...events].reverse().find((e) => e.eventType === "adapter.invoke");
     return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
   }, [censorUsernameInLogs, events]);
 
+  const adapterInvocationTimeline = useMemo(() => {
+    return events
+      .filter((event) => event.eventType === "adapter.invoke")
+      .map((event) => {
+        const payload = asRecord(event.payload);
+        const invokedAdapterType = asNonEmptyString(payload?.adapterType);
+        if (!invokedAdapterType) return null;
+        return {
+          adapterType: invokedAdapterType,
+          tsMs: new Date(event.createdAt).getTime(),
+        };
+      })
+      .filter((entry): entry is { adapterType: string; tsMs: number } => entry !== null)
+      .sort((a, b) => a.tsMs - b.tsMs);
+  }, [events]);
   const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
   const transcript = useMemo(
-    () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
-    [adapter, censorUsernameInLogs, logLines],
+    () => buildTranscript(logLines, adapter.parseStdoutLine, {
+      censorUsernameInLogs,
+      resolveStdoutParser: (entryTs) => {
+        const entryTsMs = new Date(entryTs).getTime();
+        let resolvedAdapterType = adapterType;
+        for (const invocation of adapterInvocationTimeline) {
+          if (invocation.tsMs <= entryTsMs) {
+            resolvedAdapterType = invocation.adapterType;
+          } else {
+            break;
+          }
+        }
+        return getUIAdapter(resolvedAdapterType).parseStdoutLine;
+      },
+    }),
+    [adapter, adapterInvocationTimeline, adapterType, censorUsernameInLogs, logLines],
   );
 
   useEffect(() => {
@@ -3820,12 +3849,43 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         </div>
       </div>
       <div className="max-h-[38rem] overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
-        <RunTranscriptView
-          entries={transcript}
-          mode={transcriptMode}
-          streaming={isLive}
-          emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
-        />
+        {transcriptMode === "raw" ? (
+          logLines.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground">
+              {run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+            </div>
+          ) : (
+            <div className="space-y-2 font-mono text-xs">
+              {logLines.map((line, index) => (
+                <div key={`${line.ts}-${line.stream}-${index}`} className="grid grid-cols-[auto_auto_1fr] gap-x-3">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                    {line.ts}
+                  </span>
+                  <span className={cn(
+                    "text-[10px] uppercase tracking-[0.18em]",
+                    line.stream === "stderr"
+                      ? "text-red-600 dark:text-red-300"
+                      : line.stream === "system"
+                        ? "text-blue-600 dark:text-blue-300"
+                        : "text-muted-foreground",
+                  )}>
+                    {line.stream}
+                  </span>
+                  <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">
+                    {line.chunk}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+          <RunTranscriptView
+            entries={transcript}
+            mode={transcriptMode}
+            streaming={isLive}
+            emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          />
+        )}
         {logError && (
           <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
             {logError}

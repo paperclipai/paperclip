@@ -1,9 +1,10 @@
 export const type = "claude_local";
 export const label = "Claude Code (local)";
+export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-sonnet-4-6";
 
 export const models = [
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+  { id: DEFAULT_CLAUDE_LOCAL_MODEL, label: "Claude Sonnet 4.6" },
   { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
   { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
@@ -16,12 +17,13 @@ Adapter: claude_local
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
-- model (string, optional): Claude model id
+- model (string, optional): Claude model id. Defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} when omitted.
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional): pass --dangerously-skip-permissions to claude
+- rateLimitFallback (object, optional): fallback policy when Claude exits due to rate limit; currently supports { adapterType: "codex_local", adapterConfig? }
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
