@@ -37,7 +37,7 @@ export const logger = pino({
     },
     {
       target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: false, destination: logFile, mkdir: true },
       level: "debug",
     },
   ],
