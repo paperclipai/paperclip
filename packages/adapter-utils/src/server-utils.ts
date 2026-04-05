@@ -423,6 +423,43 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function uniqueNonEmptyPaths(paths: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of paths) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function additionalCommandSearchDirs(command: string, env: NodeJS.ProcessEnv): string[] {
+  const extras: string[] = [];
+  const extraPathValue =
+    typeof env.PAPERCLIP_EXTRA_COMMAND_PATHS === "string"
+      ? env.PAPERCLIP_EXTRA_COMMAND_PATHS
+      : typeof process.env.PAPERCLIP_EXTRA_COMMAND_PATHS === "string"
+        ? process.env.PAPERCLIP_EXTRA_COMMAND_PATHS
+        : "";
+  if (extraPathValue) {
+    extras.push(...extraPathValue.split(path.delimiter));
+  }
+
+  if (process.platform === "darwin") {
+    const homeDir =
+      (typeof env.HOME === "string" && env.HOME.trim().length > 0 ? env.HOME : process.env.HOME) ?? "";
+    if (command === "codex") {
+      extras.push("/Applications/Codex.app/Contents/Resources");
+      if (homeDir) extras.push(path.join(homeDir, "Applications", "Codex.app", "Contents", "Resources"));
+    }
+  }
+
+  return uniqueNonEmptyPaths(extras);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -450,6 +487,18 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   const hasExtension = process.platform === "win32" && path.extname(command).length > 0;
 
   for (const dir of dirs) {
+    const candidates =
+      process.platform === "win32"
+        ? hasExtension
+          ? [path.join(dir, command)]
+          : exts.map((ext) => path.join(dir, `${command}${ext}`))
+        : [path.join(dir, command)];
+    for (const candidate of candidates) {
+      if (await pathExists(candidate)) return candidate;
+    }
+  }
+
+  for (const dir of additionalCommandSearchDirs(command, env)) {
     const candidates =
       process.platform === "win32"
         ? hasExtension
@@ -961,8 +1010,14 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
 
         if (opts.stdin != null && child.stdin) {
-          child.stdin.write(opts.stdin);
-          child.stdin.end();
+          const stdin = child.stdin;
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            // Short-lived probes can exit before consuming stdin.
+            if (err.code === "EPIPE" || err.code === "ECONNRESET") return;
+            onLogError(err, runId, "stdin stream error");
+          });
+          stdin.write(opts.stdin);
+          stdin.end();
         }
 
         if (typeof child.pid === "number" && child.pid > 0 && opts.onSpawn) {
