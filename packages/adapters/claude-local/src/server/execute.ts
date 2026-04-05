@@ -53,10 +53,21 @@ async function buildSkillsDir(config: Record<string, unknown>): Promise<string> 
   );
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
-    await fs.symlink(
-      entry.source,
-      path.join(target, entry.runtimeName),
-    );
+    try {
+      await fs.symlink(
+        entry.source,
+        path.join(target, entry.runtimeName),
+      );
+    } catch (err: unknown) {
+      // Windows without Developer Mode (or non-admin) blocks symlink creation with EPERM.
+      // Fall back to a recursive copy so Paperclip works out of the box on Windows.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EACCES") {
+        await fs.cp(entry.source, path.join(target, entry.runtimeName), { recursive: true });
+      } else {
+        throw err;
+      }
+    }
   }
   return tmp;
 }
