@@ -24,7 +24,7 @@
  * @see PLUGIN_SPEC.md §10 — Package Contract
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
-import { existsSync, readdirSync, copyFileSync } from "node:fs";
+import { existsSync, readdirSync, copyFileSync, statSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
@@ -878,7 +878,10 @@ export function pluginLoader(
         if (existsSync(srcSdk) && existsSync(dstSdk)) {
           try {
             for (const file of readdirSync(srcSdk)) {
-              copyFileSync(path.join(srcSdk, file), path.join(dstSdk, file));
+              const srcPath = path.join(srcSdk, file);
+              if (statSync(srcPath).isFile()) {
+                copyFileSync(srcPath, path.join(dstSdk, file));
+              }
             }
             log.info("plugin-loader: overlaid monorepo SDK extensions onto installed plugin");
           } catch (err) {
