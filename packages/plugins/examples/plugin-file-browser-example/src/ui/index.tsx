@@ -767,9 +767,9 @@ export function CommentFileLinks({ context }: PluginCommentAnnotationProps) {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-comment context menu item that appears in the comment "more" (⋮) menu.
- * Extracts file paths from the comment body and, if any are found, renders
- * a button to open the first file in the project Files tab.
+ * Per-comment context menu item that appears in the comment header area.
+ * Renders a "Files" trigger button that opens a dropdown listing all
+ * file paths extracted from the comment body.
  *
  * Respects the `commentAnnotationMode` instance config — hidden when mode
  * is `"annotation"` or `"none"`.
@@ -784,6 +784,27 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
     companyId: context.companyId,
   });
 
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(e: globalThis.MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(e: globalThis.KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   if (mode === "annotation" || mode === "none") return null;
   if (!data?.links?.length) return null;
 
@@ -791,25 +812,54 @@ export function CommentOpenFiles({ context }: PluginCommentContextMenuItemProps)
   const projectId = context.projectId;
 
   return (
-    <div>
-      <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        Files
-      </div>
-      {data.links.map((link) => {
-        const href = buildFileBrowserHref(prefix, projectId, link);
-        const fileName = link.split("/").pop() ?? link;
-        return (
-          <a
-            key={link}
-            href={href}
-            onClick={(e) => navigateToFileBrowser(href, e)}
-            className="flex w-full items-center gap-2 rounded px-2 py-1 text-xs text-foreground hover:bg-accent transition-colors"
-            title={`Open ${link} in file browser`}
-          >
-            <span className="truncate font-mono">{fileName}</span>
-          </a>
-        );
-      })}
+    <div ref={containerRef} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-md border border-border text-muted-foreground cursor-pointer transition-colors ${open ? "bg-accent" : "bg-transparent hover:bg-accent/60"}`}
+        title={`${data.links.length} file${data.links.length === 1 ? "" : "s"} referenced`}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        Files ({data.links.length})
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`ml-0.5 transition-transform ${open ? "rotate-180" : "rotate-0"}`}>
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute top-[calc(100%+4px)] right-0 z-50 min-w-48 max-w-[22rem] bg-popover border border-border rounded-lg shadow-md p-1 overflow-hidden">
+          <div className="px-2 pt-1 pb-1.5 text-[0.625rem] font-semibold tracking-widest uppercase text-muted-foreground">
+            Referenced files
+          </div>
+          {data.links.map((link) => {
+            const href = buildFileBrowserHref(prefix, projectId, link);
+            const fileName = link.split("/").pop() ?? link;
+            return (
+              <a
+                key={link}
+                href={href}
+                onClick={(e) => { navigateToFileBrowser(href, e); setOpen(false); }}
+                title={link}
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-foreground no-underline transition-colors hover:bg-accent"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-muted-foreground" aria-hidden="true">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                </svg>
+                <span className="overflow-hidden text-ellipsis whitespace-nowrap font-mono">{fileName}</span>
+                {fileName !== link && (
+                  <span className="ml-auto text-[0.625rem] text-muted-foreground shrink-0 overflow-hidden text-ellipsis whitespace-nowrap max-w-[8rem]">
+                    {link}
+                  </span>
+                )}
+              </a>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
