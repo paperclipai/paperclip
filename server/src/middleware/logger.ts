@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -26,6 +27,30 @@ const sharedOpts = {
   singleLine: true,
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function sanitizeHttpLogObject(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return sanitizeRecord(value);
+}
+
+export function sanitizeSerializedRequestForLog(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const sanitized = { ...value };
+  if (isRecord(sanitized.headers)) {
+    const headers = sanitizeRecord(sanitized.headers);
+    for (const key of Object.keys(sanitized.headers)) {
+      if (/token/i.test(key)) {
+        headers[key] = REDACTED_EVENT_VALUE;
+      }
+    }
+    sanitized.headers = headers;
+  }
+  return sanitized;
+}
+
 export const logger = pino({
   level: "debug",
 }, pino.transport({
@@ -45,6 +70,11 @@ export const logger = pino({
 
 export const httpLogger = pinoHttp({
   logger,
+  serializers: {
+    req(req) {
+      return sanitizeSerializedRequestForLog(pino.stdSerializers.req(req));
+    },
+  },
   customLogLevel(_req, res, err) {
     if (err || res.statusCode >= 500) return "error";
     if (res.statusCode >= 400) return "warn";
@@ -64,21 +94,21 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
-          reqParams: ctx.reqParams,
-          reqQuery: ctx.reqQuery,
+          reqBody: sanitizeHttpLogObject(ctx.reqBody),
+          reqParams: sanitizeHttpLogObject(ctx.reqParams),
+          reqQuery: sanitizeHttpLogObject(ctx.reqQuery),
         };
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = sanitizeHttpLogObject(body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
-        props.reqParams = params;
+        props.reqParams = sanitizeHttpLogObject(params);
       }
       if (query && typeof query === "object" && Object.keys(query).length > 0) {
-        props.reqQuery = query;
+        props.reqQuery = sanitizeHttpLogObject(query);
       }
       if ((req as any).route?.path) {
         props.routePath = (req as any).route.path;
