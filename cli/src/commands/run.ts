@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { getEmbeddedPostgresPlatformPackage } from "../checks/embedded-postgres-binary-check.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { onboard } from "./onboard.js";
 import { doctor } from "./doctor.js";
@@ -168,6 +169,16 @@ async function importServerEntry(): Promise<StartedServer> {
         `Could not locate a Paperclip server entrypoint.\n` +
           `Tried: ${devEntry}, @paperclipai/server\n` +
           `${formatError(err)}`,
+      );
+    }
+    if (isModuleNotFoundError(err) && missingSpecifier?.startsWith("@embedded-postgres/")) {
+      const expectedPkg = getEmbeddedPostgresPlatformPackage() ?? missingSpecifier;
+      throw new Error(
+        `Missing embedded PostgreSQL platform binary: ${missingSpecifier}\n` +
+          `This is a known issue when installing paperclipai globally on some systems.\n` +
+          `Fix it by running:\n\n` +
+          `  npm install -g ${expectedPkg}\n\n` +
+          `Then retry: paperclipai run`,
       );
     }
     throw new Error(
