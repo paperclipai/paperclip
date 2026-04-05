@@ -34,7 +34,7 @@ my-company/
 Export a company into a portable folder:
 
 ```sh
-paperclipai company export <company-id> --out ./my-export
+npx paperclipai company export <company-id> --out ./my-export
 ```
 
 ### Options
@@ -53,13 +53,13 @@ paperclipai company export <company-id> --out ./my-export
 
 ```sh
 # Export company with agents and projects
-paperclipai company export abc123 --out ./backup --include company,agents,projects
+npx paperclipai company export abc123 --out ./backup --include company,agents,projects
 
 # Export everything including tasks and skills
-paperclipai company export abc123 --out ./full-export --include company,agents,projects,tasks,skills
+npx paperclipai company export abc123 --out ./full-export --include company,agents,projects,tasks,skills
 
 # Export only specific skills
-paperclipai company export abc123 --out ./skills-only --include skills --skills review,deploy
+npx paperclipai company export abc123 --out ./skills-only --include skills --skills review,deploy
 ```
 
 ### What Gets Exported
@@ -79,17 +79,17 @@ Import from a local directory, GitHub URL, or GitHub shorthand:
 
 ```sh
 # From a local folder
-paperclipai company import ./my-export
+npx paperclipai company import ./my-export
 
 # From a GitHub URL
-paperclipai company import https://github.com/org/repo
+npx paperclipai company import https://github.com/org/repo
 
 # From a GitHub subfolder
-paperclipai company import https://github.com/org/repo/tree/main/companies/acme
+npx paperclipai company import https://github.com/org/repo/tree/main/companies/acme
 
 # From GitHub shorthand
-paperclipai company import org/repo
-paperclipai company import org/repo/companies/acme
+npx paperclipai company import org/repo
+npx paperclipai company import org/repo/companies/acme
 ```
 
 ### Options
@@ -131,7 +131,7 @@ When running interactively (no `--yes` or `--json` flags), the import command sh
 Always preview first with `--dry-run`:
 
 ```sh
-paperclipai company import org/repo --target existing --company-id abc123 --dry-run
+npx paperclipai company import org/repo --target existing --company-id abc123 --dry-run
 ```
 
 The preview shows:
@@ -147,7 +147,7 @@ Imported agents always land with timer heartbeats disabled. Assignment/on-demand
 **Clone a company template from GitHub:**
 
 ```sh
-paperclipai company import org/company-templates/engineering-team \
+npx paperclipai company import org/company-templates/engineering-team \
   --target new \
   --new-company-name "My Engineering Team"
 ```
@@ -155,7 +155,7 @@ paperclipai company import org/company-templates/engineering-team \
 **Add agents from a package into your existing company:**
 
 ```sh
-paperclipai company import ./shared-agents \
+npx paperclipai company import ./shared-agents \
   --target existing \
   --company-id abc123 \
   --include agents \
@@ -165,13 +165,13 @@ paperclipai company import ./shared-agents \
 **Import a specific branch or tag:**
 
 ```sh
-paperclipai company import org/repo --ref v2.0.0 --dry-run
+npx paperclipai company import org/repo --ref v2.0.0 --dry-run
 ```
 
 **Non-interactive import (CI/scripts):**
 
 ```sh
-paperclipai company import ./package \
+npx paperclipai company import ./package \
   --target new \
   --yes \
   --json

@@ -16,7 +16,7 @@ pnpm paperclipai run
 Does:
 
 1. Auto-onboards if config is missing
-2. Runs `paperclipai doctor` with repair enabled
+2. Runs `npx paperclipai doctor` with repair enabled
 3. Starts the server when checks pass
 
 Choose a specific instance:
@@ -33,7 +33,7 @@ Interactive first-time setup:
 pnpm paperclipai onboard
 ```
 
-If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to change settings on an existing install.
+If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `npx paperclipai configure` to change settings on an existing install.
 
 First prompt:
 
