@@ -1,7 +1,9 @@
 // UI components for DashScope adapter
 import { models } from "../index.js";
+import { buildDashScopeLocalConfig } from "./build-config.js";
 
 export { models };
+export { buildDashScopeLocalConfig };
 
 export const configFields = [
   { 
@@ -18,6 +20,11 @@ export const configFields = [
     required: false,
     placeholder: "Leave empty for standard endpoint",
     help: "Leave empty to use standard DashScope endpoint"
+  },
+  {
+    key: "env",
+    label: "Environment Variables",
+    type: "env",
   },
   { 
     key: "temperature", 
