@@ -61,6 +61,13 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import { categorizeAdapterError } from "./adapter-failure-taxonomy.js";
+import {
+  heartbeatRunsTotal,
+  heartbeatDurationSeconds,
+  heartbeatRunsActive,
+  tokensUsedTotal,
+  isMetricsEnabled,
+} from "../observability/metrics.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -2062,6 +2069,11 @@ export function heartbeatService(db: Db) {
     }
 
     activeRunExecutions.add(run.id);
+    const metricsOn = isMetricsEnabled();
+    const runStartMs = run.startedAt ? (new Date(run.startedAt).getTime() || Date.now()) : Date.now();
+    if (metricsOn) {
+      heartbeatRunsActive.inc();
+    }
 
     try {
     const agent = await getAgent(run.agentId);
@@ -2939,6 +2951,21 @@ export function heartbeatService(db: Db) {
         logCompressed: logSummary?.compressed ?? false,
       });
 
+      if (metricsOn) {
+        const durationSec = (Date.now() - runStartMs) / 1000;
+        heartbeatRunsTotal.inc({ agent_id: agent.id, status });
+        heartbeatDurationSeconds.observe({ agent_id: agent.id }, durationSec);
+        if (normalizedUsage) {
+          const model = readNonEmptyString(adapterResult.model) ?? "unknown";
+          if (normalizedUsage.inputTokens > 0) {
+            tokensUsedTotal.inc({ agent_id: agent.id, model, token_type: "input" }, normalizedUsage.inputTokens);
+          }
+          if (normalizedUsage.outputTokens > 0) {
+            tokensUsedTotal.inc({ agent_id: agent.id, model, token_type: "output" }, normalizedUsage.outputTokens);
+          }
+        }
+      }
+
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
         error: adapterResult.errorMessage ?? null,
@@ -3010,6 +3037,11 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      if (metricsOn) {
+        const durationSec = (Date.now() - runStartMs) / 1000;
+        heartbeatRunsTotal.inc({ agent_id: agent.id, status: "failed" });
+        heartbeatDurationSeconds.observe({ agent_id: agent.id }, durationSec);
+      }
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
@@ -3059,6 +3091,11 @@ export function heartbeatService(db: Db) {
             errorCode: "adapter_failed",
             finishedAt: new Date(),
           }).catch(() => undefined);
+          if (metricsOn) {
+            const durationSec = (Date.now() - runStartMs) / 1000;
+            heartbeatRunsTotal.inc({ agent_id: run.agentId, status: "failed" });
+            heartbeatDurationSeconds.observe({ agent_id: run.agentId }, durationSec);
+          }
           await setWakeupStatus(run.wakeupRequestId, "failed", {
             finishedAt: new Date(),
             error: message,
@@ -3079,6 +3116,9 @@ export function heartbeatService(db: Db) {
           // DB calls threw (e.g. a transient DB error in finalizeAgentStatus).
           await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
         } finally {
+          if (metricsOn) {
+            heartbeatRunsActive.dec();
+          }
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
