@@ -33,6 +33,11 @@ import {
 } from "../config/home.js";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
+import {
+  getTelemetryClient,
+  trackInstallStarted,
+  trackInstallCompleted,
+} from "../telemetry.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -244,11 +249,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     ),
   );
 
+  let existingConfig: PaperclipConfig | null = null;
   if (configExists(opts.config)) {
-    p.log.message(pc.dim(`${configPath} exists, updating config`));
+    p.log.message(pc.dim(`${configPath} exists`));
 
     try {
-      readConfig(opts.config);
+      existingConfig = readConfig(opts.config);
     } catch (err) {
       p.log.message(
         pc.yellow(
@@ -256,6 +262,76 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
         ),
       );
     }
+  }
+
+  if (existingConfig) {
+    p.log.message(
+      pc.dim("Existing Paperclip install detected; keeping the current configuration unchanged."),
+    );
+    p.log.message(pc.dim(`Use ${pc.cyan("paperclipai configure")} if you want to change settings.`));
+
+    const jwtSecret = ensureAgentJwtSecret(configPath);
+    const envFilePath = resolveAgentJwtEnvFile(configPath);
+    if (jwtSecret.created) {
+      p.log.success(`Created ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
+    } else if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()) {
+      p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} from environment`);
+    } else {
+      p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
+    }
+
+    const keyResult = ensureLocalSecretsKeyFile(existingConfig, configPath);
+    if (keyResult.status === "created") {
+      p.log.success(`Created local secrets key file at ${pc.dim(keyResult.path)}`);
+    } else if (keyResult.status === "existing") {
+      p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
+    }
+
+    p.note(
+      [
+        "Existing config preserved",
+        `Database: ${existingConfig.database.mode}`,
+        existingConfig.llm ? `LLM: ${existingConfig.llm.provider}` : "LLM: not configured",
+        `Logging: ${existingConfig.logging.mode} -> ${existingConfig.logging.logDir}`,
+        `Server: ${existingConfig.server.deploymentMode}/${existingConfig.server.exposure} @ ${existingConfig.server.host}:${existingConfig.server.port}`,
+        `Allowed hosts: ${existingConfig.server.allowedHostnames.length > 0 ? existingConfig.server.allowedHostnames.join(", ") : "(loopback only)"}`,
+        `Auth URL mode: ${existingConfig.auth.baseUrlMode}${existingConfig.auth.publicBaseUrl ? ` (${existingConfig.auth.publicBaseUrl})` : ""}`,
+        `Storage: ${existingConfig.storage.provider}`,
+        `Secrets: ${existingConfig.secrets.provider} (strict mode ${existingConfig.secrets.strictMode ? "on" : "off"})`,
+        "Agent auth: PAPERCLIP_AGENT_JWT_SECRET configured",
+      ].join("\n"),
+      "Configuration ready",
+    );
+
+    p.note(
+      [
+        `Run: ${pc.cyan("paperclipai run")}`,
+        `Reconfigure later: ${pc.cyan("paperclipai configure")}`,
+        `Diagnose setup: ${pc.cyan("paperclipai doctor")}`,
+      ].join("\n"),
+      "Next commands",
+    );
+
+    let shouldRunNow = opts.run === true || opts.yes === true;
+    if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+      const answer = await p.confirm({
+        message: "Start Paperclip now?",
+        initialValue: true,
+      });
+      if (!p.isCancel(answer)) {
+        shouldRunNow = answer;
+      }
+    }
+
+    if (shouldRunNow && !opts.invokedByRun) {
+      process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
+      const { runCommand } = await import("./run.js");
+      await runCommand({ config: configPath, repair: true, yes: true });
+      return;
+    }
+
+    p.outro("Existing Paperclip setup is ready.");
+    return;
   }
 
   let setupMode: SetupMode = "quickstart";
@@ -284,6 +360,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     }
     setupMode = setupModeChoice as SetupMode;
   }
+
+  const tc = getTelemetryClient();
+  if (tc) trackInstallStarted(tc);
 
   let llm: PaperclipConfig["llm"] | undefined;
   const { defaults: derivedDefaults, usedEnvKeys, ignoredEnvKeys } = quickstartDefaultsFromEnv();
@@ -417,6 +496,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     logging,
     server,
     auth,
+    telemetry: {
+      enabled: true,
+    },
     storage,
     secrets,
   };
@@ -429,6 +511,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   writeConfig(config, opts.config);
+
+  if (tc) trackInstallCompleted(tc, {
+    adapterType: server.deploymentMode,
+  });
 
   p.note(
     [

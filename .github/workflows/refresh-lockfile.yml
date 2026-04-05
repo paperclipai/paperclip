@@ -51,11 +51,13 @@ jobs:
           fi
 
       - name: Create or update pull request
+        id: upsert-pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
+            echo "pr_created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -79,3 +81,17 @@ jobs:
           else
             echo "PR #$existing already exists, branch updated via force push."
           fi
+          echo "pr_created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge for lockfile PR
+        if: steps.upsert-pr.outputs.pr_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_url="$(gh pr list --head chore/refresh-lockfile --json url --jq '.[0].url')"
+          if [ -z "$pr_url" ]; then
+            echo "Error: lockfile PR was not found." >&2
+            exit 1
+          fi
+
+          gh pr merge --auto --squash --delete-branch "$pr_url"

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import os from "node:os";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
   asString,
@@ -7,6 +8,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -19,7 +21,7 @@ function resolveOpenCodeCommand(input: unknown): string {
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
-const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID"]);
+const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
@@ -106,7 +108,20 @@ export async function discoverOpenCodeModels(input: {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  // Ensure HOME points to the actual running user's home directory.
+  // When the server is started via `runuser -u <user>`, HOME may still
+  // reflect the parent process (e.g. /root), causing OpenCode to miss
+  // provider auth credentials stored under the target user's home.
+  let resolvedHome: string | undefined;
+  try {
+    resolvedHome = os.userInfo().homedir || undefined;
+  } catch {
+    // os.userInfo() throws a SystemError when the current UID has no
+    // /etc/passwd entry (e.g. `docker run --user 1234` with a minimal
+    // image). Fall back to process.env.HOME.
+  }
+  // Prevent OpenCode from writing an opencode.json into the working directory.
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -115,14 +130,14 @@ export async function discoverOpenCodeModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: 20,
+      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
       graceSec: 3,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error("`opencode models` timed out.");
+    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);

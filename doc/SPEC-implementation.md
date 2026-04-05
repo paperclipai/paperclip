@@ -330,6 +330,34 @@ Operational policy:
   - `asset_id` uuid fk not null
   - `issue_comment_id` uuid fk null
 
+## 7.15 `documents` + `document_revisions` + `issue_documents`
+
+- `documents` stores editable text-first documents:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `title` text null
+  - `format` text not null (`markdown`)
+  - `latest_body` text not null
+  - `latest_revision_id` uuid null
+  - `latest_revision_number` int not null
+  - `created_by_agent_id` uuid fk null
+  - `created_by_user_id` uuid/text fk null
+  - `updated_by_agent_id` uuid fk null
+  - `updated_by_user_id` uuid/text fk null
+- `document_revisions` stores append-only history:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `revision_number` int not null
+  - `body` text not null
+  - `change_summary` text null
+- `issue_documents` links documents to issues with a stable workflow key:
+  - `id` uuid pk
+  - `company_id` uuid fk not null
+  - `issue_id` uuid fk not null
+  - `document_id` uuid fk not null
+  - `key` text not null (`plan`, `design`, `notes`, etc.)
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -413,6 +441,7 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies`
 - `GET /companies/:companyId`
 - `PATCH /companies/:companyId`
+- `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
 
 ## 10.2 Goals
@@ -441,6 +470,11 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `GET /issues/:issueId/documents`
+- `GET /issues/:issueId/documents/:key`
+- `PUT /issues/:issueId/documents/:key`
+- `GET /issues/:issueId/documents/:key/revisions`
+- `DELETE /issues/:issueId/documents/:key`
 - `POST /issues/:issueId/checkout`
 - `POST /issues/:issueId/release`
 - `POST /issues/:issueId/comments`
@@ -810,20 +844,31 @@ V1 is complete only when all criteria are true:
 
 V1 supports company import/export using a portable package contract:
 
-- exactly one JSON entrypoint: `paperclip.manifest.json`
-- all other package files are markdown with frontmatter
-- agent convention:
-  - `agents/<slug>/AGENTS.md` (required for V1 export/import)
-  - `agents/<slug>/HEARTBEAT.md` (optional, import accepted)
-  - `agents/<slug>/*.md` (optional, import accepted)
+- markdown-first package rooted at `COMPANY.md`
+- implicit folder discovery by convention
+- `.paperclip.yaml` sidecar for Paperclip-specific fidelity
+- canonical base package is vendor-neutral and aligned with `docs/companies/companies-spec.md`
+- common conventions:
+  - `agents/<slug>/AGENTS.md`
+  - `teams/<slug>/TEAM.md`
+  - `projects/<slug>/PROJECT.md`
+  - `projects/<slug>/tasks/<slug>/TASK.md`
+  - `tasks/<slug>/TASK.md`
+  - `skills/<slug>/SKILL.md`
 
 Export/import behavior in V1:
 
-- export includes company metadata and/or agents based on selection
-- export strips environment-specific paths (`cwd`, local instruction file paths)
-- export never includes secret values; secret requirements are reported
+- export emits a clean vendor-neutral markdown package plus `.paperclip.yaml`
+- projects and starter tasks are opt-in export content rather than default package content
+- recurring `TASK.md` entries use `recurring: true` in the base package and Paperclip routine fidelity in `.paperclip.yaml`
+- Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
+- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
+- export never includes secret values; env inputs are reported as portable declarations instead
 - import supports target modes:
   - create a new company
   - import into an existing company
+- import recreates exported project workspaces and remaps portable workspace keys back to target-local workspace ids
+- import forces imported agent timer heartbeats off so packages never start scheduled runs implicitly
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
+- GitHub imports warn on unpinned refs instead of blocking

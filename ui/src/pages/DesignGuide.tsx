@@ -1313,7 +1313,7 @@ export function DesignGuide() {
             ["C", "New Issue (outside inputs)"],
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
-            ["Cmd+1..9 / Ctrl+1..9", "Switch Company (by rail order)"],
+
             ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">

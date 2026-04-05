@@ -1,9 +1,18 @@
 import { z } from "zod";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
 
+export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
+  "inherit",
+  "shared_workspace",
+  "isolated_workspace",
+  "operator_branch",
+  "reuse_existing",
+  "agent_default",
+] as const;
+
 const executionWorkspaceStrategySchema = z
   .object({
-    type: z.enum(["project_primary", "git_worktree"]).optional(),
+    type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
@@ -14,7 +23,7 @@ const executionWorkspaceStrategySchema = z
 
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
-    mode: z.enum(["inherit", "project_primary", "isolated", "agent_default"]).optional(),
+    mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
   })
@@ -29,8 +38,10 @@ export const issueAssigneeAdapterOverridesSchema = z
 
 export const createIssueSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
+  projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
@@ -40,6 +51,8 @@ export const createIssueSchema = z.object({
   requestDepth: z.number().int().nonnegative().optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
@@ -55,6 +68,8 @@ export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
+  reopen: z.boolean().optional(),
+  interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
 });
 
@@ -87,3 +102,28 @@ export const createIssueAttachmentMetadataSchema = z.object({
 });
 
 export type CreateIssueAttachmentMetadata = z.infer<typeof createIssueAttachmentMetadataSchema>;
+
+export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
+
+export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
+
+export const issueDocumentKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9][a-z0-9_-]*$/, "Document key must be lowercase letters, numbers, _ or -");
+
+export const upsertIssueDocumentSchema = z.object({
+  title: z.string().trim().max(200).nullable().optional(),
+  format: issueDocumentFormatSchema,
+  body: z.string().max(524288),
+  changeSummary: z.string().trim().max(500).nullable().optional(),
+  baseRevisionId: z.string().uuid().nullable().optional(),
+});
+
+export const restoreIssueDocumentRevisionSchema = z.object({});
+
+export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
+export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
+export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;

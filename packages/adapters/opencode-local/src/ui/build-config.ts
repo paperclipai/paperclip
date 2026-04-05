@@ -55,8 +55,10 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
+  if (v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
+  ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
   // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)
   // and rely on graceSec for termination handling when a timeout is configured elsewhere.
   ac.timeoutSec = 0;

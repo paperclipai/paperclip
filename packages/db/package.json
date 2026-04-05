@@ -1,6 +1,16 @@
 {
   "name": "@paperclipai/db",
-  "version": "0.3.0",
+  "version": "0.3.1",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/db"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -25,16 +35,18 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/migrations dist/migrations",
+    "check:migrations": "tsx src/check-migration-numbering.ts",
+    "build": "pnpm run check:migrations && tsc && cp -r src/migrations dist/migrations",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "generate": "tsc -p tsconfig.json && drizzle-kit generate",
-    "migrate": "tsx src/migrate.ts",
+    "typecheck": "pnpm run check:migrations && tsc --noEmit",
+    "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
+    "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "^0.38.4",
+    "embedded-postgres": "^18.1.0-beta.16",
     "postgres": "^3.4.5"
   },
   "devDependencies": {

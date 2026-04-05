@@ -4,15 +4,20 @@ import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServi
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
+  hasNonAsciiContent,
   isUuidLike,
   normalizeProjectUrlKey,
+  type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
-import { listWorkspaceRuntimeServicesForProjectWorkspaces } from "./workspace-runtime.js";
+import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -20,10 +25,19 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
+  sourceType?: string | null;
   cwd?: string | null;
   repoUrl?: string | null;
   repoRef?: string | null;
+  defaultRef?: string | null;
+  visibility?: string | null;
+  setupCommand?: string | null;
+  cleanupCommand?: string | null;
+  remoteProvider?: string | null;
+  remoteWorkspaceRef?: string | null;
+  sharedWorkspaceKey?: string | null;
   metadata?: Record<string, unknown> | null;
+  runtimeConfig?: Partial<ProjectWorkspaceRuntimeConfig> | null;
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
@@ -33,6 +47,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
 }
@@ -91,6 +106,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     companyId: row.companyId,
     projectId: row.projectId ?? null,
     projectWorkspaceId: row.projectWorkspaceId ?? null,
+    executionWorkspaceId: row.executionWorkspaceId ?? null,
     issueId: row.issueId ?? null,
     scopeType: row.scopeType as WorkspaceRuntimeService["scopeType"],
     scopeId: row.scopeId ?? null,
@@ -125,14 +141,65 @@ function toWorkspace(
     companyId: row.companyId,
     projectId: row.projectId,
     name: row.name,
-    cwd: row.cwd,
+    sourceType: row.sourceType as ProjectWorkspace["sourceType"],
+    cwd: normalizeWorkspaceCwd(row.cwd),
     repoUrl: row.repoUrl ?? null,
     repoRef: row.repoRef ?? null,
+    defaultRef: row.defaultRef ?? row.repoRef ?? null,
+    visibility: row.visibility as ProjectWorkspace["visibility"],
+    setupCommand: row.setupCommand ?? null,
+    cleanupCommand: row.cleanupCommand ?? null,
+    remoteProvider: row.remoteProvider ?? null,
+    remoteWorkspaceRef: row.remoteWorkspaceRef ?? null,
+    sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    runtimeConfig: readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null),
     isPrimary: row.isPrimary,
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
+  const raw = readNonEmptyString(repoUrl);
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
+    const repoName = cleanedPath.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "") ?? "";
+    return repoName || null;
+  } catch {
+    return null;
+  }
+}
+
+function deriveProjectCodebase(input: {
+  companyId: string;
+  projectId: string;
+  primaryWorkspace: ProjectWorkspace | null;
+  fallbackWorkspaces: ProjectWorkspace[];
+}): ProjectCodebase {
+  const primaryWorkspace = input.primaryWorkspace ?? input.fallbackWorkspaces[0] ?? null;
+  const repoUrl = primaryWorkspace?.repoUrl ?? null;
+  const repoName = deriveRepoNameFromRepoUrl(repoUrl);
+  const localFolder = primaryWorkspace?.cwd ?? null;
+  const managedFolder = resolveManagedProjectWorkspaceDir({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    repoName,
+  });
+
+  return {
+    workspaceId: primaryWorkspace?.id ?? null,
+    repoUrl,
+    repoRef: primaryWorkspace?.repoRef ?? null,
+    defaultRef: primaryWorkspace?.defaultRef ?? null,
+    repoName,
+    localFolder,
+    managedFolder,
+    effectiveLocalFolder: localFolder ?? managedFolder,
+    origin: localFolder ? "local_folder" : "managed_checkout",
   };
 }
 
@@ -156,7 +223,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     .from(projectWorkspaces)
     .where(inArray(projectWorkspaces.projectId, projectIds))
     .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
-  const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+  const runtimeServicesByWorkspaceId = await listCurrentRuntimeServicesForProjectWorkspaces(
     db,
     rows[0]!.companyId,
     workspaceRows.map((workspace) => workspace.id),
@@ -186,10 +253,17 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
         sharedRuntimeServicesByWorkspaceId.get(workspace.id) ?? [],
       ),
     );
+    const primaryWorkspace = pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId);
     return {
       ...row,
+      codebase: deriveProjectCodebase({
+        companyId: row.companyId,
+        projectId: row.id,
+        primaryWorkspace,
+        fallbackWorkspaces: workspaces,
+      }),
       workspaces,
-      primaryWorkspace: pickPrimaryWorkspace(projectWorkspaceRows, sharedRuntimeServicesByWorkspaceId),
+      primaryWorkspace,
     };
   });
 }
@@ -270,6 +344,8 @@ export function resolveProjectNameForUniqueShortname(
 ): string {
   const requestedShortname = normalizeProjectUrlKey(requestedName);
   if (!requestedShortname) return requestedName;
+  // Non-ASCII names get a UUID suffix in deriveProjectUrlKey, making slugs inherently unique.
+  if (hasNonAsciiContent(requestedName)) return requestedName;
 
   const usedShortnames = new Set(
     existingProjects
@@ -465,7 +541,7 @@ export function projectService(db: Db) {
         .where(eq(projectWorkspaces.projectId, projectId))
         .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
       if (rows.length === 0) return [];
-      const runtimeServicesByWorkspaceId = await listWorkspaceRuntimeServicesForProjectWorkspaces(
+      const runtimeServicesByWorkspaceId = await listCurrentRuntimeServicesForProjectWorkspaces(
         db,
         rows[0]!.companyId,
         rows.map((workspace) => workspace.id),
@@ -491,7 +567,13 @@ export function projectService(db: Db) {
 
       const cwd = normalizeWorkspaceCwd(data.cwd);
       const repoUrl = readNonEmptyString(data.repoUrl);
-      if (!cwd && !repoUrl) return null;
+      const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
+      const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
+      if (sourceType === "remote_managed") {
+        if (!remoteWorkspaceRef && !repoUrl) return null;
+      } else if (!cwd && !repoUrl) {
+        return null;
+      }
       const name = deriveWorkspaceName({
         name: data.name,
         cwd,
@@ -525,10 +607,24 @@ export function projectService(db: Db) {
             companyId: project.companyId,
             projectId,
             name,
+            sourceType,
             cwd: cwd ?? null,
             repoUrl: repoUrl ?? null,
             repoRef: readNonEmptyString(data.repoRef),
-            metadata: (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+            defaultRef: readNonEmptyString(data.defaultRef) ?? readNonEmptyString(data.repoRef),
+            visibility: readNonEmptyString(data.visibility) ?? "default",
+            setupCommand: readNonEmptyString(data.setupCommand),
+            cleanupCommand: readNonEmptyString(data.cleanupCommand),
+            remoteProvider: readNonEmptyString(data.remoteProvider),
+            remoteWorkspaceRef,
+            sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
+            metadata:
+              data.runtimeConfig !== undefined
+                ? mergeProjectWorkspaceRuntimeConfig(
+                    (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+                    data.runtimeConfig ?? null,
+                  )
+                : (data.metadata as Record<string, unknown> | null | undefined) ?? null,
             isPrimary: shouldBePrimary,
           })
           .returning()
@@ -564,7 +660,19 @@ export function projectService(db: Db) {
         data.repoUrl !== undefined
           ? readNonEmptyString(data.repoUrl)
           : readNonEmptyString(existing.repoUrl);
-      if (!nextCwd && !nextRepoUrl) return null;
+      const nextSourceType =
+        data.sourceType !== undefined
+          ? readNonEmptyString(data.sourceType)
+          : readNonEmptyString(existing.sourceType);
+      const nextRemoteWorkspaceRef =
+        data.remoteWorkspaceRef !== undefined
+          ? readNonEmptyString(data.remoteWorkspaceRef)
+          : readNonEmptyString(existing.remoteWorkspaceRef);
+      if (nextSourceType === "remote_managed") {
+        if (!nextRemoteWorkspaceRef && !nextRepoUrl) return null;
+      } else if (!nextCwd && !nextRepoUrl) {
+        return null;
+      }
 
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {
         updatedAt: new Date(),
@@ -576,7 +684,27 @@ export function projectService(db: Db) {
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
       if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
-      if (data.metadata !== undefined) patch.metadata = data.metadata;
+      if (data.sourceType !== undefined && nextSourceType) patch.sourceType = nextSourceType;
+      if (data.defaultRef !== undefined) patch.defaultRef = readNonEmptyString(data.defaultRef);
+      if (data.visibility !== undefined && readNonEmptyString(data.visibility)) {
+        patch.visibility = readNonEmptyString(data.visibility)!;
+      }
+      if (data.setupCommand !== undefined) patch.setupCommand = readNonEmptyString(data.setupCommand);
+      if (data.cleanupCommand !== undefined) patch.cleanupCommand = readNonEmptyString(data.cleanupCommand);
+      if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
+      if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
+      if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
+      if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+        patch.metadata =
+          data.runtimeConfig !== undefined
+            ? mergeProjectWorkspaceRuntimeConfig(
+                data.metadata !== undefined
+                  ? (data.metadata as Record<string, unknown> | null | undefined)
+                  : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
+                data.runtimeConfig ?? null,
+              )
+            : data.metadata;
+      }
 
       const updated = await db.transaction(async (tx) => {
         if (data.isPrimary === true) {

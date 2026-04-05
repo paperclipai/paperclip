@@ -30,7 +30,6 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
-- approvalMode (string, optional): "default", "auto_edit", or "yolo" (default: "default")
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args

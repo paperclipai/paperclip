@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
+import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike } from "@paperclipai/shared";
+import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary, type ExecutionWorkspace } from "@paperclipai/shared";
+import { budgetsApi } from "../api/budgets";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -9,20 +12,37 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
+import { CopyText } from "../components/CopyText";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { projectRouteRef, cn } from "../lib/utils";
+import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { timeAgo } from "../lib/timeAgo";
+import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { Copy, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
+import { IssuesQuicklook } from "../components/IssuesQuicklook";
 
 /* ── Top-level tab types ── */
 
-type ProjectTab = "overview" | "list" | "configuration";
+type ProjectBaseTab = "overview" | "list" | "workspaces" | "configuration" | "budget";
+type ProjectPluginTab = `plugin:${string}`;
+type ProjectTab = ProjectBaseTab | ProjectPluginTab;
+
+function isProjectPluginTab(value: string | null): value is ProjectPluginTab {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
 
 function resolveProjectTab(pathname: string, projectId: string): ProjectTab | null {
   const segments = pathname.split("/").filter(Boolean);
@@ -31,7 +51,9 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const tab = segments[projectsIdx + 2];
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
+  if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -188,6 +210,233 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   );
 }
 
+function ProjectWorkspacesContent({
+  companyId,
+  projectId,
+  projectRef,
+  summaries,
+}: {
+  companyId: string;
+  projectId: string;
+  projectRef: string;
+  summaries: ReturnType<typeof buildProjectWorkspaceSummaries>;
+}) {
+  const queryClient = useQueryClient();
+  const [runtimeActionKey, setRuntimeActionKey] = useState<string | null>(null);
+  const [closingWorkspace, setClosingWorkspace] = useState<{
+    id: string;
+    name: string;
+    status: ExecutionWorkspace["status"];
+  } | null>(null);
+  const controlWorkspaceRuntime = useMutation({
+    mutationFn: async (input: {
+      key: string;
+      kind: "project_workspace" | "execution_workspace";
+      workspaceId: string;
+      action: "start" | "stop" | "restart";
+    }) => {
+      setRuntimeActionKey(`${input.key}:${input.action}`);
+      if (input.kind === "project_workspace") {
+        return await projectsApi.controlWorkspaceRuntimeServices(projectId, input.workspaceId, input.action, companyId);
+      }
+      return await executionWorkspacesApi.controlRuntimeServices(input.workspaceId, input.action);
+    },
+    onSettled: () => {
+      setRuntimeActionKey(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+    },
+  });
+
+  if (summaries.length === 0) {
+    return <p className="text-sm text-muted-foreground">No non-default workspace activity yet.</p>;
+  }
+
+  const activeSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus !== "cleanup_failed");
+  const cleanupFailedSummaries = summaries.filter((summary) => summary.executionWorkspaceStatus === "cleanup_failed");
+
+  const renderSummaryRow = (summary: ReturnType<typeof buildProjectWorkspaceSummaries>[number]) => {
+    const visibleIssues = summary.issues.slice(0, 5);
+    const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
+    const workspaceHref =
+      summary.kind === "project_workspace"
+        ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
+        : `/execution-workspaces/${summary.workspaceId}`;
+    const hasRunningServices = summary.runningServiceCount > 0;
+
+    const truncatePath = (path: string) => {
+      const parts = path.split("/").filter(Boolean);
+      if (parts.length <= 3) return path;
+      return `…/${parts.slice(-2).join("/")}`;
+    };
+
+    return (
+      <div
+        key={summary.key}
+        className="border-b border-border px-4 py-3 last:border-b-0"
+      >
+        {/* Header row: name + actions */}
+        <div className="flex items-center gap-3">
+          <Link
+            to={workspaceHref}
+            className="min-w-0 shrink truncate text-sm font-medium hover:underline"
+          >
+            {summary.workspaceName}
+          </Link>
+
+          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            {summary.serviceCount > 0 ? (
+              <span className={`inline-flex items-center gap-1 ${hasRunningServices ? "text-emerald-500" : ""}`}>
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                {summary.runningServiceCount}/{summary.serviceCount}
+              </span>
+            ) : null}
+            {summary.executionWorkspaceStatus && summary.executionWorkspaceStatus !== "active" ? (
+              <span className="text-[11px] text-muted-foreground">{summary.executionWorkspaceStatus}</span>
+            ) : null}
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <span className="text-xs text-muted-foreground">{timeAgo(summary.lastUpdatedAt)}</span>
+            {summary.hasRuntimeConfig ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
+                disabled={controlWorkspaceRuntime.isPending}
+                onClick={() =>
+                  controlWorkspaceRuntime.mutate({
+                    key: summary.key,
+                    kind: summary.kind,
+                    workspaceId: summary.workspaceId,
+                    action: hasRunningServices ? "stop" : "start",
+                  })
+                }
+              >
+                {runtimeActionKey === `${summary.key}:start` || runtimeActionKey === `${summary.key}:stop` ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : hasRunningServices ? (
+                  <Square className="h-3 w-3" />
+                ) : (
+                  <Play className="h-3 w-3" />
+                )}
+                {hasRunningServices ? "Stop" : "Start"}
+              </Button>
+            ) : null}
+            {summary.kind === "execution_workspace" && summary.executionWorkspaceId && summary.executionWorkspaceStatus ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                onClick={() => setClosingWorkspace({
+                  id: summary.executionWorkspaceId!,
+                  name: summary.workspaceName,
+                  status: summary.executionWorkspaceStatus!,
+                })}
+              >
+                {summary.executionWorkspaceStatus === "cleanup_failed" ? "Retry close" : "Close"}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Metadata lines: branch, folder */}
+        <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+          {summary.branchName ? (
+            <div className="flex items-center gap-1.5">
+              <GitBranch className="h-3 w-3 shrink-0" />
+              <span className="font-mono">{summary.branchName}</span>
+            </div>
+          ) : null}
+          {summary.cwd ? (
+            <div className="flex items-center gap-1.5">
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="truncate font-mono" title={summary.cwd}>
+                {truncatePath(summary.cwd)}
+              </span>
+              <CopyText text={summary.cwd} className="shrink-0" copiedLabel="Path copied">
+                <Copy className="h-3 w-3" />
+              </CopyText>
+            </div>
+          ) : null}
+          {summary.primaryServiceUrl ? (
+            <div className="flex items-center gap-1.5">
+              <a
+                href={summary.primaryServiceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono hover:text-foreground hover:underline"
+              >
+                {summary.primaryServiceUrl}
+              </a>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Issues */}
+        {summary.issues.length > 0 ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <span className="font-medium text-muted-foreground/70">Issues</span>
+            {visibleIssues.map((issue) => (
+              <IssuesQuicklook key={issue.id} issue={issue}>
+                <Link
+                  to={`/issues/${issue.identifier ?? issue.id}`}
+                  className="font-mono hover:text-foreground hover:underline"
+                >
+                  {issue.identifier ?? issue.id.slice(0, 8)}
+                </Link>
+              </IssuesQuicklook>
+            ))}
+            {hiddenIssueCount > 0 ? (
+              <Link to={workspaceHref} className="hover:text-foreground hover:underline">
+                +{hiddenIssueCount} more
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          {activeSummaries.map(renderSummaryRow)}
+        </div>
+        {cleanupFailedSummaries.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              Cleanup attention needed
+            </div>
+            <div className="overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/5">
+              {cleanupFailedSummaries.map(renderSummaryRow)}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      {closingWorkspace ? (
+        <ExecutionWorkspaceCloseDialog
+          workspaceId={closingWorkspace.id}
+          workspaceName={closingWorkspace.name}
+          currentStatus={closingWorkspace.status}
+          open
+          onOpenChange={(open) => {
+            if (!open) setClosingWorkspace(null);
+          }}
+          onClosed={() => {
+            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+            setClosingWorkspace(null);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
 /* ── Main project page ── */
 
 export function ProjectDetail() {
@@ -199,6 +448,7 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -213,8 +463,12 @@ export function ProjectDetail() {
   }, [companies, companyPrefix]);
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
   const canFetchProject = routeProjectRef.length > 0 && (isUuidLike(routeProjectRef) || Boolean(lookupCompanyId));
-
-  const activeTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
+  const activeRouteTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
+  const pluginTabFromSearch = useMemo(() => {
+    const tab = new URLSearchParams(location.search).get("tab");
+    return isProjectPluginTab(tab) ? tab : null;
+  }, [location.search]);
+  const activeTab = activeRouteTab ?? pluginTabFromSearch;
 
   const { data: project, isLoading, error } = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
@@ -224,6 +478,62 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const experimentalSettingsQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const {
+    slots: pluginDetailSlots,
+    isLoading: pluginDetailSlotsLoading,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "project",
+    companyId: resolvedCompanyId,
+    enabled: !!resolvedCompanyId,
+  });
+  const pluginTabItems = useMemo(
+    () => pluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as ProjectPluginTab,
+      label: slot.displayName,
+      slot,
+    })),
+    [pluginDetailSlots],
+  );
+  const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
+  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const workspaceTabProjectId = project?.id ?? null;
+  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
+      : ["issues", "__workspace-tab__", "disabled"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const {
+    data: workspaceTabExecutionWorkspaces = [],
+    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
+    error: workspaceTabExecutionWorkspacesError,
+  } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
+      : ["execution-workspaces", "__workspace-tab__", "disabled"],
+    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const workspaceSummaries = useMemo(() => {
+    if (!project || !isolatedWorkspacesEnabled) return [];
+    return buildProjectWorkspaceSummaries({
+      project,
+      issues: workspaceTabIssues,
+      executionWorkspaces: workspaceTabExecutionWorkspaces,
+    });
+  }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
+  const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const workspaceTabDecisionLoaded =
+    experimentalSettingsQuery.isFetched &&
+    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
+  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -244,11 +554,44 @@ export function ProjectDetail() {
     onSuccess: invalidateProject,
   });
 
+  const archiveProject = useMutation({
+    mutationFn: (archived: boolean) =>
+      projectsApi.update(
+        projectLookupRef,
+        { archivedAt: archived ? new Date().toISOString() : null },
+        resolvedCompanyId ?? lookupCompanyId,
+      ),
+    onSuccess: (updatedProject, archived) => {
+      invalidateProject();
+      const name = updatedProject?.name ?? project?.name ?? "Project";
+      if (archived) {
+        pushToast({ title: `"${name}" has been archived`, tone: "success" });
+        navigate("/dashboard");
+      } else {
+        pushToast({ title: `"${name}" has been unarchived`, tone: "success" });
+      }
+    },
+    onError: (_, archived) => {
+      pushToast({
+        title: archived ? "Failed to archive project" : "Failed to unarchive project",
+        tone: "error",
+      });
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
+  });
+
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
+    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+    refetchInterval: 30_000,
+    staleTime: 5_000,
   });
 
   useEffect(() => {
@@ -261,12 +604,24 @@ export function ProjectDetail() {
   useEffect(() => {
     if (!project) return;
     if (routeProjectRef === canonicalProjectRef) return;
+    if (isProjectPluginTab(activeTab)) {
+      navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(activeTab)}`, { replace: true });
+      return;
+    }
     if (activeTab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
     if (activeTab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`, { replace: true });
+      return;
+    }
+    if (activeTab === "budget") {
+      navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
+      return;
+    }
+    if (activeTab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
       return;
     }
     if (activeTab === "list") {
@@ -328,8 +683,85 @@ export function ProjectDetail() {
     }
   }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
-  // Redirect bare /projects/:id to /projects/:id/issues
+  const projectBudgetSummary = useMemo(() => {
+    const matched = budgetOverview?.policies.find(
+      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
+    );
+    if (matched) return matched;
+    return {
+      policyId: "",
+      companyId: resolvedCompanyId ?? "",
+      scopeType: "project",
+      scopeId: project?.id ?? routeProjectRef,
+      scopeName: project?.name ?? "Project",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 0,
+      observedAmount: 0,
+      remainingAmount: 0,
+      utilizationPercent: 0,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: false,
+      status: "ok",
+      paused: Boolean(project?.pausedAt),
+      pauseReason: project?.pauseReason ?? null,
+      windowStart: new Date(),
+      windowEnd: new Date(),
+    } satisfies BudgetPolicySummary;
+  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "project",
+        scopeId: project?.id ?? routeProjectRef,
+        amount,
+        windowKind: "lifetime",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+  });
+
+  if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {
+    return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
+  }
+
+  if (activeTab === "workspaces" && workspaceTabDecisionLoaded && !showWorkspacesTab) {
+    return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
+  }
+
+  // Redirect bare /projects/:id to cached tab or default /issues
   if (routeProjectRef && activeTab === null) {
+    let cachedTab: string | null = null;
+    if (project?.id) {
+      try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
+    }
+    if (cachedTab === "overview") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
+    }
+    if (cachedTab === "configuration") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
+    }
+    if (cachedTab === "budget") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
+    }
+    if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
+    }
+    if (cachedTab === "workspaces" && !workspaceTabDecisionLoaded) {
+      return <PageSkeleton variant="detail" />;
+    }
+    if (isProjectPluginTab(cachedTab)) {
+      return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
+    }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
@@ -338,8 +770,20 @@ export function ProjectDetail() {
   if (!project) return null;
 
   const handleTabChange = (tab: ProjectTab) => {
+    // Cache the active tab per project
+    if (project?.id) {
+      try { localStorage.setItem(`paperclip:project-tab:${project.id}`, tab); } catch {}
+    }
+    if (isProjectPluginTab(tab)) {
+      navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
+      return;
+    }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`);
+    } else if (tab === "budget") {
+      navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -356,20 +800,65 @@ export function ProjectDetail() {
             onSelect={(color) => updateProject.mutate({ color })}
           />
         </div>
-        <InlineEditor
-          value={project.name}
-          onSave={(name) => updateProject.mutate({ name })}
-          as="h2"
-          className="text-xl font-bold"
-        />
+        <div className="min-w-0 space-y-2">
+          <InlineEditor
+            value={project.name}
+            onSave={(name) => updateProject.mutate({ name })}
+            as="h2"
+            className="text-xl font-bold"
+          />
+          {project.pauseReason === "budget" ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
+              <span className="h-2 w-2 rounded-full bg-red-400" />
+              Paused by budget hard stop
+            </div>
+          ) : null}
+        </div>
       </div>
+
+      <PluginSlotOutlet
+        slotTypes={["toolbarButton", "contextMenuItem"]}
+        entityType="project"
+        context={{
+          companyId: resolvedCompanyId ?? null,
+          companyPrefix: companyPrefix ?? null,
+          projectId: project.id,
+          projectRef: canonicalProjectRef,
+          entityId: project.id,
+          entityType: "project",
+        }}
+        className="flex flex-wrap gap-2"
+        itemClassName="inline-flex"
+        missingBehavior="placeholder"
+      />
+
+      <PluginLauncherOutlet
+        placementZones={["toolbarButton"]}
+        entityType="project"
+        context={{
+          companyId: resolvedCompanyId ?? null,
+          companyPrefix: companyPrefix ?? null,
+          projectId: project.id,
+          projectRef: canonicalProjectRef,
+          entityId: project.id,
+          entityType: "project",
+        }}
+        className="flex flex-wrap gap-2"
+        itemClassName="inline-flex"
+      />
 
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
+            { value: "list", label: "Issues" },
             { value: "overview", label: "Overview" },
-            { value: "list", label: "List" },
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
+            { value: "budget", label: "Budget" },
+            ...pluginTabItems.map((item) => ({
+              value: item.value,
+              label: item.label,
+            })),
           ]}
           align="start"
           value={activeTab ?? "list"}
@@ -392,6 +881,23 @@ export function ProjectDetail() {
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
 
+      {activeTab === "workspaces" ? (
+        workspaceTabDecisionLoaded ? (
+          workspaceTabError ? (
+            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+          ) : (
+            <ProjectWorkspacesContent
+              companyId={resolvedCompanyId!}
+              projectId={project.id}
+              projectRef={canonicalProjectRef}
+              summaries={workspaceSummaries}
+            />
+          )
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+        )
+      ) : null}
+
       {activeTab === "configuration" && (
         <div className="max-w-4xl">
           <ProjectProperties
@@ -399,8 +905,36 @@ export function ProjectDetail() {
             onUpdate={(data) => updateProject.mutate(data)}
             onFieldUpdate={updateProjectField}
             getFieldSaveState={(field) => fieldSaveStates[field] ?? "idle"}
+            onArchive={(archived) => archiveProject.mutate(archived)}
+            archivePending={archiveProject.isPending}
           />
         </div>
+      )}
+
+      {activeTab === "budget" && resolvedCompanyId ? (
+        <div className="max-w-3xl">
+          <BudgetPolicyCard
+            summary={projectBudgetSummary}
+            variant="plain"
+            isSaving={budgetMutation.isPending}
+            onSave={(amount) => budgetMutation.mutate(amount)}
+          />
+        </div>
+      ) : null}
+
+      {activePluginTab && (
+        <PluginSlotMount
+          slot={activePluginTab.slot}
+          context={{
+            companyId: resolvedCompanyId,
+            companyPrefix: companyPrefix ?? null,
+            projectId: project.id,
+            projectRef: canonicalProjectRef,
+            entityId: project.id,
+            entityType: "project",
+          }}
+          missingBehavior="placeholder"
+        />
       )}
     </div>
   );

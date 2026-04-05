@@ -2,7 +2,6 @@ import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftInput,
   Field,
-  ToggleField,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
@@ -18,7 +17,9 @@ export function GeminiLocalConfigFields({
   config,
   eff,
   mark,
+  hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  if (hideInstructionsFile) return null;
   return (
     <>
       <Field label="Agent instructions file" hint={instructionsFileHint}>
@@ -45,20 +46,6 @@ export function GeminiLocalConfigFields({
           <ChoosePathButton />
         </div>
       </Field>
-      <ToggleField
-        label="Yolo mode"
-        hint="Run Gemini with --approval-mode yolo for unattended operation."
-        checked={
-          isCreate
-            ? values!.dangerouslyBypassSandbox
-            : eff("adapterConfig", "yolo", config.yolo === true)
-        }
-        onChange={(v) =>
-          isCreate
-            ? set!({ dangerouslyBypassSandbox: v })
-            : mark("adapterConfig", "yolo", v)
-        }
-      />
     </>
   );
 }

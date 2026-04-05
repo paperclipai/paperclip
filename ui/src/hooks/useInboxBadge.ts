@@ -12,7 +12,9 @@ import {
   getRecentTouchedIssues,
   loadDismissedInboxItems,
   saveDismissedInboxItems,
-  getUnreadTouchedIssues,
+  loadReadInboxItems,
+  saveReadInboxItems,
+  READ_ITEMS_KEY,
 } from "../lib/inbox";
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
@@ -39,6 +41,39 @@ export function useDismissedInboxItems() {
   };
 
   return { dismissed, dismiss };
+}
+
+export function useReadInboxItems() {
+  const [readItems, setReadItems] = useState<Set<string>>(loadReadInboxItems);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== READ_ITEMS_KEY) return;
+      setReadItems(loadReadInboxItems());
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  const markRead = (id: string) => {
+    setReadItems((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      saveReadInboxItems(next);
+      return next;
+    });
+  };
+
+  const markUnread = (id: string) => {
+    setReadItems((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      saveReadInboxItems(next);
+      return next;
+    });
+  };
+
+  return { readItems, markRead, markUnread };
 }
 
 export function useInboxBadge(companyId: string | null | undefined) {
@@ -72,20 +107,18 @@ export function useInboxBadge(companyId: string | null | undefined) {
     enabled: !!companyId,
   });
 
-  const { data: touchedIssues = [] } = useQuery({
-    queryKey: queryKeys.issues.listTouchedByMe(companyId!),
+  const { data: mineIssuesRaw = [] } = useQuery({
+    queryKey: queryKeys.issues.listMineByMe(companyId!),
     queryFn: () =>
       issuesApi.list(companyId!, {
         touchedByUserId: "me",
+        inboxArchivedByUserId: "me",
         status: INBOX_ISSUE_STATUSES,
       }),
     enabled: !!companyId,
   });
 
-  const unreadIssues = useMemo(
-    () => getUnreadTouchedIssues(getRecentTouchedIssues(touchedIssues)),
-    [touchedIssues],
-  );
+  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
 
   const { data: heartbeatRuns = [] } = useQuery({
     queryKey: queryKeys.heartbeats(companyId!),
@@ -100,9 +133,9 @@ export function useInboxBadge(companyId: string | null | undefined) {
         joinRequests,
         dashboard,
         heartbeatRuns,
-        unreadIssues,
+        mineIssues,
         dismissed,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, unreadIssues, dismissed],
+    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissed],
   );
 }

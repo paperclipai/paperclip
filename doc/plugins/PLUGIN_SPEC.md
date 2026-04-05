@@ -8,6 +8,29 @@ It expands the brief plugin notes in [doc/SPEC.md](../SPEC.md) and should be rea
 This is not part of the V1 implementation contract in [doc/SPEC-implementation.md](../SPEC-implementation.md).
 It is the full target architecture for the plugin system that should follow V1.
 
+## Current implementation caveats
+
+The code in this repo now includes an early plugin runtime and admin UI, but it does not yet deliver the full deployment model described in this spec.
+
+Today, the practical deployment model is:
+
+- single-tenant
+- self-hosted
+- single-node or otherwise filesystem-persistent
+
+Current limitations to keep in mind:
+
+- Plugin UI bundles currently run as same-origin JavaScript inside the main Paperclip app. Treat plugin UI as trusted code, not a sandboxed frontend capability boundary.
+- Manifest capabilities currently gate worker-side host RPC calls. They do not prevent plugin UI code from calling ordinary Paperclip HTTP APIs directly.
+- Runtime installs assume a writable local filesystem for the plugin package directory and plugin data directory.
+- Runtime npm installs assume `npm` is available in the running environment and that the host can reach the configured package registry.
+- Published npm packages are the intended install artifact for deployed plugins.
+- The repo example plugins under `packages/plugins/examples/` are development conveniences. They work from a source checkout and should not be assumed to exist in a generic published build unless they are explicitly shipped with that build.
+- Dynamic plugin install is not yet cloud-ready for horizontally scaled or ephemeral deployments. There is no shared artifact store, install coordination, or cross-node distribution layer yet.
+- The current runtime does not yet ship a real host-provided plugin UI component kit, and it does not support plugin asset uploads/reads. Treat those as future-scope ideas in this spec, not current implementation promises.
+
+In practice, that means the current implementation is a good fit for local development and self-hosted persistent deployments, but not yet for multi-instance cloud plugin distribution.
+
 ## 1. Scope
 
 This spec covers:
@@ -212,6 +235,8 @@ Suggested layout:
 
 The package install directory and the plugin data directory are separate.
 
+This on-disk model is the reason the current implementation expects a persistent writable host filesystem. Cloud-safe artifact replication is future work.
+
 ## 8.2 Operator Commands
 
 Paperclip should add CLI commands:
@@ -236,6 +261,8 @@ The install process is:
 6. Persist install record in Postgres.
 7. Start plugin worker and run health/validation.
 8. Mark plugin `ready` or `error`.
+
+For the current implementation, this install flow should be read as a single-host workflow. A successful install writes packages to the local host, and other app nodes will not automatically receive that plugin unless a future shared distribution mechanism is added.
 
 ## 9. Load Order And Precedence
 

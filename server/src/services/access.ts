@@ -83,6 +83,20 @@ export function accessService(db: Db) {
       .orderBy(sql`${companyMemberships.createdAt} desc`);
   }
 
+  async function listActiveUserMemberships(companyId: string) {
+    return db
+      .select()
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .orderBy(sql`${companyMemberships.createdAt} asc`);
+  }
+
   async function setMemberPermissions(
     companyId: string,
     memberId: string,
@@ -251,6 +265,100 @@ export function accessService(db: Db) {
     });
   }
 
+  async function copyActiveUserMemberships(sourceCompanyId: string, targetCompanyId: string) {
+    const sourceMemberships = await listActiveUserMemberships(sourceCompanyId);
+    for (const membership of sourceMemberships) {
+      await ensureMembership(
+        targetCompanyId,
+        "user",
+        membership.principalId,
+        membership.membershipRole,
+        "active",
+      );
+    }
+    return sourceMemberships;
+  }
+
+  async function listPrincipalGrants(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+  ) {
+    return db
+      .select()
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+        ),
+      )
+      .orderBy(principalPermissionGrants.permissionKey);
+  }
+
+  async function setPrincipalPermission(
+    companyId: string,
+    principalType: PrincipalType,
+    principalId: string,
+    permissionKey: PermissionKey,
+    enabled: boolean,
+    grantedByUserId: string | null,
+    scope: Record<string, unknown> | null = null,
+  ) {
+    if (!enabled) {
+      await db
+        .delete(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, principalType),
+            eq(principalPermissionGrants.principalId, principalId),
+            eq(principalPermissionGrants.permissionKey, permissionKey),
+          ),
+        );
+      return;
+    }
+
+    await ensureMembership(companyId, principalType, principalId, "member", "active");
+
+    const existing = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalType, principalType),
+          eq(principalPermissionGrants.principalId, principalId),
+          eq(principalPermissionGrants.permissionKey, permissionKey),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    if (existing) {
+      await db
+        .update(principalPermissionGrants)
+        .set({
+          scope,
+          grantedByUserId,
+          updatedAt: new Date(),
+        })
+        .where(eq(principalPermissionGrants.id, existing.id));
+      return;
+    }
+
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType,
+      principalId,
+      permissionKey,
+      scope,
+      grantedByUserId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+
   return {
     isInstanceAdmin,
     canUser,
@@ -258,11 +366,15 @@ export function accessService(db: Db) {
     getMembership,
     ensureMembership,
     listMembers,
+    listActiveUserMemberships,
+    copyActiveUserMemberships,
     setMemberPermissions,
     promoteInstanceAdmin,
     demoteInstanceAdmin,
     listUserCompanyAccess,
     setUserCompanyAccess,
     setPrincipalGrants,
+    listPrincipalGrants,
+    setPrincipalPermission,
   };
 }

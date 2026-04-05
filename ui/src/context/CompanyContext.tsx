@@ -12,8 +12,7 @@ import type { Company } from "@paperclipai/shared";
 import { companiesApi } from "../api/companies";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
-
-type CompanySelectionSource = "manual" | "route_sync" | "bootstrap";
+import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
 
 interface CompanyContextValue {
@@ -86,7 +85,11 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
+    mutationFn: (data: {
+      name: string;
+      description?: string | null;
+      budgetMonthlyCents?: number;
+    }) =>
       companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -95,7 +98,11 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   });
 
   const createCompany = useCallback(
-    async (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) => {
+    async (data: {
+      name: string;
+      description?: string | null;
+      budgetMonthlyCents?: number;
+    }) => {
       return createMutation.mutateAsync(data);
     },
     [createMutation],

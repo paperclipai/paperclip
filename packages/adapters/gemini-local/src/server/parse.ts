@@ -78,6 +78,7 @@ export function parseGeminiJsonl(stdout: string) {
   let errorMessage: string | null = null;
   let costUsd: number | null = null;
   let resultEvent: Record<string, unknown> | null = null;
+  let question: { prompt: string; choices: Array<{ key: string; label: string; description?: string }> } | null = null;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -98,6 +99,25 @@ export function parseGeminiJsonl(stdout: string) {
 
     if (type === "assistant") {
       messages.push(...collectMessageText(event.message));
+      const messageObj = parseObject(event.message);
+      const content = Array.isArray(messageObj.content) ? messageObj.content : [];
+      for (const partRaw of content) {
+        const part = parseObject(partRaw);
+        if (asString(part.type, "").trim() === "question") {
+          question = {
+            prompt: asString(part.prompt, "").trim(),
+            choices: (Array.isArray(part.choices) ? part.choices : []).map((choiceRaw) => {
+              const choice = parseObject(choiceRaw);
+              return {
+                key: asString(choice.key, "").trim(),
+                label: asString(choice.label, "").trim(),
+                description: asString(choice.description, "").trim() || undefined,
+              };
+            }),
+          };
+          break; // only one question per message
+        }
+      }
       continue;
     }
 
@@ -154,6 +174,7 @@ export function parseGeminiJsonl(stdout: string) {
     costUsd,
     errorMessage,
     resultEvent,
+    question,
   };
 }
 
@@ -210,6 +231,8 @@ export function describeGeminiFailure(parsed: Record<string, unknown>): string |
 }
 
 const GEMINI_AUTH_REQUIRED_RE = /(?:not\s+authenticated|please\s+authenticate|api[_ ]?key\s+(?:required|missing|invalid)|authentication\s+required|unauthorized|invalid\s+credentials|not\s+logged\s+in|login\s+required|run\s+`?gemini\s+auth(?:\s+login)?`?\s+first)/i;
+const GEMINI_QUOTA_EXHAUSTED_RE =
+  /(?:resource_exhausted|quota|rate[-\s]?limit|too many requests|\b429\b|billing details)/i;
 
 export function detectGeminiAuthRequired(input: {
   parsed: Record<string, unknown> | null;
@@ -225,6 +248,22 @@ export function detectGeminiAuthRequired(input: {
 
   const requiresAuth = messages.some((line) => GEMINI_AUTH_REQUIRED_RE.test(line));
   return { requiresAuth };
+}
+
+export function detectGeminiQuotaExhausted(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): { exhausted: boolean } {
+  const errors = extractGeminiErrorMessages(input.parsed ?? {});
+  const messages = [...errors, input.stdout, input.stderr]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const exhausted = messages.some((line) => GEMINI_QUOTA_EXHAUSTED_RE.test(line));
+  return { exhausted };
 }
 
 export function isGeminiTurnLimitResult(
