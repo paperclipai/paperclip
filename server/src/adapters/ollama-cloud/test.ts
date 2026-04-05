@@ -17,7 +17,8 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
 
-  const apiKey = asString(config.apiKey, process.env.OLLAMA_API_KEY ?? "");
+  const envRecord = (config.env && typeof config.env === "object") ? config.env as Record<string, string> : {};
+  const apiKey = asString(config.apiKey, envRecord.OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY ?? "");
   const model = asString(config.model, "kimi-k2.5:cloud");
 
   if (!apiKey) {

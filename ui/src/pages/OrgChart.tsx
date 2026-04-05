@@ -413,7 +413,7 @@ export function OrgChart() {
   }
 
   return (
-    <div className="flex flex-col h-full" style={{ minHeight: "calc(100vh - 120px)" }}>
+    <div className="flex flex-col" style={{ height: "calc(100vh - 80px)" }}>
     <div className="mb-2 flex items-center justify-start gap-2 shrink-0">
       <Link to="/company/import">
         <Button variant="outline" size="sm">
@@ -444,7 +444,7 @@ export function OrgChart() {
     <div
       ref={containerRef}
       className="w-full flex-1 overflow-hidden relative bg-muted/20 border border-border rounded-lg"
-      style={{ cursor: dragging ? "grabbing" : "grab", minHeight: 500 }}
+      style={{ cursor: dragging ? "grabbing" : "grab" }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}

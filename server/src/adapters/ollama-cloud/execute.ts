@@ -4,9 +4,10 @@ import { asString } from "../utils.js";
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, agent, context } = ctx;
 
-  // Get API endpoint and key
+  // Get API endpoint and key - check config.apiKey, then env bindings, then process.env
   const apiUrl = asString(config.url, "https://ollama.com/api/chat");
-  const apiKey = asString(config.apiKey, process.env.OLLAMA_API_KEY ?? "");
+  const envRecord = (config.env && typeof config.env === "object") ? config.env as Record<string, string> : {};
+  const apiKey = asString(config.apiKey, envRecord.OLLAMA_API_KEY ?? process.env.OLLAMA_API_KEY ?? "");
   const model = asString(config.model, "kimi-k2.5:cloud");
   const maxTokens = typeof config.maxOutputTokens === "number" ? config.maxOutputTokens : 4096;
 
