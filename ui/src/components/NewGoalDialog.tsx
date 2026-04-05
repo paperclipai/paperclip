@@ -116,11 +116,11 @@ export function NewGoalDialog() {
     >
       <DialogContent
         showCloseButton={false}
-        className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
+        className={cn("p-0 gap-0 flex flex-col max-h-[85vh]", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
         onKeyDown={handleKeyDown}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
               <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
@@ -168,7 +168,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Description */}
-        <div className="px-4 pb-2">
+        <div className="px-4 pb-2 overflow-y-auto min-h-0">
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
@@ -184,7 +184,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Property chips */}
-        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
+        <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
           {/* Status */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -267,7 +267,7 @@ export function NewGoalDialog() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border">
+        <div className="flex items-center justify-end px-4 py-2.5 border-t border-border shrink-0">
           <Button
             size="sm"
             disabled={!title.trim() || createGoal.isPending}
