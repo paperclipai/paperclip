@@ -525,13 +525,15 @@ export function IssueDetail() {
   // Scroll to bottom FAB
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   useEffect(() => {
+    const container = document.getElementById("main-content");
+    if (!container) return;
     const handleScroll = () => {
-      const distanceFromBottom = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
       setShowScrollBtn(distanceFromBottom > 300);
     };
-    window.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("scroll", handleScroll, { passive: true });
     handleScroll();
-    return () => window.removeEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
   }, []);
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading...</p>;
@@ -968,7 +970,10 @@ export function IssueDetail() {
 
       {showScrollBtn && (
         <button
-          onClick={() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" })}
+          onClick={() => {
+            const c = document.getElementById("main-content");
+            if (c) c.scrollTo({ top: c.scrollHeight, behavior: "smooth" });
+          }}
           className="fixed bottom-6 right-6 z-50 h-10 w-10 rounded-full bg-background/80 border border-border shadow-lg backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-background transition-all"
           aria-label="Scroll to bottom"
         >
