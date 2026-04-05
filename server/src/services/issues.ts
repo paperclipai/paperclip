@@ -1376,6 +1376,20 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(issueCompany.companyId, agentId);
 
+      // Ensure checkoutRunId always has a corresponding heartbeat_runs row before FK write.
+      if (checkoutRunId) {
+        await db
+          .insert(heartbeatRuns)
+          .values({
+            id: checkoutRunId,
+            companyId: issueCompany.companyId,
+            agentId,
+            invocationSource: "on_demand",
+            status: "running",
+          })
+          .onConflictDoNothing();
+      }
+
       const now = new Date();
       const sameRunAssigneeCondition = checkoutRunId
         ? and(
