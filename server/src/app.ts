@@ -68,10 +68,17 @@ export function createIndexHtmlGetter(indexHtmlPath: string): () => string {
   let html = "";
   let mtimeMs = 0;
   return () => {
-    const nextMtimeMs = fs.statSync(indexHtmlPath).mtimeMs;
-    if (!html || nextMtimeMs !== mtimeMs) {
-      html = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
-      mtimeMs = nextMtimeMs;
+    try {
+      const nextMtimeMs = fs.statSync(indexHtmlPath).mtimeMs;
+      if (nextMtimeMs !== mtimeMs) {
+        html = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
+        mtimeMs = nextMtimeMs;
+      }
+    } catch (err) {
+      // File is transiently absent (e.g. mid-hotpatch replacement).
+      // Serve the last known-good html if available; let the error
+      // propagate only on the very first call when there is nothing cached.
+      if (!html) throw err;
     }
     return html;
   };

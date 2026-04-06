@@ -37,6 +37,25 @@ describe("createIndexHtmlGetter", () => {
     expect(get()).toBe(first);
   });
 
+  it("returns cached html when file is transiently absent after first read", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-spa-"));
+    const p = writeTempIndexHtml(dir, "<html>v1</html>");
+    const get = createIndexHtmlGetter(p);
+
+    const first = get(); // prime cache
+
+    // Simulate the file being removed mid-hotpatch
+    fs.unlinkSync(p);
+
+    expect(get()).toBe(first);
+  });
+
+  it("throws when file is absent on the very first read", () => {
+    const p = path.join(os.tmpdir(), "paperclip-spa-nonexistent-index.html");
+    const get = createIndexHtmlGetter(p);
+    expect(() => get()).toThrow();
+  });
+
   it("re-reads from disk when mtime advances", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-spa-"));
     const p = writeTempIndexHtml(dir, "<html>v1</html>");
