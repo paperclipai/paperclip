@@ -1180,6 +1180,25 @@ export function issueRoutes(
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
+    // Archive linked execution workspace when issue transitions to terminal state.
+    // Fire-and-forget: cleanup should not block the HTTP response.
+    // Use pre-transition linkage (existing) so a PATCH that simultaneously clears or
+    // repoints executionWorkspaceId cannot bypass cleanup of the originally linked workspace.
+    const wasTerminal = existing.status === "done" || existing.status === "cancelled";
+    const isNowTerminal = issue.status === "done" || issue.status === "cancelled";
+    if (!wasTerminal && isNowTerminal && existing.executionWorkspaceId) {
+      heartbeat.archiveTerminalIssueExecutionWorkspace({
+        executionWorkspaceId: existing.executionWorkspaceId,
+        companyId: issue.companyId,
+        actor: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
+      }).catch((err) =>
+        logger.warn(
+          { err, issueId: issue.id, executionWorkspaceId: existing.executionWorkspaceId },
+          "failed to archive execution workspace on terminal issue transition",
+        ),
+      );
+    }
+
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue activity"));
