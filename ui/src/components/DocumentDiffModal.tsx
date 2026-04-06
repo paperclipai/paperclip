@@ -72,49 +72,51 @@ export function DocumentDiffModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[85vh] overflow-hidden flex flex-col">
-        <DialogHeader>
-          <DialogTitle>
-            Diff — <span className="font-mono text-sm">{documentKey}</span>
-          </DialogTitle>
-        </DialogHeader>
+      <DialogContent className="max-w-[90vw] w-full max-h-[85vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between gap-4">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>
+              Diff — <span className="font-mono text-sm">{documentKey}</span>
+            </DialogTitle>
+          </DialogHeader>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs text-muted-foreground shrink-0">Left:</span>
-            <Select
-              value={effectiveLeftId ?? ""}
-              onValueChange={(value) => setLeftRevisionId(value)}
-            >
-              <SelectTrigger className="h-8 w-56 text-xs">
-                <SelectValue placeholder="Select revision" />
-              </SelectTrigger>
-              <SelectContent>
-                {sortedRevisions.map((revision) => (
-                  <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                    {getRevisionLabel(revision)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs text-muted-foreground shrink-0">Right:</span>
-            <Select
-              value={effectiveRightId ?? ""}
-              onValueChange={(value) => setRightRevisionId(value)}
-            >
-              <SelectTrigger className="h-8 w-56 text-xs">
-                <SelectValue placeholder="Select revision" />
-              </SelectTrigger>
-              <SelectContent>
-                {sortedRevisions.map((revision) => (
-                  <SelectItem key={revision.id} value={revision.id} className="text-xs">
-                    {getRevisionLabel(revision)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="flex items-center gap-4 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">Old</span>
+              <Select
+                value={effectiveLeftId ?? ""}
+                onValueChange={(value) => setLeftRevisionId(value)}
+              >
+                <SelectTrigger className="h-7 w-60 text-xs border-border/60">
+                  <SelectValue placeholder="Select revision" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedRevisions.map((revision) => (
+                    <SelectItem key={revision.id} value={revision.id} className="text-xs">
+                      {getRevisionLabel(revision)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">New</span>
+              <Select
+                value={effectiveRightId ?? ""}
+                onValueChange={(value) => setRightRevisionId(value)}
+              >
+                <SelectTrigger className="h-7 w-60 text-xs border-border/60">
+                  <SelectValue placeholder="Select revision" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedRevisions.map((revision) => (
+                    <SelectItem key={revision.id} value={revision.id} className="text-xs">
+                      {getRevisionLabel(revision)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
@@ -155,9 +157,18 @@ export function DocumentDiffModal({
                   },
                 },
                 contentText: {
-                  fontFamily: "inherit",
-                  fontSize: "13px",
-                  lineHeight: "1.6",
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                  fontSize: "12px",
+                  lineHeight: "1.5",
+                  wordBreak: "break-word" as const,
+                  whiteSpace: "pre-wrap" as const,
+                },
+                gutter: {
+                  minWidth: "40px",
+                  whiteSpace: "nowrap" as const,
+                },
+                line: {
+                  wordBreak: "break-word" as const,
                 },
               }}
             />
