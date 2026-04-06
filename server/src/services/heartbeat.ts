@@ -427,7 +427,6 @@ export async function resolveOperationsHeartbeatTarget(
   return null;
 }
 type DbExecutor = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
->>>>>>> 0298da4a (fix(heartbeat): sanitize null bytes before heartbeat db writes)
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
