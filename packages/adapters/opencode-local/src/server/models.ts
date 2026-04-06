@@ -8,7 +8,18 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
+const VALIDATED_MODELS_CACHE_TTL_MS = 86_400_000;
+
+class OpenCodeModelsDiscoveryTimeoutError extends Error {
+  readonly partialModels: AdapterModel[];
+
+  constructor(message: string, partialModels: AdapterModel[]) {
+    super(message);
+    this.name = "OpenCodeModelsDiscoveryTimeoutError";
+    this.partialModels = partialModels;
+  }
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -20,6 +31,7 @@ function resolveOpenCodeCommand(input: unknown): string {
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+const validatedModelsCache = new Map<string, { expiresAt: number }>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
 const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
 
@@ -100,6 +112,23 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
+function pruneExpiredValidatedModelsCache(now: number) {
+  for (const [model, value] of validatedModelsCache.entries()) {
+    if (value.expiresAt <= now) validatedModelsCache.delete(model);
+  }
+}
+
+function isModelValidated(model: string): boolean {
+  const now = Date.now();
+  pruneExpiredValidatedModelsCache(now);
+  return validatedModelsCache.has(model);
+}
+
+function markModelValidated(model: string): void {
+  const now = Date.now();
+  validatedModelsCache.set(model, { expiresAt: now + VALIDATED_MODELS_CACHE_TTL_MS });
+}
+
 export async function discoverOpenCodeModels(input: {
   command?: unknown;
   cwd?: unknown;
@@ -137,7 +166,15 @@ export async function discoverOpenCodeModels(input: {
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    const partialModels = sortModels(parseModelsOutput(result.stdout));
+    const partialSuffix =
+      partialModels.length > 0
+        ? ` with ${partialModels.length} partial result${partialModels.length === 1 ? "" : "s"}`
+        : " with no results";
+    throw new OpenCodeModelsDiscoveryTimeoutError(
+      `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s${partialSuffix}.`,
+      partialModels,
+    );
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
@@ -177,11 +214,40 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
   }
 
-  const models = await discoverOpenCodeModelsCached({
-    command: input.command,
-    cwd: input.cwd,
-    env: input.env,
-  });
+  // Check if user wants to skip model validation entirely
+  if (process.env.PAPERCLIP_SKIP_MODEL_VALIDATION === "true") {
+    return [];
+  }
+
+  // Check if this model was recently validated successfully
+  if (isModelValidated(model)) {
+    return [];
+  }
+
+  let models: AdapterModel[];
+  try {
+    models = await discoverOpenCodeModelsCached({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+    });
+  } catch (error) {
+    if (error instanceof OpenCodeModelsDiscoveryTimeoutError) {
+      if (error.partialModels.some((entry) => entry.id === model)) {
+        markModelValidated(model);
+        return error.partialModels;
+      }
+
+      if (error.partialModels.length > 0) {
+        throw new Error(
+          `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s before confirming availability of ${model}. ` +
+            `It returned ${error.partialModels.length} partial result${error.partialModels.length === 1 ? "" : "s"}, so the model list may be incomplete.`,
+        );
+      }
+    }
+
+    throw error;
+  }
 
   if (models.length === 0) {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
@@ -194,17 +260,23 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     );
   }
 
+  markModelValidated(model);
+
   return models;
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   try {
     return await discoverOpenCodeModelsCached();
-  } catch {
+  } catch (error) {
+    if (error instanceof OpenCodeModelsDiscoveryTimeoutError) {
+      return error.partialModels;
+    }
     return [];
   }
 }
 
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
+  validatedModelsCache.clear();
 }
