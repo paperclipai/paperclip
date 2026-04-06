@@ -742,6 +742,39 @@ export function IssueDetail() {
     },
   });
 
+  const approvalDecision = useMutation({
+    mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
+      if (action === "approve") {
+        return approvalsApi.approve(approvalId);
+      }
+      return approvalsApi.reject(approvalId);
+    },
+    onMutate: ({ approvalId, action }) => {
+      setPendingApprovalAction({ approvalId, action });
+    },
+    onSuccess: (_approval, variables) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(variables.approvalId) });
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(resolvedCompanyId) });
+      }
+      pushToast({
+        title: variables.action === "approve" ? "Approval approved" : "Approval rejected",
+        tone: "success",
+      });
+    },
+    onError: (err, variables) => {
+      pushToast({
+        title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
+        body: err instanceof Error ? err.message : "Unable to update approval",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      setPendingApprovalAction(null);
+    },
+  });
+
   const addComment = useMutation({
     mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
       issuesApi.addComment(issueId!, body, reopen, interrupt),
@@ -1891,7 +1924,6 @@ export function IssueDetail() {
           </TabsContent>
         )}
       </Tabs>
-
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
