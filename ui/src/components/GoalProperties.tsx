@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@ironworksai/shared";
+import type { Goal, GoalCadence, GoalHealthStatus } from "@ironworksai/shared";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@ironworksai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -12,6 +12,7 @@ import { formatDate, cn, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -219,6 +220,77 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
             </Link>
           </PropertyRow>
         )}
+
+        <PropertyRow label="Health">
+          <HealthStatusBadge status={goal.healthStatus} />
+        </PropertyRow>
+
+        <PropertyRow label="Confidence">
+          {onUpdate ? (
+            <ConfidenceSlider
+              value={goal.confidence ?? 50}
+              onChange={(confidence) => onUpdate({ confidence })}
+            />
+          ) : (
+            <span className="text-sm">{goal.confidence ?? "N/A"}</span>
+          )}
+        </PropertyRow>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-1">
+        <PropertyRow label="Start Date">
+          {onUpdate ? (
+            <Input
+              type="date"
+              className="h-7 w-auto text-xs"
+              value={goal.startDate ? goal.startDate.slice(0, 10) : ""}
+              onChange={(e) =>
+                onUpdate({ startDate: e.target.value || null })
+              }
+            />
+          ) : (
+            <span className="text-sm">
+              {goal.startDate
+                ? new Date(goal.startDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                : "Not set"}
+            </span>
+          )}
+        </PropertyRow>
+
+        <PropertyRow label="Target Date">
+          {onUpdate ? (
+            <Input
+              type="date"
+              className="h-7 w-auto text-xs"
+              value={goal.targetDate ? goal.targetDate.slice(0, 10) : ""}
+              onChange={(e) =>
+                onUpdate({ targetDate: e.target.value || null })
+              }
+            />
+          ) : (
+            <span className="text-sm">
+              {goal.targetDate
+                ? new Date(goal.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                : "Not set"}
+            </span>
+          )}
+        </PropertyRow>
+
+        <PropertyRow label="Cadence">
+          {onUpdate ? (
+            <PickerButton
+              current={goal.cadence ?? "none"}
+              options={CADENCE_OPTIONS}
+              onChange={(cadence) => onUpdate({ cadence: cadence === "none" ? null : cadence })}
+            >
+              <span className="text-sm capitalize">{goal.cadence ? label(goal.cadence) : "None"}</span>
+            </PickerButton>
+          ) : (
+            <span className="text-sm capitalize">{goal.cadence ? label(goal.cadence) : "None"}</span>
+          )}
+        </PropertyRow>
       </div>
 
       <Separator />
@@ -231,6 +303,65 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           <span className="text-sm">{formatDate(goal.updatedAt)}</span>
         </PropertyRow>
       </div>
+    </div>
+  );
+}
+
+/* ── Health Status Badge ── */
+
+const HEALTH_STATUS_CONFIG: Record<string, { label: string; className: string }> = {
+  on_track: { label: "On Track", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  at_risk: { label: "At Risk", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400" },
+  off_track: { label: "Off Track", className: "bg-red-500/10 text-red-600 dark:text-red-400" },
+  achieved: { label: "Achieved", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" },
+  no_data: { label: "No Data", className: "bg-muted text-muted-foreground" },
+};
+
+function HealthStatusBadge({ status }: { status: GoalHealthStatus | null }) {
+  const key = status ?? "no_data";
+  const cfg = HEALTH_STATUS_CONFIG[key] ?? HEALTH_STATUS_CONFIG.no_data;
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", cfg.className)}>
+      {cfg.label}
+    </span>
+  );
+}
+
+/* ── Confidence Slider ── */
+
+const CADENCE_OPTIONS = ["none", "weekly", "monthly", "quarterly", "annual", "custom"] as const;
+
+function ConfidenceSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [local, setLocal] = useState(value);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleChange = useCallback(
+    (newVal: number) => {
+      setLocal(newVal);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => onChange(newVal), 400);
+    },
+    [onChange],
+  );
+
+  const color =
+    local > 66
+      ? "text-emerald-600 dark:text-emerald-400"
+      : local > 33
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+
+  return (
+    <div className="flex items-center gap-2 w-full">
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={local}
+        onChange={(e) => handleChange(Number(e.target.value))}
+        className="flex-1 h-1.5 accent-foreground cursor-pointer"
+      />
+      <span className={cn("text-xs font-medium tabular-nums w-8 text-right", color)}>{local}</span>
     </div>
   );
 }

@@ -45,6 +45,7 @@ import { aiGenerateRoutes } from "./routes/ai-generate.js";
 import { privacyRoutes, startRetentionScheduler } from "./routes/privacy.js";
 import { supportPublicRoutes } from "./routes/support.js";
 import { goalStatsRoutes } from "./routes/goal-stats.js";
+import { goalCheckInRoutes } from "./routes/goal-check-ins.js";
 import { aiGoalBreakdownRoutes } from "./routes/ai-goal-breakdown.js";
 import { messagingRoutes, emailWebhookRoutes } from "./routes/messaging.js";
 import { slimRoutes } from "./routes/slim.js";
@@ -303,6 +304,7 @@ export async function createApp(
   api.use(aiGenerateRoutes(db));
   api.use(privacyRoutes(db));
   api.use(goalStatsRoutes(db));
+  api.use(goalCheckInRoutes(db));
   api.use(aiGoalBreakdownRoutes(db));
   api.use(messagingRoutes(db));
   api.use(searchRoutes());

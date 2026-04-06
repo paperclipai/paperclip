@@ -484,6 +484,13 @@
       "when": 1775959200004,
       "tag": "0073_bug_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1775959200005,
+      "tag": "0075_goals_wave1",
+      "breakpoints": true
     }
   ]
 }

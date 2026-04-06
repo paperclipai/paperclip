@@ -71,6 +71,8 @@ export { agentMemoryEntries } from "./agent_memory_entries.js";
 export { hiringRequests } from "./hiring_requests.js";
 export { agentRoleTemplates } from "./agent_role_templates.js";
 export { goalKeyResults } from "./goal_key_results.js";
+export { goalCheckIns } from "./goal_check_ins.js";
+export { goalSnapshots } from "./goal_snapshots.js";
 export { agentChannels } from "./agent_channels.js";
 export { channelMessages } from "./channel_messages.js";
 export { channelMemberships } from "./channel_memberships.js";

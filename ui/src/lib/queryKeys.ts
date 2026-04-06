@@ -70,6 +70,10 @@ export const queryKeys = {
     detail: (id: string) => ["goals", "detail", id] as const,
     keyResults: (companyId: string, goalId: string) =>
       ["goals", "key-results", companyId, goalId] as const,
+    checkIns: (companyId: string, goalId: string) =>
+      ["goals", "check-ins", companyId, goalId] as const,
+    snapshots: (companyId: string, goalId: string) =>
+      ["goals", "snapshots", companyId, goalId] as const,
   },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,

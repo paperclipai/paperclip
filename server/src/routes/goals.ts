@@ -1,5 +1,7 @@
 import { Router } from "express";
+import { desc, eq, and, gte } from "drizzle-orm";
 import type { Db } from "@ironworksai/db";
+import { goalSnapshots } from "@ironworksai/db";
 import { createGoalSchema, updateGoalSchema } from "@ironworksai/shared";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
@@ -150,6 +152,39 @@ export function goalRoutes(db: Db) {
       return;
     }
     res.json(kr);
+  });
+
+  // ── Snapshots ────────────────────────────────────────────────────
+
+  router.get("/companies/:companyId/goals/:goalId/snapshots", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const goalId = req.params.goalId as string;
+    assertCompanyAccess(req, companyId);
+
+    const days = Math.min(Number(req.query.days) || 30, 365);
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    const snapshots = await db
+      .select()
+      .from(goalSnapshots)
+      .where(
+        and(
+          eq(goalSnapshots.goalId, goalId),
+          eq(goalSnapshots.companyId, companyId),
+          gte(goalSnapshots.createdAt, since),
+        ),
+      )
+      .orderBy(desc(goalSnapshots.createdAt))
+      .limit(90);
+
+    // Serialize bigint budgetSpentCents as string for JSON
+    const serialized = snapshots.map((s) => ({
+      ...s,
+      budgetSpentCents: s.budgetSpentCents?.toString() ?? null,
+    }));
+
+    res.json(serialized);
   });
 
   return router;

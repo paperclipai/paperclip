@@ -49,3 +49,5 @@ export { getVelocityData, type VelocityWeek } from "./velocity.js";
 export { seedSystemRoleTemplates } from "./seed-role-templates.js";
 export { executiveAnalyticsService, budgetForecast, systemHealthSummary, type BudgetForecastResult, type DepartmentSpendingRow, type SystemHealthSummary } from "./executive-analytics.js";
 export { computeDORAMetrics, type DORAMetrics } from "./dora-metrics.js";
+export { computeGoalHealth, type HealthResult } from "./goal-health.js";
+export { snapshotGoal, snapshotAllGoals, snapshotAllCompanyGoals } from "./goal-snapshots.js";

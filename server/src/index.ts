@@ -658,6 +658,52 @@ export async function startServer(): Promise<StartedServer> {
     }, backupIntervalMs);
   }
   
+  // ── Nightly goal snapshots (midnight CT) ──
+  {
+    const { snapshotAllCompanyGoals } = await import("./services/goal-snapshots.js");
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+
+    // Calculate ms until next midnight CT (America/Chicago)
+    function msUntilMidnightCT(): number {
+      const now = new Date();
+      // Next midnight in CT
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+      const parts = formatter.formatToParts(now);
+      const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "0";
+      const hoursLeft = 23 - Number(get("hour"));
+      const minutesLeft = 59 - Number(get("minute"));
+      const secondsLeft = 60 - Number(get("second"));
+      return ((hoursLeft * 60 + minutesLeft) * 60 + secondsLeft) * 1000;
+    }
+
+    const scheduleSnapshot = () => {
+      const delay = msUntilMidnightCT();
+      setTimeout(() => {
+        void snapshotAllCompanyGoals(db).catch((err) => {
+          logger.error({ err }, "Nightly goal snapshot failed");
+        });
+        // Reschedule for next midnight
+        setInterval(() => {
+          void snapshotAllCompanyGoals(db).catch((err) => {
+            logger.error({ err }, "Nightly goal snapshot failed");
+          });
+        }, 24 * ONE_HOUR_MS);
+      }, delay);
+    };
+
+    scheduleSnapshot();
+    logger.info("Goal snapshot scheduler armed (midnight CT daily)");
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
@@ -9,6 +9,8 @@ import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { goalProgressApi } from "../api/goalProgress";
 import { goalKeyResultsApi, type GoalKeyResult } from "../api/goalKeyResults";
+import { goalCheckInsApi, type CreateCheckInPayload } from "../api/goalCheckIns";
+import { goalSnapshotsApi, type GoalSnapshotDTO } from "../api/goalSnapshots";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
@@ -25,11 +27,13 @@ import { projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertTriangle, CheckCircle2, Circle, CopyPlus, History, Loader2, PanelRightClose, PanelRightOpen, Plus, ShieldAlert, Target, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { AlertTriangle, BarChart3, CheckCircle2, CheckSquare, Circle, ClipboardCheck, CopyPlus, History, Loader2, PanelRightClose, PanelRightOpen, Plus, ShieldAlert, Square, Target, TrendingUp, Trash2, Users } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useNavigate } from "@/lib/router";
 import { useToast } from "../context/ToastContext";
-import type { Goal, Issue, Project } from "@ironworksai/shared";
+import type { Goal, GoalCheckIn, GoalHealthStatus, Issue, Project } from "@ironworksai/shared";
 
 /* ── Risk Assessment (12.55) ── */
 
@@ -167,6 +171,347 @@ function GoalBurndownChart({ issues, targetDate }: { issues: Issue[]; targetDate
   );
 }
 
+/* ── Health Status Badge (unified) ── */
+
+const HEALTH_STATUS_COLORS: Record<string, string> = {
+  on_track: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  at_risk: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  off_track: "bg-red-500/10 text-red-600 dark:text-red-400",
+  achieved: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  no_data: "bg-muted text-muted-foreground",
+};
+
+const HEALTH_STATUS_LABELS: Record<string, string> = {
+  on_track: "On Track",
+  at_risk: "At Risk",
+  off_track: "Off Track",
+  achieved: "Achieved",
+  no_data: "No Data",
+};
+
+function GoalHealthBadge({ status }: { status: GoalHealthStatus | null }) {
+  const key = status ?? "no_data";
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0", HEALTH_STATUS_COLORS[key] ?? HEALTH_STATUS_COLORS.no_data)}>
+      {HEALTH_STATUS_LABELS[key] ?? "No Data"}
+    </span>
+  );
+}
+
+/* ── Health Trend Sparkline ── */
+
+function HealthTrendChart({ snapshots }: { snapshots: GoalSnapshotDTO[] }) {
+  if (snapshots.length < 2) return null;
+
+  // Sort chronologically
+  const sorted = [...snapshots].sort(
+    (a, b) => new Date(a.snapshotDate).getTime() - new Date(b.snapshotDate).getTime(),
+  );
+
+  const points = sorted
+    .filter((s) => s.healthScore != null)
+    .map((s) => ({
+      date: new Date(s.snapshotDate),
+      score: s.healthScore!,
+    }));
+
+  if (points.length < 2) return null;
+
+  const minScore = Math.min(...points.map((p) => p.score));
+  const maxScore = Math.max(...points.map((p) => p.score));
+  const scoreRange = maxScore - minScore || 1;
+  const minDate = points[0].date.getTime();
+  const maxDate = points[points.length - 1].date.getTime();
+  const dateRange = maxDate - minDate || 1;
+
+  const svgWidth = 360;
+  const svgHeight = 80;
+  const padding = 8;
+  const chartWidth = svgWidth - padding * 2;
+  const chartHeight = svgHeight - padding * 2;
+
+  const pathPoints = points.map((p) => ({
+    x: padding + ((p.date.getTime() - minDate) / dateRange) * chartWidth,
+    y: padding + chartHeight - ((p.score - minScore) / scoreRange) * chartHeight,
+  }));
+
+  const pathD = pathPoints
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
+    .join(" ");
+
+  const startLabel = points[0].date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const endLabel = points[points.length - 1].date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-2">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+        <TrendingUp className="h-3.5 w-3.5" />
+        Health Trend (last 30 days)
+      </h4>
+      <svg viewBox={`0 0 ${svgWidth} ${svgHeight + 16}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {/* Grid */}
+        <line x1={padding} y1={padding} x2={svgWidth - padding} y2={padding} className="stroke-muted/30" strokeWidth="0.5" />
+        <line x1={padding} y1={padding + chartHeight / 2} x2={svgWidth - padding} y2={padding + chartHeight / 2} className="stroke-muted/30" strokeWidth="0.5" />
+        <line x1={padding} y1={padding + chartHeight} x2={svgWidth - padding} y2={padding + chartHeight} className="stroke-muted/30" strokeWidth="0.5" />
+
+        {/* Y labels */}
+        <text x={2} y={padding + 3} className="fill-muted-foreground text-[7px]">{maxScore}</text>
+        <text x={2} y={padding + chartHeight + 3} className="fill-muted-foreground text-[7px]">{minScore}</text>
+
+        {/* Line */}
+        <path d={pathD} fill="none" className="stroke-blue-500" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Dots */}
+        {pathPoints.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r="2.5" className="fill-blue-500" />
+        ))}
+
+        {/* X labels */}
+        <text x={padding} y={svgHeight + 12} className="fill-muted-foreground text-[7px]">{startLabel}</text>
+        <text x={svgWidth - padding} y={svgHeight + 12} textAnchor="end" className="fill-muted-foreground text-[7px]">{endLabel}</text>
+      </svg>
+    </div>
+  );
+}
+
+/* ── Check-in Status Badge ── */
+
+const CHECKIN_STATUS_COLORS: Record<string, string> = {
+  on_track: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  at_risk: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  off_track: "bg-red-500/10 text-red-600 dark:text-red-400",
+  achieved: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  cancelled: "bg-muted text-muted-foreground",
+};
+
+function CheckInStatusBadge({ status }: { status: string }) {
+  return (
+    <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", CHECKIN_STATUS_COLORS[status] ?? "bg-muted text-muted-foreground")}>
+      {status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+/* ── Check-in Form ── */
+
+function AddCheckInForm({
+  defaultConfidence,
+  onSubmit,
+  isPending,
+}: {
+  defaultConfidence: number;
+  onSubmit: (data: CreateCheckInPayload) => void;
+  isPending: boolean;
+}) {
+  const [status, setStatus] = useState("on_track");
+  const [confidence, setConfidence] = useState(defaultConfidence);
+  const [note, setNote] = useState("");
+  const [blockers, setBlockers] = useState("");
+  const [nextSteps, setNextSteps] = useState("");
+
+  const handleSubmit = () => {
+    onSubmit({
+      status,
+      confidence,
+      note: note.trim() || undefined,
+      blockers: blockers.trim() || undefined,
+      nextSteps: nextSteps.trim() || undefined,
+    });
+    setNote("");
+    setBlockers("");
+    setNextSteps("");
+  };
+
+  const confColor =
+    confidence > 66
+      ? "text-emerald-600 dark:text-emerald-400"
+      : confidence > 33
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+
+  return (
+    <div className="border border-border rounded-lg p-4 space-y-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Add Check-in</h4>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Status</label>
+          <Select value={status} onValueChange={setStatus}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="on_track">On Track</SelectItem>
+              <SelectItem value="at_risk">At Risk</SelectItem>
+              <SelectItem value="off_track">Off Track</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">
+            Confidence: <span className={cn("font-medium", confColor)}>{confidence}</span>
+          </label>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={confidence}
+            onChange={(e) => setConfidence(Number(e.target.value))}
+            className="w-full h-1.5 accent-foreground cursor-pointer"
+          />
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Note</label>
+        <Textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="What progress was made?"
+          className="text-sm min-h-[60px]"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Blockers (optional)</label>
+          <Textarea
+            value={blockers}
+            onChange={(e) => setBlockers(e.target.value)}
+            placeholder="Any blockers?"
+            className="text-sm min-h-[40px]"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Next Steps (optional)</label>
+          <Textarea
+            value={nextSteps}
+            onChange={(e) => setNextSteps(e.target.value)}
+            placeholder="What's next?"
+            className="text-sm min-h-[40px]"
+          />
+        </div>
+      </div>
+
+      <Button size="sm" onClick={handleSubmit} disabled={isPending}>
+        {isPending ? "Submitting..." : "Submit Check-in"}
+      </Button>
+    </div>
+  );
+}
+
+/* ── Milestones (localStorage) ── */
+
+interface Milestone {
+  id: string;
+  title: string;
+  targetDate: string;
+  completed: boolean;
+}
+
+function useMilestones(goalId: string) {
+  const key = `ironworks:milestones:${goalId}`;
+  const [milestones, setMilestones] = useState<Milestone[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+
+  const save = useCallback(
+    (ms: Milestone[]) => {
+      setMilestones(ms);
+      try {
+        localStorage.setItem(key, JSON.stringify(ms));
+      } catch {
+        // ignore
+      }
+    },
+    [key],
+  );
+
+  const add = useCallback(
+    (title: string, targetDate: string) => {
+      const ms = [...milestones, { id: crypto.randomUUID(), title, targetDate, completed: false }];
+      save(ms);
+    },
+    [milestones, save],
+  );
+
+  const toggle = useCallback(
+    (id: string) => {
+      const ms = milestones.map((m) => (m.id === id ? { ...m, completed: !m.completed } : m));
+      save(ms);
+    },
+    [milestones, save],
+  );
+
+  const remove = useCallback(
+    (id: string) => {
+      save(milestones.filter((m) => m.id !== id));
+    },
+    [milestones, save],
+  );
+
+  return { milestones, add, toggle, remove };
+}
+
+/* ── Agent Contribution Chart ── */
+
+function AgentContributionSection({
+  issues,
+  agentMap,
+}: {
+  issues: Issue[];
+  agentMap: Map<string, import("@ironworksai/shared").Agent>;
+}) {
+  const contributions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const issue of issues) {
+      if (issue.status === "done" && issue.assigneeAgentId) {
+        counts.set(issue.assigneeAgentId, (counts.get(issue.assigneeAgentId) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .map(([agentId, count]) => ({
+        agentId,
+        name: agentMap.get(agentId)?.name ?? agentId.slice(0, 8),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+  }, [issues, agentMap]);
+
+  if (contributions.length === 0) return null;
+
+  const maxCount = contributions[0].count;
+
+  return (
+    <div className="rounded-xl border border-border p-4 space-y-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+        <Users className="h-3.5 w-3.5" />
+        Agent Contributions
+      </h4>
+      <div className="space-y-2">
+        {contributions.map((c) => (
+          <div key={c.agentId} className="flex items-center gap-2">
+            <span className="text-xs w-24 truncate shrink-0">{c.name}</span>
+            <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-blue-500"
+                style={{ width: `${(c.count / maxCount) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground tabular-nums w-6 text-right">{c.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function GoalDetail() {
   const { goalId } = useParams<{ goalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -283,6 +628,35 @@ export function GoalDetail() {
   const [krUnit, setKrUnit] = useState("%");
   const [editingKrId, setEditingKrId] = useState<string | null>(null);
   const [editingKrValue, setEditingKrValue] = useState("");
+
+  // Check-ins
+  const { data: checkIns } = useQuery({
+    queryKey: queryKeys.goals.checkIns(resolvedCompanyId!, goalId!),
+    queryFn: () => goalCheckInsApi.list(resolvedCompanyId!, goalId!),
+    enabled: !!resolvedCompanyId && !!goalId,
+  });
+
+  const createCheckIn = useMutation({
+    mutationFn: (data: CreateCheckInPayload) =>
+      goalCheckInsApi.create(resolvedCompanyId!, goalId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.checkIns(resolvedCompanyId!, goalId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.detail(goalId!) });
+    },
+  });
+
+  // Snapshots (for trend chart)
+  const { data: snapshots } = useQuery({
+    queryKey: queryKeys.goals.snapshots(resolvedCompanyId!, goalId!),
+    queryFn: () => goalSnapshotsApi.list(resolvedCompanyId!, goalId!, 30),
+    enabled: !!resolvedCompanyId && !!goalId,
+  });
+
+  // Milestones (localStorage)
+  const milestonesHook = useMilestones(goalId!);
+  const [showMilestoneForm, setShowMilestoneForm] = useState(false);
+  const [milestoneTitle, setMilestoneTitle] = useState("");
+  const [milestoneDate, setMilestoneDate] = useState("");
 
   // Goal progress stats
   const { data: progress } = useQuery({
@@ -403,6 +777,7 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
+          <GoalHealthBadge status={goal.healthStatus} />
           <Button
             variant="outline"
             size="sm"
@@ -511,6 +886,9 @@ export function GoalDetail() {
           </TabsTrigger>
           <TabsTrigger value="projects">
             Projects ({linkedProjects.length})
+          </TabsTrigger>
+          <TabsTrigger value="check-ins">
+            Check-ins ({(checkIns ?? []).length})
           </TabsTrigger>
           <TabsTrigger value="activity">
             Activity ({goalActivity.length})
@@ -714,6 +1092,61 @@ export function GoalDetail() {
           )}
         </TabsContent>
 
+        <TabsContent value="check-ins" className="mt-4 space-y-4">
+          <AddCheckInForm
+            defaultConfidence={goal.confidence ?? 50}
+            onSubmit={(data) => createCheckIn.mutate(data)}
+            isPending={createCheckIn.isPending}
+          />
+
+          {(checkIns ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No check-ins yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {(checkIns ?? []).map((ci: GoalCheckIn) => (
+                <div key={ci.id} className="border border-border rounded-lg p-3 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(ci.createdAt).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <CheckInStatusBadge status={ci.status} />
+                    {ci.confidence != null && (
+                      <span className="text-[10px] text-muted-foreground">
+                        Confidence: {ci.confidence}%
+                      </span>
+                    )}
+                    {ci.authorAgentId && (
+                      <span className="text-[10px] text-muted-foreground">
+                        by {agentMap.get(ci.authorAgentId)?.name ?? "Agent"}
+                      </span>
+                    )}
+                    {ci.authorUserId && (
+                      <span className="text-[10px] text-muted-foreground">by User</span>
+                    )}
+                  </div>
+                  {ci.note && <p className="text-sm">{ci.note}</p>}
+                  {ci.blockers && (
+                    <div className="text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 rounded px-2 py-1">
+                      <span className="font-medium">Blockers:</span> {ci.blockers}
+                    </div>
+                  )}
+                  {ci.nextSteps && (
+                    <div className="text-xs text-muted-foreground">
+                      <span className="font-medium">Next steps:</span> {ci.nextSteps}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
         <TabsContent value="activity" className="mt-4">
           {goalActivity.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
@@ -735,6 +1168,104 @@ export function GoalDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Milestones Section */}
+      <div className="rounded-xl border border-border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
+            <ClipboardCheck className="h-3.5 w-3.5" />
+            Milestones
+          </h4>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowMilestoneForm(true)}
+          >
+            <Plus className="h-3 w-3 mr-1" />
+            Add
+          </Button>
+        </div>
+
+        {showMilestoneForm && (
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Milestone title..."
+              value={milestoneTitle}
+              onChange={(e) => setMilestoneTitle(e.target.value)}
+              className="text-xs"
+              autoFocus
+            />
+            <Input
+              type="date"
+              value={milestoneDate}
+              onChange={(e) => setMilestoneDate(e.target.value)}
+              className="w-auto text-xs"
+            />
+            <Button
+              size="sm"
+              disabled={!milestoneTitle.trim()}
+              onClick={() => {
+                milestonesHook.add(milestoneTitle.trim(), milestoneDate);
+                setMilestoneTitle("");
+                setMilestoneDate("");
+                setShowMilestoneForm(false);
+              }}
+            >
+              Save
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setShowMilestoneForm(false); setMilestoneTitle(""); }}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
+
+        {milestonesHook.milestones.length === 0 && !showMilestoneForm ? (
+          <p className="text-sm text-muted-foreground">No milestones defined yet.</p>
+        ) : (
+          <div className="space-y-1">
+            {milestonesHook.milestones.map((ms) => (
+              <div key={ms.id} className="flex items-center gap-2 py-1">
+                <button
+                  onClick={() => milestonesHook.toggle(ms.id)}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {ms.completed ? (
+                    <CheckSquare className="h-4 w-4 text-emerald-500" />
+                  ) : (
+                    <Square className="h-4 w-4" />
+                  )}
+                </button>
+                <span className={cn("text-sm flex-1", ms.completed && "line-through text-muted-foreground")}>
+                  {ms.title}
+                </span>
+                {ms.targetDate && (
+                  <span className="text-[10px] text-muted-foreground">
+                    {new Date(ms.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  </span>
+                )}
+                <button
+                  onClick={() => milestonesHook.remove(ms.id)}
+                  className="text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Health Trend Chart */}
+      {snapshots && snapshots.length >= 2 && (
+        <HealthTrendChart snapshots={snapshots} />
+      )}
+
+      {/* Agent Contributions */}
+      <AgentContributionSection issues={goalIssues} agentMap={agentMap} />
     </div>
     {twoPane && (
       <div className="hidden lg:block border border-border rounded-lg p-4 h-fit sticky top-4">

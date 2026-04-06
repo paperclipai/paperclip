@@ -69,8 +69,20 @@ function ProgressBar({ percent, size = "md" }: { percent: number; size?: "sm" | 
 
 type GoalHealth = "on_track" | "at_risk" | "off_track" | "no_data";
 
+/** Prefer the backend-computed healthStatus; fall back to local heuristic. */
+function resolveGoalHealth(
+  goal: Goal,
+  progress?: GoalProgressItem | null,
+): GoalHealth {
+  // Use server-computed healthStatus when present
+  if (goal.healthStatus && goal.healthStatus !== "no_data" && goal.healthStatus !== "achieved") {
+    return goal.healthStatus as GoalHealth;
+  }
+  return computeGoalHealth(goal, progress);
+}
+
 function computeGoalHealth(
-  goal: Goal & { targetDate?: string | null },
+  goal: Goal,
   progress?: GoalProgressItem | null,
 ): GoalHealth {
   if (!progress || progress.totalIssues === 0) return "no_data";
@@ -106,7 +118,7 @@ function computeGoalHealth(
 }
 
 function forecastCompletion(
-  goal: Goal & { targetDate?: string | null },
+  goal: Goal,
   progress?: GoalProgressItem | null,
 ): string | null {
   if (!progress || progress.totalIssues === 0 || progress.completedIssues === 0) return null;
@@ -144,6 +156,22 @@ function HealthBadge({ health }: { health: GoalHealth }) {
   );
 }
 
+function ConfidenceIndicator({ confidence }: { confidence: number | null | undefined }) {
+  if (confidence == null) return null;
+  const color =
+    confidence > 66
+      ? "bg-emerald-500"
+      : confidence > 33
+        ? "bg-amber-500"
+        : "bg-red-500";
+  return (
+    <span className="flex items-center gap-1 shrink-0" title={`Confidence: ${confidence}%`}>
+      <span className={cn("h-2 w-2 rounded-full", color)} />
+      <span className="text-[10px] text-muted-foreground tabular-nums">{confidence}</span>
+    </span>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Cascade Summary Banner                                             */
 /* ------------------------------------------------------------------ */
@@ -163,7 +191,7 @@ function CascadeSummaryBanner({
 
     for (const goal of goals) {
       const progress = progressMap.get(goal.id);
-      const health = computeGoalHealth(goal as Goal & { targetDate?: string | null }, progress);
+      const health = resolveGoalHealth(goal, progress);
       if (health === "no_data") continue;
       total++;
       if (health === "on_track") onTrack++;
@@ -228,9 +256,8 @@ function GoalCard({
   const inProgress = progress?.inProgressIssues ?? 0;
   const blocked = progress?.blockedIssues ?? 0;
   const percent = progress?.progressPercent ?? 0;
-  const typedGoal = goal as Goal & { targetDate?: string | null };
-  const health = computeGoalHealth(typedGoal, progress);
-  const forecast = forecastCompletion(typedGoal, progress);
+  const health = resolveGoalHealth(goal, progress);
+  const forecast = forecastCompletion(goal, progress);
 
   return (
     <Link
@@ -243,14 +270,15 @@ function GoalCard({
             <h3 className="text-sm font-semibold truncate">{goal.title}</h3>
             <StatusBadge status={goal.status} />
             <HealthBadge health={health} />
-            {typedGoal.targetDate && (
+            <ConfidenceIndicator confidence={goal.confidence} />
+            {goal.targetDate && (
               <span className={cn(
                 "text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
-                new Date(typedGoal.targetDate) < new Date()
+                new Date(goal.targetDate) < new Date()
                   ? "bg-red-500/10 text-red-600 dark:text-red-400"
                   : "bg-muted text-muted-foreground",
               )}>
-                {new Date(typedGoal.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                {new Date(goal.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
               </span>
             )}
           </div>
@@ -352,7 +380,7 @@ function GoalTreeNode({ goal, progress, childGoals, allGoals, progressMap, issue
   const percent = progress?.progressPercent ?? 0;
   const issues = issuesByGoal.get(goal.id) ?? [];
   const hasChildren = childGoals.length > 0 || issues.length > 0;
-  const health = computeGoalHealth(goal as Goal & { targetDate?: string | null }, progress);
+  const health = resolveGoalHealth(goal, progress);
 
   const issueStatusIcon = (status: string) => {
     if (status === "done") return <CheckCircle2 className="h-3 w-3 text-emerald-500 shrink-0" />;
@@ -473,8 +501,7 @@ function GoalGanttView({
   // Determine date range across all goals
   const allDates = goals.flatMap((g) => {
     const dates: number[] = [new Date(g.createdAt).getTime()];
-    const typedGoal = g as Goal & { targetDate?: string | null };
-    if (typedGoal.targetDate) dates.push(new Date(typedGoal.targetDate).getTime());
+    if (g.targetDate) dates.push(new Date(g.targetDate).getTime());
     return dates;
   });
   if (allDates.length === 0) return <p className="text-sm text-muted-foreground">No goals with dates for timeline.</p>;
@@ -520,15 +547,14 @@ function GoalGanttView({
 
       {/* Goal bars */}
       {goals.map((goal) => {
-        const typedGoal = goal as Goal & { targetDate?: string | null };
         const startPct = ((new Date(goal.createdAt).getTime() - minDate) / range) * 100;
-        const endPct = typedGoal.targetDate
-          ? ((new Date(typedGoal.targetDate).getTime() - minDate) / range) * 100
+        const endPct = goal.targetDate
+          ? ((new Date(goal.targetDate).getTime() - minDate) / range) * 100
           : Math.min(100, startPct + 15);
         const width = Math.max(2, endPct - startPct);
         const progress = progressMap.get(goal.id);
         const percent = progress?.progressPercent ?? 0;
-        const health = computeGoalHealth(typedGoal, progress);
+        const health = resolveGoalHealth(goal, progress);
         const barColor = health === "on_track" ? "bg-emerald-500" : health === "at_risk" ? "bg-amber-500" : health === "off_track" ? "bg-red-500" : "bg-muted-foreground/30";
         const children = childrenMap.get(goal.id);
 

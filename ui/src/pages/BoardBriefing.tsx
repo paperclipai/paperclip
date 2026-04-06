@@ -5,6 +5,7 @@ import { agentsApi } from "../api/agents";
 import { channelsApi } from "../api/channels";
 import { issuesApi } from "../api/issues";
 import { costsApi } from "../api/costs";
+import { goalsApi } from "../api/goals";
 import { goalProgressApi } from "../api/goalProgress";
 import { hiringApi } from "../api/hiring";
 import { approvalsApi } from "../api/approvals";
@@ -82,6 +83,13 @@ export function BoardBriefing() {
   const { data: goalsProgress } = useQuery({
     queryKey: ["goals", "progress", selectedCompanyId!],
     queryFn: () => goalProgressApi.batch(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
+  const { data: allGoals } = useQuery({
+    queryKey: queryKeys.goals.list(selectedCompanyId!),
+    queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     staleTime: 30_000,
   });
@@ -218,15 +226,48 @@ export function BoardBriefing() {
   const spendTrend = weekSpendCents - lastWeekEstimate;
   const monthlyProjection = Math.round(weekSpendCents * 4.33);
 
-  // Goals
+  // Goals - enhanced with health status
   const goalStats = useMemo(() => {
-    const goals = goalsProgress ?? [];
-    const total = goals.length;
-    const completed = goals.filter((g) => g.progressPercent === 100).length;
-    const inProgress = goals.filter((g) => g.progressPercent > 0 && g.progressPercent < 100).length;
-    const atRisk = goals.filter((g) => g.blockedIssues > 0).length;
-    return { total, completed, inProgress, atRisk };
-  }, [goalsProgress]);
+    const progressList = goalsProgress ?? [];
+    const goalsList = allGoals ?? [];
+    const total = progressList.length;
+    const completed = progressList.filter((g) => g.progressPercent === 100).length;
+    const inProgress = progressList.filter((g) => g.progressPercent > 0 && g.progressPercent < 100).length;
+    const atRisk = progressList.filter((g) => g.blockedIssues > 0).length;
+    const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+    // Health status counts from actual goal objects
+    let onTrack = 0;
+    let healthAtRisk = 0;
+    let offTrack = 0;
+    const topAtRisk: Array<{ id: string; title: string; healthScore: number | null; healthStatus: string | null; ownerAgentId: string | null }> = [];
+
+    for (const g of goalsList) {
+      if (g.healthStatus === "on_track") onTrack++;
+      else if (g.healthStatus === "at_risk") {
+        healthAtRisk++;
+        topAtRisk.push(g);
+      } else if (g.healthStatus === "off_track") {
+        offTrack++;
+        topAtRisk.push(g);
+      }
+    }
+
+    // Sort at-risk goals by health score ascending (worst first)
+    topAtRisk.sort((a, b) => (a.healthScore ?? 0) - (b.healthScore ?? 0));
+
+    return {
+      total,
+      completed,
+      inProgress,
+      atRisk,
+      completionRate,
+      onTrack,
+      healthAtRisk,
+      offTrack,
+      topAtRisk: topAtRisk.slice(0, 5),
+    };
+  }, [goalsProgress, allGoals]);
 
   // Hiring
   const pendingHiring = useMemo(
@@ -515,19 +556,38 @@ export function BoardBriefing() {
 
       {/* 3. Goal Progress + 4. Pending Decisions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Goal Progress Card - drill-down to Goals */}
+        {/* Goal Health Card - drill-down to Goals */}
         <Link to="/goals" className="no-underline text-inherit block">
         <div className="rounded-xl border border-border p-5 space-y-3 hover:border-foreground/20 transition-colors cursor-pointer">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-2">
             <Target className="h-3.5 w-3.5" />
-            Goal Progress
+            Goal Health
           </h3>
           <div className="grid grid-cols-2 gap-3">
             <StatBlock label="Total Goals" value={goalStats.total} />
+            <StatBlock label="Completion Rate" value={`${goalStats.completionRate}%`} color="text-blue-400" />
+            <StatBlock label="On Track" value={goalStats.onTrack} color="text-emerald-400" />
+            <StatBlock label="At Risk" value={goalStats.healthAtRisk} color={goalStats.healthAtRisk > 0 ? "text-amber-400" : undefined} />
+            <StatBlock label="Off Track" value={goalStats.offTrack} color={goalStats.offTrack > 0 ? "text-red-400" : undefined} />
             <StatBlock label="Completed" value={goalStats.completed} color="text-emerald-400" />
-            <StatBlock label="In Progress" value={goalStats.inProgress} color="text-blue-400" />
-            <StatBlock label="At Risk" value={goalStats.atRisk} color={goalStats.atRisk > 0 ? "text-red-400" : undefined} />
           </div>
+          {goalStats.topAtRisk.length > 0 && (
+            <div className="pt-2 border-t border-border space-y-1.5">
+              <span className="text-[10px] text-muted-foreground font-medium uppercase">Top at-risk goals</span>
+              {goalStats.topAtRisk.map((g) => (
+                <div key={g.id} className="flex items-center gap-2 text-xs">
+                  <span className={cn(
+                    "h-1.5 w-1.5 rounded-full shrink-0",
+                    g.healthStatus === "off_track" ? "bg-red-500" : "bg-amber-500",
+                  )} />
+                  <span className="truncate flex-1">{g.title}</span>
+                  {g.healthScore != null && (
+                    <span className="text-muted-foreground tabular-nums shrink-0">{g.healthScore}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         </Link>
 
@@ -1085,7 +1145,7 @@ function StatBlock({
   color,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   color?: string;
 }) {
   return (
