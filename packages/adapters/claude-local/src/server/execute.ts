@@ -448,7 +448,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (effort) args.push("--effort", effort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    if (effectiveInstructionsFilePath) {
+    // On resumed sessions the instructions are already in the session cache;
+    // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
+    // per heartbeat and the Claude CLI may reject the combination outright.
+    if (effectiveInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", effectiveInstructionsFilePath);
     }
     args.push("--add-dir", skillsDir);

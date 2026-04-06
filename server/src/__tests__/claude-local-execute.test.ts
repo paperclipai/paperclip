@@ -25,7 +25,98 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function setupExecuteEnv(root: string) {
+  const workspace = path.join(root, "workspace");
+  const binDir = path.join(root, "bin");
+  const commandPath = path.join(binDir, "claude");
+  const capturePath = path.join(root, "capture.json");
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(binDir, { recursive: true });
+  await writeFakeClaudeCommand(commandPath);
+  const previousHome = process.env.HOME;
+  const previousPath = process.env.PATH;
+  process.env.HOME = root;
+  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+  return {
+    workspace, commandPath, capturePath,
+    restore: () => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    },
+  };
+}
+
 describe("claude execute", () => {
+  /**
+   * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
+   *
+   * --append-system-prompt-file should only be passed on fresh sessions.
+   * On resumed sessions the instructions are already in the session cache;
+   * re-injecting them wastes tokens and may be rejected by the CLI.
+   */
+  it("passes --append-system-prompt-file on a fresh session when instructionsFile is set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    try {
+      await execute({
+        runId: "run-fresh",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured.argv).toContain("--append-system-prompt-file");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("omits --append-system-prompt-file on a resumed session even when instructionsFile is set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const instructionsFile = path.join(root, "instructions.md");
+    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    try {
+      await execute({
+        runId: "run-resume",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "claude-session-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+          instructionsFilePath: instructionsFile,
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured.argv).not.toContain("--append-system-prompt-file");
+      expect(captured.argv).toContain("--resume");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");
