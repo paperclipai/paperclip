@@ -12,6 +12,7 @@ import {
   User,
   Wrench,
 } from "lucide-react";
+import { ToolPayloadView } from "./ToolPayloadView";
 
 export type TranscriptMode = "nice" | "raw";
 export type TranscriptDensity = "comfortable" | "compact";
@@ -769,20 +770,17 @@ function TranscriptToolCard({
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Input
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
-                  {formatToolPayload(block.input) || "<empty>"}
-                </pre>
+                <ToolPayloadView value={block.input} />
               </div>
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Result
                 </div>
-                <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
-                )}>
-                  {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
-                </pre>
+                <ToolPayloadView
+                  value={block.result}
+                  isError={block.status === "error"}
+                  placeholder="Waiting for result..."
+                />
               </div>
             </div>
           </div>
@@ -907,12 +905,10 @@ function TranscriptCommandGroup({
                 </span>
               </div>
               {item.result && (
-                <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                  item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
-                )}>
-                  {formatToolPayload(item.result)}
-                </pre>
+                <ToolPayloadView
+                  value={item.result}
+                  isError={item.status === "error"}
+                />
               )}
             </div>
           ))}
@@ -1031,19 +1027,15 @@ function TranscriptToolGroup({
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
                   <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Input</div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
-                    {formatToolPayload(item.input) || "<empty>"}
-                  </pre>
+                  <ToolPayloadView value={item.input} />
                 </div>
                 {item.result && (
                   <div>
                     <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Result</div>
-                    <pre className={cn(
-                      "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
-                      item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
-                    )}>
-                      {formatToolPayload(item.result)}
-                    </pre>
+                    <ToolPayloadView
+                      value={item.result}
+                      isError={item.status === "error"}
+                    />
                   </div>
                 )}
               </div>

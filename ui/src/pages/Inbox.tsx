@@ -66,6 +66,8 @@ import {
 import {
   Inbox as InboxIcon,
   AlertTriangle,
+  ChevronDown,
+  ChevronRight,
   XCircle,
   X,
   RotateCcw,
@@ -119,6 +121,24 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 
 function runFailureMessage(run: HeartbeatRun): string {
   return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+}
+
+/** Full multi-line error body for the expandable detail view. */
+function runFailureDetail(run: HeartbeatRun): string | null {
+  const full = (run.error ?? run.stderrExcerpt ?? "").trim();
+  if (!full) return null;
+  // Only worth expanding when the full text has more than the single-line summary.
+  const summary = runFailureMessage(run);
+  return full !== summary ? full : null;
+}
+
+/** Human-readable error metadata chips (exit code, signal, error code). */
+function runFailureChips(run: HeartbeatRun): Array<{ label: string; value: string }> {
+  const chips: Array<{ label: string; value: string }> = [];
+  if (run.exitCode != null && run.exitCode !== 0) chips.push({ label: "exit", value: String(run.exitCode) });
+  if (run.signal) chips.push({ label: "signal", value: run.signal });
+  if (run.errorCode) chips.push({ label: "code", value: run.errorCode });
+  return chips;
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
@@ -389,6 +409,9 @@ export function FailedRunInboxRow({
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const displayError = runFailureMessage(run);
+  const fullDetail = runFailureDetail(run);
+  const chips = runFailureChips(run);
+  const [expanded, setExpanded] = useState(false);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -459,12 +482,31 @@ export function FailedRunInboxRow({
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
+              {chips.map((chip) => (
+                <span
+                  key={chip.label}
+                  className="inline-flex items-center gap-1 rounded bg-red-500/10 px-1.5 py-0.5 font-mono text-[11px] text-red-700 dark:text-red-300"
+                >
+                  {chip.label} {chip.value}
+                </span>
+              ))}
               <span className="truncate max-w-[300px]">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
             </span>
           </span>
         </Link>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          {fullDetail && (
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setExpanded((v) => !v); }}
+              className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={expanded ? "Collapse error details" : "Expand error details"}
+            >
+              {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              Details
+            </button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -488,7 +530,19 @@ export function FailedRunInboxRow({
           )}
         </div>
       </div>
+      {/* Mobile actions */}
       <div className="mt-3 flex gap-2 sm:hidden">
+        {fullDetail && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={expanded ? "Collapse error details" : "Expand error details"}
+          >
+            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            Details
+          </button>
+        )}
         <Button
           type="button"
           variant="outline"
@@ -511,6 +565,12 @@ export function FailedRunInboxRow({
           </button>
         )}
       </div>
+      {/* Expandable error detail */}
+      {expanded && fullDetail && (
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-red-500/[0.06] border border-red-500/20 p-3 font-mono text-xs text-red-700 dark:text-red-300">
+          {fullDetail}
+        </pre>
+      )}
     </div>
   );
 }
