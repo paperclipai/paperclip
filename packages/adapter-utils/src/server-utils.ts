@@ -224,7 +224,15 @@ export function wrapUntrustedHandoff(raw: string): string {
     trimmed.startsWith(UNTRUSTED_HANDOFF_OPEN) &&
     trimmed.endsWith(expectedSuffix)
   ) {
-    return `${UNTRUSTED_HANDOFF_PREAMBLE}\n\n${trimmed}`;
+    // Belt-and-suspenders: verify exactly one OPEN and one CLOSE tag.
+    // A crafted payload could satisfy startsWith/endsWith while embedding
+    // duplicate tag pairs with unguarded content between them.
+    const openCount = (trimmed.match(/<previous-agent-output trust="untrusted">/g) || []).length;
+    const closeCount = (trimmed.match(/<\/previous-agent-output>/g) || []).length;
+    if (openCount === 1 && closeCount === 1) {
+      return `${UNTRUSTED_HANDOFF_PREAMBLE}\n\n${trimmed}`;
+    }
+    // Fall through to re-wrap: interior injection detected
   }
   return [
     UNTRUSTED_HANDOFF_PREAMBLE,
