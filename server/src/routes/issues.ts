@@ -1336,6 +1336,69 @@ export function issueRoutes(
         },
       });
 
+      // Auto-create approval when an agent posts a comment requesting board approval
+      // but hasn't created a formal approval ticket
+      if (actor.actorType === "agent" && actor.agentId) {
+        const lowerBody = commentBody.toLowerCase();
+        const requestsApproval =
+          lowerBody.includes("awaiting board approval") ||
+          lowerBody.includes("awaiting approval") ||
+          lowerBody.includes("pending board approval") ||
+          lowerBody.includes("please approve") ||
+          lowerBody.includes("board: please approve") ||
+          lowerBody.includes("waiting for approval") ||
+          lowerBody.includes("requesting approval");
+        if (requestsApproval) {
+          const existingApprovals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+          const hasPendingApproval = existingApprovals.some(
+            (a: { status: string }) => a.status === "pending" || a.status === "revision_requested",
+          );
+          if (!hasPendingApproval) {
+            const approval = await approvalsSvc.create(issue.companyId, {
+              type: "approve_ceo_strategy",
+              requestedByAgentId: actor.agentId,
+              payload: {
+                issueId: issue.id,
+                issueIdentifier: issue.identifier,
+                issueTitle: issue.title,
+                plan: commentBody.slice(0, 2000),
+              },
+              requestedByUserId: null,
+              status: "pending",
+              decisionNote: null,
+              decidedByUserId: null,
+              decidedAt: null,
+              updatedAt: new Date(),
+            });
+            if (approval) {
+              await issueApprovalsSvc.linkManyForApproval(approval.id, [issue.id], {
+                agentId: actor.agentId,
+                userId: null,
+              });
+              await logActivity(db, {
+                companyId: issue.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "approval.created",
+                entityType: "approval",
+                entityId: approval.id,
+                details: {
+                  type: approval.type,
+                  issueIds: [issue.id],
+                  source: "auto_comment_approval_request",
+                  issueIdentifier: issue.identifier,
+                },
+              });
+              logger.info(
+                { approvalId: approval.id, issueId: issue.id, agentId: actor.agentId },
+                "auto-created approval from agent comment requesting board approval",
+              );
+            }
+          }
+        }
+      }
     }
 
     const assigneeChanged = assigneeWillChange;
