@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { buildExecutionPolicy, stageParticipantValues } from "../lib/issue-execution-policy";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -166,6 +167,10 @@ export function IssueProperties({
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
+  const [reviewersOpen, setReviewersOpen] = useState(false);
+  const [reviewerSearch, setReviewerSearch] = useState("");
+  const [approversOpen, setApproversOpen] = useState(false);
+  const [approverSearch, setApproverSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -265,9 +270,59 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
+  const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
+  const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+    onUpdate({
+      executionPolicy: buildExecutionPolicy({
+        existingPolicy: issue.executionPolicy ?? null,
+        reviewerValues: nextReviewers,
+        approverValues: nextApprovers,
+      }),
+    });
+  };
+  const toggleExecutionParticipant = (stageType: "review" | "approval", value: string) => {
+    const currentValues = stageType === "review" ? reviewerValues : approverValues;
+    const nextValues = currentValues.includes(value)
+      ? currentValues.filter((candidate) => candidate !== value)
+      : [...currentValues, value];
+    updateExecutionPolicy(
+      stageType === "review" ? nextValues : reviewerValues,
+      stageType === "approval" ? nextValues : approverValues,
+    );
+  };
+  const executionParticipantLabel = (value: string) => {
+    if (value.startsWith("agent:")) {
+      return agentName(value.slice("agent:".length)) ?? value.slice("agent:".length, "agent:".length + 8);
+    }
+    if (value.startsWith("user:")) {
+      return userLabel(value.slice("user:".length)) ?? "User";
+    }
+    return value;
+  };
+  const reviewerTrigger = reviewerValues.length > 0
+    ? <span className="text-sm truncate">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    : <span className="text-sm text-muted-foreground">None</span>;
+  const approverTrigger = approverValues.length > 0
+    ? <span className="text-sm truncate">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    : <span className="text-sm text-muted-foreground">None</span>;
+  const currentExecutionLabel = (() => {
+    if (!issue.executionState?.currentStageType) return null;
+    const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
+    const participant = issue.executionState.currentParticipant;
+    const participantLabel = participant
+      ? (participant.type === "agent"
+        ? agentName(participant.agentId ?? null)
+        : userLabel(participant.userId ?? null))
+      : null;
+    if (issue.executionState.status === "changes_requested") {
+      return `${stageLabel} requested changes${participantLabel ? ` by ${participantLabel}` : ""}`;
+    }
+    return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
+  })();
 
   const labelsTrigger = (issue.labels ?? []).length > 0 ? (
     <div className="flex items-center gap-1 flex-wrap">
@@ -450,6 +505,80 @@ export function IssueProperties({
             {a.name}
           </button>
         ))}
+      </div>
+    </>
+  );
+
+  const executionParticipantsContent = (
+    stageType: "review" | "approval",
+    values: string[],
+    search: string,
+    setSearch: (value: string) => void,
+    onClear: () => void,
+  ) => (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder={`Search ${stageType === "review" ? "reviewers" : "approvers"}...`}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            values.length === 0 && "bg-accent",
+          )}
+          onClick={onClear}
+        >
+          No {stageType === "review" ? "reviewers" : "approvers"}
+        </button>
+        {currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              values.includes(`user:${currentUserId}`) && "bg-accent",
+            )}
+            onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Assign to me
+          </button>
+        )}
+        {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
+          <button
+            className={cn(
+              "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+              values.includes(`user:${issue.createdByUserId}`) && "bg-accent",
+            )}
+            onClick={() => toggleExecutionParticipant(stageType, `user:${issue.createdByUserId}`)}
+          >
+            <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+            {creatorUserLabel ? creatorUserLabel : "Requester"}
+          </button>
+        )}
+        {sortedAgents
+          .filter((agent) => {
+            if (!search.trim()) return true;
+            return agent.name.toLowerCase().includes(search.toLowerCase());
+          })
+          .map((agent) => {
+            const encoded = `agent:${agent.id}`;
+            return (
+              <button
+                key={`${stageType}:${agent.id}`}
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  values.includes(encoded) && "bg-accent",
+                )}
+                onClick={() => toggleExecutionParticipant(stageType, encoded)}
+              >
+                <AgentIcon icon={agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+                {agent.name}
+              </button>
+            );
+          })}
       </div>
     </>
   );
@@ -749,6 +878,48 @@ export function IssueProperties({
             ) : null}
           </div>
         </PropertyRow>
+
+        <PropertyPicker
+          inline={inline}
+          label="Reviewers"
+          open={reviewersOpen}
+          onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
+          triggerContent={reviewerTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "review",
+            reviewerValues,
+            reviewerSearch,
+            setReviewerSearch,
+            () => updateExecutionPolicy([], approverValues),
+          )}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Approvers"
+          open={approversOpen}
+          onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
+          triggerContent={approverTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "approval",
+            approverValues,
+            approverSearch,
+            setApproverSearch,
+            () => updateExecutionPolicy(reviewerValues, []),
+          )}
+        </PropertyPicker>
+
+        {currentExecutionLabel && (
+          <PropertyRow label="Execution">
+            <span className="text-sm">{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
 
         {issue.parentId && (
           <PropertyRow label="Parent">

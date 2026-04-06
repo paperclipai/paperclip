@@ -13,6 +13,7 @@ import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
+import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { useToast } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -66,6 +67,8 @@ interface IssueDraft {
   status: string;
   priority: string;
   assigneeValue: string;
+  reviewerValue: string;
+  approverValue: string;
   assigneeId?: string;
   projectId: string;
   projectWorkspaceId?: string;
@@ -281,6 +284,8 @@ export function NewIssueDialog() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
+  const [reviewerValue, setReviewerValue] = useState("");
+  const [approverValue, setApproverValue] = useState("");
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
@@ -484,6 +489,8 @@ export function NewIssueDialog() {
       status,
       priority,
       assigneeValue,
+      reviewerValue,
+      approverValue,
       projectId,
       projectWorkspaceId,
       assigneeModelOverride,
@@ -498,6 +505,8 @@ export function NewIssueDialog() {
     status,
     priority,
     assigneeValue,
+    reviewerValue,
+    approverValue,
     projectId,
     projectWorkspaceId,
     assigneeModelOverride,
@@ -547,6 +556,8 @@ export function NewIssueDialog() {
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setReviewerValue("");
+      setApproverValue("");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -565,6 +576,8 @@ export function NewIssueDialog() {
           ? assigneeValueFromSelection(newIssueDefaults)
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
+      setReviewerValue(draft.reviewerValue ?? "");
+      setApproverValue(draft.approverValue ?? "");
       setProjectId(restoredProjectId);
       setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
@@ -584,6 +597,8 @@ export function NewIssueDialog() {
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setReviewerValue("");
+      setApproverValue("");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -626,6 +641,8 @@ export function NewIssueDialog() {
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
+    setReviewerValue("");
+    setApproverValue("");
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeOptionsOpen(false);
@@ -647,6 +664,8 @@ export function NewIssueDialog() {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
     setAssigneeValue("");
+    setReviewerValue("");
+    setApproverValue("");
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeModelOverride("");
@@ -685,6 +704,10 @@ export function NewIssueDialog() {
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
+    const executionPolicy = buildExecutionPolicy({
+      reviewerValues: reviewerValue ? [reviewerValue] : [],
+      approverValues: approverValue ? [approverValue] : [],
+    });
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
@@ -704,6 +727,7 @@ export function NewIssueDialog() {
         ? { executionWorkspaceId: selectedExecutionWorkspaceId }
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
+      ...(executionPolicy ? { executionPolicy } : {}),
     });
   }
 
@@ -1148,6 +1172,64 @@ export function NewIssueDialog() {
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
                         style={{ backgroundColor: project?.color ?? "#6366f1" }}
                       />
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+              />
+              <InlineEntitySelector
+                value={reviewerValue}
+                options={assigneeOptions}
+                placeholder="Reviewer"
+                disablePortal
+                noneLabel="No reviewer"
+                searchPlaceholder="Search reviewers..."
+                emptyMessage="No reviewers found."
+                onChange={setReviewerValue}
+                renderTriggerValue={(option) =>
+                  option ? (
+                    <span className="truncate">{`Reviewer: ${option.label}`}</span>
+                  ) : (
+                    <span className="text-muted-foreground">Reviewer</span>
+                  )
+                }
+                renderOption={(option) => {
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const reviewer = parseAssigneeValue(option.id).assigneeAgentId
+                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                    : null;
+                  return (
+                    <>
+                      {reviewer ? <AgentIcon icon={reviewer.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                      <span className="truncate">{option.label}</span>
+                    </>
+                  );
+                }}
+              />
+              <InlineEntitySelector
+                value={approverValue}
+                options={assigneeOptions}
+                placeholder="Approver"
+                disablePortal
+                noneLabel="No approver"
+                searchPlaceholder="Search approvers..."
+                emptyMessage="No approvers found."
+                onChange={setApproverValue}
+                renderTriggerValue={(option) =>
+                  option ? (
+                    <span className="truncate">{`Approver: ${option.label}`}</span>
+                  ) : (
+                    <span className="text-muted-foreground">Approver</span>
+                  )
+                }
+                renderOption={(option) => {
+                  if (!option.id) return <span className="truncate">{option.label}</span>;
+                  const approver = parseAssigneeValue(option.id).assigneeAgentId
+                    ? (agents ?? []).find((agent) => agent.id === parseAssigneeValue(option.id).assigneeAgentId)
+                    : null;
+                  return (
+                    <>
+                      {approver ? <AgentIcon icon={approver.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
                     </>
                   );
