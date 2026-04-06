@@ -41,6 +41,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,
+      enableDependencies: false,
     });
     mockInstanceSettingsService.updateGeneral.mockResolvedValue({
       id: "instance-settings-1",

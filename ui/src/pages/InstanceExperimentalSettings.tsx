@@ -24,7 +24,7 @@ export function InstanceExperimentalSettings() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean }) =>
+    mutationFn: async (patch: { enableIsolatedWorkspaces?: boolean; autoRestartDevServerWhenIdle?: boolean; enableDependencies?: boolean }) =>
       instanceSettingsApi.updateExperimental(patch),
     onSuccess: async () => {
       setActionError(null);
@@ -54,6 +54,7 @@ export function InstanceExperimentalSettings() {
 
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
+  const enableDependencies = experimentalQuery.data?.enableDependencies === true;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -105,6 +106,25 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle guarded dev-server auto-restart"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Enable Issue Dependencies</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Allow issues to declare blocker dependencies on other issues. When enabled, the &ldquo;Blocked By&rdquo;
+              section appears in issue detail, agents can set <code>blockedByIssueIds</code> on issues, and resolved
+              blockers automatically wake dependent agents.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableDependencies}
+            onCheckedChange={() => toggleMutation.mutate({ enableDependencies: !enableDependencies })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle issue dependencies experimental setting"
           />
         </div>
       </section>

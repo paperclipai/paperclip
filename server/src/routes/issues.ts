@@ -109,6 +109,11 @@ export function issueRoutes(
     return parsed;
   }
 
+  async function isDependenciesEnabled(): Promise<boolean> {
+    const { enableDependencies } = await instanceSettings.getExperimental();
+    return enableDependencies;
+  }
+
   async function runSingleFileUpload(req: Request, res: Response) {
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
@@ -1050,8 +1055,15 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+
+    // Strip blockedByIssueIds from create when dependencies are disabled
+    const createBody = { ...req.body };
+    if (Array.isArray(createBody.blockedByIssueIds) && !(await isDependenciesEnabled())) {
+      delete createBody.blockedByIssueIds;
+    }
+
     const issue = await svc.create(companyId, {
-      ...req.body,
+      ...createBody,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -1068,7 +1080,7 @@ export function issueRoutes(
       details: {
         title: issue.title,
         identifier: issue.identifier,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+        ...(Array.isArray(createBody.blockedByIssueIds) ? { blockedByIssueIds: createBody.blockedByIssueIds } : {}),
       },
     });
 
@@ -1112,6 +1124,14 @@ export function issueRoutes(
       }
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+
+    const depsEnabled = await isDependenciesEnabled();
+    if (Array.isArray(req.body.blockedByIssueIds) && !depsEnabled) {
+      res.status(403).json({
+        error: "Dependencies feature is not enabled. Enable the 'enableDependencies' experimental flag in instance settings.",
+      });
+      return;
+    }
 
     const actor = getActorInfo(req);
     const isClosed = existing.status === "done" || existing.status === "cancelled";
@@ -1413,7 +1433,7 @@ export function issueRoutes(
       }
 
       const becameDone = existing.status !== "done" && issue.status === "done";
-      if (becameDone) {
+      if (becameDone && depsEnabled) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
           addWakeup(dependent.assigneeAgentId, {
