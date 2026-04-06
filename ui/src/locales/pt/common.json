@@ -1,0 +1,2128 @@
+{
+  "sidebar": {
+    "new_issue": "Novo Chamado",
+    "search": "Buscar",
+    "dashboard": "Painel",
+    "goals": "Objetivos",
+    "approvals": "Aprovações",
+    "runs": "Execuções",
+    "live_runs": "Execuções ao Vivo",
+    "heartbeat": "Monitoramento",
+    "settings": "Configurações",
+    "teams": "Equipes",
+    "members": "Membros",
+    "pending": "Solicitações de Participação",
+    "projects": "Projetos",
+    "inbox": "Caixa de Entrada",
+    "sections": {
+      "work": "Trabalho",
+      "company": "Empresa",
+      "projects": "Projetos",
+      "agents": "Agentes"
+    },
+    "work": {
+      "tasks": "Tarefas",
+      "routines": "Rotinas"
+    },
+    "actions": {
+      "new_project": "Novo projeto",
+      "new_agent": "Novo agente"
+    },
+    "status": {
+      "paused_by_budget": "Pausado por orçamento",
+      "live_count": "{{count}} ao vivo"
+    },
+    "company_menu": {
+      "org": "Organograma",
+      "skills": "Habilidades",
+      "costs": "Custos",
+      "activity": "Atividade",
+      "select": "Selecionar empresa"
+    }
+  },
+  "dashboard": {
+    "welcome": "Bem-vindo ao Paperclip. Configure sua primeira empresa e agente para começar.",
+    "get_started": "Começar",
+    "select_company": "Crie ou selecione uma empresa para visualizar o painel.",
+    "no_agents": "Você não possui agentes.",
+    "create_one": "Crie um aqui",
+    "active_budget_incidents_one": "{{count}} incidente de orçamento ativo",
+    "active_budget_incidents_other": "{{count}} incidentes de orçamento ativos",
+    "paused": {
+      "agents_one": "{{count}} agente pausado",
+      "agents_other": "{{count}} agentes pausados",
+      "projects_one": "{{count}} projeto pausado",
+      "projects_other": "{{count}} projetos pausados",
+      "approvals_one": "{{count}} aprovação de orçamento pendente",
+      "approvals_other": "{{count}} aprovações de orçamento pendentes",
+      "deleting": "Excluindo...",
+      "agents_count_one": "{{count}} agente",
+      "agents_count_other": "{{count}} agentes",
+      "issues_count_one": "{{count}} chamado",
+      "issues_count_other": "{{count}} chamados"
+    },
+    "open_budgets": "Orçamentos abertos",
+    "active_agents": "Agentes Ativos",
+    "success_rate": "Taxa de Sucesso",
+    "avg_resolution_time": "Tempo Médio de Resolução",
+    "open_issues": "Chamados Abertos",
+    "total_cost": "Custo Total",
+    "human_interventions": "Intervenções Humanas",
+    "activity_over_time": "Atividade ao Longo do Tempo",
+    "issue_distribution": "Distribuição de Chamados",
+    "metrics": {
+      "agents_enabled": "Agentes Ativos",
+      "agents_description": "{{running}} em execução · {{paused}} pausados · {{error}} erro",
+      "tasks_in_progress": "Tarefas em Andamento",
+      "tasks_description": "{{open}} abertas · {{blocked}} bloqueadas",
+      "month_spend": "Gasto do Mês",
+      "month_spend_description": "{{percent}}% do orçamento mensal de {{budget}} utilizado",
+      "unlimited_budget": "Orçamento ilimitado",
+      "pending_approvals": "Aprovações Pendentes",
+      "pending_approvals_description": "Sem solicitações de orçamento pendentes",
+      "budget_overrides_description": "{{count}} solicitações de orçamento pendentes"
+    },
+    "charts": {
+      "run_activity": "Atividade de Execução",
+      "last_14_days": "Últimos 14 dias",
+      "issues_priority": "Chamados por Prioridade",
+      "issues_status": "Chamados por Status",
+      "success_rate": "Taxa de Sucesso"
+    },
+    "recent_activity": "Atividade Recente",
+    "recent_tasks": "Tarefas Recentes",
+    "no_tasks": "Nenhuma tarefa recente.",
+    "agents_panel": {
+      "title": "Agentes",
+      "no_runs": "Nenhuma execução recente de agente.",
+      "live_now": "Ao vivo agora",
+      "finished": "Finalizado {{time}}",
+      "started": "Iniciado {{time}}",
+      "waiting_transcript": "Aguardando análise do transcript...",
+      "waiting_output": "Aguardando saída...",
+      "no_transcript": "Nenhum transcript capturado."
+    },
+    "components": {
+      "liveRunWidget": {
+        "title": "Execuções ao Vivo",
+        "description": "Transmitido com a mesma interface de transcrição usada na página de detalhes da execução.",
+        "stop": "Parar",
+        "stopping": "Parando...",
+        "open_run": "Abrir execução",
+        "waiting_parsing": "Aguardando análise da transcrição...",
+        "waiting_output": "Aguardando saída da execução..."
+      },
+      "worktreeBanner": {
+        "worktree": "Árvore de Trabalho"
+      }
+    }
+  },
+  "transcript": {
+    "stdout": "saída",
+    "collapse_stdout": "Recolher saída",
+    "expand_stdout": "Expandir saída"
+  },
+  "activity": {
+    "title": "Atividade",
+    "no_activity": "Nenhuma atividade recente.",
+    "view_all": "Ver tudo",
+    "actors": {
+      "system": "Sistema",
+      "board": "Quadro",
+      "unknown": "Desconhecido"
+    },
+    "verbs": {
+      "issue.created": "criou",
+      "issue.updated": "atualizou",
+      "issue.checked_out": "assinou",
+      "issue.released": "liberou",
+      "issue.comment_added": "comentou em",
+      "issue.attachment_added": "anexou arquivo em",
+      "issue.attachment_removed": "removeu anexo de",
+      "issue.document_created": "criou documento para",
+      "issue.document_updated": "atualizou documento em",
+      "issue.document_deleted": "excluiu documento de",
+      "issue.commented": "comentou em",
+      "issue.deleted": "excluiu",
+      "agent.created": "criou",
+      "agent.updated": "atualizou",
+      "agent.paused": "pausou",
+      "agent.resumed": "retomou",
+      "agent.terminated": "encerrou",
+      "agent.key_created": "criou chave de API para",
+      "agent.budget_updated": "atualizou orçamento de",
+      "agent.runtime_session_reset": "reiniciou sessão de",
+      "heartbeat.invoked": "invocou monitoramento para",
+      "heartbeat.cancelled": "cancelou monitoramento para",
+      "approval.created": "solicitou aprovação",
+      "approval.approved": "aprovou",
+      "approval.rejected": "rejeitou",
+      "project.created": "criou",
+      "project.updated": "atualizou",
+      "project.deleted": "excluiu",
+      "goal.created": "criou",
+      "goal.updated": "atualizou",
+      "goal.deleted": "excluiu",
+      "cost.reported": "reportou custo para",
+      "cost.recorded": "registrou custo para",
+      "company.created": "criou a empresa",
+      "company.updated": "atualizou a empresa",
+      "company.archived": "arquivou",
+      "company.budget_updated": "atualizou orçamento de"
+    },
+    "changed_status": "alterou status de {{from}} para {{to}} em",
+    "changed_status_to": "alterou status para {{to}} em",
+    "changed_priority": "alterou prioridade de {{from}} para {{to}} em",
+    "changed_priority_to": "alterou prioridade para {{to}} em"
+  },
+  "status": {
+    "pending": "Pendente",
+    "approved": "Aprovado",
+    "rejected": "Rejeitado",
+    "canceled": "Cancelado",
+    "budget_override_required": "Necessário ajuste de orçamento",
+    "revision_requested": "Revisão solicitada",
+    "failed": "Falhou",
+    "timed_out": "Tempo esgotado",
+    "completed": "Concluído",
+    "active": "Ativo",
+    "paused": "Pausado",
+    "succeeded": "Concluída",
+    "error": "Erro",
+    "running": "Em execução",
+    "queued": "Na fila",
+    "cancelled": "Cancelada",
+    "backlog": "Pendências",
+    "todo": "A fazer",
+    "in_progress": "Em andamento",
+    "planned": "Planejado",
+    "achieved": "Alcançado",
+    "done": "Concluído",
+    "closed": "Fechado"
+  },
+  "actions": {
+    "assign_task": "Atribuir Tarefa",
+    "run_heartbeat": "Executar Monitoramento",
+    "pause": "Pausar",
+    "resume": "Retomar",
+    "retry": "Tentar novamente",
+    "retrying": "Tentando...",
+    "run_now": "Executar agora"
+  },
+  "page": {
+    "dashboard": {
+      "title": "Painel"
+    },
+    "inbox": {
+      "title": "Caixa de Entrada",
+      "inbox_zero": "Caixa de entrada vazia.",
+      "no_new_items": "Nenhum novo item na caixa de entrada.",
+      "no_recent_items": "Nenhum item recente na caixa de entrada.",
+      "no_match_search": "Nenhum item corresponde à sua busca.",
+      "no_match_filters": "Nenhum item corresponde a estes filtros.",
+      "search_placeholder": "Buscar na caixa de entrada...",
+      "earlier": "Anterior",
+      "categories": {
+        "placeholder": "Categoria",
+        "everything": "Todas as categorias",
+        "issues_i_touched": "Meus chamados recentes",
+        "join_requests": "Solicitações de entrada",
+        "approvals": "Aprovações",
+        "failed_runs": "Execuções falhas",
+        "alerts": "Alertas"
+      },
+      "approval_status": {
+        "placeholder": "Status de aprovação",
+        "all": "Todos os status de aprovação",
+        "actionable": "Ação necessária",
+        "resolved": "Resolvido"
+      },
+      "columns": {
+        "show_hide": "Mostrar / ocultar colunas",
+        "desktop_rows": "Linhas de chamados (Desktop)",
+        "choose_visible": "Escolha quais colunas ficarão visíveis",
+        "reset": "Redefinir padrões",
+        "default_list": "status, id, atualizado",
+        "labels": {
+          "status": "Status",
+          "id": "ID",
+          "assignee": "Responsável",
+          "project": "Projeto",
+          "workspace": "Espaço de Trabalho",
+          "labels": "Etiquetas",
+          "updated": "Última atualização"
+        },
+        "descriptions": {
+          "status": "Estado do chamado na borda esquerda.",
+          "id": "Identificador do ticket como PAP-1009.",
+          "assignee": "Agente ou usuário responsável.",
+          "project": "Pílula do projeto vinculado com sua cor.",
+          "workspace": "Espaço de execução utilizado para o chamado.",
+          "labels": "Etiquetas e tags do chamado.",
+          "updated": "Horário da última atividade visível."
+        }
+      },
+      "actions": {
+        "mark_all_read": "Marcar tudo como lido",
+        "mark_as_read": "Marcar como lido",
+        "marking": "Marcando...",
+        "approve": "Aprovar",
+        "reject": "Rejeitar",
+        "retry": "Tentar novamente",
+        "dismiss": "Descartar",
+        "dismiss_from_inbox": "Descartar da caixa de entrada"
+      },
+      "dialogs": {
+        "mark_all_read_title": "Marcar tudo como lido?",
+        "mark_all_read_description": "Isso marcará {{count}} {{item_label}} não lidos como lidos.",
+        "item_one": "item",
+        "item_other": "itens"
+      },
+      "labels": {
+        "failed_run": "Execução falha",
+        "retrying": "Tentando novamente...",
+        "live": "Ao vivo",
+        "human_join_request": "Solicitação de entrada (Humano)",
+        "agent_join_request": "Solicitação de entrada (Agente)",
+        "updated": "Atualizado {{time}}",
+        "requested_by": "solicitado por {{name}}",
+        "requested_time_from_ip": "solicitado {{time}} do IP {{ip}}",
+        "all_empty_description": "Nenhuma notificação encontrada",
+        "unread_empty_description": "Verificar notificações é uma ótima maneira de começar o dia",
+        "recent_empty_description": "Verificar notificações é uma ótima maneira de começar o dia",
+        "mine_empty_description": "Verificar notificações é uma ótima maneira de começar o dia",
+        "adapter": "adaptador: {{type}}",
+        "unassigned": "Não atribuído",
+        "no_project": "Sem projeto",
+        "user": "Usuário",
+        "alerts_header": "Alertas"
+      },
+      "tabs": {
+        "mine": "Meus",
+        "recent": "Recentes",
+        "unread": "Não lidos",
+        "all": "Todos"
+      },
+      "empty": {
+        "selectCompany": "Selecione uma empresa para ver a caixa de entrada."
+      },
+      "errors": {
+        "approve_failed": "Falha ao aprovar",
+        "reject_failed": "Falha ao rejeitar",
+        "approve_join_failed": "Falha ao aprovar solicitação de entrada",
+        "reject_join_failed": "Falha ao rejeitar solicitação de entrada",
+        "control_failed": "Falha ao controlar serviços de runtime."
+      },
+      "components": {
+        "routineVariablesEditor": {
+          "title": "Variáveis",
+          "detected_hint": "Detectado pelos espaços reservados {{name}} nas instruções da rotina.",
+          "manual_run_hint": "Solicitar este valor ao usuário antes de cada execução manual.",
+          "placeholder_name": "Nome da variável",
+          "type": "Tipo",
+          "default_value": "Valor padrão",
+          "required": "Obrigatório",
+          "no_default": "Sem padrão",
+          "true": "Verdadeiro",
+          "false": "Falso",
+          "options": "Opções",
+          "default_option": "Opção padrão",
+          "instructions_hint": "Use os espaços reservados {{variable_name}} nas instruções para solicitar entradas quando a rotina for executada.",
+          "types": {
+            "text": "Texto",
+            "textarea": "Texto longo",
+            "number": "Número",
+            "boolean": "Booleano",
+            "select": "Seleção"
+          }
+        },
+        "scheduleEditor": {
+          "title": "Agendamento",
+          "choose_frequency": "Escolha a frequência...",
+          "custom_cron": "Expressão cron personalizada",
+          "cron_hint": "Cinco campos: minuto hora dia-do-mês mês dia-da-semana",
+          "at": "as",
+          "at_minute": "no minuto",
+          "on": "na",
+          "on_day": "no dia",
+          "no_schedule": "Nenhuma escala definida",
+          "every": "Toda(o)",
+          "monthly_on_the": "Mensalmente no dia {{day}} às {{time}}",
+          "presets": {
+            "every_minute": "Todo minuto",
+            "every_hour": "Toda hora",
+            "every_day": "Todo dia",
+            "weekdays": "Dias de semana",
+            "weekly": "Semanalmente",
+            "monthly": "Mensalmente",
+            "custom": "Personalizado (cron)"
+          },
+          "days": {
+            "mon": "Seg",
+            "tue": "Ter",
+            "wed": "Qua",
+            "thu": "Qui",
+            "fri": "Sex",
+            "sat": "Sáb",
+            "sun": "Dom"
+          },
+          "am": "AM",
+          "pm": "PM"
+        },
+        "pathInstructionsModal": {
+          "title": "Como obter um caminho completo",
+          "description": "Cole o caminho absoluto (ex.",
+          "choose": "Escolher",
+          "platforms": {
+            "mac": "macOS",
+            "windows": "Windows",
+            "linux": "Linux"
+          },
+          "instructions": {
+            "mac": {
+              "steps": {
+                "1": "Abra o Finder e navegue até a pasta.",
+                "2": "Clique com o botão direito (ou Control-clique) na pasta.",
+                "3": "Segure a tecla Option e escolha \"Copiar como nome do caminho\".",
+                "4": "Cole o caminho copiado aqui."
+              },
+              "tip": "Você também pode abrir o Terminal, digitar cd, arrastar a pasta para o terminal, pressionar Enter e depois executar pwd."
+            },
+            "windows": {
+              "steps": {
+                "1": "Abra o Explorador de Arquivos e navegue até a pasta.",
+                "2": "Clique na barra de endereço no topo e copie o caminho completo.",
+                "3": "Cole o caminho copiado aqui."
+              },
+              "tip": "Como alternativa, segure Shift e clique com o botão direito na pasta, depois selecione \"Copiar como caminho\"."
+            },
+            "linux": {
+              "steps": {
+                "1": "Abra um terminal e navegue até o diretório com cd.",
+                "2": "Execute pwd para mostrar o caminho completo.",
+                "3": "Copie a saída e cole aqui."
+              },
+              "tip": "Na maioria dos gerenciadores de arquivos, Ctrl+L mostra o caminho completo na barra de endereço."
+            }
+          }
+        },
+        "reportsToPicker": {
+          "disabled_empty": "Reporta para: N/A (CEO)",
+          "choose": "Reporta para...",
+          "choose_manager": "Escolher gestor...",
+          "unknown_manager": "Gestor desconhecido (ID antigo)",
+          "reports_to_name": "Reporta para {{name}}{{suffix}}",
+          "terminated": "encerrado",
+          "no_manager": "Sem gestor",
+          "current_terminated": "Atual: {{name}} (encerrado)",
+          "saved_missing": "O gestor salvo não existe nesta empresa. Escolha um novo gestor ou limpe."
+        },
+        "agentConfigForm": {
+          "adapter": "Adaptador",
+          "testing": "Testando...",
+          "test_environment": "Testar ambiente",
+          "environment_test_failed": "Falha no teste de ambiente",
+          "adapter_type": "Tipo de adaptador",
+          "prompt_template": "Template de prompt",
+          "prompt_template_placeholder": "Você e o agente {{ agent.name }}. Seu papel e {{ agent.role }}...",
+          "prompt_template_warning_short": "O template de prompt e repetido em cada heartbeat. Mantenha curto e dinâmico para evitar custo recorrente de tokens.",
+          "prompt_template_warning": "O template de prompt e repetido em cada heartbeat. Prefira instruções curtas e variaveis como context.* ou run.*; evite repetir instruções estaveis aqui.",
+          "permissions_configuration": "Permissoes e Configuração",
+          "command": "Comando",
+          "detect_from_hermes_config": "Detectar da configuração do Hermes",
+          "failed_load_adapter_models": "Falha ao carregar modelos do adaptador.",
+          "codex_minimal_warning": "O Codex pode rejeitar `minimal` quando a busca estiver ativada.",
+          "model": "Modelo",
+          "default": "Padrão",
+          "select_model_required": "Selecione um modelo (obrigatorio)",
+          "select_model": "Selecionar modelo",
+          "search_models_create": "Buscar modelos... (digite para criar)",
+          "search_models": "Buscar modelos...",
+          "detecting": "Detectando...",
+          "detect_from_config": "Detectar da configuração",
+          "current": "atual",
+          "detected": "detectado",
+          "use_manual_model": "Usar modelo manual",
+          "no_hermes_model_detected": "Nenhum modelo Hermes detectado ainda. Configure o Hermes ou informe um provedor/modelo manualmente.",
+          "no_models_found": "Nenhum modelo encontrado.",
+          "thinking_effort": "Esforco de raciocinio",
+          "auto": "Automático",
+          "agent_instructions_file": "Arquivo de instruções do agente",
+          "bypass_sandbox": "Ignorar sandbox",
+          "enable_search": "Ativar busca",
+          "enable_chrome": "Ativar Chrome",
+          "skip_permissions": "Ignorar permissoes",
+          "max_turns_per_run": "Maximo de turnos por execução",
+          "path_to_project_placeholder": "/caminho/do/projeto",
+          "help": {
+            "name": "Nome de exibicao deste agente.",
+            "title": "Cargo exibido no organograma.",
+            "role": "Papel organizacional. Define posicao e capacidades.",
+            "reports_to": "Agente para o qual este agente reporta na hierarquia.",
+            "capabilities": "Descreve o que este agente pode fazer. Usado no organograma e no roteamento de tarefas.",
+            "adapter_type": "Como este agente executa: CLI local (Claude/Codex/OpenCode), OpenClaw Gateway, processo gerado ou webhook HTTP.",
+            "cwd": "Fallback legado de diretorio de trabalho para adaptadores locais. Configurações novas devem usar workspaces de projeto.",
+            "prompt_template": "Enviado em cada heartbeat. Mantenha curto e dinâmico. Use para contexto da tarefa atual, não para instruções longas.",
+            "model": "Sobrescreve o modelo padrão usado pelo adaptador.",
+            "thinking_effort": "Controla a profundidade de raciocinio do modelo. Os valores suportados variam por adaptador/modelo.",
+            "chrome": "Ativa a integração Chrome do Claude passando --chrome.",
+            "skip_permissions": "Executa sem supervisao aprovando automaticamente prompts de permissão do adaptador quando suportado.",
+            "bypass_sandbox": "Executa o Codex sem restricoes de sandbox. Necessario para acesso a filesystem/rede.",
+            "search": "Ativa busca web do Codex durante as execuções.",
+            "workspace_strategy": "Define como o Paperclip cria o workspace de execução do agente.",
+            "workspace_base_ref": "Ref base do git usada ao criar uma branch de worktree.",
+            "workspace_branch_template": "Template de nome para branches derivadas.",
+            "worktree_parent_dir": "Diretorio onde worktrees derivados serao criados.",
+            "runtime_services_json": "Definicoes opcionais de servicos de runtime do workspace.",
+            "max_turns_per_run": "Número maximo de turnos agenticos (tool calls) por heartbeat.",
+            "command": "Comando a executar (ex.: node, python).",
+            "local_command": "Sobrescreve o caminho do comando CLI chamado pelo adaptador.",
+            "args": "Argumentos de linha de comando, separados por virgula.",
+            "extra_args": "Argumentos extras de CLI para adaptadores locais, separados por virgula.",
+            "env_vars": "Variaveis de ambiente injetadas no processo do adaptador.",
+            "bootstrap_prompt": "Enviado apenas quando o Paperclip inicia uma sessão nova.",
+            "payload_template_json": "JSON opcional mesclado no payload de request de adaptadores remotos.",
+            "webhook_url": "URL que recebe requests POST quando o agente e invocado.",
+            "heartbeat_interval": "Executa este agente automaticamente em um intervalo.",
+            "interval_sec": "Segundos entre invocações automaticas de heartbeat.",
+            "timeout_sec": "Tempo maximo em segundos para uma execução antes de encerrar.",
+            "grace_sec": "Segundos de espera apos enviar interrupt antes de forcar kill.",
+            "wake_on_demand": "Permite acordar este agente por atribuicoes, API, UI ou sistemas automatizados.",
+            "cooldown_sec": "Segundos minimos entre execuções consecutivas de heartbeat.",
+            "max_concurrent_runs": "Número maximo de execuções de heartbeat simultâneas.",
+            "budget_monthly_cents": "Limite mensal de gasto em centavos. 0 significa sem limite."
+          },
+          "environment_result": {
+            "status": {
+              "pass": "Aprovado",
+              "warn": "Avisos",
+              "fail": "Falhou"
+            },
+            "level": {
+              "info": "INFO",
+              "warn": "AVISO",
+              "error": "ERRO"
+            },
+            "hint_label": "Dica",
+            "messages": {
+              "cwd_valid": "Diretorio de trabalho valido: {{path}}",
+              "command_not_found": "Comando não encontrado no PATH: \"{{command}}\"",
+              "codex_auth_config": "O Codex está autenticado pela própria configuração de auth.",
+              "openai_key_present": "OPENAI_API_KEY esta definido para autenticação do Codex.",
+              "openai_key_missing": "OPENAI_API_KEY não esta definido. As execuções do Codex podem falhar ate configurar autenticação."
+            },
+            "details": {
+              "logged_in_as": "Logado como {{email}}.",
+              "detected_in": "Detectado em {{source}}."
+            },
+            "hints": {
+              "set_openai_key_or_auth": "Defina OPENAI_API_KEY no env do adaptador, no shell, ou rode `codex auth` para login.",
+              "use_codex_cli_probe": "Use o comando `codex` para executar a sonda automatica de login e instalação.",
+              "retry_probe": "Tente novamente a sonda. Se persistir, verifique manualmente se o Codex executa `Respond with hello` neste diretorio.",
+              "try_probe_manually": "Teste manualmente (`codex exec --json -` e prompt: Respond with hello) para inspecionar a saida completa.",
+              "configure_openai_or_login": "Configure OPENAI_API_KEY no env/shell do adaptador ou rode `codex login`, depois teste novamente.",
+              "run_codex_exec_debug": "Rode `codex exec --json -` manualmente neste diretorio de trabalho e envie `Respond with hello` para depurar."
+            }
+          }
+        },
+        "liveRunWidget": {
+          "title": "Execuções ao Vivo",
+          "description": "Transmitido com a mesma interface de transcrição usada na página de detalhes da execução.",
+          "stop": "Parar",
+          "stopping": "Parando...",
+          "open_run": "Abrir execução",
+          "waiting_parsing": "Aguardando análise da transcrição...",
+          "waiting_output": "Aguardando saída da execução..."
+        },
+        "worktreeBanner": {
+          "worktree": "Árvore de Trabalho"
+        },
+        "routineRunVariablesDialog": {
+          "title": "Executar rotina",
+          "description": "Preencha as variáveis da rotina antes de iniciar a tarefa de execução.",
+          "no_value": "Sem valor",
+          "choose_value": "Escolha um valor",
+          "missing_required": "Faltando: {{fields}}",
+          "choose_workspace": "Escolha uma workspace existente antes de executar."
+        }
+      },
+      "agent_errors": {
+        "one": "{{count}} agente com erros",
+        "other": "{{count}} agentes com erros"
+      },
+      "budget_utilization": "Orçamento com {{percent}}% de utilização este mês"
+    },
+    "approvals": {
+      "title": "Aprovações",
+      "pending_tab": "Pendentes",
+      "all_tab": "Todas",
+      "no_pending": "Nenhuma aprovação pendente.",
+      "no_approvals": "Nenhuma aprovação ainda.",
+      "select_company": "Selecione uma empresa primeiro.",
+      "failed_approve": "Falha ao aprovar",
+      "failed_reject": "Falha ao rejeitar"
+    },
+    "common": {
+      "loading": "Carregando...",
+      "error": "Ocorreu um erro",
+      "no_data": "Nenhum dado encontrado"
+    },
+    "not_found": {
+      "title_company": "Empresa não encontrada",
+      "title_page": "Página não encontrada",
+      "desc_company": "Nenhuma empresa corresponde ao prefixo \"{{prefix}}\".",
+      "desc_page": "Esta rota não existe.",
+      "requested_path": "Caminho solicitado:",
+      "open_dashboard": "Abrir painel",
+      "go_home": "Ir para início"
+    },
+    "projects": {
+      "title": "Projetos",
+      "add_project": "Adicionar Projeto",
+      "no_projects": "Nenhum projeto ainda.",
+      "select_company": "Selecione uma empresa para ver os projetos.",
+      "dialog": {
+        "new_project": "Novo projeto",
+        "project_name": "Nome do projeto",
+        "add_description": "Adicionar descrição...",
+        "repo_url": "URL do repo",
+        "local_folder": "Pasta local",
+        "optional": "opcional",
+        "repo_help": "Vincule um repositório GitHub para que os agentes possam clonar, ler e enviar código deste projeto.",
+        "local_folder_help": "Defina um caminho absoluto nesta máquina onde os agentes locais vão ler e escrever arquivos deste projeto.",
+        "github_repo_placeholder": "https://github.com/org/repo",
+        "absolute_path_placeholder": "/caminho/absoluto/para/workspace",
+        "goal": "Objetivo",
+        "add_goal": "+ Objetivo",
+        "no_goal": "Sem objetivo",
+        "all_goals_selected": "Todos os objetivos já foram selecionados.",
+        "target_date": "Data alvo",
+        "create_project": "Criar projeto",
+        "creating": "Criando...",
+        "remove_goal_aria": "Remover objetivo {{title}}",
+        "workspace_name_local_default": "Pasta local",
+        "workspace_name_repo_default": "Repo GitHub",
+        "errors": {
+          "local_path_abs": "A pasta local deve ser um caminho absoluto completo.",
+          "repo_invalid": "O repo deve usar uma URL válida de GitHub ou GitHub Enterprise.",
+          "create_failed": "Falha ao criar projeto."
+        }
+      }
+    },
+    "projectDetail": {
+      "common": {
+        "project": "Projeto"
+      },
+      "tabs": {
+        "issues": "Chamados",
+        "overview": "Visão geral",
+        "workspaces": "Espaços de trabalho",
+        "configuration": "Configuração",
+        "budget": "Orçamento"
+      },
+      "overview": {
+        "add_description": "Adicionar uma descrição...",
+        "status": "Status",
+        "target_date": "Data alvo"
+      },
+      "paused_by_budget": "Pausado por limite rígido de orçamento",
+      "loading_workspaces": "Carregando workspaces...",
+      "toasts": {
+        "success_archive": "\"{{name}}\" foi arquivado",
+        "success_unarchive": "\"{{name}}\" foi desarquivado",
+        "failed_archive": "Falha ao arquivar projeto",
+        "failed_unarchive": "Falha ao desarquivar projeto"
+      },
+      "properties": {
+        "saving": "Salvando",
+        "saved": "Salvo",
+        "failed": "Falhou",
+        "name": "Nome",
+        "project_name": "Nome do projeto",
+        "description": "Descrição",
+        "add_description": "Adicionar uma descrição...",
+        "no_description": "Sem descrição",
+        "status": "Status",
+        "lead": "Líder",
+        "goals": "Objetivos",
+        "goal": "Objetivo",
+        "all_goals_linked": "Todos os objetivos vinculados.",
+        "created": "Criado",
+        "updated": "Atualizado",
+        "target_date": "Data alvo",
+        "codebase": "Base de Código",
+        "codebase_help_aria": "Ajuda de codebase",
+        "codebase_help": "O repositório identifica a fonte de verdade. A pasta local é o local padrão onde os agentes escrevem código.",
+        "repo": "Repositório",
+        "change_repo": "Alterar repo",
+        "clear_repo": "Limpar repo",
+        "not_set": "Não definido.",
+        "set_repo": "Definir repo",
+        "local_folder": "Pasta local",
+        "paperclip_managed_folder": "Pasta gerenciada pelo Paperclip.",
+        "change_local_folder": "Alterar pasta local",
+        "set_local_folder": "Definir pasta local",
+        "clear_local_folder": "Limpar pasta local"
+      },
+      "archive": {
+        "danger_zone": "Zona de perigo",
+        "archive": "Arquivar",
+        "unarchive": "Desarquivar",
+        "archive_description": "Arquive este projeto para ocultá-lo da barra lateral e dos seletores de projeto.",
+        "unarchive_description": "Desarquive este projeto para restaurá-lo na barra lateral e nos seletores de projeto.",
+        "archiving": "Arquivando...",
+        "unarchiving": "Desarquivando...",
+        "confirm": "Confirmar",
+        "action_project": "{{action}} projeto"
+      }
+    },
+    "issues": {
+      "title": "Chamados",
+      "select_company": "Selecione uma empresa para ver os chamados.",
+      "no_issues": "Nenhum chamado ainda.",
+      "no_match": "Nenhum chamado corresponde aos filtros ou à busca atual.",
+      "toolbar": {
+        "new_issue": "Novo Chamado",
+        "search_placeholder": "Buscar chamados...",
+        "search_aria": "Buscar chamados",
+        "list_view": "Visualização em lista",
+        "board_view": "Visualização em quadro",
+        "filter": "Filtro",
+        "filters": "Filtros",
+        "filters_with_count": "Filtros: {{count}}",
+        "clear": "Limpar",
+        "quick_filters": "Filtros rápidos",
+        "quick": {
+          "all": "Todos",
+          "active": "Ativos",
+          "backlog": "Backlog",
+          "done": "Concluídos"
+        },
+        "status": "Status",
+        "priority": "Prioridade",
+        "assignee": "Responsável",
+        "title": "Título",
+        "created": "Criado",
+        "updated": "Atualizado",
+        "sort": "Ordenar",
+        "group": "Agrupar",
+        "none": "Nenhum"
+      },
+      "assignee": {
+        "none": "Sem responsável",
+        "unassigned": "Não atribuído",
+        "user": "Usuário",
+        "me": "Eu"
+      }
+    },
+    "newIssueDialog": {
+      "breadcrumb": "Novo Chamado",
+      "title_placeholder": "Título do chamado",
+      "add_description": "Adicionar descrição...",
+      "for_agent": "Para o agente",
+      "assigned_agent": "Agente designado",
+      "none_selected": "Não selecionado",
+      "search_agents": "Buscar agentes...",
+      "no_agents_found": "Nenhum agente encontrado.",
+      "in_project_joiner": "no",
+      "project": "Projeto",
+      "no_project": "Nenhum projeto",
+      "search_projects": "Buscar projetos...",
+      "no_results": "Sem resultados.",
+      "remove_attachment": "Remover anexo",
+      "labels": "Rótulos",
+      "attach": "Anexar",
+      "start_date": "Data de início",
+      "due_date": "Data de vencimento",
+      "discard_draft": "Descartar rascunho",
+      "creating_issue": "Criando chamado...",
+      "creating": "Criando...",
+      "create_issue": "Criar Chamado",
+      "execution_workspace_modes": {
+        "shared_workspace": "Padrão do projeto",
+        "isolated_workspace": "Novo workspace isolado",
+        "reuse_existing": "Reutilizar workspace existente"
+      },
+      "status": {
+        "backlog": "Pendências",
+        "todo": "A Fazer",
+        "in_progress": "Em Progresso",
+        "in_review": "Em Revisão",
+        "done": "Concluído"
+      },
+      "priority": {
+        "label": "Prioridade",
+        "critical": "Crítica",
+        "high": "Alta",
+        "medium": "Média",
+        "low": "Baixa"
+      }
+    },
+    "goals": {
+      "title": "Objetivos",
+      "select_company": "Selecione uma empresa para ver os objetivos.",
+      "no_goals": "Nenhum objetivo ainda.",
+      "add_goal": "Adicionar objetivo",
+      "new_goal": "Novo objetivo",
+      "dialog": {
+        "new_goal": "Novo objetivo",
+        "new_sub_goal": "Novo subobjetivo",
+        "goal_title": "Título do objetivo",
+        "add_description": "Adicionar descrição...",
+        "parent_goal": "Objetivo pai",
+        "no_parent": "Sem pai",
+        "creating": "Criando...",
+        "create_goal": "Criar objetivo",
+        "create_sub_goal": "Criar subobjetivo",
+        "levels": {
+          "company": "Empresa",
+          "team": "Equipe",
+          "agent": "Agente",
+          "task": "Tarefa"
+        }
+      },
+      "properties": {
+        "status": "Status",
+        "level": "Nível",
+        "owner": "Responsável",
+        "none": "Nenhum",
+        "parent_goal": "Objetivo pai",
+        "created": "Criado",
+        "updated": "Atualizado"
+      }
+    },
+    "agents": {
+      "title": "Agentes",
+      "new_agent": "Novo Agente",
+      "select_company": "Selecione uma empresa para ver os agentes.",
+      "create_first": "Crie seu primeiro agente para começar.",
+      "no_match_filter": "Nenhum agente corresponde ao filtro selecionado.",
+      "no_org_hierarchy": "Nenhuma hierarquia organizacional definida.",
+      "filters": "Filtros",
+      "show_terminated": "Mostrar terminados",
+      "all": "Todos",
+      "active": "Ativos",
+      "paused": "Pausados",
+      "error": "Erro",
+      "count_one": "{{count}} agente",
+      "count_other": "{{count}} agentes",
+      "live": "Ao vivo",
+      "new_agent_dialog": {
+        "title": "Adicionar novo agente",
+        "recommendation": "Recomendamos deixar seu CEO cuidar da configuração do agente. Ele conhece a estrutura da organização e pode configurar reporte, permissões e adaptadores.",
+        "ask_ceo": "Pedir ao CEO para criar um novo agente",
+        "advanced_link": "Quero fazer a configuração avançada",
+        "back": "Voltar",
+        "choose_adapter": "Escolha o tipo de adaptador para a configuração avançada.",
+        "recommended": "Recomendado",
+        "issue": {
+          "title": "Criar um novo agente",
+          "description": "(digite aqui que tipo de agente você deseja)"
+        }
+      },
+      "new_agent_page": {
+        "title": "Novo Agente",
+        "subtitle": "Configuração avançada do agente",
+        "agent_name": "Nome do agente",
+        "title_placeholder": "Titulo (ex.: VP de Engenharia)",
+        "company_skills": "Habilidades da empresa",
+        "skills_description": "Habilidades opcionais da biblioteca da empresa. As habilidades nativas do Paperclip sao adicionadas automaticamente.",
+        "no_company_skills": "Nenhuma habilidade opcional da empresa instalada ainda.",
+        "this_will_be_ceo": "Este sera o CEO",
+        "creating": "Criando...",
+        "create_agent": "Criar agente",
+        "errors": {
+          "create_failed": "Falha ao criar agente",
+          "opencode_model_required": "OpenCode exige um modelo explicito no formato provedor/modelo.",
+          "failed_load_models": "Falha ao carregar modelos do OpenCode.",
+          "models_loading": "Os modelos do OpenCode ainda estao carregando. Aguarde e tente novamente.",
+          "no_models_discovered": "Nenhum modelo OpenCode foi descoberto. Execute `opencode models` e autentique os provedores.",
+          "model_unavailable": "O modelo configurado do OpenCode esta indisponível: {{model}}"
+        }
+      }
+    },
+    "routines": {
+      "title": "Rotinas",
+      "new_routine": "Nova Rotina",
+      "routine_title": "Título da rotina",
+      "add_instructions": "Adicionar instruções...",
+      "advanced_delivery": "Configurações avançadas de entrega",
+      "delivery_hint": "Mantenha os controles de política secundários à definição do trabalho.",
+      "concurrency": "Concorrência",
+      "catch_up": "Recuperação (Catch-up)",
+      "last_run": "Última execução",
+      "enabled": "Ativado",
+      "unknown": "Desconhecido",
+      "routine_created": "Rotina criada",
+      "routine_created_body": "Adicione o primeiro gatilho para transformá-la em um fluxo de trabalho ao vivo.",
+      "beta": "Beta",
+      "no_routines": "Nenhuma rotina ainda.",
+      "no_routines_hint": "Nenhuma rotina ainda. Use Criar rotina para definir o primeiro fluxo de trabalho recorrente.",
+      "select_company": "Selecione uma empresa para ver as rotinas.",
+      "description": "Definições de trabalho recorrentes que se materializam em problemas de execução auditáveis.",
+      "define_work_hint": "Defina primeiro o trabalho recorrente. A configuração do gatilho vem a seguir na página de detalhes.",
+      "for": "Para",
+      "in": "em",
+      "assignee": "Responsável",
+      "project": "Projeto",
+      "no_assignee": "Sem responsável",
+      "no_project": "Sem projeto",
+      "search_assignees": "Buscar responsáveis...",
+      "search_projects": "Buscar projetos...",
+      "no_assignees_found": "Nenhum responsável encontrado.",
+      "no_projects_found": "Nenhum projeto encontrado.",
+      "post_creation_hint": "Após a criação, o Paperclip leva você direto para a configuração do gatilho para agendamentos, webhooks ou execuções internas.",
+      "creating": "Criando...",
+      "load_failed": "Falha ao carregar rotinas",
+      "run_now": "Executar agora",
+      "update_failed": "Falha ao atualizar rotina",
+      "update_failed_body": "O Paperclip não pôde atualizar a rotina.",
+      "run_failed": "Falha na execução da rotina",
+      "run_failed_body": "O Paperclip não pôde iniciar a execução da rotina.",
+      "table": {
+        "name": "Nome",
+        "project": "Projeto",
+        "agent": "Agente",
+        "last_run": "Última execução",
+        "enabled": "Ativado"
+      },
+      "concurrency_descriptions": {
+        "coalesce": "Se uma execução já estiver ativa, mantenha apenas uma execução de acompanhamento na fila.",
+        "always": "Coloque cada ocorrência de gatilho na fila, mesmo que a rotina já esteja em execução.",
+        "skip": "Descarte novas ocorrências de gatilho enquanto uma execução ainda estiver ativa."
+      },
+      "catch_up_descriptions": {
+        "skip": "Ignore janelas que foram perdidas enquanto o agendador ou a rotina estavam pausados.",
+        "capped": "Recupere janelas de agendamento perdidas em lotes limitados após a recuperação."
+      }
+    },
+    "routineDetail": {
+      "signing_mode": "Modo de assinatura",
+      "replay_window": "Janela de repetição (segundos)",
+      "unsaved_changes": "Alterações não salvas",
+      "add_trigger": "Adicionar gatilho",
+      "no_triggers": "Nenhum gatilho configurado ainda.",
+      "no_runs": "Nenhuma execução ainda.",
+      "no_activity": "Nenhuma atividade ainda.",
+      "kind": "Tipo",
+      "secret_warning": "Salve isso agora. O Paperclip não mostrará o valor secreto novamente.",
+      "next_run": "Próximo: {{date}}",
+      "save_trigger": "Salvar gatilho",
+      "rotate_secret": "Rotacionar segredo",
+      "webhook_trigger_created": "Gatilho de webhook criado",
+      "webhook_secret_rotated": "Segredo do webhook rotacionado",
+      "trigger_added": "Gatilho adicionado",
+      "trigger_added_body": "O agendamento da rotina foi salvo.",
+      "trigger_saved_body": "A atualização da cadência da rotina foi salva.",
+      "trigger_deleted": "Gatilho excluído",
+      "failed_add_trigger": "Falha ao adicionar gatilho",
+      "failed_update_trigger": "Falha ao atualizar gatilho",
+      "failed_delete_trigger": "Falha ao excluir gatilho",
+      "failed_rotate_secret": "Falha ao rotacionar segredo do webhook",
+      "failed_save_routine": "Falha ao salvar rotina",
+      "routine_saved": "Rotina salva",
+      "automation_paused": "Automação pausada.",
+      "automation_enabled": "Automação ativada.",
+      "run_started": "Execução da rotina iniciada",
+      "tabs": {
+        "triggers": "Gatilhos",
+        "runs": "Execuções",
+        "activity": "Atividade"
+      },
+      "signing_descriptions": {
+        "bearer": "Espera um token de portador (bearer) compartilhado no cabeçalho Authorization.",
+        "hmac_sha256": "Espera uma assinatura HMAC SHA-256 sobre a requisição usando o segredo compartilhado."
+      }
+    },
+    "projectWorkspace": {
+      "loading": "Carregando espaço de trabalho...",
+      "not_found": "Espaço de trabalho não encontrado para este projeto.",
+      "workspace_name": "Nome do espaço de trabalho",
+      "visibility": "Visibilidade"
+    },
+    "agentDetail": {
+      "runs": {
+        "transcript": "Transcrição",
+        "failureDetails": "Detalhes da falha",
+        "events": "Eventos",
+        "retry": "Tentar novamente",
+        "retrying": "Tentando...",
+        "jumpToLive": "Ir para o vivo",
+        "live": "Ao vivo",
+        "waitingTranscript": "Aguardando transcrição...",
+        "noTranscript": "Nenhuma transcrição persistida para esta execução.",
+        "stderrExcerpt": "saída de erro (excerto)",
+        "stdoutExcerpt": "saída padrão (excerto)",
+        "adapterResult": "resultado JSON do adaptador",
+        "sources": {
+          "timer": "Agendado",
+          "assignment": "Atribuição",
+          "on_demand": "Sob demanda",
+          "automation": "Automação"
+        },
+        "workspace": {
+          "worktreeSetup": "Configuração da árvore de trabalho",
+          "provision": "Provisionamento",
+          "teardown": "Desativação",
+          "worktreeCleanup": "Limpeza da árvore de trabalho",
+          "command": "Comando",
+          "workingDir": "Diretório de trabalho",
+          "branch": "Branch",
+          "baseRef": "Ref base",
+          "worktree": "Árvore de trabalho",
+          "repoRoot": "Raiz do repositório",
+          "cleanup": "Limpeza",
+          "created": "Criado por esta execução",
+          "reused": "Espaço de trabalho existente reutilizado"
+        },
+        "loadingLogs": "Carregando logs da execução...",
+        "noEvents": "Sem eventos de log."
+      },
+      "keys": {
+        "created": "Chave de API criada — copie agora, ela não será exibida novamente.",
+        "hide": "Ocultar",
+        "show": "Mostrar",
+        "copy": "Copiar",
+        "copied": "Copiado!",
+        "dismiss": "Fechar",
+        "createTitle": "Criar Chave de API",
+        "description": "As chaves de API permitem que este agente se autentique no servidor Paperclip.",
+        "placeholder": "Nome da chave (ex: CLI, Produção)",
+        "creating": "Criando...",
+        "create": "Criar Chave"
+      },
+      "breadcrumbs": {
+        "agents": "Agentes",
+        "runs": "Execuções",
+        "instructions": "Instruções",
+        "configuration": "Configuração",
+        "run": "Execução {{id}}"
+      }
+    },
+    "org": {
+      "title": "Organização",
+      "select_company": "Selecione uma empresa para visualizar o organograma.",
+      "not_found": "Organograma não encontrado.",
+      "select_agent": "Selecione um agente para ver seus detalhes."
+    },
+    "org_chart": {
+      "title": "Organograma",
+      "import": "Importar",
+      "export": "Exportar",
+      "select_company": "Selecione uma empresa para visualizar o organograma.",
+      "no_hierarchy": "Nenhuma hierarquia organizacional definida.",
+      "zoom_in": "Aumentar Zoom",
+      "zoom_out": "Diminuir Zoom",
+      "reset_zoom": "Redefinir Zoom",
+      "fit_screen": "Ajustar à tela",
+      "fit": "Ajustar",
+      "empty_state": "Nenhum dado organizacional disponível."
+    },
+    "companySkills": {
+      "title": "Habilidades",
+      "detail_breadcrumb": "Detalhe",
+      "available": "{{count}} disponiveis",
+      "filter_placeholder": "Filtrar habilidades",
+      "source_placeholder": "Cole caminho, URL do GitHub ou comando skills.sh",
+      "add": "Adicionar",
+      "select_company": "Selecione uma empresa para gerenciar habilidades.",
+      "form": {
+        "skill_name": "Nome da habilidade",
+        "skill_slug": "nome-curto-opcional",
+        "short_description": "Descricao curta",
+        "cancel": "Cancelar",
+        "creating": "Criando...",
+        "create_skill": "Criar habilidade"
+      },
+      "list": {
+        "no_filter_match": "Nenhuma habilidade corresponde a este filtro.",
+        "collapse_skill": "Recolher {{name}}",
+        "expand_skill": "Expandir {{name}}"
+      },
+      "tree": {
+        "references": "referencias"
+      },
+      "source": {
+        "skills_sh_managed": "gerenciado por skills.sh",
+        "github_managed": "gerenciado pelo GitHub",
+        "url_managed": "gerenciado por URL",
+        "folder": "Pasta",
+        "folder_managed": "gerenciado por pasta",
+        "paperclip_managed": "gerenciado pelo Paperclip",
+        "catalog": "Catalogo",
+        "catalog_managed": "gerenciado por catalogo"
+      },
+      "scan": {
+        "scan_workspaces": "Escanear workspaces de projeto em busca de habilidades",
+        "scanning": "Escaneando workspaces de projeto em busca de habilidades...",
+        "refreshing": "Atualizando lista de habilidades...",
+        "found": "{{count}} encontradas",
+        "imported": "{{count}} importadas",
+        "updated": "{{count}} atualizadas",
+        "conflicts": "{{count}} conflitos",
+        "skipped": "{{count}} ignoradas",
+        "summary": "{{parts}} em {{count}} workspace(s)."
+      },
+      "dialog": {
+        "add_source_title": "Adicionar fonte de habilidade",
+        "add_source_description": "Cole primeiro um caminho local, URL do GitHub ou comando `skills.sh` no campo.",
+        "browse_skills_sh": "Explorar skills.sh",
+        "browse_skills_sh_hint": "Encontre comandos de instalação e cole um aqui.",
+        "search_github": "Buscar no GitHub",
+        "search_github_hint": "Procure repositorios com `SKILL.md` e depois cole a URL do repo aqui."
+      },
+      "detail": {
+        "select_skill": "Selecione uma habilidade para inspecionar seus arquivos.",
+        "stop_editing": "Parar edicao",
+        "edit": "Editar",
+        "source": "Origem",
+        "copied_path": "Caminho copiado para o workspace",
+        "pin": "PIN",
+        "untracked": "não rastreado",
+        "tracking": "rastreando {{ref}}",
+        "check_updates": "Verificar atualizações",
+        "install_update": "Instalar atualização",
+        "up_to_date": "Atualizado",
+        "key": "Chave",
+        "mode": "Modo",
+        "editable": "Editavel",
+        "read_only": "Somente leitura",
+        "used_by": "Usado por",
+        "no_agents_attached": "Nenhum agente vinculado",
+        "view": "Visualizar",
+        "code": "Codigo",
+        "saving": "Salvando...",
+        "save": "Salvar",
+        "select_file": "Selecione um arquivo para inspecionar.",
+        "reason_bundled_read_only": "As habilidades empacotadas do Paperclip sao somente leitura."
+      },
+      "toasts": {
+        "imported_title": "Habilidades importadas",
+        "imported_body": "{{count}} habilidade(s) adicionada(s).",
+        "import_warnings": "Avisos de importação",
+        "import_failed_title": "Falha ao importar habilidade",
+        "import_failed_body": "Falha ao importar a fonte de habilidade.",
+        "created_title": "Habilidade criada",
+        "created_body": "{{name}} agora e editavel no workspace do Paperclip.",
+        "create_failed_title": "Falha ao criar habilidade",
+        "create_failed_body": "Falha ao criar habilidade.",
+        "scan_complete": "Escaneamento de habilidades concluido",
+        "conflicts_found": "Conflitos de habilidades encontrados",
+        "scan_warnings": "Avisos do escaneamento",
+        "scan_failed_title": "Falha no escaneamento de habilidades",
+        "scan_failed_body": "Falha ao escanear workspaces de projeto.",
+        "saved_title": "Habilidade salva",
+        "save_failed_title": "Falha ao salvar",
+        "save_failed_body": "Falha ao salvar arquivo da habilidade.",
+        "updated_title": "Habilidade atualizada",
+        "updated_body_pinned": "Fixado em {{pin}}",
+        "update_failed_title": "Falha ao atualizar",
+        "update_failed_body": "Falha ao instalar atualização da habilidade."
+      }
+    },
+    "costs": {
+      "title": "Custos",
+      "subtitle": "Gastos de inferencia, taxas de plataforma, creditos e janelas de cota em tempo real.",
+      "select_company": "Selecione uma empresa para visualizar custos.",
+      "to": "ate",
+      "select_range": "Selecione data inicial e final para carregar os dados.",
+      "presets": {
+        "mtd": "Mes atual",
+        "7d": "Ultimos 7 dias",
+        "30d": "Ultimos 30 dias",
+        "last7d": "Ultimos 7 dias",
+        "last30d": "Ultimos 30 dias",
+        "ytd": "Ano atual",
+        "all": "Todo periodo",
+        "custom": "Personalizado"
+      },
+      "tabs": {
+        "overview": "Visao geral",
+        "budgets": "Orçamentos",
+        "providers": "Provedores",
+        "billers": "Faturadores",
+        "finance": "Financeiro"
+      },
+      "budgets_section": {
+        "title": "Painel de controle de orçamento",
+        "description": "Limites de gasto com bloqueio para agentes e projetos. A cota de assinatura dos provedores fica separada e aparece em Provedores.",
+        "metrics": {
+          "active_incidents": {
+            "label": "Incidentes ativos",
+            "subtitle": "Atravessamentos abertos de limite suave ou rigido"
+          },
+          "pending_approvals": {
+            "label": "Aprovações pendentes",
+            "subtitle": "Aprovações de ajuste de orçamento aguardando ação da diretoria"
+          },
+          "paused_agents": {
+            "label": "Agentes pausados",
+            "subtitle": "Heartbeats de agentes bloqueados por orçamento"
+          },
+          "paused_projects": {
+            "label": "Projetos pausados",
+            "subtitle": "Execução de projeto bloqueada por orçamento"
+          }
+        },
+        "active_incidents_title": "Incidentes ativos",
+        "active_incidents_description": "Resolva bloqueios aqui aumentando o orçamento ou mantendo o escopo pausado explicitamente.",
+        "scope_title": {
+          "company": "Orçamentos da empresa",
+          "agent": "Orçamentos de agentes",
+          "project": "Orçamentos de projetos"
+        },
+        "scope_description": {
+          "company": "Política mensal para toda a empresa.",
+          "agent": "Políticas mensais recorrentes de gasto para agentes individuais.",
+          "project": "Políticas de gasto vitalicio para projetos vinculados a execução."
+        },
+        "empty": "Ainda não ha políticas de orçamento. Defina orçamentos de agentes e projetos nas páginas de detalhes, ou use o controle mensal existente da empresa."
+      },
+      "metrics": {
+        "inference_spend": "Gasto de inferencia",
+        "inference_spend_subtitle": "{{tokens}} tokens em eventos por requisição",
+        "budget": "Orçamento",
+        "open": "Aberto",
+        "paused_summary": "{{agents}} agentes pausados · {{projects}} projetos pausados",
+        "of_budget": "{{spend}} de {{budget}}",
+        "no_monthly_cap": "Sem limite mensal configurado",
+        "finance_net": "Liquido financeiro",
+        "finance_net_subtitle": "{{debits}} debitos · {{credits}} creditos",
+        "finance_events": "Eventos financeiros",
+        "estimated_in_range": "{{value}} estimado no periodo"
+      },
+      "inference_ledger": {
+        "title": "Razao de inferencia",
+        "description": "Gasto de inferencia por requisição no periodo selecionado.",
+        "budget_value": "Orçamento {{value}}",
+        "unlimited_budget": "Orçamento ilimitado",
+        "usage": "uso",
+        "utilization": "{{percent}}% do orçamento mensal consumido neste periodo."
+      },
+      "finance_ledger": {
+        "title": "Razao financeiro",
+        "description": "Lançamentos de conta que não mapeiam para uma única requisição de inferencia.",
+        "debits": "Debitos",
+        "credits": "Creditos",
+        "net": "Liquido",
+        "estimated": "Estimado",
+        "events_in_range": "{{count}} evento(s) no periodo",
+        "credits_description": "Reembolsos, compensações e retornos de credito",
+        "net_description": "Debito menos credito no periodo selecionado",
+        "estimated_description": "Debitos estimados que ainda não estao consolidados em fatura"
+      },
+      "by_agent": {
+        "title": "Por agente",
+        "description": "O que cada agente consumiu no periodo selecionado.",
+        "empty": "Ainda não ha eventos de custo."
+      },
+      "by_project": {
+        "title": "Por projeto",
+        "description": "Custos de execução atribuidos a chamados vinculados a projeto.",
+        "empty": "Ainda não ha custos de execução atribuidos a projeto.",
+        "unattributed": "Não atribuido"
+      },
+      "by_biller": {
+        "title": "Por faturador",
+        "description": "Eventos financeiros de conta agrupados por quem cobrou ou creditou.",
+        "empty": "Ainda não ha eventos financeiros."
+      },
+      "providers": {
+        "all": "Todos os provedores",
+        "empty": "Nenhum evento de custo neste periodo."
+      },
+      "billers": {
+        "all": "Todos os faturadores",
+        "empty": "Nenhum evento faturavel neste periodo."
+      },
+      "finance_timeline": {
+        "title": "Eventos financeiros recentes",
+        "description": "Recargas, taxas, creditos, compromissos e outros lançamentos fora de requisicoes.",
+        "empty": "Ainda não ha eventos financeiros. Adicione lançamentos de conta quando faturas ou creditos forem processados.",
+        "invoice": "fatura {{value}}",
+        "region": "regiao {{value}}",
+        "tier": "plano {{value}}",
+        "estimated": "estimado"
+      },
+      "finance_kind": {
+        "title": "Mix de eventos financeiros",
+        "description": "Lançamentos de conta agrupados por tipo de evento.",
+        "empty": "Não ha eventos financeiros neste periodo.",
+        "stats": "{{eventCount}} evento(s) · {{billerCount}} faturador(es)",
+        "debits": "{{value}} debitos"
+      }
+    },
+    "companies": {
+      "title": "Empresas",
+      "new_company": "Nova Empresa",
+      "no_companies": "Nenhuma empresa encontrada.",
+      "select_to_manage": "Selecione uma empresa para gerenciar suas configurações.",
+      "status": {
+        "active": "Ativa",
+        "archived": "Arquivada"
+      },
+      "agents_one": "{{count}} agente",
+      "agents_other": "{{count}} agentes",
+      "issues_one": "{{count}} chamado",
+      "issues_other": "{{count}} chamados"
+    },
+    "instanceSettings": {
+      "title": "Configurações da instancia",
+      "nav": {
+        "general": "Geral",
+        "heartbeats": "Monitoramento",
+        "experimental": "Experimental",
+        "plugins": "Plugins"
+      },
+      "general": {
+        "loading": "Carregando configurações gerais...",
+        "description": "Configure padroes da instancia que afetam como logs visiveis ao operador sao exibidos.",
+        "censor_username": {
+          "title": "Ocultar usuario nos logs",
+          "description": "Oculta o trecho de usuario em caminhos de diretorio home e em logs similares visiveis ao operador. Mencoes avulsas de usuario fora de caminhos ainda não sao mascaradas na transcrição ao vivo. Isso vem desativado por padrão.",
+          "aria": "Alternar ocultação de usuario nos logs"
+        },
+        "keyboard_shortcuts": {
+          "title": "Atalhos de teclado",
+          "description": "Ativa atalhos de teclado do app, incluindo navegação da caixa de entrada e atalhos globais como criar chamados ou alternar paineis. Isso vem desativado por padrão.",
+          "aria": "Alternar atalhos de teclado"
+        },
+        "feedback_sharing": {
+          "title": "Compartilhamento de feedback de IA",
+          "description": "Controla se votos positivos e negativos podem enviar a saida de IA votada para a Paperclip Labs. Os votos sempre ficam salvos localmente.",
+          "terms": "Leia nossos termos de servico",
+          "no_default": "Ainda não ha padrão salvo. A próxima escolha de positivo ou negativo perguntara uma vez e salvara a resposta aqui.",
+          "allowed_label": "Sempre permitir",
+          "allowed_description": "Compartilha automaticamente as saidas de IA votadas.",
+          "not_allowed_label": "Não permitir",
+          "not_allowed_description": "Mantem as saidas de IA votadas somente localmente.",
+          "dev_note": "Para testar novamente o prompt de primeiro uso em ambiente local, remova a chave feedbackDataSharingPreference da linha JSON instance_settings.general desta instancia, ou defina de volta para \"prompt\". Sem valor e \"prompt\" significam que nenhum padrão foi escolhido ainda."
+        },
+        "errors": {
+          "load_failed": "Falha ao carregar configurações gerais.",
+          "update_failed": "Falha ao atualizar configurações gerais."
+        }
+      },
+      "heartbeats": {
+        "title": "Heartbeats do agendador",
+        "loading": "Carregando heartbeats do agendador...",
+        "description": "Agentes com heartbeat por timer ativado em todas as suas empresas.",
+        "active": "ativos",
+        "disabled": "desativados",
+        "company_one": "empresa",
+        "company_other": "empresas",
+        "agent_one": "agente",
+        "agent_other": "agentes",
+        "confirm_disable_all": "Desativar heartbeats de timer para todos os {{count}} {{noun}} habilitados?",
+        "disable_all": "Desativar todos",
+        "disabling": "Desativando...",
+        "empty": "Nenhum heartbeat do agendador corresponde ao criterio atual.",
+        "never": "nunca",
+        "full_agent_config": "Configuração completa do agente",
+        "disable_timer": "Desativar heartbeat por timer",
+        "enable_timer": "Ativar heartbeat por timer",
+        "errors": {
+          "load_failed": "Falha ao carregar heartbeats do agendador.",
+          "update_failed": "Falha ao atualizar heartbeat.",
+          "disable_all_failed": "Falha ao desativar todos os heartbeats.",
+          "unknown_error": "Erro desconhecido",
+          "disable_one": "Falha ao desativar 1 heartbeat de timer: {{detail}}",
+          "disable_many": "Falha ao desativar {{failed}} de {{total}} heartbeats de timer. Primeiro erro: {{detail}}"
+        }
+      },
+      "experimental": {
+        "loading": "Carregando configurações experimentais...",
+        "description": "Ative recursos que ainda estao sendo avaliados antes de virarem comportamento padrão.",
+        "enable_isolated_workspaces": {
+          "title": "Ativar workspaces isolados",
+          "description": "Mostra controles de workspace de execução na configuração de projeto e permite comportamento de workspace isolado para execuções novas e existentes de chamados.",
+          "aria": "Alternar configuração experimental de workspaces isolados"
+        },
+        "auto_restart_dev_server": {
+          "title": "Reiniciar servidor dev automaticamente quando ocioso",
+          "description": "No `pnpm dev:once`, aguarda todas as execuções locais enfileiradas e em andamento terminarem e depois reinicia o servidor automaticamente quando mudancas de backend ou migrações deixam o boot atual obsoleto.",
+          "aria": "Alternar reinicio protegido do servidor dev"
+        },
+        "errors": {
+          "load_failed": "Falha ao carregar configurações experimentais.",
+          "update_failed": "Falha ao atualizar configurações experimentais."
+        }
+      },
+      "plugins": {
+        "title": "Gerenciador de Plugins",
+        "loading": "Carregando plugins...",
+        "install_plugin": "Instalar plugin",
+        "install_description": "Informe o nome do pacote npm do plugin que deseja instalar.",
+        "npm_package_name": "Nome do pacote npm",
+        "install": "Instalar",
+        "installing": "Instalando...",
+        "alpha": {
+          "title": "Plugins estao em alpha.",
+          "description": "O runtime de plugins e a superficie da API ainda estao mudando. Espere mudancas que quebram compatibilidade enquanto esse recurso amadurece."
+        },
+        "available_title": "Plugins disponiveis",
+        "installed_title": "Plugins instalados",
+        "examples": "Exemplos",
+        "example": "Exemplo",
+        "loading_examples": "Carregando exemplos inclusos...",
+        "no_examples": "Nenhum plugin de exemplo foi encontrado neste checkout.",
+        "not_installed": "Não instalado",
+        "open_settings": "Abrir configurações",
+        "review": "Revisar",
+        "install_example": "Instalar exemplo",
+        "no_plugins_installed": "Nenhum plugin instalado",
+        "install_to_extend": "Instale um plugin para estender funcionalidades.",
+        "no_description": "Nenhuma descricao informada.",
+        "plugin_error": "Erro do plugin",
+        "view_full_error": "Ver erro completo",
+        "disable": "Desativar",
+        "configure": "Configurar",
+        "uninstall_plugin": "Desinstalar plugin",
+        "uninstall": "Desinstalar",
+        "uninstalling": "Desinstalando...",
+        "uninstall_confirm": "Tem certeza que deseja desinstalar {{name}}? Esta ação não pode ser desfeita.",
+        "error_details": "Detalhes do erro",
+        "plugin_details": "Detalhes do plugin",
+        "error_details_description": "{{name}} entrou em estado de erro.",
+        "what_errored": "O que falhou",
+        "no_error_summary": "Nenhum resumo de erro disponível.",
+        "full_error_output": "Saida completa do erro",
+        "no_stored_error": "Nenhuma mensagem de erro armazenada.",
+        "close": "Fechar",
+        "toasts": {
+          "install_success": "Plugin instalado com sucesso",
+          "install_failed": "Falha ao instalar plugin",
+          "uninstall_success": "Plugin desinstalado com sucesso",
+          "uninstall_failed": "Falha ao desinstalar plugin",
+          "enabled": "Plugin ativado",
+          "enable_failed": "Falha ao ativar plugin",
+          "disabled": "Plugin desativado",
+          "disable_failed": "Falha ao desativar plugin"
+        },
+        "errors": {
+          "load_failed": "Falha ao carregar plugins.",
+          "load_examples_failed": "Falha ao carregar exemplos inclusos."
+        }
+      }
+    },
+    "company_settings": {
+      "title": "Configurações da Empresa",
+      "general": "Geral",
+      "company_name": "Nome da empresa",
+      "company_name_hint": "O nome de exibição da sua empresa.",
+      "description": "Descrição",
+      "description_hint": "Descrição opcional exibida no perfil da empresa.",
+      "description_placeholder": "Descrição opcional da empresa",
+      "appearance": "Aparência",
+      "logo": "Logotipo",
+      "logo_hint": "Envie um logotipo em formato PNG, JPEG, WEBP, GIF ou SVG.",
+      "choose_file": "Escolher arquivo",
+      "no_file_selected": "Nenhum arquivo selecionado",
+      "remove_logo": "Remover logotipo",
+      "removing": "Removendo...",
+      "uploading": "Enviando logotipo...",
+      "brand_color": "Cor da marca",
+      "brand_color_hint": "Define o matiz para o ícone da empresa. Deixe vazio para cor gerada automaticamente.",
+      "clear": "Limpar",
+      "saving": "Salvando...",
+      "save_changes": "Salvar alterações",
+      "saved": "Salvo",
+      "hiring": "Contratação",
+      "require_approval": "Exigir aprovação do conselho para novas contratações",
+      "require_approval_hint": "Novas contratações de agentes permanecem pendentes até serem aprovadas pelo conselho.",
+      "feedback_sharing": "Compartilhamento de Feedback",
+      "allow_sharing": "Permitir o compartilhamento de saídas de IA votadas com a Paperclip Labs",
+      "allow_sharing_hint": "Apenas as saídas geradas por IA em que você vota explicitamente são elegíveis para compartilhamento de feedback.",
+      "feedback_terms_info": "Os votos são sempre salvos localmente. Esta configuração controla se os resultados da IA votados também podem ser marcados para compartilhamento com a Paperclip Labs.",
+      "feedback_sharing_enabled": "Compartilhamento de feedback ativado",
+      "feedback_sharing_disabled": "Compartilhamento de feedback desativado",
+      "feedback_sharing_error": "Falha ao atualizar o compartilhamento de feedback",
+      "invites": "Convites",
+      "invite_snippet_hint": "Gere um snippet de convite para agente OpenClaw.",
+      "generate_invite": "Gerar Prompt de Convite OpenClaw",
+      "generating": "Gerando...",
+      "copied": "Copiado",
+      "copy_snippet": "Copiar snippet",
+      "copied_snippet": "Snippet copiado",
+      "packages": "Pacotes",
+      "packages_info": "A importação e exportação foram movidas para páginas dedicadas acessíveis pelo cabeçalho do Organograma.",
+      "danger_zone": "Zona de Perigo",
+      "archive_info": "Arquive esta empresa para ocultá-la da barra lateral. Isso persiste no banco de dados.",
+      "archive_company": "Arquivar empresa",
+      "archive_confirm": "Arquivar a empresa \"{{name}}\"? Ela será ocultada da barra lateral.",
+      "archiving": "Arquivando...",
+      "already_archived": "Já arquivada",
+      "no_company": "Nenhuma empresa selecionada. Selecione uma empresa no alternador acima."
+    },
+    "issueDetail": {
+      "breadcrumbs": {
+        "issues": "Chamados",
+        "issue": "Chamado"
+      },
+      "tabs": {
+        "comments": "Comentários",
+        "subissues": "Sub-chamados",
+        "activity": "Atividade"
+      },
+      "actions": {
+        "showProperties": "Mostrar propriedades",
+        "hideIssue": "Ocultar este Chamado",
+        "deleteAttachment": "Excluir anexo",
+        "uploadAttachment": "Anexar arquivo",
+        "upload": "Enviar",
+        "copyMarkdown": "Copiar chamado como markdown",
+        "labels": {
+          "created": "criou a tarefa",
+          "updated": "atualizou a tarefa",
+          "commented": "comentou",
+          "status_changed": "alterou o status",
+          "assigned": "atribuiu a tarefa",
+          "unassigned": "removeu o responsável",
+          "depth_changed": "alterou a profundidade",
+          "reassigned": "reatribuiu a tarefa",
+          "from": "de",
+          "to": "para"
+        },
+        "actors": {
+          "system": "Sistema",
+          "board": "Quadro"
+        }
+      },
+      "placeholders": {
+        "addDescription": "Adicionar uma descrição...",
+        "description": "Adicionar uma descrição..."
+      },
+      "attachments": "Anexos",
+      "toasts": {
+        "copySuccess": {
+          "title": "Copiado para a área de transferência"
+        },
+        "archiveSuccess": {
+          "title": "Chamado arquivado da caixa de entrada"
+        },
+        "archiveError": {
+          "title": "Falha ao arquivar",
+          "body": "Não foi possível arquivar este chamado da caixa de entrada"
+        },
+        "interruptSuccess": {
+          "title": "Execução interrompida",
+          "body": "A execução ativa está sendo parada para que os comentários na fila possam continuar em seguida."
+        },
+        "interruptError": {
+          "title": "Falha na interrupção",
+          "body": "Não foi possível interromper a execução ativa"
+        },
+        "feedbackSuccess": {
+          "savingPromptShare": "Feedback salvo. Votos futuros serão compartilhados",
+          "savingPromptLocal": "Feedback salvo. Votos futuros permanecerão locais",
+          "savedAndSharing": "Feedback salvo e compartilhamento ativado",
+          "saved": "Feedback salvo"
+        },
+        "feedbackError": {
+          "title": "Falha ao salvar feedback"
+        },
+        "commentError": {
+          "title": "Falha ao comentar",
+          "body": "Não foi possível postar o comentário"
+        },
+        "attachmentError": {
+          "uploading": "Enviando...",
+          "uploadFailed": "Falha no upload",
+          "importFailed": "Falha na importação do documento",
+          "deleteFailed": "Falha ao excluir"
+        }
+      },
+      "status": {
+        "hidden": "Este chamado está oculto",
+        "live": "Ao vivo"
+      },
+      "activity": {
+        "noActivity": "Nenhuma atividade ainda.",
+        "costSummary": "Resumo de Custos",
+        "noCostData": "Nenhum dado de custo ainda.",
+        "tokens": "Tokens"
+      },
+      "approvals": {
+        "linked": "Aprovações Vinculadas ({{count}})"
+      },
+      "origin": {
+        "routine": "Rotina"
+      },
+      "subissues": {
+        "none": "Nenhum sub-chamado."
+      },
+      "properties": {
+        "title": "Propriedades"
+      },
+      "commentThread": {
+        "title": "Linha do Tempo",
+        "placeholder": "Deixe um comentário...",
+        "submit": "Comentar",
+        "posting": "Enviando...",
+        "reopen": "Reabrir",
+        "queued": "Na fila",
+        "queueing": "Enfileirando...",
+        "sending": "Enviando...",
+        "noTimeline": "Nenhuma entrada na linha do tempo ainda.",
+        "queuedComments": "Comentários na fila ({{count}})",
+        "interrupt": "Interromper",
+        "interrupting": "Interrompendo...",
+        "updatedTask": "atualizou esta tarefa",
+        "attachImage": "Anexar imagem",
+        "copyMarkdown": "Copiar como markdown",
+        "run": "execução",
+        "you": "Você",
+        "unassigned": "Não atribuído",
+        "none": "Nenhum"
+      },
+      "documents": {
+        "title": "Documentos",
+        "newDocument": "Novo documento",
+        "new": "Novo",
+        "cancel": "Cancelar",
+        "createDocument": "Criar documento",
+        "saving": "Salvando...",
+        "editDocument": "Editar documento",
+        "downloadDocument": "Baixar documento",
+        "deleteDocument": "Excluir documento",
+        "copyDocument": "Copiar documento",
+        "copied": "Copiado",
+        "placeholder": {
+          "key": "Chave do documento",
+          "title": "Título opcional",
+          "body": "Conteúdo em Markdown"
+        },
+        "error": {
+          "invalidKeyPattern": "Use letras minúsculas, números, -, ou _, e comece com uma letra ou número."
+        },
+        "documentActions": "Ações do documento",
+        "revisionHistory": "Histórico de revisões",
+        "loadingRevisions": "Carregando revisões...",
+        "noRevisions": "Nenhuma revisão ainda",
+        "current": "Atual",
+        "returnToLatest": "Voltar para a mais recente",
+        "restoreRevision": "Restaurar esta revisão",
+        "restoring": "Restaurando...",
+        "viewingRevision": "Visualizando revisão {{number}}",
+        "outOfDate": "Desatualizado",
+        "hideRemote": "Ocultar remoto",
+        "reviewRemote": "Revisar remoto",
+        "keepMyDraft": "Manter meu rascunho",
+        "reloadRemote": "Recarregar remoto",
+        "overwriteRemote": "Sobrescrever remoto",
+        "historicalPreviewDescription": "Esta é uma visualização histórica. Restaurá-la cria uma nova revisão mais recente e mantém o histórico imutável.",
+        "outOfDateDescription": "Este documento foi alterado enquanto você editava. Seu rascunho local foi preservado e o salvamento automático está pausado.",
+        "errorMessage": {
+          "requiredKeyAndBody": "A chave e o corpo do documento são obrigatórios",
+          "emptyBody": "O corpo do documento não pode estar vazio",
+          "conflictFetchFailed": "O documento foi alterado remotamente e a versão mais recente não pôde ser carregada",
+          "saveFailed": "Falha ao salvar o documento",
+          "copyFailed": "Não foi possível copiar o documento",
+          "saveBeforeViewHistory": "Salve ou cancele suas alterações locais antes de visualizar uma revisão antiga."
+        }
+      }
+    },
+    "issueProperties": {
+      "labels": {
+        "status": "Status",
+        "priority": "Prioridade",
+        "labels": "Etiquetas",
+        "assignee": "Responsável",
+        "project": "Projeto",
+        "parent": "Pai",
+        "depth": "Profundidade",
+        "createdBy": "Criado por",
+        "started": "Iniciado",
+        "completed": "Concluído",
+        "created": "Criado",
+        "updated": "Atualizado"
+      },
+      "placeholders": {
+        "searchLabels": "Buscar etiquetas...",
+        "searchAssignees": "Buscar responsáveis...",
+        "searchProjects": "Buscar projetos...",
+        "newLabel": "Nova etiqueta"
+      },
+      "actions": {
+        "assignToMe": "Atribuir a mim",
+        "assignToRequester": "Atribuir ao solicitante",
+        "assignTo": "Atribuir a {{name}}",
+        "noAssignee": "Sem responsável",
+        "noProject": "Sem projeto",
+        "createLabel": "Criar etiqueta",
+        "creating": "Criando...",
+        "showProperties": "Mostrar propriedades",
+        "hideIssue": "Ocultar este Chamado"
+      },
+      "status": {
+        "unassigned": "Não atribuído",
+        "none": "Nenhum",
+        "noLabels": "Sem etiquetas"
+      },
+      "selectors": {
+        "assignee": "Responsável",
+        "no_assignee": "Sem responsável",
+        "search_assignees": "Buscar responsáveis...",
+        "no_assignees_found": "Nenhum responsável encontrado"
+      }
+    },
+    "components": {
+      "routineVariablesEditor": {
+        "title": "Variáveis",
+        "detected_hint": "Detectado pelos espaços reservados {{name}} nas instruções da rotina.",
+        "manual_run_hint": "Solicitar este valor ao usuário antes de cada execução manual.",
+        "placeholder_name": "Nome da variável",
+        "type": "Tipo",
+        "default_value": "Valor padrão",
+        "required": "Obrigatório",
+        "no_default": "Sem padrão",
+        "true": "Verdadeiro",
+        "false": "Falso",
+        "options": "Opções",
+        "default_option": "Opção padrão",
+        "instructions_hint": "Use os espaços reservados {{variable_name}} nas instruções para solicitar entradas quando a rotina for executada.",
+        "types": {
+          "text": "Texto",
+          "textarea": "Texto longo",
+          "number": "Número",
+          "boolean": "Booleano",
+          "select": "Seleção"
+        }
+      },
+      "routineRunVariablesDialog": {
+        "title": "Executar rotina",
+        "description": "Preencha as variáveis da rotina antes de iniciar a tarefa de execução.",
+        "no_value": "Sem valor",
+        "choose_value": "Escolha um valor",
+        "missing_required": "Faltando: {{fields}}",
+        "choose_workspace": "Escolha uma workspace existente antes de executar."
+      },
+      "scheduleEditor": {
+        "title": "Agendamento",
+        "choose_frequency": "Escolha a frequência...",
+        "custom_cron": "Expressão cron personalizada",
+        "cron_hint": "Cinco campos: minuto hora dia-do-mês mês dia-da-semana",
+        "at": "as",
+        "at_minute": "no minuto",
+        "on": "na",
+        "on_day": "no dia",
+        "no_schedule": "Nenhuma escala definida",
+        "every": "Toda(o)",
+        "monthly_on_the": "Mensalmente no dia {{day}} às {{time}}",
+        "presets": {
+          "every_minute": "Todo minuto",
+          "every_hour": "Toda hora",
+          "every_day": "Todo dia",
+          "weekdays": "Dias de semana",
+          "weekly": "Semanalmente",
+          "monthly": "Mensalmente",
+          "custom": "Personalizado (cron)"
+        },
+        "days": {
+          "mon": "Seg",
+          "tue": "Ter",
+          "wed": "Qua",
+          "thu": "Qui",
+          "fri": "Sex",
+          "sat": "Sáb",
+          "sun": "Dom"
+        },
+        "am": "AM",
+        "pm": "PM"
+      },
+      "pathInstructionsModal": {
+        "title": "Como obter um caminho completo",
+        "description": "Cole o caminho absoluto (ex.",
+        "choose": "Escolher",
+        "platforms": {
+          "mac": "macOS",
+          "windows": "Windows",
+          "linux": "Linux"
+        },
+        "instructions": {
+          "mac": {
+            "steps": {
+              "1": "Abra o Finder e navegue ate a pasta.",
+              "2": "Clique com o botao direito (ou Control-clique) na pasta.",
+              "3": "Segure a tecla Option e escolha \"Copiar como nome do caminho\".",
+              "4": "Cole o caminho copiado aqui."
+            },
+            "tip": "Você também pode abrir o Terminal, digitar cd, arrastar a pasta para o terminal, pressionar Enter e depois executar pwd."
+          },
+          "windows": {
+            "steps": {
+              "1": "Abra o Explorador de Arquivos e navegue ate a pasta.",
+              "2": "Clique na barra de endereco no topo e copie o caminho completo.",
+              "3": "Cole o caminho copiado aqui."
+            },
+            "tip": "Como alternativa, segure Shift e clique com o botao direito na pasta, depois selecione \"Copiar como caminho\"."
+          },
+          "linux": {
+            "steps": {
+              "1": "Abra um terminal e navegue ate o diretorio com cd.",
+              "2": "Execute pwd para mostrar o caminho completo.",
+              "3": "Copie a saida e cole aqui."
+            },
+            "tip": "Na maioria dos gerenciadores de arquivos, Ctrl+L mostra o caminho completo na barra de endereco."
+          }
+        }
+      },
+      "reportsToPicker": {
+        "disabled_empty": "Reporta para: N/A (CEO)",
+        "choose": "Reporta para...",
+        "choose_manager": "Escolher gestor...",
+        "unknown_manager": "Gestor desconhecido (ID antigo)",
+        "reports_to_name": "Reporta para {{name}}{{suffix}}",
+        "terminated": "encerrado",
+        "no_manager": "Sem gestor",
+        "current_terminated": "Atual: {{name}} (encerrado)",
+        "saved_missing": "O gestor salvo não existe nesta empresa. Escolha um novo gestor ou limpe."
+      },
+      "agentConfigForm": {
+        "adapter": "Adaptador",
+        "testing": "Testando...",
+        "test_environment": "Testar ambiente",
+        "environment_test_failed": "Falha no teste de ambiente",
+        "adapter_type": "Tipo de adaptador",
+        "prompt_template": "Template de prompt",
+        "prompt_template_placeholder": "Você e o agente {{ agent.name }}. Seu papel e {{ agent.role }}...",
+        "prompt_template_warning_short": "O template de prompt e repetido em cada heartbeat. Mantenha curto e dinâmico para evitar custo recorrente de tokens.",
+        "prompt_template_warning": "O template de prompt e repetido em cada heartbeat. Prefira instruções curtas e variaveis como context.* ou run.*; evite repetir instruções estaveis aqui.",
+        "permissions_configuration": "Permissoes e Configuração",
+        "command": "Comando",
+        "detect_from_hermes_config": "Detectar da configuração do Hermes",
+        "failed_load_adapter_models": "Falha ao carregar modelos do adaptador.",
+        "codex_minimal_warning": "O Codex pode rejeitar `minimal` quando a busca estiver ativada.",
+        "model": "Modelo",
+        "default": "Padrão",
+        "select_model_required": "Selecione um modelo (obrigatorio)",
+        "select_model": "Selecionar modelo",
+        "search_models_create": "Buscar modelos... (digite para criar)",
+        "search_models": "Buscar modelos...",
+        "detecting": "Detectando...",
+        "detect_from_config": "Detectar da configuração",
+        "current": "atual",
+        "detected": "detectado",
+        "use_manual_model": "Usar modelo manual",
+        "no_hermes_model_detected": "Nenhum modelo Hermes detectado ainda. Configure o Hermes ou informe um provedor/modelo manualmente.",
+        "no_models_found": "Nenhum modelo encontrado.",
+        "thinking_effort": "Esforco de raciocinio",
+        "auto": "Automático",
+        "agent_instructions_file": "Arquivo de instruções do agente",
+        "bypass_sandbox": "Ignorar sandbox",
+        "enable_search": "Ativar busca",
+        "enable_chrome": "Ativar Chrome",
+        "skip_permissions": "Ignorar permissoes",
+        "max_turns_per_run": "Maximo de turnos por execução",
+        "path_to_project_placeholder": "/caminho/do/projeto",
+        "help": {
+          "name": "Nome de exibicao deste agente.",
+          "title": "Cargo exibido no organograma.",
+          "role": "Papel organizacional. Define posicao e capacidades.",
+          "reports_to": "Agente para o qual este agente reporta na hierarquia.",
+          "capabilities": "Descreve o que este agente pode fazer. Usado no organograma e no roteamento de tarefas.",
+          "adapter_type": "Como este agente executa: CLI local (Claude/Codex/OpenCode), OpenClaw Gateway, processo gerado ou webhook HTTP.",
+          "cwd": "Fallback legado de diretorio de trabalho para adaptadores locais. Configurações novas devem usar workspaces de projeto.",
+          "prompt_template": "Enviado em cada heartbeat. Mantenha curto e dinâmico. Use para contexto da tarefa atual, não para instruções longas.",
+          "model": "Sobrescreve o modelo padrão usado pelo adaptador.",
+          "thinking_effort": "Controla a profundidade de raciocinio do modelo. Os valores suportados variam por adaptador/modelo.",
+          "chrome": "Ativa a integração Chrome do Claude passando --chrome.",
+          "skip_permissions": "Executa sem supervisao aprovando automaticamente prompts de permissão do adaptador quando suportado.",
+          "bypass_sandbox": "Executa o Codex sem restricoes de sandbox. Necessario para acesso a filesystem/rede.",
+          "search": "Ativa busca web do Codex durante as execuções.",
+          "workspace_strategy": "Define como o Paperclip cria o workspace de execução do agente.",
+          "workspace_base_ref": "Ref base do git usada ao criar uma branch de worktree.",
+          "workspace_branch_template": "Template de nome para branches derivadas.",
+          "worktree_parent_dir": "Diretorio onde worktrees derivados serao criados.",
+          "runtime_services_json": "Definicoes opcionais de servicos de runtime do workspace.",
+          "max_turns_per_run": "Número maximo de turnos agenticos (tool calls) por heartbeat.",
+          "command": "Comando a executar (ex.: node, python).",
+          "local_command": "Sobrescreve o caminho do comando CLI chamado pelo adaptador.",
+          "args": "Argumentos de linha de comando, separados por virgula.",
+          "extra_args": "Argumentos extras de CLI para adaptadores locais, separados por virgula.",
+          "env_vars": "Variaveis de ambiente injetadas no processo do adaptador.",
+          "bootstrap_prompt": "Enviado apenas quando o Paperclip inicia uma sessão nova.",
+          "payload_template_json": "JSON opcional mesclado no payload de request de adaptadores remotos.",
+          "webhook_url": "URL que recebe requests POST quando o agente e invocado.",
+          "heartbeat_interval": "Executa este agente automaticamente em um intervalo.",
+          "interval_sec": "Segundos entre invocações automaticas de heartbeat.",
+          "timeout_sec": "Tempo maximo em segundos para uma execução antes de encerrar.",
+          "grace_sec": "Segundos de espera apos enviar interrupt antes de forcar kill.",
+          "wake_on_demand": "Permite acordar este agente por atribuicoes, API, UI ou sistemas automatizados.",
+          "cooldown_sec": "Segundos minimos entre execuções consecutivas de heartbeat.",
+          "max_concurrent_runs": "Número maximo de execuções de heartbeat simultâneas.",
+          "budget_monthly_cents": "Limite mensal de gasto em centavos. 0 significa sem limite."
+        },
+        "environment_result": {
+          "status": {
+            "pass": "Aprovado",
+            "warn": "Avisos",
+            "fail": "Falhou"
+          },
+          "level": {
+            "info": "INFO",
+            "warn": "AVISO",
+            "error": "ERRO"
+          },
+          "hint_label": "Dica",
+          "messages": {
+            "cwd_valid": "Diretorio de trabalho valido: {{path}}",
+            "command_not_found": "Comando não encontrado no PATH: \"{{command}}\"",
+            "codex_auth_config": "O Codex está autenticado pela própria configuração de auth.",
+            "openai_key_present": "OPENAI_API_KEY esta definido para autenticação do Codex.",
+            "openai_key_missing": "OPENAI_API_KEY não esta definido. As execuções do Codex podem falhar ate configurar autenticação."
+          },
+          "details": {
+            "logged_in_as": "Logado como {{email}}.",
+            "detected_in": "Detectado em {{source}}."
+          },
+          "hints": {
+            "set_openai_key_or_auth": "Defina OPENAI_API_KEY no env do adaptador, no shell, ou rode `codex auth` para login.",
+            "use_codex_cli_probe": "Use o comando `codex` para executar a sonda automatica de login e instalação.",
+            "retry_probe": "Tente novamente a sonda. Se persistir, verifique manualmente se o Codex executa `Respond with hello` neste diretorio.",
+            "try_probe_manually": "Teste manualmente (`codex exec --json -` e prompt: Respond with hello) para inspecionar a saida completa.",
+            "configure_openai_or_login": "Configure OPENAI_API_KEY no env/shell do adaptador ou rode `codex login`, depois teste novamente.",
+            "run_codex_exec_debug": "Rode `codex exec --json -` manualmente neste diretorio de trabalho e envie `Respond with hello` para depurar."
+          }
+        }
+      },
+      "liveRunWidget": {
+        "title": "Execuções ao Vivo",
+        "description": "Transmitido com a mesma interface de transcrição usada na página de detalhes da execução.",
+        "stop": "Parar",
+        "stopping": "Parando...",
+        "open_run": "Abrir execução",
+        "waiting_parsing": "Aguardando análise da transcrição...",
+        "waiting_output": "Aguardando saída da execução..."
+      },
+      "worktreeBanner": {
+        "worktree": "Árvore de Trabalho"
+      }
+    }
+  },
+  "components": {
+    "routineVariables": {
+      "title": "Variáveis",
+      "name": "Nome",
+      "type": "Tipo",
+      "default_value": "Valor padrão",
+      "no_default": "Sem padrão",
+      "options": "Opções",
+      "options_placeholder": "alto, médio, baixo",
+      "default_option": "Opção padrão",
+      "no_value": "Sem valor",
+      "choose_value": "Escolha um valor"
+    },
+    "scheduleEditor": {
+      "frequency": "Frequência",
+      "choose_frequency": "Escolha a frequência...",
+      "at_minute": "no minuto",
+      "on_day": "no dia"
+    },
+    "worktree": {
+      "banner": "Árvore de trabalho (Worktree)"
+    },
+    "properties": {
+      "title": "Propriedades",
+      "project_name": "Nome do projeto",
+      "add_description": "Adicionar uma descrição..."
+    },
+    "onboarding": {
+      "title": "Boas-vindas",
+      "subtitle": "Configure o ambiente da sua empresa",
+      "steps": {
+        "company": "Empresa",
+        "agent": "Agente",
+        "task": "Tarefa",
+        "launch": "Lançamento"
+      }
+    },
+    "pathInstructionsModal": {
+      "title": "Como obter um caminho completo",
+      "description": "Cole o caminho absoluto (ex.",
+      "choose": "Escolher",
+      "platforms": {
+        "mac": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "instructions": {
+        "mac": {
+          "steps": {
+            "1": "Abra o Finder e navegue até a pasta.",
+            "2": "Clique com o botão direito (ou Control-clique) na pasta.",
+            "3": "Segure a tecla Option e escolha \"Copiar como nome do caminho\".",
+            "4": "Cole o caminho copiado aqui."
+          },
+          "tip": "Você também pode abrir o Terminal, digitar cd, arrastar a pasta para o terminal, pressionar Enter e depois executar pwd."
+        },
+        "windows": {
+          "steps": {
+            "1": "Abra o Explorador de Arquivos e navegue até a pasta.",
+            "2": "Clique na barra de endereço no topo e copie o caminho completo.",
+            "3": "Cole o caminho copiado aqui."
+          },
+          "tip": "Como alternativa, segure Shift e clique com o botão direito na pasta, depois selecione \"Copiar como caminho\"."
+        },
+        "linux": {
+          "steps": {
+            "1": "Abra um terminal e navegue até o diretório com cd.",
+            "2": "Execute pwd para mostrar o caminho completo.",
+            "3": "Copie a saída e cole aqui."
+          },
+          "tip": "Na maioria dos gerenciadores de arquivos, Ctrl+L mostra o caminho completo na barra de endereço."
+        }
+      }
+    },
+    "budgetPolicyCard": {
+      "scope": {
+        "project": "Projeto",
+        "company": "Empresa"
+      },
+      "window_lifetime": "Orçamento vitalício",
+      "window_monthly_utc": "Orçamento mensal UTC",
+      "observed": "Observado",
+      "percent_of_limit": "{{percent}}% do limite",
+      "no_cap_configured": "Sem limite configurado",
+      "budget": "Orçamento",
+      "disabled": "Desativado",
+      "soft_alert_at": "Alerta suave em {{percent}}%",
+      "pause": "pausa",
+      "remaining": "Restante",
+      "unlimited": "Ilimitado",
+      "project_paused_message": "A execução está pausada para este projeto até que o orçamento seja aumentado ou o incidente seja dispensado.",
+      "scope_paused_message": "Os heartbeats estão pausados para este escopo até que o orçamento seja aumentado ou o incidente seja dispensado.",
+      "budget_usd": "Orçamento (USD)",
+      "amount_placeholder": "0,00",
+      "saving": "Salvando...",
+      "update_budget": "Atualizar orçamento",
+      "set_budget": "Definir orçamento",
+      "invalid_amount": "Insira um valor em dólar válido e não negativo.",
+      "status": {
+        "paused": "Pausado",
+        "warning": "Aviso",
+        "hard_stop": "Bloqueio rígido",
+        "healthy": "Saudável"
+      }
+    }
+  },
+  "common": {
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "edit": "Editar",
+    "delete": "Excluir",
+    "archive": "Arquivar",
+    "restore": "Restaurar",
+    "pause": "Pausar",
+    "enable": "Ativar",
+    "running": "Executando...",
+    "adding": "Adicionando...",
+    "on": "Ligado",
+    "off": "Desligado",
+    "coming_soon": "EM BREVE",
+    "labels": {
+      "label": "Rótulo",
+      "schedule": "Agendamento",
+      "last": "Último",
+      "url": "URL",
+      "secret": "Segredo"
+    },
+    "trigger_kinds": {
+      "schedule": "Agendamento",
+      "webhook": "Webhook",
+      "api": "API"
+    },
+    "accessibility": {
+      "skip_to_main": "Pular para o conteúdo principal",
+      "open_sidebar": "Abrir barra lateral",
+      "close_sidebar": "Fechar barra lateral",
+      "switch_theme": "Alternar para modo {{theme}}"
+    },
+    "navigation": {
+      "documentation": "Documentação",
+      "instance_settings": "Configurações da instância"
+    },
+    "command_palette": {
+      "placeholder": "Buscar tarefas, agentes, projetos...",
+      "no_results": "Nenhum resultado encontrado.",
+      "groups": {
+        "actions": "Ações",
+        "pages": "Páginas",
+        "issues": "Tarefas",
+        "agents": "Agentes",
+        "projects": "Projetos"
+      },
+      "actions": {
+        "create_issue": "Criar nova tarefa",
+        "create_agent": "Criar novo agente",
+        "create_project": "Criar novo projeto"
+      }
+    },
+    "policies": {
+      "coalesce_if_active": "Agrupar se ativo",
+      "always_enqueue": "Sempre enfileirar",
+      "skip_if_active": "Pular se ativo",
+      "skip_missed": "Pular perdidos",
+      "enqueue_missed_with_cap": "Enfileirar perdidos com limite"
+    },
+    "placeholders": {
+      "searchLabels": "Buscar etiquetas...",
+      "searchAssignees": "Buscar responsáveis...",
+      "searchProjects": "Buscar projetos..."
+    },
+    "error": "Ocorreu um erro"
+  },
+  "onboarding": {
+    "title": "Boas-vindas",
+    "subtitle": "Configure o ambiente da sua empresa",
+    "steps": {
+      "company": "Empresa",
+      "agent": "Agente",
+      "task": "Tarefa",
+      "launch": "Lançamento"
+    },
+    "company": {
+      "title": "Nomeie sua empresa",
+      "description": "Esta é a organização onde seus agentes vão trabalhar.",
+      "company_name": "Nome da empresa",
+      "mission_optional": "Missão / objetivo (opcional)",
+      "mission_placeholder": "O que esta empresa esta tentando alcancar?"
+    },
+    "agent": {
+      "title": "Crie seu primeiro agente",
+      "description": "Escolha como este agente vai executar tarefas.",
+      "name": "Nome do agente",
+      "adapter_type": "Tipo de adaptador",
+      "recommended": "Recomendado",
+      "more_adapter_types": "Mais tipos de adaptador",
+      "model": "Modelo",
+      "no_models_discovered": "Nenhum modelo encontrado.",
+      "adapter_environment_check": "Verificação de ambiente do adaptador",
+      "adapter_environment_check_description": "Executa uma sonda ao vivo pedindo para a CLI do adaptador responder com hello.",
+      "test_now": "Testar agora",
+      "test_environment_requires_company": "Crie ou selecione uma empresa antes de testar o ambiente do adaptador.",
+      "gateway_url": "URL do gateway",
+      "webhook_url": "URL do webhook"
+    },
+    "task": {
+      "title": "Dê algo para ele fazer",
+      "description": "De ao seu agente uma tarefa pequena para começar - uma correção de bug, uma pesquisa ou um script.",
+      "task_title": "Titulo da tarefa",
+      "task_title_placeholder": "ex.: Pesquisar precos dos concorrentes",
+      "description_optional": "Descricao (opcional)",
+      "description_placeholder": "Adicione mais detalhes sobre o que o agente deve fazer...",
+      "default_title": "Contrate seu primeiro engenheiro e crie um plano de contratação",
+      "default_description": "Você e o CEO. Você define a direcao da empresa.\n\n- contratar um engenheiro fundador\n- escrever um plano de contratação\n- quebrar o roadmap em tarefas concretas e começar a delegar trabalho"
+    },
+    "launch": {
+      "title": "Pronto para lancar",
+      "description": "Tudo está configurado. Ao lancar agora, vamos criar a tarefa inicial, acordar o agente e abrir o chamado."
+    },
+    "actions": {
+      "back": "Voltar",
+      "next": "Próximo",
+      "creating": "Criando...",
+      "create_open_issue": "Criar e abrir chamado"
+    }
+  }
+}

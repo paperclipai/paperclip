@@ -1,38 +1,27 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PatchInstanceGeneralSettings } from "@paperclipai/shared";
-import { LogOut, SlidersHorizontal } from "lucide-react";
-import { authApi } from "@/api/auth";
+import { SlidersHorizontal } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { Button } from "../components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings() {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-    },
-    onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
-    },
-  });
-
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
-      { label: "General" },
+      { label: t("page.instanceSettings.title", "Instance Settings") },
+      { label: t("page.instanceSettings.nav.general", "General") },
     ]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const generalQuery = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -46,12 +35,16 @@ export function InstanceGeneralSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : t("page.instanceSettings.general.errors.update_failed", "Failed to update general settings."),
+      );
     },
   });
 
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("page.instanceSettings.general.loading", "Loading general settings...")}</div>;
   }
 
   if (generalQuery.error) {
@@ -59,7 +52,7 @@ export function InstanceGeneralSettings() {
       <div className="text-sm text-destructive">
         {generalQuery.error instanceof Error
           ? generalQuery.error.message
-          : "Failed to load general settings."}
+          : t("page.instanceSettings.general.errors.load_failed", "Failed to load general settings.")}
       </div>
     );
   }
@@ -73,10 +66,13 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">{t("page.instanceSettings.nav.general", "General")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide defaults that affect how operator-visible logs are displayed.
+          {t(
+            "page.instanceSettings.general.description",
+            "Configure instance-wide defaults that affect how operator-visible logs are displayed.",
+          )}
         </p>
       </div>
 
@@ -89,47 +85,80 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">{t("page.instanceSettings.general.censor_username.title", "Censor username in logs")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
-              username mentions outside of paths are not yet masked in the live transcript view. This is off by
-              default.
+              {t(
+                "page.instanceSettings.general.censor_username.description",
+                "Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view. This is off by default.",
+              )}
             </p>
           </div>
-          <ToggleSwitch
-            checked={censorUsernameInLogs}
-            onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
+          <button
+            type="button"
+            data-slot="toggle"
+            aria-label={t("page.instanceSettings.general.censor_username.aria", "Toggle username log censoring")}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle username log censoring"
-          />
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              censorUsernameInLogs ? "bg-green-600" : "bg-muted",
+            )}
+            onClick={() =>
+              updateGeneralMutation.mutate({
+                censorUsernameInLogs: !censorUsernameInLogs,
+              })
+            }
+          >
+            <span
+              className={cn(
+                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                censorUsernameInLogs ? "translate-x-4.5" : "translate-x-0.5",
+              )}
+            />
+          </button>
         </div>
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">{t("page.instanceSettings.general.keyboard_shortcuts.title", "Keyboard shortcuts")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
-              toggling panels. This is off by default.
+              {t(
+                "page.instanceSettings.general.keyboard_shortcuts.description",
+                "Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or toggling panels. This is off by default.",
+              )}
             </p>
           </div>
-          <ToggleSwitch
-            checked={keyboardShortcuts}
-            onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
+          <button
+            type="button"
+            data-slot="toggle"
+            aria-label={t("page.instanceSettings.general.keyboard_shortcuts.aria", "Toggle keyboard shortcuts")}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
-          />
+            className={cn(
+              "relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+              keyboardShortcuts ? "bg-green-600" : "bg-muted",
+            )}
+            onClick={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
+          >
+            <span
+              className={cn(
+                "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                keyboardShortcuts ? "translate-x-4.5" : "translate-x-0.5",
+              )}
+            />
+          </button>
         </div>
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">AI feedback sharing</h2>
+            <h2 className="text-sm font-semibold">{t("page.instanceSettings.general.feedback_sharing.title", "AI feedback sharing")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Control whether thumbs up and thumbs down votes can send the voted AI output to
-              Paperclip Labs. Votes are always saved locally.
+              {t(
+                "page.instanceSettings.general.feedback_sharing.description",
+                "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+              )}
             </p>
             {FEEDBACK_TERMS_URL ? (
               <a
@@ -138,27 +167,35 @@ export function InstanceGeneralSettings() {
                 rel="noreferrer"
                 className="inline-flex text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
               >
-                Read our terms of service
+                {t("page.instanceSettings.general.feedback_sharing.terms", "Read our terms of service")}
               </a>
             ) : null}
           </div>
           {feedbackDataSharingPreference === "prompt" ? (
             <div className="rounded-lg border border-border/70 bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              No default is saved yet. The next thumbs up or thumbs down choice will ask once and
-              then save the answer here.
+              {t(
+                "page.instanceSettings.general.feedback_sharing.no_default",
+                "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
+              )}
             </div>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: t("page.instanceSettings.general.feedback_sharing.allowed_label", "Always allow"),
+                description: t(
+                  "page.instanceSettings.general.feedback_sharing.allowed_description",
+                  "Share voted AI outputs automatically.",
+                ),
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: t("page.instanceSettings.general.feedback_sharing.not_allowed_label", "Don't allow"),
+                description: t(
+                  "page.instanceSettings.general.feedback_sharing.not_allowed_description",
+                  "Keep voted AI outputs local only.",
+                ),
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -190,32 +227,11 @@ export function InstanceGeneralSettings() {
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            To retest the first-use prompt in local dev, remove the{" "}
-            <code>feedbackDataSharingPreference</code> key from the{" "}
-            <code>instance_settings.general</code> JSON row for this instance, or set it back to{" "}
-            <code>"prompt"</code>. Unset and <code>"prompt"</code> both mean no default has been
-            chosen yet.
+            {t(
+              "page.instanceSettings.general.feedback_sharing.dev_note",
+              "To retest the first-use prompt in local dev, remove the feedbackDataSharingPreference key from the instance_settings.general JSON row for this instance, or set it back to \"prompt\". Unset and \"prompt\" both mean no default has been chosen yet.",
+            )}
           </p>
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Sign out of this Paperclip instance. You will be redirected to the login page.
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={signOutMutation.isPending}
-            onClick={() => signOutMutation.mutate()}
-          >
-            <LogOut className="size-4" />
-            {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-          </Button>
         </div>
       </section>
     </div>

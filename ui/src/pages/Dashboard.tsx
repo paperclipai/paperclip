@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -19,10 +20,11 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Plus, Hexagon } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Button } from "@/components/ui/button";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -33,6 +35,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
+  const { t } = useTranslation();
   const { openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
@@ -47,8 +50,8 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("sidebar.dashboard") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.dashboard(selectedCompanyId!),
@@ -167,15 +170,15 @@ export function Dashboard() {
     if (companies.length === 0) {
       return (
         <EmptyState
-          icon={LayoutDashboard}
-          message="Welcome to Paperclip. Set up your first company and agent to get started."
-          action="Get Started"
+          icon={Bot}
+          message={t("dashboard.welcome")}
+          action={t("dashboard.get_started")}
           onAction={openOnboarding}
         />
       );
     }
     return (
-      <EmptyState icon={LayoutDashboard} message="Create or select a company to view the dashboard." />
+      <EmptyState icon={LayoutDashboard} message={t("dashboard.select_company")} />
     );
   }
 
@@ -190,19 +193,17 @@ export function Dashboard() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (
-        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
-          <div className="flex items-center gap-2.5">
-            <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-sm text-amber-900 dark:text-amber-100">
-              You have no agents.
-            </p>
-          </div>
-          <button
-            onClick={() => openOnboarding({ initialStep: 2, companyId: selectedCompanyId! })}
-            className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
-          >
-            Create one here
-          </button>
+        <div className="flex flex-col items-center justify-center p-8 border border-border bg-card">
+          <Bot className="h-8 w-8 text-muted-foreground mb-3" />
+          <p className="text-sm text-muted-foreground mb-4">
+            {t("dashboard.no_agents")}
+          </p>
+          <Button size="sm" variant="outline" asChild>
+            <Link to="/agents">
+              <LayoutDashboard className="h-4 w-4 mr-2" />
+              {t("dashboard.create_one")}
+            </Link>
+          </Button>
         </div>
       )}
 
@@ -215,85 +216,82 @@ export function Dashboard() {
               <div className="flex items-start gap-2.5">
                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
                 <div>
-                  <p className="text-sm font-medium text-red-50">
-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
-                  </p>
+                  <span className="text-sm font-medium text-destructive">
+                    {t("dashboard.active_budget_incidents", {
+                      count: data.budgets.activeIncidents,
+                    })}
+                  </span>
                   <p className="text-xs text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
+                    {t("dashboard.paused.agents", { count: data.budgets.pausedAgents })} · {t("dashboard.paused.projects", { count: data.budgets.pausedProjects })} · {t("dashboard.paused.approvals", { count: data.budgets.pendingApprovals })}
                   </p>
                 </div>
               </div>
-              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-100">
-                Open budgets
-              </Link>
+              <Button size="sm" variant="outline" asChild>
+                <Link to="/costs">
+                  {t("dashboard.open_budgets")}
+                </Link>
+              </Button>
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <MetricCard
-              icon={Bot}
+              label={t("dashboard.metrics.agents_enabled")}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
-                </span>
-              }
+              icon={Bot}
+              description={t("dashboard.metrics.agents_description", {
+                running: data.agents.running,
+                paused: data.agents.paused,
+                error: data.agents.error
+              })}
             />
             <MetricCard
-              icon={CircleDot}
+              label={t("dashboard.metrics.tasks_in_progress")}
               value={data.tasks.inProgress}
-              label="Tasks In Progress"
-              to="/issues"
-              description={
-                <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
-                </span>
-              }
+              icon={CircleDot}
+              description={t("dashboard.metrics.tasks_description", {
+                open: data.tasks.open,
+                blocked: data.tasks.blocked
+              })}
             />
             <MetricCard
-              icon={DollarSign}
+              label={t("dashboard.metrics.month_spend")}
               value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
+              icon={DollarSign}
               description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
-                </span>
+                data.costs.monthBudgetCents > 0
+                  ? t("dashboard.metrics.month_spend_description", {
+                      percent: data.costs.monthUtilizationPercent,
+                      budget: formatCents(data.costs.monthBudgetCents)
+                    })
+                  : t("dashboard.metrics.unlimited_budget")
               }
             />
             <MetricCard
-              icon={ShieldCheck}
+              label={t("dashboard.metrics.pending_approvals")}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
-              to="/approvals"
+              icon={ShieldCheck}
               description={
-                <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
-                </span>
+                data.budgets.pendingApprovals > 0
+                  ? t("dashboard.metrics.budget_overrides_description", {
+                      count: data.budgets.pendingApprovals
+                    })
+                  : t("dashboard.metrics.pending_approvals_description")
               }
             />
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartCard title={t("dashboard.charts.run_activity")} subtitle={t("dashboard.charts.last_14_days")}>
               <RunActivityChart runs={runs ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Priority" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.charts.issues_priority")} subtitle={t("dashboard.charts.last_14_days")}>
               <PriorityChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Issues by Status" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.charts.issues_status")} subtitle={t("dashboard.charts.last_14_days")}>
               <IssueStatusChart issues={issues ?? []} />
             </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
+            <ChartCard title={t("dashboard.charts.success_rate")} subtitle={t("dashboard.charts.last_14_days")}>
               <SuccessRateChart runs={runs ?? []} />
             </ChartCard>
           </div>
@@ -307,34 +305,36 @@ export function Dashboard() {
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}
-            {recentActivity.length > 0 && (
-              <div className="min-w-0">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                  Recent Activity
-                </h3>
-                <div className="border border-border divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
-                    <ActivityRow
-                      key={event.id}
-                      event={event}
-                      agentMap={agentMap}
-                      entityNameMap={entityNameMap}
-                      entityTitleMap={entityTitleMap}
-                      className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
-                    />
-                  ))}
-                </div>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-foreground uppercase tracking-wider">
+                  {t("dashboard.recent_activity")}
+                </h2>
               </div>
-            )}
+              <div className="border border-border divide-y divide-border overflow-hidden">
+                {recentActivity.map((event) => (
+                  <ActivityRow
+                    key={event.id}
+                    event={event}
+                    agentMap={agentMap}
+                    entityNameMap={entityNameMap}
+                    entityTitleMap={entityTitleMap}
+                    className={animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined}
+                  />
+                ))}
+              </div>
+            </div>
 
             {/* Recent Tasks */}
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                Recent Tasks
-              </h3>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-foreground uppercase tracking-wider">
+                  {t("dashboard.recent_tasks")}
+                </h2>
+              </div>
               {recentIssues.length === 0 ? (
-                <div className="border border-border p-4">
-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
+                <div className="p-8 border border-border border-dashed flex flex-col items-center justify-center">
+                  <p className="text-sm text-muted-foreground">{t("dashboard.no_tasks")}</p>
                 </div>
               ) : (
                 <div className="border border-border divide-y divide-border overflow-hidden">

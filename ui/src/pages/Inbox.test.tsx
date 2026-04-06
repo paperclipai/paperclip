@@ -122,6 +122,7 @@ describe("FailedRunInboxRow", () => {
           onRetry={() => {}}
           isRetrying={false}
           selected
+          t={(key: string) => key}
         />,
       );
     });
@@ -153,7 +154,7 @@ describe("InboxIssueMetaLeading", () => {
     const root = createRoot(container);
 
     act(() => {
-      root.render(<InboxIssueMetaLeading issue={createIssue()} isLive />);
+      root.render(<InboxIssueMetaLeading issue={createIssue()} isLive t={(key: string) => key} />);
     });
 
     const statusIcon = container.querySelector('span[class*="border-blue-600"]');
@@ -205,6 +206,7 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          t={(key: string) => key}
         />,
       );
     });
@@ -229,6 +231,7 @@ describe("InboxIssueTrailingColumns", () => {
           workspaceName={null}
           assigneeName={null}
           currentUserId={null}
+          t={(key: string) => key}
         />,
       );
     });

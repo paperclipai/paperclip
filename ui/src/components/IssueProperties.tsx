@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
 import type { Issue } from "@paperclipai/shared";
@@ -118,6 +119,7 @@ function PropertyPicker({
 }
 
 export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -125,8 +127,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
-  const [blockedByOpen, setBlockedByOpen] = useState(false);
-  const [blockedBySearch, setBlockedBySearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -163,12 +163,6 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryKey: queryKeys.issues.labels(companyId!),
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
-  });
-
-  const { data: allIssues } = useQuery({
-    queryKey: queryKeys.issues.list(companyId!),
-    queryFn: () => issuesApi.list(companyId!),
-    enabled: !!companyId && blockedByOpen,
   });
 
   const createLabel = useMutation({
@@ -252,7 +246,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No labels</span>
+      <span className="text-sm text-muted-foreground">{t("page.issueProperties.status.noLabels", "No labels")}</span>
     </>
   );
 
@@ -260,7 +254,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search labels..."
+        placeholder={t("page.issueProperties.placeholders.searchLabels", "Search labels...")}
         value={labelSearch}
         onChange={(e) => setLabelSearch(e.target.value)}
         autoFocus={!inline}
@@ -307,7 +301,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           />
           <input
             className="flex-1 px-2 py-1.5 text-xs bg-transparent outline-none rounded placeholder:text-muted-foreground/50"
-            placeholder="New label"
+            placeholder={t("page.issueProperties.placeholders.newLabel", "New label")}
             value={newLabelName}
             onChange={(e) => setNewLabelName(e.target.value)}
           />
@@ -323,7 +317,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           }
         >
           <Plus className="h-3 w-3" />
-          {createLabel.isPending ? "Creating…" : "Create label"}
+          {createLabel.isPending ? t("page.issueProperties.actions.creating", "Creating...") : t("page.issueProperties.actions.createLabel", "Create label")}
         </button>
       </div>
     </>
@@ -339,7 +333,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">Unassigned</span>
+      <span className="text-sm text-muted-foreground">{t("page.issueProperties.status.unassigned", "Unassigned")}</span>
     </>
   );
 
@@ -347,7 +341,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder={t("page.issueProperties.placeholders.searchAssignees", "Search assignees...")}
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
@@ -360,7 +354,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           )}
           onClick={() => { onUpdate({ assigneeAgentId: null, assigneeUserId: null }); setAssigneeOpen(false); }}
         >
-          No assignee
+          {t("page.issueProperties.actions.noAssignee", "No assignee")}
         </button>
         {currentUserId && (
           <button
@@ -374,7 +368,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
+            {t("page.issueProperties.actions.assignToMe", "Assign to me")}
           </button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
@@ -389,7 +383,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             }}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            {creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester"}
+            {creatorUserLabel ? t("page.issueProperties.actions.assignTo", "Assign to {{name}}", { name: creatorUserLabel }) : t("page.issueProperties.actions.assignToRequester", "Assign to requester")}
           </button>
         )}
         {sortedAgents
@@ -426,7 +420,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   ) : (
     <>
       <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No project</span>
+      <span className="text-sm text-muted-foreground">{t("page.issueProperties.actions.noProject", "No project")}</span>
     </>
   );
 
@@ -434,7 +428,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search projects..."
+        placeholder={t("page.issueProperties.placeholders.searchProjects", "Search projects...")}
         value={projectSearch}
         onChange={(e) => setProjectSearch(e.target.value)}
         autoFocus={!inline}
@@ -456,7 +450,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             setProjectOpen(false);
           }}
         >
-          No project
+          {t("page.issueProperties.actions.noProject", "No project")}
         </button>
         {orderedProjects
           .filter((p) => {
@@ -496,92 +490,10 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     </>
   );
 
-  const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
-  const blockedByTrigger = blockedByIds.length > 0 ? (
-    <div className="flex items-center gap-1 flex-wrap min-w-0">
-      {(issue.blockedBy ?? []).slice(0, 2).map((relation) => (
-        <span key={relation.id} className="inline-flex max-w-full items-center rounded-full border border-border px-2 py-0.5 text-xs">
-          <span className="truncate">{relation.identifier ?? relation.title}</span>
-        </span>
-      ))}
-      {(issue.blockedBy ?? []).length > 2 && (
-        <span className="text-xs text-muted-foreground">+{(issue.blockedBy ?? []).length - 2}</span>
-      )}
-    </div>
-  ) : (
-    <span className="text-sm text-muted-foreground">No blockers</span>
-  );
-
-  const blockingIssues = issue.blocks ?? [];
-  const blockerOptions = (allIssues ?? [])
-    .filter((candidate) => candidate.id !== issue.id)
-    .filter((candidate) => {
-      if (!blockedBySearch.trim()) return true;
-      const query = blockedBySearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
-    .sort((a, b) => {
-      const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
-      const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
-      return aLabel.localeCompare(bLabel);
-    });
-
-  const toggleBlockedBy = (blockedByIssueId: string) => {
-    const nextBlockedByIds = blockedByIds.includes(blockedByIssueId)
-      ? blockedByIds.filter((candidate) => candidate !== blockedByIssueId)
-      : [...blockedByIds, blockedByIssueId];
-    onUpdate({ blockedByIssueIds: nextBlockedByIds });
-  };
-
-  const blockedByContent = (
-    <>
-      <input
-        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
-        value={blockedBySearch}
-        onChange={(e) => setBlockedBySearch(e.target.value)}
-        autoFocus={!inline}
-      />
-      <div className="max-h-48 overflow-y-auto overscroll-contain">
-        <button
-          className={cn(
-            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-            blockedByIds.length === 0 && "bg-accent",
-          )}
-          onClick={() => onUpdate({ blockedByIssueIds: [] })}
-        >
-          No blockers
-        </button>
-        {blockerOptions.map((candidate) => {
-          const selected = blockedByIds.includes(candidate.id);
-          return (
-            <button
-              key={candidate.id}
-              className={cn(
-                "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
-                selected && "bg-accent",
-              )}
-              onClick={() => toggleBlockedBy(candidate.id)}
-            >
-              <StatusIcon status={candidate.status} />
-              <span className="truncate">
-                {candidate.identifier ? `${candidate.identifier} ` : ""}
-                {candidate.title}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </>
-  );
-
   return (
     <div className="space-y-4">
       <div className="space-y-1">
-        <PropertyRow label="Status">
+        <PropertyRow label={t("page.issueProperties.labels.status", "Status")}>
           <StatusIcon
             status={issue.status}
             onChange={(status) => onUpdate({ status })}
@@ -589,7 +501,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           />
         </PropertyRow>
 
-        <PropertyRow label="Priority">
+        <PropertyRow label={t("page.issueProperties.labels.priority", "Priority")}>
           <PriorityIcon
             priority={issue.priority}
             onChange={(priority) => onUpdate({ priority })}
@@ -599,7 +511,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label="Labels"
+          label={t("page.issueProperties.labels.labels", "Labels")}
           open={labelsOpen}
           onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
           triggerContent={labelsTrigger}
@@ -611,7 +523,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label="Assignee"
+          label={t("page.issueProperties.labels.assignee", "Assignee")}
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
           triggerContent={assigneeTrigger}
@@ -631,7 +543,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
         <PropertyPicker
           inline={inline}
-          label="Project"
+          label={t("page.issueProperties.labels.project", "Project")}
           open={projectOpen}
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
@@ -650,41 +562,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           {projectContent}
         </PropertyPicker>
 
-        <PropertyPicker
-          inline={inline}
-          label="Blocked by"
-          open={blockedByOpen}
-          onOpenChange={(open) => {
-            setBlockedByOpen(open);
-            if (!open) setBlockedBySearch("");
-          }}
-          triggerContent={blockedByTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-72"
-        >
-          {blockedByContent}
-        </PropertyPicker>
-
-        <PropertyRow label="Blocking">
-          {blockingIssues.length > 0 ? (
-            <div className="flex flex-wrap gap-1">
-              {blockingIssues.map((relation) => (
-                <Link
-                  key={relation.id}
-                  to={`/issues/${relation.identifier ?? relation.id}`}
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
-                >
-                  {relation.identifier ?? relation.title}
-                </Link>
-              ))}
-            </div>
-          ) : (
-            <span className="text-sm text-muted-foreground">None</span>
-          )}
-        </PropertyRow>
-
         {issue.parentId && (
-          <PropertyRow label="Parent">
+          <PropertyRow label={t("page.issueProperties.labels.parent", "Parent")}>
             <Link
               to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
               className="text-sm hover:underline"
@@ -693,8 +572,9 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             </Link>
           </PropertyRow>
         )}
+
         {issue.requestDepth > 0 && (
-          <PropertyRow label="Depth">
+          <PropertyRow label={t("page.issueProperties.labels.depth", "Depth")}>
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
@@ -704,7 +584,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
 
       <div className="space-y-1">
         {(issue.createdByAgentId || issue.createdByUserId) && (
-          <PropertyRow label="Created by">
+          <PropertyRow label={t("page.issueProperties.labels.createdBy", "Created by")}>
             {issue.createdByAgentId ? (
               <Link
                 to={`/agents/${issue.createdByAgentId}`}
@@ -721,19 +601,19 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           </PropertyRow>
         )}
         {issue.startedAt && (
-          <PropertyRow label="Started">
+          <PropertyRow label={t("page.issueProperties.labels.started", "Started")}>
             <span className="text-sm">{formatDate(issue.startedAt)}</span>
           </PropertyRow>
         )}
         {issue.completedAt && (
-          <PropertyRow label="Completed">
+          <PropertyRow label={t("page.issueProperties.labels.completed", "Completed")}>
             <span className="text-sm">{formatDate(issue.completedAt)}</span>
           </PropertyRow>
         )}
-        <PropertyRow label="Created">
+        <PropertyRow label={t("page.issueProperties.labels.created", "Created")}>
           <span className="text-sm">{formatDate(issue.createdAt)}</span>
         </PropertyRow>
-        <PropertyRow label="Updated">
+        <PropertyRow label={t("page.issueProperties.labels.updated", "Updated")}>
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
       </div>

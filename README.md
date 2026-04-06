@@ -127,6 +127,15 @@ Monitor and manage your autonomous businesses from anywhere.
 
 <br/>
 
+## Localization
+
+Paperclip UI supports a multi-language experience.
+
+- English (`en`)
+- Portuguese (`pt-BR`)
+
+<br/>
+
 ## Problems Paperclip solves
 
 | Without Paperclip                                                                                                                     | With Paperclip                                                                                                                         |

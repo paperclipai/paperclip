@@ -1,0 +1,2122 @@
+{
+  "sidebar": {
+    "new_issue": "New Issue",
+    "search": "Search",
+    "dashboard": "Dashboard",
+    "goals": "Goals",
+    "approvals": "Approvals",
+    "runs": "Runs",
+    "live_runs": "Live Runs",
+    "heartbeat": "Heartbeat",
+    "settings": "Settings",
+    "teams": "Teams",
+    "members": "Members",
+    "pending": "Join Requests",
+    "projects": "Projects",
+    "inbox": "Inbox",
+    "sections": {
+      "work": "Work",
+      "company": "Company",
+      "projects": "Projects",
+      "agents": "Agents"
+    },
+    "actions": {
+      "new_project": "New project",
+      "new_agent": "New agent"
+    },
+    "status": {
+      "paused_by_budget": "Paused by budget",
+      "live_count": "{{count}} live"
+    },
+    "work": {
+      "tasks": "Tasks",
+      "routines": "Routines"
+    },
+    "company_menu": {
+      "org": "Org",
+      "skills": "Skills",
+      "costs": "Costs",
+      "activity": "Activity",
+      "select": "Select company"
+    }
+  },
+  "dashboard": {
+    "welcome": "Welcome to Paperclip. Set up your first company and agent to get started.",
+    "get_started": "Get Started",
+    "select_company": "Create or select a company to view the dashboard.",
+    "no_agents": "You have no agents.",
+    "create_one": "Create one here",
+    "active_budget_incidents_one": "{{count}} active budget incident",
+    "active_budget_incidents_other": "{{count}} active budget incidents",
+    "paused": {
+      "agents_one": "{{count}} paused agent",
+      "agents_other": "{{count}} paused agents",
+      "projects_one": "{{count}} paused project",
+      "projects_other": "{{count}} paused projects",
+      "approvals_one": "{{count}} pending budget approval",
+      "approvals_other": "{{count}} pending budget approvals",
+      "deleting": "Deleting...",
+      "agents_count_one": "{{count}} agent",
+      "agents_count_other": "{{count}} agents",
+      "issues_count_one": "{{count}} issue",
+      "issues_count_other": "{{count}} issues"
+    },
+    "open_budgets": "Open budgets",
+    "active_agents": "Active Agents",
+    "success_rate": "Success Rate",
+    "avg_resolution_time": "Avg. Resolution Time",
+    "open_issues": "Open Issues",
+    "total_cost": "Total Cost",
+    "human_interventions": "Human Interventions",
+    "activity_over_time": "Activity Over Time",
+    "issue_distribution": "Issue Distribution",
+    "metrics": {
+      "agents_enabled": "Active Agents",
+      "agents_description": "{{running}} running · {{paused}} paused · {{error}} error",
+      "tasks_in_progress": "Tasks in Progress",
+      "tasks_description": "{{open}} open · {{blocked}} blocked",
+      "month_spend": "Month Spend",
+      "month_spend_description": "{{percent}}% of {{budget}} monthly budget used",
+      "unlimited_budget": "Unlimited budget",
+      "pending_approvals": "Pending Approvals",
+      "pending_approvals_description": "No pending budget overrides",
+      "budget_overrides_description": "{{count}} pending budget overrides"
+    },
+    "charts": {
+      "run_activity": "Run Activity",
+      "last_14_days": "Last 14 days",
+      "issues_priority": "Issues by Priority",
+      "issues_status": "Issues by Status",
+      "success_rate": "Success Rate"
+    },
+    "recent_activity": "Recent Activity",
+    "recent_tasks": "Recent Tasks",
+    "no_tasks": "No recent tasks.",
+    "agents_panel": {
+      "title": "Agents",
+      "no_runs": "No recent agent runs.",
+      "live_now": "Live now",
+      "finished": "Finished {{time}}",
+      "started": "Started {{time}}",
+      "waiting_transcript": "Waiting for transcript parsing...",
+      "waiting_output": "Waiting for output...",
+      "no_transcript": "No transcript captured."
+    },
+    "components": {
+      "liveRunWidget": {
+        "title": "Live Runs",
+        "description": "Streamed with the same transcript UI used on the full run detail page.",
+        "stop": "Stop",
+        "stopping": "Stopping...",
+        "open_run": "Open run",
+        "waiting_parsing": "Waiting for transcript parsing...",
+        "waiting_output": "Waiting for run output..."
+      },
+      "worktreeBanner": {
+        "worktree": "Worktree"
+      }
+    }
+  },
+  "transcript": {
+    "stdout": "stdout",
+    "collapse_stdout": "Collapse stdout",
+    "expand_stdout": "Expand stdout"
+  },
+  "activity": {
+    "title": "Activity",
+    "no_activity": "No recent activity.",
+    "view_all": "View all",
+    "actors": {
+      "system": "System",
+      "board": "Board",
+      "unknown": "Unknown"
+    },
+    "verbs": {
+      "issue.created": "created",
+      "issue.updated": "updated",
+      "issue.checked_out": "checked out",
+      "issue.released": "released",
+      "issue.comment_added": "commented on",
+      "issue.attachment_added": "attached file to",
+      "issue.attachment_removed": "removed attachment from",
+      "issue.document_created": "created document for",
+      "issue.document_updated": "updated document on",
+      "issue.document_deleted": "deleted document from",
+      "issue.commented": "commented on",
+      "issue.deleted": "deleted",
+      "agent.created": "created",
+      "agent.updated": "updated",
+      "agent.paused": "paused",
+      "agent.resumed": "resumed",
+      "agent.terminated": "terminated",
+      "agent.key_created": "created API key for",
+      "agent.budget_updated": "updated budget for",
+      "agent.runtime_session_reset": "reset session for",
+      "heartbeat.invoked": "invoked heartbeat for",
+      "heartbeat.cancelled": "cancelled heartbeat for",
+      "approval.created": "requested approval",
+      "approval.approved": "approved",
+      "approval.rejected": "rejected",
+      "project.created": "created",
+      "project.updated": "updated",
+      "project.deleted": "deleted",
+      "goal.created": "created",
+      "goal.updated": "updated",
+      "goal.deleted": "deleted",
+      "cost.reported": "reported cost for",
+      "cost.recorded": "recorded cost for",
+      "company.created": "created company",
+      "company.updated": "updated company",
+      "company.archived": "archived",
+      "company.budget_updated": "updated budget for"
+    },
+    "changed_status": "changed status from {{from}} to {{to}} on",
+    "changed_status_to": "changed status to {{to}} on",
+    "changed_priority": "changed priority from {{from}} to {{to}} on",
+    "changed_priority_to": "changed priority to {{to}} on"
+  },
+  "status": {
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "canceled": "Canceled",
+    "budget_override_required": "Budget override required",
+    "revision_requested": "Revision requested",
+    "failed": "Failed",
+    "timed_out": "Timed out",
+    "completed": "Completed",
+    "active": "Active",
+    "paused": "Paused",
+    "succeeded": "Succeeded",
+    "error": "Error",
+    "running": "Running",
+    "queued": "Queued",
+    "cancelled": "Cancelled",
+    "backlog": "Backlog",
+    "todo": "Todo",
+    "in_progress": "In Progress",
+    "planned": "Planned",
+    "done": "Done",
+    "closed": "Closed"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "delete": "Delete",
+    "archive": "Archive",
+    "restore": "Restore",
+    "pause": "Pause",
+    "enable": "Enable",
+    "running": "Running...",
+    "adding": "Adding...",
+    "on": "On",
+    "off": "Off",
+    "coming_soon": "COMING SOON",
+    "labels": {
+      "label": "Label",
+      "schedule": "Schedule",
+      "last": "Last",
+      "url": "URL",
+      "secret": "Secret"
+    },
+    "policies": {
+      "coalesce_if_active": "Coalesce if active",
+      "always_enqueue": "Always enqueue",
+      "skip_if_active": "Skip if active",
+      "skip_missed": "Skip missed",
+      "enqueue_missed_with_cap": "Enqueue missed with cap"
+    },
+    "trigger_kinds": {
+      "schedule": "Schedule",
+      "webhook": "Webhook",
+      "api": "API"
+    },
+    "accessibility": {
+      "skip_to_main": "Skip to Main Content",
+      "open_sidebar": "Open sidebar",
+      "close_sidebar": "Close sidebar",
+      "switch_theme": "Switch to {{theme}} mode"
+    },
+    "navigation": {
+      "documentation": "Documentation",
+      "instance_settings": "Instance settings"
+    },
+    "command_palette": {
+      "placeholder": "Search issues, agents, projects...",
+      "no_results": "No results found.",
+      "groups": {
+        "actions": "Actions",
+        "pages": "Pages",
+        "issues": "Issues",
+        "agents": "Agents",
+        "projects": "Projects"
+      },
+      "actions": {
+        "create_issue": "Create new issue",
+        "create_agent": "Create new agent",
+        "create_project": "Create new project"
+      }
+    },
+    "error": "An error occurred"
+  },
+  "actions": {
+    "assign_task": "Assign Task",
+    "run_heartbeat": "Run Heartbeat",
+    "pause": "Pause",
+    "resume": "Resume",
+    "retry": "Retry",
+    "retrying": "Retrying...",
+    "run_now": "Run now"
+  },
+  "page": {
+    "dashboard": {
+      "title": "Dashboard"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "inbox_zero": "Inbox zero.",
+      "no_new_items": "No new inbox items.",
+      "no_recent_items": "No recent inbox items.",
+      "no_match_search": "No inbox items match your search.",
+      "no_match_filters": "No inbox items match these filters.",
+      "search_placeholder": "Search inbox...",
+      "earlier": "Earlier",
+      "categories": {
+        "placeholder": "Category",
+        "everything": "All categories",
+        "issues_i_touched": "My recent issues",
+        "join_requests": "Join requests",
+        "approvals": "Approvals",
+        "failed_runs": "Failed runs",
+        "alerts": "Alerts"
+      },
+      "approval_status": {
+        "placeholder": "Approval status",
+        "all": "All approval statuses",
+        "actionable": "Needs action",
+        "resolved": "Resolved"
+      },
+      "columns": {
+        "show_hide": "Show / hide columns",
+        "desktop_rows": "Desktop issue rows",
+        "choose_visible": "Choose which inbox columns stay visible",
+        "reset": "Reset defaults",
+        "default_list": "status, id, updated",
+        "labels": {
+          "status": "Status",
+          "id": "ID",
+          "assignee": "Assignee",
+          "project": "Project",
+          "workspace": "Workspace",
+          "labels": "Tags",
+          "updated": "Last updated"
+        },
+        "descriptions": {
+          "status": "Issue state chip on the left edge.",
+          "id": "Ticket identifier like PAP-1009.",
+          "assignee": "Assigned agent or board user.",
+          "project": "Linked project pill with its color.",
+          "workspace": "Execution or project workspace used for the issue.",
+          "labels": "Issue labels and tags.",
+          "updated": "Latest visible activity time."
+        }
+      },
+      "actions": {
+        "mark_all_read": "Mark all as read",
+        "mark_as_read": "Mark as read",
+        "marking": "Marking...",
+        "approve": "Approve",
+        "reject": "Reject",
+        "retry": "Retry",
+        "dismiss": "Dismiss",
+        "dismiss_from_inbox": "Dismiss from inbox"
+      },
+      "dialogs": {
+        "mark_all_read_title": "Mark all as read?",
+        "mark_all_read_description": "This will mark {{count}} unread {{item_label}} as read.",
+        "item_one": "item",
+        "item_other": "items"
+      },
+      "labels": {
+        "failed_run": "Failed run",
+        "retrying": "Retrying...",
+        "live": "Live",
+        "human_join_request": "Human join request",
+        "agent_join_request": "Agent join request",
+        "updated": "Updated {{time}}",
+        "requested_by": "requested by {{name}}",
+        "requested_time_from_ip": "requested {{time}} from IP {{ip}}",
+        "all_empty_description": "No notifications found",
+        "unread_empty_description": "Checking notifications is a great way to start your day",
+        "recent_empty_description": "Checking notifications is a great way to start your day",
+        "mine_empty_description": "Checking notifications is a great way to start your day",
+        "adapter": "adapter: {{type}}",
+        "unassigned": "Unassigned",
+        "no_project": "No project",
+        "user": "User",
+        "alerts_header": "Alerts"
+      },
+      "tabs": {
+        "mine": "Mine",
+        "recent": "Recent",
+        "unread": "Unread",
+        "all": "All"
+      },
+      "empty": {
+        "selectCompany": "Select a company to view inbox."
+      },
+      "errors": {
+        "approve_failed": "Failed to approve",
+        "reject_failed": "Failed to reject",
+        "approve_join_failed": "Failed to approve join request",
+        "reject_join_failed": "Failed to reject join request",
+        "control_failed": "Failed to control runtime services."
+      },
+      "components": {
+        "routineVariablesEditor": {
+          "title": "Variables",
+          "detected_hint": "Detected from {{name}} placeholders in the routine instructions.",
+          "manual_run_hint": "Prompt the user for this value before each manual run.",
+          "placeholder_name": "Variable name",
+          "type": "Type",
+          "default_value": "Default value",
+          "required": "Required",
+          "no_default": "No default",
+          "true": "True",
+          "false": "False",
+          "options": "Options",
+          "default_option": "Default option",
+          "instructions_hint": "Use {{variable_name}} placeholders in the instructions to prompt for inputs when the routine runs.",
+          "types": {
+            "text": "Text",
+            "textarea": "Long text",
+            "number": "Number",
+            "boolean": "Boolean",
+            "select": "Dropdown"
+          }
+        },
+        "routineRunVariablesDialog": {
+          "title": "Run routine",
+          "description": "Fill in the routine variables before starting the execution issue.",
+          "no_value": "No value",
+          "choose_value": "Choose a value",
+          "missing_required": "Missing: {{fields}}",
+          "choose_workspace": "Choose an existing workspace before running."
+        },
+        "scheduleEditor": {
+          "title": "Schedule",
+          "choose_frequency": "Choose frequency...",
+          "custom_cron": "Custom cron expression",
+          "cron_hint": "Five fields: minute hour day-of-month month day-of-week",
+          "at": "at",
+          "at_minute": "at minute",
+          "on": "on",
+          "on_day": "on day",
+          "no_schedule": "No schedule set",
+          "every": "Every",
+          "monthly_on_the": "Monthly on the {{day}}{{suffix}} at {{time}}",
+          "presets": {
+            "every_minute": "Every minute",
+            "every_hour": "Every hour",
+            "every_day": "Every day",
+            "weekdays": "Weekdays",
+            "weekly": "Weekly",
+            "monthly": "Monthly",
+            "custom": "Custom (cron)"
+          },
+          "days": {
+            "mon": "Mon",
+            "tue": "Tue",
+            "wed": "Wed",
+            "thu": "Thu",
+            "fri": "Fri",
+            "sat": "Sat",
+            "sun": "Sun"
+          },
+          "am": "AM",
+          "pm": "PM"
+        },
+        "pathInstructionsModal": {
+          "title": "How to get a full path",
+          "description": "Paste the absolute path (e.g.",
+          "choose": "Choose",
+          "platforms": {
+            "mac": "macOS",
+            "windows": "Windows",
+            "linux": "Linux"
+          },
+          "instructions": {
+            "mac": {
+              "steps": {
+                "1": "Open Finder and navigate to the folder.",
+                "2": "Right-click (or Control-click) the folder.",
+                "3": "Hold the Option key and choose \"Copy as Pathname\".",
+                "4": "Paste the copied path here."
+              },
+              "tip": "You can also open Terminal, type cd, drag the folder into the terminal window, press Enter, then run pwd."
+            },
+            "windows": {
+              "steps": {
+                "1": "Open File Explorer and navigate to the folder.",
+                "2": "Click in the address bar at the top and copy the full path.",
+                "3": "Paste the copied path here."
+              },
+              "tip": "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\"."
+            },
+            "linux": {
+              "steps": {
+                "1": "Open a terminal and navigate to the directory with cd.",
+                "2": "Run pwd to print the full path.",
+                "3": "Copy the output and paste it here."
+              },
+              "tip": "In most file managers, Ctrl+L reveals the full path in the address bar."
+            }
+          }
+        },
+        "reportsToPicker": {
+          "disabled_empty": "Reports to: N/A (CEO)",
+          "choose": "Reports to...",
+          "choose_manager": "Choose manager...",
+          "unknown_manager": "Unknown manager (stale ID)",
+          "reports_to_name": "Reports to {{name}}{{suffix}}",
+          "terminated": "terminated",
+          "no_manager": "No manager",
+          "current_terminated": "Current: {{name}} (terminated)",
+          "saved_missing": "Saved manager is missing from this company. Choose a new manager or clear."
+        },
+        "agentConfigForm": {
+          "adapter": "Adapter",
+          "testing": "Testing...",
+          "test_environment": "Test environment",
+          "environment_test_failed": "Environment test failed",
+          "adapter_type": "Adapter type",
+          "prompt_template": "Prompt Template",
+          "prompt_template_placeholder": "You are agent {{ agent.name }}. Your role is {{ agent.role }}...",
+          "prompt_template_warning_short": "Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.",
+          "prompt_template_warning": "Prompt template is replayed on every heartbeat. Prefer small task framing and variables like context.* or run.*; avoid repeating stable instructions here.",
+          "permissions_configuration": "Permissions & Configuration",
+          "command": "Command",
+          "detect_from_hermes_config": "Detect from Hermes config",
+          "failed_load_adapter_models": "Failed to load adapter models.",
+          "codex_minimal_warning": "Codex may reject `minimal` thinking when search is enabled.",
+          "model": "Model",
+          "default": "Default",
+          "select_model_required": "Select model (required)",
+          "select_model": "Select model",
+          "search_models_create": "Search models... (type to create)",
+          "search_models": "Search models...",
+          "detecting": "Detecting...",
+          "detect_from_config": "Detect from config",
+          "current": "current",
+          "detected": "detected",
+          "use_manual_model": "Use manual model",
+          "no_hermes_model_detected": "No Hermes model detected yet. Configure Hermes or enter a provider/model manually.",
+          "no_models_found": "No models found.",
+          "thinking_effort": "Thinking effort",
+          "auto": "Auto",
+          "agent_instructions_file": "Agent instructions file",
+          "bypass_sandbox": "Bypass sandbox",
+          "enable_search": "Enable search",
+          "enable_chrome": "Enable Chrome",
+          "skip_permissions": "Skip permissions",
+          "max_turns_per_run": "Max turns per run",
+          "path_to_project_placeholder": "/path/to/project",
+          "help": {
+            "name": "Display name for this agent.",
+            "title": "Job title shown in the org chart.",
+            "role": "Organizational role. Determines position and capabilities.",
+            "reports_to": "The agent this one reports to in the org hierarchy.",
+            "capabilities": "Describes what this agent can do. Used in the org chart and task routing.",
+            "adapter_type": "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or HTTP webhook.",
+            "cwd": "Deprecated legacy working-directory fallback for local adapters. New configs should use project workspaces.",
+            "prompt_template": "Sent on every heartbeat. Keep it small and dynamic. Use for current-task framing, not large static instructions.",
+            "model": "Override the default model used by the adapter.",
+            "thinking_effort": "Control model reasoning depth. Supported values vary by adapter/model.",
+            "chrome": "Enable Claude Chrome integration by passing --chrome.",
+            "skip_permissions": "Run unattended by auto-approving adapter permission prompts when supported.",
+            "bypass_sandbox": "Run Codex without sandbox restrictions. Required for filesystem/network access.",
+            "search": "Enable Codex web search during runs.",
+            "workspace_strategy": "How Paperclip should realize an execution workspace for this agent.",
+            "workspace_base_ref": "Base git ref used when creating a worktree branch.",
+            "workspace_branch_template": "Template for naming derived branches.",
+            "worktree_parent_dir": "Directory where derived worktrees should be created.",
+            "runtime_services_json": "Optional workspace runtime service definitions.",
+            "max_turns_per_run": "Maximum number of agentic turns (tool calls) per heartbeat run.",
+            "command": "The command to execute (e.g. node, python).",
+            "local_command": "Override the CLI command path the adapter should call.",
+            "args": "Command-line arguments, comma-separated.",
+            "extra_args": "Extra CLI arguments for local adapters, comma-separated.",
+            "env_vars": "Environment variables injected into the adapter process.",
+            "bootstrap_prompt": "Only sent when Paperclip starts a fresh session.",
+            "payload_template_json": "Optional JSON merged into remote adapter request payloads.",
+            "webhook_url": "The URL that receives POST requests when the agent is invoked.",
+            "heartbeat_interval": "Run this agent automatically on an interval.",
+            "interval_sec": "Seconds between automatic heartbeat invocations.",
+            "timeout_sec": "Maximum seconds a run can take before termination.",
+            "grace_sec": "Seconds to wait after interrupt before force-kill.",
+            "wake_on_demand": "Allow this agent to wake by assignments, API calls, UI actions, or automation.",
+            "cooldown_sec": "Minimum seconds between consecutive heartbeat runs.",
+            "max_concurrent_runs": "Maximum number of heartbeat runs that can execute simultaneously.",
+            "budget_monthly_cents": "Monthly spend limit in cents. 0 means no limit."
+          },
+          "environment_result": {
+            "status": {
+              "pass": "Passed",
+              "warn": "Warnings",
+              "fail": "Failed"
+            },
+            "level": {
+              "info": "INFO",
+              "warn": "WARN",
+              "error": "ERROR"
+            },
+            "hint_label": "Hint",
+            "messages": {
+              "cwd_valid": "Working directory is valid: {{path}}",
+              "command_not_found": "Command not found in PATH: \"{{command}}\"",
+              "codex_auth_config": "Codex is authenticated via its own auth configuration.",
+              "openai_key_present": "OPENAI_API_KEY is set for Codex authentication.",
+              "openai_key_missing": "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured."
+            },
+            "details": {
+              "logged_in_as": "Logged in as {{email}}.",
+              "detected_in": "Detected in {{source}}."
+            },
+            "hints": {
+              "set_openai_key_or_auth": "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+              "use_codex_cli_probe": "Use the `codex` CLI command to run the automatic login and installation probe.",
+              "retry_probe": "Retry the probe. If this persists, verify Codex can run `Respond with hello` from this directory manually.",
+              "try_probe_manually": "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+              "configure_openai_or_login": "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+              "run_codex_exec_debug": "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug."
+            }
+          }
+        },
+        "liveRunWidget": {
+          "title": "Live Runs",
+          "description": "Streamed with the same transcript UI used on the full run detail page.",
+          "stop": "Stop",
+          "stopping": "Stopping...",
+          "open_run": "Open run",
+          "waiting_parsing": "Waiting for transcript parsing...",
+          "waiting_output": "Waiting for run output..."
+        },
+        "worktreeBanner": {
+          "worktree": "Worktree"
+        }
+      },
+      "agent_errors": {
+        "one": "{{count}} agent has errors",
+        "other": "{{count}} agents have errors"
+      },
+      "budget_utilization": "Budget at {{percent}}% utilization this month"
+    },
+    "approvals": {
+      "title": "Approvals",
+      "pending_tab": "Pending",
+      "all_tab": "All",
+      "no_pending": "No pending approvals.",
+      "no_approvals": "No approvals yet.",
+      "select_company": "Select a company first.",
+      "failed_approve": "Failed to approve",
+      "failed_reject": "Failed to reject"
+    },
+    "common": {
+      "loading": "Loading...",
+      "error": "An error occurred",
+      "no_data": "No data found"
+    },
+    "not_found": {
+      "title_company": "Company not found",
+      "title_page": "Page not found",
+      "desc_company": "No company matches prefix \"{{prefix}}\".",
+      "desc_page": "This route does not exist.",
+      "requested_path": "Requested path:",
+      "open_dashboard": "Open dashboard",
+      "go_home": "Go home"
+    },
+    "projects": {
+      "title": "Projects",
+      "add_project": "Add Project",
+      "no_projects": "No projects yet.",
+      "select_company": "Select a company to view projects.",
+      "dialog": {
+        "new_project": "New project",
+        "project_name": "Project name",
+        "add_description": "Add description...",
+        "repo_url": "Repo URL",
+        "local_folder": "Local folder",
+        "optional": "optional",
+        "repo_help": "Link a GitHub repository so agents can clone, read, and push code for this project.",
+        "local_folder_help": "Set an absolute path on this machine where local agents will read and write files for this project.",
+        "github_repo_placeholder": "https://github.com/org/repo",
+        "absolute_path_placeholder": "/absolute/path/to/workspace",
+        "goal": "Goal",
+        "add_goal": "+ Goal",
+        "no_goal": "No goal",
+        "all_goals_selected": "All goals already selected.",
+        "target_date": "Target date",
+        "create_project": "Create project",
+        "creating": "Creating...",
+        "remove_goal_aria": "Remove goal {{title}}",
+        "workspace_name_local_default": "Local folder",
+        "workspace_name_repo_default": "GitHub repo",
+        "errors": {
+          "local_path_abs": "Local folder must be a full absolute path.",
+          "repo_invalid": "Repo must use a valid GitHub or GitHub Enterprise repo URL.",
+          "create_failed": "Failed to create project."
+        }
+      }
+    },
+    "projectDetail": {
+      "common": {
+        "project": "Project"
+      },
+      "tabs": {
+        "issues": "Issues",
+        "overview": "Overview",
+        "workspaces": "Workspaces",
+        "configuration": "Configuration",
+        "budget": "Budget"
+      },
+      "overview": {
+        "add_description": "Add a description...",
+        "status": "Status",
+        "target_date": "Target Date"
+      },
+      "paused_by_budget": "Paused by budget hard stop",
+      "loading_workspaces": "Loading workspaces...",
+      "toasts": {
+        "success_archive": "\"{{name}}\" has been archived",
+        "success_unarchive": "\"{{name}}\" has been unarchived",
+        "failed_archive": "Failed to archive project",
+        "failed_unarchive": "Failed to unarchive project"
+      },
+      "properties": {
+        "saving": "Saving",
+        "saved": "Saved",
+        "failed": "Failed",
+        "name": "Name",
+        "project_name": "Project name",
+        "description": "Description",
+        "add_description": "Add a description...",
+        "no_description": "No description",
+        "status": "Status",
+        "lead": "Lead",
+        "goals": "Goals",
+        "goal": "Goal",
+        "all_goals_linked": "All goals linked.",
+        "created": "Created",
+        "updated": "Updated",
+        "target_date": "Target Date",
+        "codebase": "Codebase",
+        "codebase_help_aria": "Codebase help",
+        "codebase_help": "Repo identifies the source of truth. Local folder is the default place agents write code.",
+        "repo": "Repo",
+        "change_repo": "Change repo",
+        "clear_repo": "Clear repo",
+        "not_set": "Not set.",
+        "set_repo": "Set repo",
+        "local_folder": "Local folder",
+        "paperclip_managed_folder": "Paperclip-managed folder.",
+        "change_local_folder": "Change local folder",
+        "set_local_folder": "Set local folder",
+        "clear_local_folder": "Clear local folder"
+      },
+      "archive": {
+        "danger_zone": "Danger Zone",
+        "archive": "Archive",
+        "unarchive": "Unarchive",
+        "archive_description": "Archive this project to hide it from the sidebar and project selectors.",
+        "unarchive_description": "Unarchive this project to restore it in the sidebar and project selectors.",
+        "archiving": "Archiving...",
+        "unarchiving": "Unarchiving...",
+        "confirm": "Confirm",
+        "action_project": "{{action}} project"
+      }
+    },
+    "issues": {
+      "title": "Issues",
+      "select_company": "Select a company to view issues.",
+      "no_issues": "No issues yet.",
+      "no_match": "No issues match the current filters or search.",
+      "toolbar": {
+        "new_issue": "New Issue",
+        "search_placeholder": "Search issues...",
+        "search_aria": "Search issues",
+        "list_view": "List view",
+        "board_view": "Board view",
+        "filter": "Filter",
+        "filters": "Filters",
+        "filters_with_count": "Filters: {{count}}",
+        "clear": "Clear",
+        "quick_filters": "Quick filters",
+        "quick": {
+          "all": "All",
+          "active": "Active",
+          "backlog": "Backlog",
+          "done": "Done"
+        },
+        "status": "Status",
+        "priority": "Priority",
+        "assignee": "Assignee",
+        "title": "Title",
+        "created": "Created",
+        "updated": "Updated",
+        "sort": "Sort",
+        "group": "Group",
+        "none": "None"
+      },
+      "assignee": {
+        "none": "No assignee",
+        "unassigned": "Unassigned",
+        "user": "User",
+        "me": "Me"
+      }
+    },
+    "newIssueDialog": {
+      "breadcrumb": "New Issue",
+      "title_placeholder": "Issue title",
+      "add_description": "Add description...",
+      "for_agent": "For agent",
+      "assigned_agent": "Assigned agent",
+      "none_selected": "Not selected",
+      "search_agents": "Search agents...",
+      "no_agents_found": "No agents found.",
+      "in_project_joiner": "in",
+      "project": "Project",
+      "no_project": "No project",
+      "search_projects": "Search projects...",
+      "no_results": "No results.",
+      "remove_attachment": "Remove attachment",
+      "labels": "Labels",
+      "attach": "Attach",
+      "start_date": "Start date",
+      "due_date": "Due date",
+      "discard_draft": "Discard draft",
+      "creating_issue": "Creating issue...",
+      "creating": "Creating...",
+      "create_issue": "Create Issue",
+      "execution_workspace_modes": {
+        "shared_workspace": "Project default",
+        "isolated_workspace": "New isolated workspace",
+        "reuse_existing": "Reuse existing workspace"
+      },
+      "status": {
+        "backlog": "Backlog",
+        "todo": "To do",
+        "in_progress": "In progress",
+        "in_review": "In review",
+        "done": "Done"
+      },
+      "priority": {
+        "label": "Priority",
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      }
+    },
+    "goals": {
+      "title": "Goals",
+      "select_company": "Select a company to view goals.",
+      "no_goals": "No goals yet.",
+      "add_goal": "Add Goal",
+      "new_goal": "New Goal",
+      "dialog": {
+        "new_goal": "New goal",
+        "new_sub_goal": "New sub-goal",
+        "goal_title": "Goal title",
+        "add_description": "Add description...",
+        "parent_goal": "Parent goal",
+        "no_parent": "No parent",
+        "creating": "Creating...",
+        "create_goal": "Create goal",
+        "create_sub_goal": "Create sub-goal",
+        "levels": {
+          "company": "Company",
+          "team": "Team",
+          "agent": "Agent",
+          "task": "Task"
+        }
+      },
+      "properties": {
+        "status": "Status",
+        "level": "Level",
+        "owner": "Owner",
+        "none": "None",
+        "parent_goal": "Parent goal",
+        "created": "Created",
+        "updated": "Updated"
+      }
+    },
+    "agents": {
+      "title": "Agents",
+      "new_agent": "New Agent",
+      "select_company": "Select a company to view agents.",
+      "create_first": "Create your first agent to get started.",
+      "no_match_filter": "No agents match the selected filter.",
+      "no_org_hierarchy": "No organizational hierarchy defined.",
+      "filters": "Filters",
+      "show_terminated": "Show terminated",
+      "all": "All",
+      "active": "Active",
+      "paused": "Paused",
+      "error": "Error",
+      "count_one": "{{count}} agent",
+      "count_other": "{{count}} agents",
+      "live": "Live",
+      "new_agent_dialog": {
+        "title": "Add a new agent",
+        "recommendation": "We recommend letting your CEO handle agent setup. They know the org structure and can configure reporting, permissions, and adapters.",
+        "ask_ceo": "Ask the CEO to create a new agent",
+        "advanced_link": "I want advanced configuration myself",
+        "back": "Back",
+        "choose_adapter": "Choose your adapter type for advanced setup.",
+        "recommended": "Recommended",
+        "issue": {
+          "title": "Create a new agent",
+          "description": "(describe here what kind of agent you need)"
+        }
+      },
+      "new_agent_page": {
+        "title": "New Agent",
+        "subtitle": "Advanced agent configuration",
+        "agent_name": "Agent name",
+        "title_placeholder": "Title (e.g. VP of Engineering)",
+        "company_skills": "Company skills",
+        "skills_description": "Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.",
+        "no_company_skills": "No optional company skills installed yet.",
+        "this_will_be_ceo": "This will be the CEO",
+        "creating": "Creating...",
+        "create_agent": "Create agent",
+        "errors": {
+          "create_failed": "Failed to create agent",
+          "opencode_model_required": "OpenCode requires an explicit model in provider/model format.",
+          "failed_load_models": "Failed to load OpenCode models.",
+          "models_loading": "OpenCode models are still loading. Please wait and try again.",
+          "no_models_discovered": "No OpenCode models discovered. Run `opencode models` and authenticate providers.",
+          "model_unavailable": "Configured OpenCode model is unavailable: {{model}}"
+        }
+      }
+    },
+    "routines": {
+      "title": "Routines",
+      "new_routine": "New Routine",
+      "routine_title": "Routine title",
+      "add_instructions": "Add instructions...",
+      "advanced_delivery": "Advanced delivery settings",
+      "delivery_hint": "Keep policy controls secondary to the work definition.",
+      "concurrency": "Concurrency",
+      "catch_up": "Catch-up",
+      "last_run": "Last run",
+      "enabled": "Enabled",
+      "unknown": "Unknown",
+      "routine_created": "Routine created",
+      "routine_created_body": "Add the first trigger to turn it into a live workflow.",
+      "beta": "Beta",
+      "no_routines": "No routines yet.",
+      "no_routines_hint": "No routines yet. Use Create routine to define the first recurring workflow.",
+      "select_company": "Select a company to view routines.",
+      "description": "Recurring work definitions that materialize into auditable execution issues.",
+      "define_work_hint": "Define the recurring work first. Trigger setup comes next on the detail page.",
+      "for": "For",
+      "in": "in",
+      "assignee": "Assignee",
+      "project": "Project",
+      "no_assignee": "No assignee",
+      "no_project": "No project",
+      "search_assignees": "Search assignees...",
+      "search_projects": "Search projects...",
+      "no_assignees_found": "No assignees found.",
+      "no_projects_found": "No projects found.",
+      "post_creation_hint": "After creation, Paperclip takes you straight to trigger setup for schedules, webhooks, or internal runs.",
+      "creating": "Creating...",
+      "load_failed": "Failed to load routines",
+      "run_now": "Run now",
+      "update_failed": "Failed to update routine",
+      "update_failed_body": "Paperclip could not update the routine.",
+      "run_failed": "Routine run failed",
+      "run_failed_body": "Paperclip could not start the routine run.",
+      "table": {
+        "name": "Name",
+        "project": "Project",
+        "agent": "Agent",
+        "last_run": "Last run",
+        "enabled": "Enabled"
+      },
+      "concurrency_descriptions": {
+        "coalesce": "If a run is already active, keep just one follow-up run queued.",
+        "always": "Queue every trigger occurrence, even if the routine is already running.",
+        "skip": "Drop new trigger occurrences while a run is still active."
+      },
+      "catch_up_descriptions": {
+        "skip": "Ignore windows that were missed while the scheduler or routine was paused.",
+        "capped": "Catch up missed schedule windows in capped batches after recovery."
+      }
+    },
+    "routineDetail": {
+      "signing_mode": "Signing mode",
+      "replay_window": "Replay window (seconds)",
+      "unsaved_changes": "Unsaved changes",
+      "add_trigger": "Add trigger",
+      "no_triggers": "No triggers configured yet.",
+      "no_runs": "No runs yet.",
+      "no_activity": "No activity yet.",
+      "kind": "Kind",
+      "secret_warning": "Save this now. Paperclip will not show the secret value again.",
+      "next_run": "Next: {{date}}",
+      "save_trigger": "Save trigger",
+      "rotate_secret": "Rotate secret",
+      "webhook_trigger_created": "Webhook trigger created",
+      "webhook_secret_rotated": "Webhook secret rotated",
+      "trigger_added": "Trigger added",
+      "trigger_added_body": "The routine schedule was saved.",
+      "trigger_saved_body": "The routine cadence update was saved.",
+      "trigger_deleted": "Trigger deleted",
+      "failed_add_trigger": "Failed to add trigger",
+      "failed_update_trigger": "Failed to update trigger",
+      "failed_delete_trigger": "Failed to delete trigger",
+      "failed_rotate_secret": "Failed to rotate webhook secret",
+      "failed_save_routine": "Failed to save routine",
+      "routine_saved": "Routine saved",
+      "automation_paused": "Automation paused.",
+      "automation_enabled": "Automation enabled.",
+      "run_started": "Routine run started",
+      "tabs": {
+        "triggers": "Triggers",
+        "runs": "Runs",
+        "activity": "Activity"
+      },
+      "signing_descriptions": {
+        "bearer": "Expect a shared bearer token in the Authorization header.",
+        "hmac_sha256": "Expect an HMAC SHA-256 signature over the request using the shared secret."
+      }
+    },
+    "projectWorkspace": {
+      "loading": "Loading workspace...",
+      "not_found": "Workspace not found for this project.",
+      "workspace_name": "Workspace name",
+      "visibility": "Visibility"
+    },
+    "agentDetail": {
+      "runs": {
+        "transcript": "Transcript",
+        "failureDetails": "Failure details",
+        "events": "Events",
+        "retry": "Retry",
+        "retrying": "Retrying...",
+        "jumpToLive": "Jump to live",
+        "live": "Live",
+        "waitingTranscript": "Waiting for transcript...",
+        "noTranscript": "No persisted transcript for this run.",
+        "stderrExcerpt": "stderr excerpt",
+        "stdoutExcerpt": "stdout excerpt",
+        "adapterResult": "adapter result JSON",
+        "sources": {
+          "timer": "Timer",
+          "assignment": "Assignment",
+          "on_demand": "On-demand",
+          "automation": "Automation"
+        },
+        "workspace": {
+          "worktreeSetup": "Worktree setup",
+          "provision": "Provision",
+          "teardown": "Teardown",
+          "worktreeCleanup": "Worktree cleanup",
+          "command": "Command",
+          "workingDir": "Working dir",
+          "branch": "Branch",
+          "baseRef": "Base ref",
+          "worktree": "Worktree",
+          "repoRoot": "Repo root",
+          "cleanup": "Cleanup",
+          "created": "Created by this run",
+          "reused": "Reused existing workspace"
+        },
+        "loadingLogs": "Loading run logs...",
+        "noEvents": "No log events."
+      },
+      "keys": {
+        "created": "API key created — copy it now, it will not be shown again.",
+        "hide": "Hide",
+        "show": "Show",
+        "copy": "Copy",
+        "copied": "Copied!",
+        "dismiss": "Dismiss",
+        "createTitle": "Create API Key",
+        "description": "API keys allow this agent to authenticate calls to the Paperclip server.",
+        "placeholder": "Key name (e.g. CLI, Prod)",
+        "creating": "Creating...",
+        "create": "Create Key"
+      },
+      "breadcrumbs": {
+        "agents": "Agents",
+        "runs": "Runs",
+        "instructions": "Instructions",
+        "configuration": "Configuration",
+        "run": "Run {{id}}"
+      }
+    },
+    "org": {
+      "title": "Org",
+      "select_company": "Select a company to view the organization chart.",
+      "not_found": "Organization chart not found.",
+      "select_agent": "Select an agent to view their details."
+    },
+    "org_chart": {
+      "title": "Org Chart",
+      "import": "Import",
+      "export": "Export",
+      "select_company": "Select a company to view the organization chart.",
+      "no_hierarchy": "No organizational hierarchy defined.",
+      "zoom_in": "Zoom In",
+      "zoom_out": "Zoom Out",
+      "reset_zoom": "Reset Zoom",
+      "fit_screen": "Fit to screen",
+      "fit": "Fit",
+      "empty_state": "No organizational data available."
+    },
+    "companySkills": {
+      "title": "Skills",
+      "detail_breadcrumb": "Detail",
+      "available": "{{count}} available",
+      "filter_placeholder": "Filter skills",
+      "source_placeholder": "Paste path, GitHub URL, or skills.sh command",
+      "add": "Add",
+      "select_company": "Select a company to manage skills.",
+      "form": {
+        "skill_name": "Skill name",
+        "skill_slug": "optional-shortname",
+        "short_description": "Short description",
+        "cancel": "Cancel",
+        "creating": "Creating...",
+        "create_skill": "Create skill"
+      },
+      "list": {
+        "no_filter_match": "No skills match this filter.",
+        "collapse_skill": "Collapse {{name}}",
+        "expand_skill": "Expand {{name}}"
+      },
+      "tree": {
+        "references": "references"
+      },
+      "source": {
+        "skills_sh_managed": "skills.sh managed",
+        "github_managed": "GitHub managed",
+        "url_managed": "URL managed",
+        "folder": "Folder",
+        "folder_managed": "Folder managed",
+        "paperclip_managed": "Paperclip managed",
+        "catalog": "Catalog",
+        "catalog_managed": "Catalog managed"
+      },
+      "scan": {
+        "scan_workspaces": "Scan project workspaces for skills",
+        "scanning": "Scanning project workspaces for skills...",
+        "refreshing": "Refreshing skills list...",
+        "found": "{{count}} found",
+        "imported": "{{count}} imported",
+        "updated": "{{count}} updated",
+        "conflicts": "{{count}} conflicts",
+        "skipped": "{{count}} skipped",
+        "summary": "{{parts}} across {{count}} workspace(s)."
+      },
+      "dialog": {
+        "add_source_title": "Add a skill source",
+        "add_source_description": "Paste a local path, GitHub URL, or `skills.sh` command into the field first.",
+        "browse_skills_sh": "Browse skills.sh",
+        "browse_skills_sh_hint": "Find install commands and paste one here.",
+        "search_github": "Search GitHub",
+        "search_github_hint": "Look for repositories with `SKILL.md`, then paste the repo URL here."
+      },
+      "detail": {
+        "select_skill": "Select a skill to inspect its files.",
+        "stop_editing": "Stop editing",
+        "edit": "Edit",
+        "source": "Source",
+        "copied_path": "Copied path to workspace",
+        "pin": "Pin",
+        "untracked": "untracked",
+        "tracking": "tracking {{ref}}",
+        "check_updates": "Check for updates",
+        "install_update": "Install update",
+        "up_to_date": "Up to date",
+        "key": "Key",
+        "mode": "Mode",
+        "editable": "Editable",
+        "read_only": "Read only",
+        "used_by": "Used by",
+        "no_agents_attached": "No agents attached",
+        "view": "View",
+        "code": "Code",
+        "saving": "Saving...",
+        "save": "Save",
+        "select_file": "Select a file to inspect.",
+        "reason_bundled_read_only": "Bundled Paperclip skills are read-only."
+      },
+      "toasts": {
+        "imported_title": "Skills imported",
+        "imported_body": "{{count}} skill(s) added.",
+        "import_warnings": "Import warnings",
+        "import_failed_title": "Skill import failed",
+        "import_failed_body": "Failed to import skill source.",
+        "created_title": "Skill created",
+        "created_body": "{{name}} is now editable in the Paperclip workspace.",
+        "create_failed_title": "Skill creation failed",
+        "create_failed_body": "Failed to create skill.",
+        "scan_complete": "Project skill scan complete",
+        "conflicts_found": "Skill conflicts found",
+        "scan_warnings": "Scan warnings",
+        "scan_failed_title": "Project skill scan failed",
+        "scan_failed_body": "Failed to scan project workspaces.",
+        "saved_title": "Skill saved",
+        "save_failed_title": "Save failed",
+        "save_failed_body": "Failed to save skill file.",
+        "updated_title": "Skill updated",
+        "updated_body_pinned": "Pinned to {{pin}}",
+        "update_failed_title": "Update failed",
+        "update_failed_body": "Failed to install skill update."
+      }
+    },
+    "costs": {
+      "title": "Costs",
+      "subtitle": "Inference spend, platform fees, credits, and live quota windows.",
+      "select_company": "Select a company to view costs.",
+      "to": "to",
+      "select_range": "Select a start and end date to load data.",
+      "presets": {
+        "mtd": "Month to Date",
+        "7d": "Last 7 Days",
+        "30d": "Last 30 Days",
+        "last7d": "Last 7 Days",
+        "last30d": "Last 30 Days",
+        "ytd": "Year to Date",
+        "all": "All Time",
+        "custom": "Custom"
+      },
+      "tabs": {
+        "overview": "Overview",
+        "budgets": "Budgets",
+        "providers": "Providers",
+        "billers": "Billers",
+        "finance": "Finance"
+      },
+      "budgets_section": {
+        "title": "Budget control plane",
+        "description": "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.",
+        "metrics": {
+          "active_incidents": {
+            "label": "Active incidents",
+            "subtitle": "Open soft or hard threshold crossings"
+          },
+          "pending_approvals": {
+            "label": "Pending approvals",
+            "subtitle": "Budget override approvals awaiting board action"
+          },
+          "paused_agents": {
+            "label": "Paused agents",
+            "subtitle": "Agent heartbeats blocked by budget"
+          },
+          "paused_projects": {
+            "label": "Paused projects",
+            "subtitle": "Project execution blocked by budget"
+          }
+        },
+        "active_incidents_title": "Active incidents",
+        "active_incidents_description": "Resolve hard stops here by raising the budget or explicitly keeping the scope paused.",
+        "scope_title": {
+          "company": "Company budgets",
+          "agent": "Agent budgets",
+          "project": "Project budgets"
+        },
+        "scope_description": {
+          "company": "Company-wide monthly policy.",
+          "agent": "Recurring monthly spend policies for individual agents.",
+          "project": "Lifetime spend policies for execution-bound projects."
+        },
+        "empty": "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing company monthly budget control."
+      },
+      "metrics": {
+        "inference_spend": "Inference spend",
+        "inference_spend_subtitle": "{{tokens}} tokens across request-scoped events",
+        "budget": "Budget",
+        "open": "Open",
+        "paused_summary": "{{agents}} agents paused · {{projects}} projects paused",
+        "of_budget": "{{spend}} of {{budget}}",
+        "no_monthly_cap": "No monthly cap configured",
+        "finance_net": "Finance net",
+        "finance_net_subtitle": "{{debits}} debits · {{credits}} credits",
+        "finance_events": "Finance events",
+        "estimated_in_range": "{{value}} estimated in range"
+      },
+      "inference_ledger": {
+        "title": "Inference ledger",
+        "description": "Request-scoped inference spend for the selected period.",
+        "budget_value": "Budget {{value}}",
+        "unlimited_budget": "Unlimited budget",
+        "usage": "usage",
+        "utilization": "{{percent}}% of monthly budget consumed in this range."
+      },
+      "finance_ledger": {
+        "title": "Finance ledger",
+        "description": "Account-level charges that do not map to a single inference request.",
+        "debits": "Debits",
+        "credits": "Credits",
+        "net": "Net",
+        "estimated": "Estimated",
+        "events_in_range": "{{count}} total event(s) in range",
+        "credits_description": "Refunds, offsets, and credit returns",
+        "net_description": "Debit minus credit for the selected period",
+        "estimated_description": "Estimated debits that are not yet invoice-authoritative"
+      },
+      "by_agent": {
+        "title": "By agent",
+        "description": "What each agent consumed in the selected period.",
+        "empty": "No cost events yet."
+      },
+      "by_project": {
+        "title": "By project",
+        "description": "Run costs attributed through project-linked issues.",
+        "empty": "No project-attributed run costs yet.",
+        "unattributed": "Unattributed"
+      },
+      "by_biller": {
+        "title": "By biller",
+        "description": "Account-level financial events grouped by who charged or credited them.",
+        "empty": "No finance events yet."
+      },
+      "providers": {
+        "all": "All providers",
+        "empty": "No cost events in this period."
+      },
+      "billers": {
+        "all": "All billers",
+        "empty": "No billable events in this period."
+      },
+      "finance_timeline": {
+        "title": "Recent financial events",
+        "description": "Top-ups, fees, credits, commitments, and other non-request charges.",
+        "empty": "No finance events yet. Add account-level charges once biller invoices or credits land.",
+        "invoice": "invoice {{value}}",
+        "region": "region {{value}}",
+        "tier": "tier {{value}}",
+        "estimated": "estimated"
+      },
+      "finance_kind": {
+        "title": "Financial event mix",
+        "description": "Account-level charges grouped by event kind.",
+        "empty": "No finance events in this period.",
+        "stats": "{{eventCount}} event(s) · {{billerCount}} biller(s)",
+        "debits": "{{value}} debits"
+      }
+    },
+    "companies": {
+      "title": "Companies",
+      "new_company": "New Company",
+      "no_companies": "No companies found.",
+      "select_to_manage": "Select a company to manage its settings.",
+      "status": {
+        "active": "Active",
+        "archived": "Archived"
+      },
+      "agents_one": "{{count}} agent",
+      "agents_other": "{{count}} agents",
+      "issues_one": "{{count}} issue",
+      "issues_other": "{{count}} issues"
+    },
+    "instanceSettings": {
+      "title": "Instance Settings",
+      "nav": {
+        "general": "General",
+        "heartbeats": "Heartbeats",
+        "experimental": "Experimental",
+        "plugins": "Plugins"
+      },
+      "general": {
+        "loading": "Loading general settings...",
+        "description": "Configure instance-wide defaults that affect how operator-visible logs are displayed.",
+        "censor_username": {
+          "title": "Censor username in logs",
+          "description": "Hide the username segment in home-directory paths and similar operator-visible log output. Standalone username mentions outside of paths are not yet masked in the live transcript view. This is off by default.",
+          "aria": "Toggle username log censoring"
+        },
+        "keyboard_shortcuts": {
+          "title": "Keyboard shortcuts",
+          "description": "Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or toggling panels. This is off by default.",
+          "aria": "Toggle keyboard shortcuts"
+        },
+        "feedback_sharing": {
+          "title": "AI feedback sharing",
+          "description": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+          "terms": "Read our terms of service",
+          "no_default": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
+          "allowed_label": "Always allow",
+          "allowed_description": "Share voted AI outputs automatically.",
+          "not_allowed_label": "Don't allow",
+          "not_allowed_description": "Keep voted AI outputs local only.",
+          "dev_note": "To retest the first-use prompt in local dev, remove the feedbackDataSharingPreference key from the instance_settings.general JSON row for this instance, or set it back to \"prompt\". Unset and \"prompt\" both mean no default has been chosen yet."
+        },
+        "errors": {
+          "load_failed": "Failed to load general settings.",
+          "update_failed": "Failed to update general settings."
+        }
+      },
+      "heartbeats": {
+        "title": "Scheduler Heartbeats",
+        "loading": "Loading scheduler heartbeats...",
+        "description": "Agents with a timer heartbeat enabled across all of your companies.",
+        "active": "active",
+        "disabled": "disabled",
+        "company_one": "company",
+        "company_other": "companies",
+        "agent_one": "agent",
+        "agent_other": "agents",
+        "confirm_disable_all": "Disable timer heartbeats for all {{count}} enabled {{noun}}?",
+        "disable_all": "Disable All",
+        "disabling": "Disabling...",
+        "empty": "No scheduler heartbeats match the current criteria.",
+        "never": "never",
+        "full_agent_config": "Full agent config",
+        "disable_timer": "Disable Timer Heartbeat",
+        "enable_timer": "Enable Timer Heartbeat",
+        "errors": {
+          "load_failed": "Failed to load scheduler heartbeats.",
+          "update_failed": "Failed to update heartbeat.",
+          "disable_all_failed": "Failed to disable all heartbeats.",
+          "unknown_error": "Unknown error",
+          "disable_one": "Failed to disable 1 timer heartbeat: {{detail}}",
+          "disable_many": "Failed to disable {{failed}} of {{total}} timer heartbeats. First error: {{detail}}"
+        }
+      },
+      "experimental": {
+        "loading": "Loading experimental settings...",
+        "description": "Opt into features that are still being evaluated before they become default behavior.",
+        "enable_isolated_workspaces": {
+          "title": "Enable Isolated Workspaces",
+          "description": "Show execution workspace controls in project configuration and allow isolated workspace behavior for new and existing issue runs.",
+          "aria": "Toggle isolated workspaces experimental setting"
+        },
+        "auto_restart_dev_server": {
+          "title": "Auto-Restart Dev Server When Idle",
+          "description": "In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server automatically when backend changes or migrations make the current boot stale.",
+          "aria": "Toggle guarded dev-server auto-restart"
+        },
+        "errors": {
+          "load_failed": "Failed to load experimental settings.",
+          "update_failed": "Failed to update experimental settings."
+        }
+      },
+      "plugins": {
+        "title": "Plugin Manager",
+        "loading": "Loading plugins...",
+        "install_plugin": "Install Plugin",
+        "install_description": "Enter the npm package name of the plugin you wish to install.",
+        "npm_package_name": "npm Package Name",
+        "install": "Install",
+        "installing": "Installing...",
+        "alpha": {
+          "title": "Plugins are alpha.",
+          "description": "The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles."
+        },
+        "available_title": "Available Plugins",
+        "installed_title": "Installed Plugins",
+        "examples": "Examples",
+        "example": "Example",
+        "loading_examples": "Loading bundled examples...",
+        "no_examples": "No bundled example plugins were found in this checkout.",
+        "not_installed": "Not installed",
+        "open_settings": "Open Settings",
+        "review": "Review",
+        "install_example": "Install Example",
+        "no_plugins_installed": "No plugins installed",
+        "install_to_extend": "Install a plugin to extend functionality.",
+        "no_description": "No description provided.",
+        "plugin_error": "Plugin error",
+        "view_full_error": "View full error",
+        "disable": "Disable",
+        "configure": "Configure",
+        "uninstall_plugin": "Uninstall Plugin",
+        "uninstall": "Uninstall",
+        "uninstalling": "Uninstalling...",
+        "uninstall_confirm": "Are you sure you want to uninstall {{name}}? This action cannot be undone.",
+        "error_details": "Error Details",
+        "plugin_details": "Plugin Details",
+        "error_details_description": "{{name}} hit an error state.",
+        "what_errored": "What errored",
+        "no_error_summary": "No error summary available.",
+        "full_error_output": "Full error output",
+        "no_stored_error": "No stored error message.",
+        "close": "Close",
+        "toasts": {
+          "install_success": "Plugin installed successfully",
+          "install_failed": "Failed to install plugin",
+          "uninstall_success": "Plugin uninstalled successfully",
+          "uninstall_failed": "Failed to uninstall plugin",
+          "enabled": "Plugin enabled",
+          "enable_failed": "Failed to enable plugin",
+          "disabled": "Plugin disabled",
+          "disable_failed": "Failed to disable plugin"
+        },
+        "errors": {
+          "load_failed": "Failed to load plugins.",
+          "load_examples_failed": "Failed to load bundled examples."
+        }
+      }
+    },
+    "company_settings": {
+      "title": "Company Settings",
+      "general": "General",
+      "company_name": "Company name",
+      "company_name_hint": "The display name for your company.",
+      "description": "Description",
+      "description_hint": "Optional description shown in the company profile.",
+      "description_placeholder": "Optional company description",
+      "appearance": "Appearance",
+      "logo": "Logo",
+      "logo_hint": "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.",
+      "choose_file": "Choose file",
+      "no_file_selected": "No file selected",
+      "remove_logo": "Remove logo",
+      "removing": "Removing...",
+      "uploading": "Uploading logo...",
+      "brand_color": "Brand color",
+      "brand_color_hint": "Sets the hue for the company icon. Leave empty for auto-generated color.",
+      "clear": "Clear",
+      "saving": "Saving...",
+      "save_changes": "Save changes",
+      "saved": "Saved",
+      "hiring": "Hiring",
+      "require_approval": "Require board approval for new hires",
+      "require_approval_hint": "New agent hires stay pending until approved by board.",
+      "feedback_sharing": "Feedback Sharing",
+      "allow_sharing": "Allow sharing voted AI outputs with Paperclip Labs",
+      "allow_sharing_hint": "Only AI-generated outputs you explicitly vote on are eligible for feedback sharing.",
+      "feedback_terms_info": "Votes are always saved locally. This setting controls whether voted AI outputs may also be marked for sharing with Paperclip Labs.",
+      "feedback_sharing_enabled": "Feedback sharing enabled",
+      "feedback_sharing_disabled": "Feedback sharing disabled",
+      "feedback_sharing_error": "Failed to update feedback sharing",
+      "invites": "Invites",
+      "invite_snippet_hint": "Generate an OpenClaw agent invite snippet.",
+      "generate_invite": "Generate OpenClaw Invite Prompt",
+      "generating": "Generating...",
+      "copied": "Copied",
+      "copy_snippet": "Copy snippet",
+      "copied_snippet": "Copied snippet",
+      "packages": "Packages",
+      "packages_info": "Import and export have moved to dedicated pages accessible from the Org Chart header.",
+      "danger_zone": "Danger Zone",
+      "archive_info": "Archive this company to hide it from the sidebar. This persists in the database.",
+      "archive_company": "Archive company",
+      "archive_confirm": "Archive company \"{{name}}\"? It will be hidden from the sidebar.",
+      "archiving": "Archiving...",
+      "already_archived": "Already archived",
+      "no_company": "No company selected. Select a company from the switcher above."
+    },
+    "issueDetail": {
+      "breadcrumbs": {
+        "issues": "Issues",
+        "issue": "Issue"
+      },
+      "tabs": {
+        "comments": "Comments",
+        "subissues": "Sub-issues",
+        "activity": "Activity"
+      },
+      "actions": {
+        "showProperties": "Show properties",
+        "hideIssue": "Hide this Issue",
+        "deleteAttachment": "Delete attachment",
+        "uploadAttachment": "Upload attachment",
+        "upload": "Upload",
+        "copyMarkdown": "Copy issue as markdown",
+        "labels": {
+          "created": "created the issue",
+          "updated": "updated the issue",
+          "commented": "commented",
+          "status_changed": "changed the status",
+          "assigned": "assigned the issue",
+          "unassigned": "removed the assignee",
+          "depth_changed": "changed the depth",
+          "reassigned": "reassigned the issue",
+          "from": "from",
+          "to": "to"
+        },
+        "actors": {
+          "system": "System",
+          "board": "Board"
+        }
+      },
+      "placeholders": {
+        "addDescription": "Add a description...",
+        "description": "Add a description..."
+      },
+      "attachments": "Attachments",
+      "toasts": {
+        "copySuccess": {
+          "title": "Copied to clipboard"
+        },
+        "archiveSuccess": {
+          "title": "Issue archived from inbox"
+        },
+        "archiveError": {
+          "title": "Archive failed",
+          "body": "Unable to archive this issue from the inbox"
+        },
+        "interruptSuccess": {
+          "title": "Run interrupted",
+          "body": "The active run is stopping so queued comments can continue next."
+        },
+        "interruptError": {
+          "title": "Interrupt failed",
+          "body": "Unable to interrupt the active run"
+        },
+        "feedbackSuccess": {
+          "savingPromptShare": "Feedback saved. Future votes will share",
+          "savingPromptLocal": "Feedback saved. Future votes will stay local",
+          "savedAndSharing": "Feedback saved and sharing enabled",
+          "saved": "Feedback saved"
+        },
+        "feedbackError": {
+          "title": "Failed to save feedback"
+        },
+        "commentError": {
+          "title": "Comment failed",
+          "body": "Unable to post comment"
+        },
+        "attachmentError": {
+          "uploading": "Uploading...",
+          "uploadFailed": "Upload failed",
+          "importFailed": "Document import failed",
+          "deleteFailed": "Delete failed"
+        }
+      },
+      "status": {
+        "hidden": "This issue is hidden",
+        "live": "Live"
+      },
+      "activity": {
+        "noActivity": "No activity yet.",
+        "costSummary": "Cost Summary",
+        "noCostData": "No cost data yet.",
+        "tokens": "Tokens"
+      },
+      "approvals": {
+        "linked": "Linked Approvals ({{count}})"
+      },
+      "origin": {
+        "routine": "Routine"
+      },
+      "subissues": {
+        "none": "No sub-issues."
+      },
+      "properties": {
+        "title": "Properties"
+      },
+      "commentThread": {
+        "title": "Timeline",
+        "placeholder": "Leave a comment...",
+        "submit": "Comment",
+        "posting": "Posting...",
+        "reopen": "Re-open",
+        "queued": "Queued",
+        "queueing": "Queueing...",
+        "sending": "Sending...",
+        "noTimeline": "No timeline entries yet.",
+        "queuedComments": "Queued Comments ({{count}})",
+        "interrupt": "Interrupt",
+        "interrupting": "Interrupting...",
+        "updatedTask": "updated this task",
+        "attachImage": "Attach image",
+        "copyMarkdown": "Copy as markdown",
+        "run": "run",
+        "you": "You",
+        "unassigned": "Unassigned",
+        "none": "None"
+      },
+      "documents": {
+        "title": "Documents",
+        "newDocument": "New document",
+        "new": "New",
+        "cancel": "Cancel",
+        "createDocument": "Create document",
+        "saving": "Saving...",
+        "editDocument": "Edit document",
+        "downloadDocument": "Download document",
+        "deleteDocument": "Delete document",
+        "copyDocument": "Copy document",
+        "copied": "Copied",
+        "placeholder": {
+          "key": "Document key",
+          "title": "Optional title",
+          "body": "Markdown body"
+        },
+        "error": {
+          "invalidKeyPattern": "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+        },
+        "documentActions": "Document actions",
+        "revisionHistory": "Revision history",
+        "loadingRevisions": "Loading revisions...",
+        "noRevisions": "No revisions yet",
+        "current": "Current",
+        "returnToLatest": "Return to latest",
+        "restoreRevision": "Restore this revision",
+        "restoring": "Restoring...",
+        "viewingRevision": "Viewing revision {{number}}",
+        "outOfDate": "Out of date",
+        "hideRemote": "Hide remote",
+        "reviewRemote": "Review remote",
+        "keepMyDraft": "Keep my draft",
+        "reloadRemote": "Reload remote",
+        "overwriteRemote": "Overwrite remote",
+        "historicalPreviewDescription": "This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.",
+        "outOfDateDescription": "This document changed while you were editing. Your local draft is preserved and autosave is paused.",
+        "errorMessage": {
+          "requiredKeyAndBody": "Document key and body are required",
+          "emptyBody": "Document body cannot be empty",
+          "conflictFetchFailed": "Document changed remotely and the latest version could not be loaded",
+          "saveFailed": "Failed to save document",
+          "copyFailed": "Could not copy document",
+          "saveBeforeViewHistory": "Save or cancel your local changes before viewing an older revision."
+        }
+      }
+    },
+    "issueProperties": {
+      "labels": {
+        "status": "Status",
+        "priority": "Priority",
+        "labels": "Labels",
+        "assignee": "Assignee",
+        "project": "Project",
+        "parent": "Parent",
+        "depth": "Depth",
+        "createdBy": "Created by",
+        "started": "Started",
+        "completed": "Completed",
+        "created": "Created",
+        "updated": "Updated"
+      },
+      "placeholders": {
+        "searchLabels": "Search labels...",
+        "searchAssignees": "Search assignees...",
+        "searchProjects": "Search projects...",
+        "newLabel": "New label"
+      },
+      "actions": {
+        "assignToMe": "Assign to me",
+        "assignToRequester": "Assign to requester",
+        "assignTo": "Assign to {{name}}",
+        "noAssignee": "No assignee",
+        "noProject": "No project",
+        "createLabel": "Create label",
+        "creating": "Creating...",
+        "showProperties": "Show properties",
+        "hideIssue": "Hide this Issue"
+      },
+      "status": {
+        "unassigned": "Unassigned",
+        "none": "None",
+        "noLabels": "No labels"
+      },
+      "selectors": {
+        "assignee": "Assignee",
+        "no_assignee": "No assignee",
+        "search_assignees": "Search assignees...",
+        "no_assignees_found": "No assignees found"
+      }
+    },
+    "components": {
+      "routineVariablesEditor": {
+        "title": "Variables",
+        "detected_hint": "Detected from {{name}} placeholders in the routine instructions.",
+        "manual_run_hint": "Prompt the user for this value before each manual run.",
+        "placeholder_name": "Variable name",
+        "type": "Type",
+        "default_value": "Default value",
+        "required": "Required",
+        "no_default": "No default",
+        "true": "True",
+        "false": "False",
+        "options": "Options",
+        "default_option": "Default option",
+        "instructions_hint": "Use {{variable_name}} placeholders in the instructions to prompt for inputs when the routine runs.",
+        "types": {
+          "text": "Text",
+          "textarea": "Long text",
+          "number": "Number",
+          "boolean": "Boolean",
+          "select": "Dropdown"
+        }
+      },
+      "routineRunVariablesDialog": {
+        "title": "Run routine",
+        "description": "Fill in the routine variables before starting the execution issue.",
+        "no_value": "No value",
+        "choose_value": "Choose a value",
+        "missing_required": "Missing: {{fields}}",
+        "choose_workspace": "Choose an existing workspace before running."
+      },
+      "scheduleEditor": {
+        "title": "Schedule",
+        "choose_frequency": "Choose frequency...",
+        "custom_cron": "Custom cron expression",
+        "cron_hint": "Five fields: minute hour day-of-month month day-of-week",
+        "at": "at",
+        "at_minute": "at minute",
+        "on": "on",
+        "on_day": "on day",
+        "no_schedule": "No schedule set",
+        "every": "Every",
+        "monthly_on_the": "Monthly on the {{day}}{{suffix}} at {{time}}",
+        "presets": {
+          "every_minute": "Every minute",
+          "every_hour": "Every hour",
+          "every_day": "Every day",
+          "weekdays": "Weekdays",
+          "weekly": "Weekly",
+          "monthly": "Monthly",
+          "custom": "Custom (cron)"
+        },
+        "days": {
+          "mon": "Mon",
+          "tue": "Tue",
+          "wed": "Wed",
+          "thu": "Thu",
+          "fri": "Fri",
+          "sat": "Sat",
+          "sun": "Sun"
+        },
+        "am": "AM",
+        "pm": "PM"
+      },
+      "pathInstructionsModal": {
+        "title": "How to get a full path",
+        "description": "Paste the absolute path (e.g.",
+        "choose": "Choose",
+        "platforms": {
+          "mac": "macOS",
+          "windows": "Windows",
+          "linux": "Linux"
+        },
+        "instructions": {
+          "mac": {
+            "steps": {
+              "1": "Open Finder and navigate to the folder.",
+              "2": "Right-click (or Control-click) the folder.",
+              "3": "Hold the Option key and choose \"Copy as Pathname\".",
+              "4": "Paste the copied path here."
+            },
+            "tip": "You can also open Terminal, type cd, drag the folder into the terminal window, press Enter, then run pwd."
+          },
+          "windows": {
+            "steps": {
+              "1": "Open File Explorer and navigate to the folder.",
+              "2": "Click in the address bar at the top and copy the full path.",
+              "3": "Paste the copied path here."
+            },
+            "tip": "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\"."
+          },
+          "linux": {
+            "steps": {
+              "1": "Open a terminal and navigate to the directory with cd.",
+              "2": "Run pwd to print the full path.",
+              "3": "Copy the output and paste it here."
+            },
+            "tip": "In most file managers, Ctrl+L reveals the full path in the address bar."
+          }
+        }
+      },
+      "reportsToPicker": {
+        "disabled_empty": "Reports to: N/A (CEO)",
+        "choose": "Reports to...",
+        "choose_manager": "Choose manager...",
+        "unknown_manager": "Unknown manager (stale ID)",
+        "reports_to_name": "Reports to {{name}}{{suffix}}",
+        "terminated": "terminated",
+        "no_manager": "No manager",
+        "current_terminated": "Current: {{name}} (terminated)",
+        "saved_missing": "Saved manager is missing from this company. Choose a new manager or clear."
+      },
+      "agentConfigForm": {
+        "adapter": "Adapter",
+        "testing": "Testing...",
+        "test_environment": "Test environment",
+        "environment_test_failed": "Environment test failed",
+        "adapter_type": "Adapter type",
+        "prompt_template": "Prompt Template",
+        "prompt_template_placeholder": "You are agent {{ agent.name }}. Your role is {{ agent.role }}...",
+        "prompt_template_warning_short": "Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.",
+        "prompt_template_warning": "Prompt template is replayed on every heartbeat. Prefer small task framing and variables like context.* or run.*; avoid repeating stable instructions here.",
+        "permissions_configuration": "Permissions & Configuration",
+        "command": "Command",
+        "detect_from_hermes_config": "Detect from Hermes config",
+        "failed_load_adapter_models": "Failed to load adapter models.",
+        "codex_minimal_warning": "Codex may reject `minimal` thinking when search is enabled.",
+        "model": "Model",
+        "default": "Default",
+        "select_model_required": "Select model (required)",
+        "select_model": "Select model",
+        "search_models_create": "Search models... (type to create)",
+        "search_models": "Search models...",
+        "detecting": "Detecting...",
+        "detect_from_config": "Detect from config",
+        "current": "current",
+        "detected": "detected",
+        "use_manual_model": "Use manual model",
+        "no_hermes_model_detected": "No Hermes model detected yet. Configure Hermes or enter a provider/model manually.",
+        "no_models_found": "No models found.",
+        "thinking_effort": "Thinking effort",
+        "auto": "Auto",
+        "agent_instructions_file": "Agent instructions file",
+        "bypass_sandbox": "Bypass sandbox",
+        "enable_search": "Enable search",
+        "enable_chrome": "Enable Chrome",
+        "skip_permissions": "Skip permissions",
+        "max_turns_per_run": "Max turns per run",
+        "path_to_project_placeholder": "/path/to/project",
+        "help": {
+          "name": "Display name for this agent.",
+          "title": "Job title shown in the org chart.",
+          "role": "Organizational role. Determines position and capabilities.",
+          "reports_to": "The agent this one reports to in the org hierarchy.",
+          "capabilities": "Describes what this agent can do. Used in the org chart and task routing.",
+          "adapter_type": "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or HTTP webhook.",
+          "cwd": "Deprecated legacy working-directory fallback for local adapters. New configs should use project workspaces.",
+          "prompt_template": "Sent on every heartbeat. Keep it small and dynamic. Use for current-task framing, not large static instructions.",
+          "model": "Override the default model used by the adapter.",
+          "thinking_effort": "Control model reasoning depth. Supported values vary by adapter/model.",
+          "chrome": "Enable Claude Chrome integration by passing --chrome.",
+          "skip_permissions": "Run unattended by auto-approving adapter permission prompts when supported.",
+          "bypass_sandbox": "Run Codex without sandbox restrictions. Required for filesystem/network access.",
+          "search": "Enable Codex web search during runs.",
+          "workspace_strategy": "How Paperclip should realize an execution workspace for this agent.",
+          "workspace_base_ref": "Base git ref used when creating a worktree branch.",
+          "workspace_branch_template": "Template for naming derived branches.",
+          "worktree_parent_dir": "Directory where derived worktrees should be created.",
+          "runtime_services_json": "Optional workspace runtime service definitions.",
+          "max_turns_per_run": "Maximum number of agentic turns (tool calls) per heartbeat run.",
+          "command": "The command to execute (e.g. node, python).",
+          "local_command": "Override the CLI command path the adapter should call.",
+          "args": "Command-line arguments, comma-separated.",
+          "extra_args": "Extra CLI arguments for local adapters, comma-separated.",
+          "env_vars": "Environment variables injected into the adapter process.",
+          "bootstrap_prompt": "Only sent when Paperclip starts a fresh session.",
+          "payload_template_json": "Optional JSON merged into remote adapter request payloads.",
+          "webhook_url": "The URL that receives POST requests when the agent is invoked.",
+          "heartbeat_interval": "Run this agent automatically on an interval.",
+          "interval_sec": "Seconds between automatic heartbeat invocations.",
+          "timeout_sec": "Maximum seconds a run can take before termination.",
+          "grace_sec": "Seconds to wait after interrupt before force-kill.",
+          "wake_on_demand": "Allow this agent to wake by assignments, API calls, UI actions, or automation.",
+          "cooldown_sec": "Minimum seconds between consecutive heartbeat runs.",
+          "max_concurrent_runs": "Maximum number of heartbeat runs that can execute simultaneously.",
+          "budget_monthly_cents": "Monthly spend limit in cents. 0 means no limit."
+        },
+        "environment_result": {
+          "status": {
+            "pass": "Passed",
+            "warn": "Warnings",
+            "fail": "Failed"
+          },
+          "level": {
+            "info": "INFO",
+            "warn": "WARN",
+            "error": "ERROR"
+          },
+          "hint_label": "Hint",
+          "messages": {
+            "cwd_valid": "Working directory is valid: {{path}}",
+            "command_not_found": "Command not found in PATH: \"{{command}}\"",
+            "codex_auth_config": "Codex is authenticated via its own auth configuration.",
+            "openai_key_present": "OPENAI_API_KEY is set for Codex authentication.",
+            "openai_key_missing": "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured."
+          },
+          "details": {
+            "logged_in_as": "Logged in as {{email}}.",
+            "detected_in": "Detected in {{source}}."
+          },
+          "hints": {
+            "set_openai_key_or_auth": "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+            "use_codex_cli_probe": "Use the `codex` CLI command to run the automatic login and installation probe.",
+            "retry_probe": "Retry the probe. If this persists, verify Codex can run `Respond with hello` from this directory manually.",
+            "try_probe_manually": "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+            "configure_openai_or_login": "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+            "run_codex_exec_debug": "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug."
+          }
+        }
+      },
+      "liveRunWidget": {
+        "title": "Live Runs",
+        "description": "Streamed with the same transcript UI used on the full run detail page.",
+        "stop": "Stop",
+        "stopping": "Stopping...",
+        "open_run": "Open run",
+        "waiting_parsing": "Waiting for transcript parsing...",
+        "waiting_output": "Waiting for run output..."
+      },
+      "worktreeBanner": {
+        "worktree": "Worktree"
+      }
+    }
+  },
+  "components": {
+    "routineVariables": {
+      "title": "Variables",
+      "name": "Name",
+      "type": "Type",
+      "default_value": "Default value",
+      "no_default": "No default",
+      "options": "Options",
+      "options_placeholder": "high, medium, low",
+      "default_option": "Default option",
+      "no_value": "No value",
+      "choose_value": "Choose a value"
+    },
+    "scheduleEditor": {
+      "frequency": "Frequency",
+      "choose_frequency": "Choose frequency...",
+      "at_minute": "at minute",
+      "on_day": "on day"
+    },
+    "worktree": {
+      "banner": "Worktree"
+    },
+    "properties": {
+      "title": "Properties",
+      "project_name": "Project name",
+      "add_description": "Add a description..."
+    },
+    "onboarding": {
+      "title": "Onboarding",
+      "subtitle": "Configure your company environment",
+      "steps": {
+        "company": "Company",
+        "agent": "Agent",
+        "task": "Task",
+        "launch": "Launch"
+      }
+    },
+    "pathInstructionsModal": {
+      "title": "How to get a full path",
+      "description": "Paste the absolute path (e.g.",
+      "choose": "Choose",
+      "platforms": {
+        "mac": "macOS",
+        "windows": "Windows",
+        "linux": "Linux"
+      },
+      "instructions": {
+        "mac": {
+          "steps": {
+            "1": "Open Finder and navigate to the folder.",
+            "2": "Right-click (or Control-click) the folder.",
+            "3": "Hold the Option key and choose \"Copy as Pathname\".",
+            "4": "Paste the copied path here."
+          },
+          "tip": "You can also open Terminal, type cd, drag the folder into the terminal window, press Enter, then run pwd."
+        },
+        "windows": {
+          "steps": {
+            "1": "Open File Explorer and navigate to the folder.",
+            "2": "Click in the address bar at the top and copy the full path.",
+            "3": "Paste the copied path here."
+          },
+          "tip": "Alternatively, hold Shift and right-click the folder, then select \"Copy as path\"."
+        },
+        "linux": {
+          "steps": {
+            "1": "Open a terminal and navigate to the directory with cd.",
+            "2": "Run pwd to print the full path.",
+            "3": "Copy the output and paste it here."
+          },
+          "tip": "In most file managers, Ctrl+L reveals the full path in the address bar."
+        }
+      }
+    },
+    "budgetPolicyCard": {
+      "scope": {
+        "project": "Project",
+        "company": "Company"
+      },
+      "window_lifetime": "Lifetime budget",
+      "window_monthly_utc": "Monthly UTC budget",
+      "observed": "Observed",
+      "percent_of_limit": "{{percent}}% of limit",
+      "no_cap_configured": "No cap configured",
+      "budget": "Budget",
+      "disabled": "Disabled",
+      "soft_alert_at": "Soft alert at {{percent}}%",
+      "pause": "pause",
+      "remaining": "Remaining",
+      "unlimited": "Unlimited",
+      "project_paused_message": "Execution is paused for this project until the budget is raised or the incident is dismissed.",
+      "scope_paused_message": "Heartbeats are paused for this scope until the budget is raised or the incident is dismissed.",
+      "budget_usd": "Budget (USD)",
+      "amount_placeholder": "0.00",
+      "saving": "Saving...",
+      "update_budget": "Update budget",
+      "set_budget": "Set budget",
+      "invalid_amount": "Enter a valid non-negative dollar amount.",
+      "status": {
+        "paused": "Paused",
+        "warning": "Warning",
+        "hard_stop": "Hard stop",
+        "healthy": "Healthy"
+      }
+    }
+  },
+  "onboarding": {
+    "title": "Onboarding",
+    "subtitle": "Configure your company environment",
+    "steps": {
+      "company": "Company",
+      "agent": "Agent",
+      "task": "Task",
+      "launch": "Launch"
+    },
+    "company": {
+      "title": "Name your company",
+      "description": "This is the organization your agents will work for.",
+      "company_name": "Company name",
+      "mission_optional": "Mission / goal (optional)",
+      "mission_placeholder": "What is this company trying to achieve?"
+    },
+    "agent": {
+      "title": "Create your first agent",
+      "description": "Choose how this agent will run tasks.",
+      "name": "Agent name",
+      "adapter_type": "Adapter type",
+      "recommended": "Recommended",
+      "more_adapter_types": "More Agent Adapter Types",
+      "model": "Model",
+      "no_models_discovered": "No models discovered.",
+      "adapter_environment_check": "Adapter environment check",
+      "adapter_environment_check_description": "Runs a live probe that asks the adapter CLI to respond with hello.",
+      "test_now": "Test now",
+      "test_environment_requires_company": "Create or select a company before testing adapter environment.",
+      "gateway_url": "Gateway URL",
+      "webhook_url": "Webhook URL"
+    },
+    "task": {
+      "title": "Give it something to do",
+      "description": "Give your agent a small task to start with - a bug fix, a research question, writing a script.",
+      "task_title": "Task title",
+      "task_title_placeholder": "e.g. Research competitor pricing",
+      "description_optional": "Description (optional)",
+      "description_placeholder": "Add more detail about what the agent should do...",
+      "default_title": "Hire your first engineer and create a hiring plan",
+      "default_description": "You are the CEO. You set the direction for the company.\n\n- hire a founding engineer\n- write a hiring plan\n- break the roadmap into concrete tasks and start delegating work"
+    },
+    "launch": {
+      "title": "Ready to launch",
+      "description": "Everything is set up. Launching now will create the starter task, wake the agent, and open the issue."
+    },
+    "actions": {
+      "back": "Back",
+      "next": "Next",
+      "creating": "Creating...",
+      "create_open_issue": "Create & Open Issue"
+    }
+  }
+}
