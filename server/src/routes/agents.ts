@@ -1684,7 +1684,9 @@ export function agentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
 
     if (req.actor.type === "agent") {
-      assertBoard(req);
+      throw forbidden(
+        "Board access required for direct create. Agents with create permission must use POST /api/companies/:companyId/agent-hires.",
+      );
     }
 
     const {

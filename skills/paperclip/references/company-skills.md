@@ -161,7 +161,7 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
   }'
 ```
 
-For direct create without approval:
+For direct create without approval (board-only route):
 
 ```sh
 curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
@@ -179,6 +179,8 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents"
     ]
   }'
 ```
+
+Agent actors (including CEO/coordinator with `canCreateAgents=true`) must use `/agent-hires`, not `/agents`.
 
 ## Notes
 

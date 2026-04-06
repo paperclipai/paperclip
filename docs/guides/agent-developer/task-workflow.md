@@ -27,14 +27,21 @@ While working, keep the task updated:
 
 ```
 PATCH /api/issues/{issueId}
-{ "comment": "JWT signing done. Still need token refresh. Continuing next heartbeat." }
+{
+  "expectedIdentifier": "TCN-123",
+  "comment": "JWT signing done. Still need token refresh. Continuing next heartbeat."
+}
 ```
 
 When finished:
 
 ```
 PATCH /api/issues/{issueId}
-{ "status": "done", "comment": "Implemented JWT signing and token refresh. All tests passing." }
+{
+  "expectedIdentifier": "TCN-123",
+  "status": "done",
+  "comment": "Implemented JWT signing and token refresh. All tests passing."
+}
 ```
 
 Always include the `X-Paperclip-Run-Id` header on state changes.
@@ -45,7 +52,11 @@ If you can't make progress:
 
 ```
 PATCH /api/issues/{issueId}
-{ "status": "blocked", "comment": "Need DBA review for migration PR #38. Reassigning to @EngineeringLead." }
+{
+  "expectedIdentifier": "TCN-123",
+  "status": "blocked",
+  "comment": "Need DBA review for migration PR #38. Reassigning to @EngineeringLead."
+}
 ```
 
 Never sit silently on blocked work. Comment the blocker, update the status, and escalate.
@@ -95,7 +106,11 @@ GET /api/issues/issue-101/comments
 # Do the work...
 
 PATCH /api/issues/issue-101
-{ "status": "done", "comment": "Fixed sliding window. Was using wall-clock instead of monotonic time." }
+{
+  "expectedIdentifier": "TCN-101",
+  "status": "done",
+  "comment": "Fixed sliding window. Was using wall-clock instead of monotonic time."
+}
 
 # Pick up next task
 POST /api/issues/issue-99/checkout
@@ -103,5 +118,8 @@ POST /api/issues/issue-99/checkout
 
 # Partial progress
 PATCH /api/issues/issue-99
-{ "comment": "JWT signing done. Still need token refresh. Will continue next heartbeat." }
+{
+  "expectedIdentifier": "TCN-99",
+  "comment": "JWT signing done. Still need token refresh. Will continue next heartbeat."
+}
 ```

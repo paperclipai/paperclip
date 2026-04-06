@@ -280,6 +280,7 @@ function buildReviewDescription(input: {
     "## Definition of Done",
     "",
     `- Revisão publicada no GitHub em ${artifact.pullRequest.url}`,
+    "- Antes de declarar bloqueio de autenticação/acesso ao GitHub, validar no terminal com `gh auth status` e registrar o resultado no comentário da issue",
     "- Resumo objetivo postado nesta issue com findings ordenados por severidade",
     `- Se houver ajustes: indicar retorno de ${sourceIssueLink} para \`in_progress\``,
     `- Se não houver findings bloqueantes: registrar que ${sourceIssueLink} pode seguir para revisão humana final/merge`,
@@ -383,18 +384,18 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
   }
 
   async function resolveArtifact(sourceIssue: NonNullable<IssueSummary>, comment: IssueComment | null | undefined) {
+    // Same-PATCH handoff comment should take precedence because it reflects the latest
+    // executor intent for this transition into `handoff_ready`.
+    if (comment) {
+      const fromCurrentComment = buildCommentArtifact(sourceIssue, comment);
+      if (fromCurrentComment) return fromCurrentComment;
+    }
+
     const products = await workProducts.listForIssue(sourceIssue.id);
     for (const product of products) {
       if (product.type !== "pull_request") continue;
       const artifact = buildWorkProductArtifact(product);
       if (artifact) return artifact;
-    }
-
-    // Comment submitted in the same PATCH as `handoff_ready`: treat any GitHub PR URL as the handoff
-    // (executors often paste the PR link without `# handoff` / `@revisor pr` markers).
-    if (comment) {
-      const fromCurrentComment = buildCommentArtifact(sourceIssue, comment);
-      if (fromCurrentComment) return fromCurrentComment;
     }
 
     const latestComments = await issues.listComments(sourceIssue.id, { order: "desc", limit: 20 });
@@ -471,7 +472,10 @@ export function reviewDispatchService(db: Db, deps: ReviewDispatchDeps = {}) {
     }
 
     if (artifact.source !== "comment") {
-      const fallback = childIssues.find((child) => parseReviewTicketPullRequest(child)?.url === artifact.pullRequest.url);
+      const fallback = childIssues.find((child) =>
+        !TERMINAL_ISSUE_STATUSES.has(child.status)
+        && parseReviewTicketPullRequest(child)?.url === artifact.pullRequest.url,
+      );
       if (fallback) {
         return {
           reviewIssue: fallback,

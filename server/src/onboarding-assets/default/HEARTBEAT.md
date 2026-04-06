@@ -12,6 +12,7 @@ Run this checklist on every heartbeat.
 1. Read today's note in `$AGENT_HOME/memory/YYYY-MM-DD.md`.
 2. Review planned work, blockers, and what changed since the last run.
 3. Record notable progress in today's note before exiting.
+4. If you will write/update today's memory note, re-read that exact file in the same session immediately before writing (OpenCode read-before-write guard).
 
 ## 3. Get Assignments
 
@@ -19,6 +20,7 @@ Run this checklist on every heartbeat.
 - Prioritize `in_progress`, then **`handoff_ready`** (repair the handoff — section **3b**), then `changes_requested` (rework after review), then `todo` / `claimed`.
 - Skip `blocked` unless new context lets you unblock it.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it first.
+- Mandatory assigned-wake rule: when `PAPERCLIP_WAKE_REASON=issue_assigned` and `PAPERCLIP_TASK_ID` is set, execute that task first and do at least one concrete action on it before triaging unrelated assignments.
 
 ## 3b. Handoff ready / noop (review was not dispatched)
 
@@ -92,6 +94,12 @@ You do **not** need checkout for this path unless your tools require a local git
 1. Add timeline updates to `$AGENT_HOME/memory/YYYY-MM-DD.md`.
 2. Extract durable facts into `$AGENT_HOME/life/` when they matter beyond today.
 3. Update `$AGENT_HOME/MEMORY.md` when you learn a stable working pattern.
+4. For OpenCode flows, never overwrite a memory file you did not read in this session; if the file changed since read, re-read and apply once.
+
+## 8b. Missing files and paths
+
+- Before reading/editing a repo file from memory or comments, confirm the path exists (`rg --files`, `find`, or equivalent).
+- If a path is missing, treat it as context drift, not a fatal run condition: locate the new path and continue; only escalate when the target cannot be resolved.
 
 ## 9. Exit
 

@@ -90,6 +90,17 @@ You can wire the same CLI entry (`paperclipai run` / `cli` + `tsx` + `run`) to *
 
 If Activity Monitor shows huge **`node (vitest …)`** usage while **`/api/health`** still returns **200**, that is expected: Vitest workers are separate from the LaunchAgent server. See **Node memory: Paperclip vs test runners** in **`docs/guides/board-operator/macos-background-service.md`**.
 
+Root Vitest defaults now cap worker fan-out to reduce runaway RAM usage in local sessions:
+
+- local default: `2` workers
+- CI default: `50%` of available workers
+
+Override when needed:
+
+```sh
+PAPERCLIP_VITEST_MAX_WORKERS=4 pnpm test:run
+```
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:

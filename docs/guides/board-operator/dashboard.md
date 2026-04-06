@@ -24,6 +24,7 @@ Access the dashboard from the left sidebar after selecting a company. It refresh
 - **Blocked tasks** — these need your attention. Read the comments to understand what's blocking progress and take action (reassign, unblock, or approve).
 - **Budget utilization** — agents auto-pause at 100% budget. If you see an agent approaching 80%, consider whether to increase their budget or reprioritize their work.
 - **Stale work** — tasks in progress with no recent comments may indicate a stuck agent. Check the agent's run history for errors.
+- **Run failures with effect** — some failed runs can still produce issue mutations (for example checkout/status/comment before a late adapter error). In observability tables, Paperclip prioritizes displaying the latest failure that produced **no** operational effect when both kinds exist, so remediation can focus on truly blocked runs first.
 
 ## Dashboard API
 

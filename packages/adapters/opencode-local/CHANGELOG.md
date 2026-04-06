@@ -4,7 +4,14 @@
 
 ### Patch Changes
 
+- Add an explicit stdin wake-focus hint for `issue_assigned` runs with `PAPERCLIP_TASK_ID`, forcing the model to act on the triggered issue before triaging unrelated assignments; includes a regression test in `execute.test.ts`.
+- Expand stale-workspace-file detection/retry to cover OpenCode "must read file ... before overwriting it" guard messages (in addition to "modified since it was last read"), so these concurrency/read-order failures retry once and classify as `opencode_stale_workspace_file` when persistent.
 - Treat non-zero `opencode run` exits as heartbeat success when JSONL ends with `step_finish` reason `stop`, no parsed error is present, and stderr is empty; preserve the real `exitCode` for diagnostics while setting `resultJson.paperclip.ignoredNonZeroExitCode` (`reason: opencode_last_step_finish_stop`) so server heartbeat outcome logic aligns with successful streamed work.
+- Retry OpenCode execution once with a fresh run when tool-call validation fails (for example `webfetch` invalid-args errors), including no-session runs, so transient/stale schema mismatches do not immediately hard-fail the heartbeat.
+- When tool-call validation errors indicate invalid `webfetch.format` values, retry runs now append an explicit repair hint to stdin (`format` must be `text|markdown|html`, never `json`) to reduce repeated schema failures on the next attempt.
+- When OpenCode returns path-resolution failures (`File not found`, `ENOENT`/`no such file`), the adapter retries once with a path-recovery hint (verify files from current repo root, prefer repository-relative paths, avoid stale absolute paths from other workspaces).
+- Retry once on permission auto-reject even when no session resume is active; keep existing session-resume retry behavior and clear saved session linkage when needed.
+- Expand non-interactive permission bootstrap to include `webfetch` and `network` (`allow`) in both `OPENCODE_PERMISSION` merge and injected runtime `opencode.json`, reducing headless permission denials for tool calls.
 - Fix `execute` control flow so session-retry branches (unknown session, permission auto-reject, stale workspace file) stay inside the async `try` block; this resolves LaunchAgent startup/runtime transpile failures caused by stray `await` usage outside an async function.
 - `execute` now treats non-timeout OpenCode model-discovery failures (`opencode models` unexpected errors) as runtime warnings and continues with the configured model; explicit `Configured OpenCode model is unavailable` remains a hard error.
 - Treat heartbeat workspace `source` **`adapter_config`** like **`agent_home`** when applying optional adapter `cwd` override.

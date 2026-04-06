@@ -120,7 +120,7 @@ This keeps the assignee field stable while still showing who should move the iss
 
 ## 5. Technical Review Dispatch
 
-Moving a source issue to `handoff_ready` can dispatch technical review automatically.
+Keeping a source issue in `handoff_ready` or `technical_review` during a `PATCH` can dispatch technical review automatically.
 
 Current dispatch contract:
 
@@ -134,8 +134,8 @@ Current dispatch contract:
 - **Ambiguity:** when multiple agents match the resolved reference (e.g. duplicate name slugs), dispatch is a noop with reason `reviewer_ambiguous`.
 - **PR URLs** are parsed for **github.com** only (`owner/repo/pull/n`); other hosts are not auto-dispatched—attach a GitHub work product or link in handoff text, or create review issues manually.
 - PR context is resolved in this order:
-  1. attached work product of type pull request
-  2. the **`comment` body on the same `PATCH`** that leaves the issue in `handoff_ready`, if it contains a GitHub PR URL (no `# Handoff` / `@revisor pr` required)
+  1. the **`comment` body on the same `PATCH`** that leaves the issue in `handoff_ready` or `technical_review`, if it contains a GitHub PR URL (no `# Handoff` / `@revisor pr` required)
+  2. attached work product of type pull request
   3. recent issue comments (newest-first, up to 20): prefer comments with explicit handoff markers (`# handoff`, `@revisor pr`) or no-new-diff phrases; otherwise the **newest** comment that contains a GitHub PR URL
   4. source issue description containing a GitHub PR URL
 - Review children are created with `originKind='technical_review_dispatch'`.
@@ -152,6 +152,8 @@ Practical effect:
 - same PR, same explicit head SHA repeated in a new handoff comment: the dispatcher treats it as the same reviewed diff and does not open a duplicate review ticket
 - when the dispatcher lands on `already_reviewed` for a completed review child, Paperclip now tries to self-heal the source issue immediately instead of waiting for a coordinator reconciliation pass
 - no PR reference: dispatch is a no-op and the operator must attach or mention the PR explicitly (activity `issue.review_dispatch_noop` with `reason` is logged for `reviewer_not_found`, `reviewer_ambiguous`, and `pull_request_not_found`)
+- self-heal for stalled parent: if a parent is already in `technical_review` but has no review child, a follow-up `PATCH` (for example, adding an operator comment) now re-attempts dispatch instead of waiting for a status bounce back to `handoff_ready`
+- review child Definition of Done now requires the reviewer to run `gh auth status` before claiming GitHub auth/access blockers; when blocked, include that command result in the issue comment for operator triage
 - when the review child is closed with blocking findings, Paperclip requeues the source issue for the assigned executor and restores it to `in_progress`
 - when the review child is closed without blocking findings, Paperclip advances the source issue to `human_review`
 - **Unparsed or ambiguous review summaries:** if the free-text summary does not match the classifier (`server/src/services/technical-review-outcome.ts`), the source issue **stays** in its current state; the server emits a **warn** log and activity **`issue.review_outcome_unparsed`** on the review child. Operators should fix the summary wording (see `doc/plans/2026-04-05-review-outcome-classification-matrix.md`) or move the parent manually; monitor unparsed rates when the Revisor template changes.
@@ -196,6 +198,17 @@ Recommended pattern:
 - use assignment/comment wakes for normal task execution
 - use scheduled routines for reconciliation, backlog opening, health sweeps, and other recurring control-plane work
 - retire compensation routines once the runtime gains a first-class automation path
+
+Automatic backlog opening:
+
+- The heartbeat scheduler can now auto-promote aged assigned issues from `backlog` to `todo` and enqueue controlled wakes.
+- Defaults: promote after `24h`, max `20` promotions per tick, max `5` wakeups per tick, and `10m` per-agent wakeup cooldown.
+- Environment controls:
+  - `PAPERCLIP_BACKLOG_AUTO_PROMOTION_ENABLED` (`false` disables)
+  - `PAPERCLIP_BACKLOG_AUTO_PROMOTION_AGE_SEC`
+  - `PAPERCLIP_BACKLOG_AUTO_PROMOTION_BATCH`
+  - `PAPERCLIP_BACKLOG_AUTO_PROMOTION_WAKEUP_COOLDOWN_SEC`
+  - `PAPERCLIP_BACKLOG_AUTO_PROMOTION_MAX_WAKEUPS_PER_TICK`
 
 ## 7. Health Monitoring And Observability
 

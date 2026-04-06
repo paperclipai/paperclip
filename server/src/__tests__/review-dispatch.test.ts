@@ -126,6 +126,9 @@ describe("reviewDispatchService", () => {
     expect(issues.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       description: expect.stringContaining("/TCN/issues/TCN-15#comment-comment-1"),
     }));
+    expect(issues.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      description: expect.stringContaining("gh auth status"),
+    }));
   });
 
   it("dispatches from the PATCH comment when it contains a GitHub PR URL without # handoff markers", async () => {
@@ -177,6 +180,69 @@ describe("reviewDispatchService", () => {
     expect(payload?.description).toContain("/TCN/issues/TCN-15#comment-comment-plain");
     expect(payload?.description).toContain("Handoff atual");
     expect(payload?.description).toContain("https://github.com/acme/app/pull/212");
+  });
+
+  it("prefers the same-PATCH comment over stale work-product context to open a new review round", async () => {
+    const createdReviewIssue = makeReviewIssue({
+      id: "review-2",
+      identifier: "TCN-60",
+      originKind: REVIEW_DISPATCH_ORIGIN_KIND,
+      originId: "github:acme/app:pr:212:comment:comment-round-2",
+      status: "todo",
+    });
+    const donePreviousReviewIssue = makeReviewIssue({
+      status: "done",
+      originKind: REVIEW_DISPATCH_ORIGIN_KIND,
+      originId: "github:acme/app:pr:212:work-product:wp-1:2026-03-29T21:10:00.000Z",
+      createdAt: new Date("2026-03-29T21:47:05.000Z"),
+    });
+    const roundTwoComment = makeComment({
+      id: "comment-round-2",
+      body: "Novo round após ajustes. PR: https://github.com/acme/app/pull/212",
+      createdAt: new Date("2026-03-29T22:40:00.000Z"),
+    });
+
+    const agents = {
+      resolveByReference: vi.fn(async () => ({
+        agent: { id: "reviewer-1", companyId: "company-1", name: "Revisor PR", status: "idle" },
+        ambiguous: false,
+      })),
+    };
+    const issues = {
+      getById: vi.fn(async () => makeIssue()),
+      getComment: vi.fn(async () => roundTwoComment),
+      listComments: vi.fn(async () => []),
+      list: vi.fn(async () => [donePreviousReviewIssue]),
+      create: vi.fn(async () => createdReviewIssue),
+    };
+    const workProducts = {
+      listForIssue: vi.fn(async () => [{
+        id: "wp-1",
+        issueId: "issue-1",
+        companyId: "company-1",
+        type: "pull_request",
+        provider: "github",
+        title: "PR #212",
+        url: "https://github.com/acme/app/pull/212",
+        externalId: null,
+        metadata: null,
+        isPrimary: true,
+        createdAt: new Date("2026-03-29T21:10:00.000Z"),
+        updatedAt: new Date("2026-03-29T21:10:00.000Z"),
+      }]),
+    };
+
+    const svc = reviewDispatchService(testDb, createMockDeps({
+      agents,
+      issues,
+      workProducts,
+    }));
+    const result = await svc.dispatchForIssue({ issueId: "issue-1", commentId: "comment-round-2" });
+
+    expect(result.kind).toBe("created");
+    expect(issues.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      originId: "github:acme/app:pr:212:comment:comment-round-2",
+    }));
   });
 
   it("reuses an existing historical review ticket seeded after the same handoff comment", async () => {

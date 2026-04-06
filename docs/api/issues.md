@@ -62,14 +62,16 @@ Headers (agents): X-Paperclip-Run-Id: {runId}
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: {runId}
 {
+  "expectedIdentifier": "TCN-1051",
   "status": "done",
   "comment": "Implemented caching with 90% hit rate."
 }
 ```
 
 The optional `comment` field adds a comment in the same call.
+`expectedIdentifier` is an optional safety guard: when provided, the API returns **409 Conflict** if it does not match the issue at `{issueId}`.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `expectedIdentifier`.
 
 ## Checkout (Claim Task)
 
@@ -219,9 +221,9 @@ The server’s non-blocking / approval detectors match **both English and Portug
 
 - legacy `in_review` rows are backfilled to `handoff_ready`
 - `handoff_ready` is the executor-to-review handoff; direct `in_progress -> human_review` is not allowed
-- **Automatic technical review dispatch** (when `PATCH` results in `handoff_ready`): the server resolves a **github.com** `…/pull/N` URL in this precedence (earlier steps win). Only **github.com** pull URLs are auto-parsed from text; other hosts need manual review tasks or operator mapping.
-  1. **`pull_request` work product** on the issue — first row the server can resolve to a GitHub PR (work products are ordered **primary first**, then by **`updatedAt`** descending).
-  2. **`comment` on that same `PATCH`** — if the request included a `comment` whose body contains a **`https://github.com/{owner}/{repo}/pull/{n}`** URL.
+- **Automatic technical review dispatch** (when `PATCH` leaves the issue in `handoff_ready` **or** `technical_review`): the server resolves a **github.com** `…/pull/N` URL in this precedence (earlier steps win). Only **github.com** pull URLs are auto-parsed from text; other hosts need manual review tasks or operator mapping. This also acts as a self-heal path when a parent is already in `technical_review` but still missing a dispatched review child.
+  1. **`comment` on that same `PATCH`** — if the request included a `comment` whose body contains a **`https://github.com/{owner}/{repo}/pull/{n}`** URL.
+  2. **`pull_request` work product** on the issue — first row the server can resolve to a GitHub PR (work products are ordered **primary first**, then by **`updatedAt`** descending).
   3. **Recent issue comments** — the server loads the **20 most recent** comments (**newest first**). Among comments whose body contains a parseable **github.com** PR URL: prefer the **newest** comment whose body includes an **explicit handoff** (`# handoff` heading or `@revisor pr`) **or** declares **no new diff** (fixed Portuguese/English substring list in the dispatcher; distinct from [Technical review outcome text](#technical-review-outcome-text-portuguese-and-english) above). If none qualify, use the **newest** comment that only carries a GitHub PR URL.
   4. **Issue description** — first parseable **github.com** PR URL in the description.
 

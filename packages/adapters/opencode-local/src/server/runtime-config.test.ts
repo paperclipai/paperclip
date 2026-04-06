@@ -57,6 +57,8 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       permission: {
         read: "allow",
         external_directory: "allow",
+        webfetch: "allow",
+        network: "allow",
       },
     });
 

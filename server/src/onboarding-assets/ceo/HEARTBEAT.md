@@ -29,6 +29,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Prioritize: `in_progress` first, then **`handoff_ready`** (delegate or have the executor repair PR / reviewer per the executor onboarding template [`../default/HEARTBEAT.md`](../default/HEARTBEAT.md) section **6a — Technical review handoff**), then `changes_requested`, then **`claimed`**, then **`todo`**. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- Mandatory assigned-wake rule: when `PAPERCLIP_WAKE_REASON=issue_assigned` and `PAPERCLIP_TASK_ID` is set, handle that issue first and do at least one concrete action on it before touching unrelated assignments.
 
 ## 5. Checkout and Work
 

@@ -9,3 +9,7 @@ The npm package contains the production build under `dist/`. It does not ship th
 ## Typical use
 
 Install the package, then serve or copy the built files from `node_modules/@paperclipai/ui/dist`.
+
+## Accessibility note
+
+When using Radix `Dialog`, every `DialogContent` must include a `DialogTitle` (visible or screen-reader-only, for example with `className="sr-only"`). This avoids runtime accessibility warnings and keeps modal semantics correct for assistive technologies.

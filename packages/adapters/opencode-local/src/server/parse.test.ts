@@ -4,6 +4,9 @@ import {
   opencodeStdoutIndicatesIgnorableNonZeroExit,
   isOpenCodePermissionAutoRejectError,
   isOpenCodeStaleWorkspaceFileError,
+  isOpenCodeFileNotFoundPathError,
+  isOpenCodeToolArgumentValidationError,
+  isOpenCodeWebfetchFormatValidationError,
   isOpenCodeUnknownSessionError,
 } from "./parse.js";
 
@@ -114,7 +117,87 @@ describe("isOpenCodeStaleWorkspaceFileError", () => {
     expect(isOpenCodeStaleWorkspaceFileError("", msg, null)).toBe(true);
   });
 
+  it("detects must-read-before-overwrite guard variants", () => {
+    const msg =
+      "Error: You must read file /Users/nincius/.paperclip/instances/default/workspaces/fdf/memory/2026-04-06.md before overwriting it. Use the Read tool first";
+    expect(isOpenCodeStaleWorkspaceFileError("", "", msg)).toBe(true);
+  });
+
   it("ignores unrelated errors", () => {
     expect(isOpenCodeStaleWorkspaceFileError("", "", "ENOENT: no such file")).toBe(false);
+  });
+});
+
+describe("isOpenCodeToolArgumentValidationError", () => {
+  it("detects webfetch invalid argument errors", () => {
+    expect(
+      isOpenCodeToolArgumentValidationError(
+        "",
+        "",
+        "Error: The webfetch tool was called with invalid args: expected object with `url`.",
+      ),
+    ).toBe(true);
+  });
+
+  it("detects generic invalid tool-argument errors", () => {
+    expect(
+      isOpenCodeToolArgumentValidationError(
+        "",
+        "invalid arguments for tool read_file",
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores unrelated errors", () => {
+    expect(isOpenCodeToolArgumentValidationError("", "", "network timeout")).toBe(false);
+  });
+});
+
+describe("isOpenCodeWebfetchFormatValidationError", () => {
+  it("detects invalid webfetch format option payloads", () => {
+    expect(
+      isOpenCodeWebfetchFormatValidationError(
+        "",
+        "",
+        "Invalid option: expected one of \"text\"|\"markdown\"|\"html\" at path format (webfetch).",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores generic tool argument errors when format is not referenced", () => {
+    expect(
+      isOpenCodeWebfetchFormatValidationError(
+        "",
+        "",
+        "The edit tool was called with invalid arguments: oldString/newString type mismatch.",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isOpenCodeFileNotFoundPathError", () => {
+  it("detects explicit file not found errors", () => {
+    expect(
+      isOpenCodeFileNotFoundPathError(
+        "",
+        "",
+        "Error: File not found: /Users/nincius/sistematecnica-v1/supabase/functions/_shared/studioFusion.ts",
+      ),
+    ).toBe(true);
+  });
+
+  it("detects ENOENT/no-such-file variants", () => {
+    expect(
+      isOpenCodeFileNotFoundPathError(
+        "",
+        "",
+        "ENOENT: no such file or directory, open './missing.ts'",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores unrelated failures", () => {
+    expect(isOpenCodeFileNotFoundPathError("", "", "network timeout")).toBe(false);
   });
 });

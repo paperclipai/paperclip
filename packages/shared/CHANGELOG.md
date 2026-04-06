@@ -8,6 +8,7 @@
 
 ### Patch Changes
 
+- `updateIssueSchema` now supports optional `expectedIdentifier` so clients can ask the server to reject `PATCH /api/issues/:id` when the intended issue key does not match the path target.
 - Restored shared export `INBOX_MINE_ISSUE_STATUS_FILTER` (derived from `ISSUE_STATUSES` minus `cancelled`) and re-exported it through package `index`, fixing LaunchAgent/runtime startup failures when `validators/agent` imports this constant.
 - `ISSUE_BACKLOG_STATUSES`: readonly `["backlog"]` tuple for backlog-only filters (UI aligns with `ISSUE_ACTIVE_STATUSES` / `ISSUE_TERMINAL_STATUSES`).
 - **`DEFAULT_OPENCODE_QUOTA_FALLBACK_MODEL`:** canonical OpenCode quota-fallback model id, exported from package **`constants`** so UI and rollout tooling share one value.

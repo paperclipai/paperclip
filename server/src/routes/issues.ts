@@ -1804,11 +1804,25 @@ export function issueRoutes(
     const isClosed = existing.status === "done" || existing.status === "cancelled";
     const {
       comment: commentBody,
+      expectedIdentifier: expectedIdentifierRaw,
       reopen: reopenRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    const expectedIdentifierQuery =
+      typeof req.query.expectedIdentifier === "string" ? req.query.expectedIdentifier.trim() : null;
+    const expectedIdentifier = expectedIdentifierRaw?.trim() || expectedIdentifierQuery;
+    if (
+      expectedIdentifier &&
+      typeof existing.identifier === "string" &&
+      expectedIdentifier.toUpperCase() !== existing.identifier.toUpperCase()
+    ) {
+      res.status(409).json({
+        error: `Issue identifier mismatch: expected ${expectedIdentifier}, got ${existing.identifier}`,
+      });
+      return;
+    }
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate = req.actor.type === "agent" && Object.keys(updateFields).length > 0;
@@ -2022,7 +2036,10 @@ export function issueRoutes(
       logger.warn({ err, issueId: issue.id }, "failed to reconcile technical review outcome");
     }
 
-    if (issue.status === "handoff_ready") {
+    const shouldAttemptReviewDispatch =
+      (issue.status === "handoff_ready" || issue.status === "technical_review") &&
+      issue.originKind !== REVIEW_DISPATCH_ORIGIN_KIND;
+    if (shouldAttemptReviewDispatch) {
       try {
         const dispatch = await reviewDispatch.dispatchForIssue({
           issueId: issue.id,

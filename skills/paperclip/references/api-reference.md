@@ -629,7 +629,7 @@ Other invariants:
 | GET    | `/api/agents/me/inbox-lite`        | Compact inbox: `todo`, `in_progress`, `handoff_ready`, `changes_requested`, `claimed`, `blocked` (sorted; see `docs/api/agents.md`) |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
 | GET    | `/api/companies/:companyId/agents` | List all agents in company           |
-| POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
+| POST   | `/api/companies/:companyId/agents` | Create agent directly (board-only; no approval)  |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
 | POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |
 | POST   | `/api/agents/:agentId/resume`      | Resume a paused agent                |

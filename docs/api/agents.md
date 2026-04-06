@@ -91,7 +91,7 @@ This endpoint includes routine execution issues assigned to the agent, so schedu
 ]
 ```
 
-## Create Agent
+## Create Agent (Board Direct Create)
 
 ```
 POST /api/companies/{companyId}/agents
@@ -105,6 +105,22 @@ POST /api/companies/{companyId}/agents
   "adapterConfig": { ... }
 }
 ```
+
+Board-only direct create route.
+
+For agent actors (including CEO/coordinator with `canCreateAgents=true`), use:
+
+```
+POST /api/companies/{companyId}/agent-hires
+{
+  "name": "Engineer",
+  "role": "engineer",
+  "adapterType": "claude_local",
+  "adapterConfig": { ... }
+}
+```
+
+The hire route applies the company approval workflow (`pending_approval` when required).
 
 ## Update Agent
 
@@ -147,6 +163,7 @@ POST /api/agents/{agentId}/keys
 ```
 
 Returns a long-lived API key for the agent. Store it securely — the full value is only shown once.
+This route is board-only.
 
 ## Invoke Heartbeat
 

@@ -349,6 +349,56 @@ describe("issueService.list participantAgentId", () => {
     ).rejects.toThrow("Use POST /api/issues/:id/checkout to move an issue into in_progress.");
   });
 
+  it("creates issue with workspace inheritance reference without throwing", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace inheritance project",
+      status: "planned",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      isPrimary: true,
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Child with inherited workspace",
+      status: "todo",
+      priority: "medium",
+      projectId,
+      inheritExecutionWorkspaceFromIssueId: parentIssueId,
+    });
+
+    expect(created.projectWorkspaceId).toBe(workspaceId);
+  });
+
   it("rejects moving an issue into in_progress without checkout", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

@@ -345,4 +345,42 @@ describe("deriveDashboardObservability", () => {
       wipCount: 0,
     });
   });
+
+  it("prefers latest failure without operational effect when recent failed runs still produced mutations", () => {
+    const { agents, issues, runs, activity, reviewer } = observabilityFixture();
+    const withMixedFailures = [
+      makeRun({
+        id: "run-failed-with-effect",
+        agentId: reviewer.id,
+        status: "failed",
+        createdAt: new Date("2026-03-31T11:10:00.000Z"),
+        finishedAt: new Date("2026-03-31T11:11:00.000Z"),
+        operationalEffect: {
+          producedEffect: true,
+          activityCount: 2,
+          actions: ["issue.checked_out", "issue.updated"],
+          signals: ["checkouts", "statusChanges"],
+          summary: "1 status change, 1 checkout",
+          counts: {
+            comments: 0,
+            statusChanges: 1,
+            handoffs: 0,
+            assignmentChanges: 0,
+            checkouts: 1,
+            documents: 0,
+            workProducts: 0,
+            approvals: 0,
+            attachments: 0,
+            issueCreations: 0,
+            releases: 0,
+            otherMutations: 0,
+          },
+        },
+      }),
+      ...runs,
+    ];
+    const data = deriveDashboardObservability({ agents, issues, runs: withMixedFailures, activity, now: NOW });
+    const reviewerRow = data.agentRows.find((row) => row.agentId === reviewer.id);
+    expect(reviewerRow?.latestFailureRun?.id).toBe("run-failed");
+  });
 });

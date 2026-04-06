@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType, ExecutionWorkspace, ExecutionWorkspaceConfig } from "@paperclipai/shared";
 import {
@@ -80,6 +80,23 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const BACKLOG_AUTO_PROMOTION_ENABLED = process.env.PAPERCLIP_BACKLOG_AUTO_PROMOTION_ENABLED !== "false";
+const BACKLOG_AUTO_PROMOTION_AGE_SEC = Math.max(
+  300,
+  Number(process.env.PAPERCLIP_BACKLOG_AUTO_PROMOTION_AGE_SEC) || 24 * 60 * 60,
+);
+const BACKLOG_AUTO_PROMOTION_BATCH = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_BACKLOG_AUTO_PROMOTION_BATCH) || 20,
+);
+const BACKLOG_AUTO_PROMOTION_WAKEUP_COOLDOWN_SEC = Math.max(
+  30,
+  Number(process.env.PAPERCLIP_BACKLOG_AUTO_PROMOTION_WAKEUP_COOLDOWN_SEC) || 10 * 60,
+);
+const BACKLOG_AUTO_PROMOTION_MAX_WAKEUPS_PER_TICK = Math.max(
+  1,
+  Number(process.env.PAPERCLIP_BACKLOG_AUTO_PROMOTION_MAX_WAKEUPS_PER_TICK) || 5,
+);
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -4385,6 +4402,154 @@ export function heartbeatService(db: Db) {
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  async function autoPromoteStaleBacklog(now: Date) {
+    if (!BACKLOG_AUTO_PROMOTION_ENABLED) {
+      return {
+        promoted: 0,
+        wakeupsEnqueued: 0,
+        wakeupsSkipped: 0,
+      };
+    }
+
+    const staleBefore = new Date(now.getTime() - BACKLOG_AUTO_PROMOTION_AGE_SEC * 1000);
+    const staleCandidates = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .innerJoin(
+        agents,
+        and(
+          eq(issues.assigneeAgentId, agents.id),
+          eq(issues.companyId, agents.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.status, "backlog"),
+          isNull(issues.hiddenAt),
+          lte(issues.createdAt, staleBefore),
+          lte(issues.updatedAt, staleBefore),
+          ne(agents.status, "paused"),
+          ne(agents.status, "terminated"),
+          ne(agents.status, "pending_approval"),
+        ),
+      )
+      .orderBy(asc(issues.createdAt))
+      .limit(BACKLOG_AUTO_PROMOTION_BATCH);
+
+    if (staleCandidates.length === 0) {
+      return {
+        promoted: 0,
+        wakeupsEnqueued: 0,
+        wakeupsSkipped: 0,
+      };
+    }
+
+    const candidateIds = staleCandidates.map((row) => row.id);
+    const promoted = await db
+      .update(issues)
+      .set({
+        status: "todo",
+        updatedAt: now,
+      })
+      .where(and(inArray(issues.id, candidateIds), eq(issues.status, "backlog")))
+      .returning({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+      });
+
+    const byAgent = new Map<string, { companyId: string; issueId: string; count: number }>();
+    for (const row of promoted) {
+      const agentId = row.assigneeAgentId;
+      if (!agentId) continue;
+      const existing = byAgent.get(agentId);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        byAgent.set(agentId, {
+          companyId: row.companyId,
+          issueId: row.id,
+          count: 1,
+        });
+      }
+    }
+
+    if (byAgent.size === 0) {
+      return {
+        promoted: promoted.length,
+        wakeupsEnqueued: 0,
+        wakeupsSkipped: 0,
+      };
+    }
+
+    const wakeupCooldownAfter = new Date(now.getTime() - BACKLOG_AUTO_PROMOTION_WAKEUP_COOLDOWN_SEC * 1000);
+    const candidateAgentIds = [...byAgent.keys()];
+    const recentlyWokenAgentIds = await db
+      .selectDistinct({ agentId: agentWakeupRequests.agentId })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          inArray(agentWakeupRequests.agentId, candidateAgentIds),
+          gt(agentWakeupRequests.requestedAt, wakeupCooldownAfter),
+          inArray(agentWakeupRequests.status, ["queued", "claimed", "coalesced", "deferred_issue_execution"]),
+        ),
+      )
+      .then((rows) => new Set(rows.map((row) => row.agentId)));
+
+    let wakeupsEnqueued = 0;
+    let wakeupsSkipped = 0;
+
+    for (const [agentId, entry] of byAgent.entries()) {
+      if (wakeupsEnqueued >= BACKLOG_AUTO_PROMOTION_MAX_WAKEUPS_PER_TICK) {
+        wakeupsSkipped += 1;
+        continue;
+      }
+      if (recentlyWokenAgentIds.has(agentId)) {
+        wakeupsSkipped += 1;
+        continue;
+      }
+
+      try {
+        const run = await enqueueWakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_backlog_auto_promoted",
+          payload: {
+            issueId: entry.issueId,
+            mutation: "backlog_auto_promote",
+            promotedCountForAgent: entry.count,
+          },
+          requestedByActorType: "system",
+          requestedByActorId: "heartbeat_scheduler",
+          contextSnapshot: {
+            issueId: entry.issueId,
+            source: "issue.backlog_auto_promote",
+            mutation: "backlog_auto_promote",
+            promotedCountForAgent: entry.count,
+          },
+        });
+        if (run) wakeupsEnqueued += 1;
+        else wakeupsSkipped += 1;
+      } catch (err) {
+        wakeupsSkipped += 1;
+        logger.warn(
+          { err, agentId, companyId: entry.companyId, issueId: entry.issueId },
+          "failed to queue wakeup for auto-promoted backlog issue",
+        );
+      }
+    }
+
+    return {
+      promoted: promoted.length,
+      wakeupsEnqueued,
+      wakeupsSkipped,
+    };
+  }
+
   return {
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const query = db
@@ -4557,8 +4722,16 @@ export function heartbeatService(db: Db) {
         if (run) enqueued += 1;
         else skipped += 1;
       }
+      const backlogPromotion = await autoPromoteStaleBacklog(now);
 
-      return { checked, enqueued, skipped };
+      return {
+        checked,
+        enqueued,
+        skipped,
+        backlogPromoted: backlogPromotion.promoted,
+        backlogWakeupsEnqueued: backlogPromotion.wakeupsEnqueued,
+        backlogWakeupsSkipped: backlogPromotion.wakeupsSkipped,
+      };
     },
 
     cancelRun: (runId: string) => cancelRunInternal(runId),

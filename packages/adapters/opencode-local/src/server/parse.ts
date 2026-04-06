@@ -164,5 +164,71 @@ export function isOpenCodeStaleWorkspaceFileError(
     .filter(Boolean)
     .join("\n");
 
-  return /modified\s+since\s+it\s+was\s+last\s+read/i.test(haystack);
+  if (/modified\s+since\s+it\s+was\s+last\s+read/i.test(haystack)) return true;
+  if (/must\s+read\s+file/i.test(haystack) && /before\s+overwrit/i.test(haystack)) return true;
+  return false;
+}
+
+/**
+ * Detects tool-call schema/argument validation failures (for example webfetch
+ * payload mismatches) that can happen on stale resumed sessions.
+ */
+export function isOpenCodeToolArgumentValidationError(
+  stdout: string,
+  stderr: string,
+  parsedErrorMessage: string | null,
+): boolean {
+  const haystack = [stdout, stderr, parsedErrorMessage ?? ""]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (/tool\b.*\bcalled with invalid arg(?:ument)?s?/i.test(haystack)) return true;
+  if (/invalid arg(?:ument)?s?\s+for\s+tool/i.test(haystack)) return true;
+  if (/webfetch\b.*\binvalid arg(?:ument)?s?/i.test(haystack)) return true;
+  return false;
+}
+
+/** Detects invalid `webfetch.format` values (for example `json`) emitted by tool-call validation. */
+export function isOpenCodeWebfetchFormatValidationError(
+  stdout: string,
+  stderr: string,
+  parsedErrorMessage: string | null,
+): boolean {
+  const haystack = [stdout, stderr, parsedErrorMessage ?? ""]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (!/webfetch/i.test(haystack)) return false;
+  if (/path["'` ]*[:=]["'` ]*format/i.test(haystack) && /invalid/i.test(haystack)) return true;
+  if (/expected one of ["'`]?text["'`]?\|["'`]?markdown["'`]?\|["'`]?html/i.test(haystack)) return true;
+  if (/invalid option.*format/i.test(haystack)) return true;
+  return false;
+}
+
+/**
+ * Detects path-resolution failures (`File not found`, `ENOENT`) where the model can usually
+ * recover by re-checking repository-relative paths on a fresh run.
+ */
+export function isOpenCodeFileNotFoundPathError(
+  stdout: string,
+  stderr: string,
+  parsedErrorMessage: string | null,
+): boolean {
+  const haystack = [stdout, stderr, parsedErrorMessage ?? ""]
+    .join("\n")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  if (/file not found:/i.test(haystack)) return true;
+  if (/enoent\b/i.test(haystack) && /(no such file|not found)/i.test(haystack)) return true;
+  if (/path\b.*\bnot found/i.test(haystack)) return true;
+  return false;
 }

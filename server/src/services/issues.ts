@@ -1237,7 +1237,11 @@ export function issueService(db: Db) {
       data: IssueCreateInput,
     ) => {
       assertInProgressTransitionUsesCheckout("new", data.status);
-      const { labelIds: inputLabelIds, ...issueData } = data;
+      const {
+        labelIds: inputLabelIds,
+        inheritExecutionWorkspaceFromIssueId,
+        ...issueData
+      } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;

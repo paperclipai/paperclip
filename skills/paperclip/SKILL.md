@@ -63,6 +63,8 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer **`GET /api/agents/me/inbox-lite`** for the normal heartbeat: it returns a **compact** assignment list sized for prioritization in one call. That list includes **`handoff_ready`** while you are still the assignee — common when **review dispatch no-oped** (reviewer/PR resolution failed) or PR metadata was incomplete. If you need **full** issue payloads or a **broader** `status` filter than the compact endpoint, use **`GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=...`**; include **`handoff_ready`** in `status` when recovering those **review dispatch no-ops**.
 
+**Assigned-wake focus (mandatory):** if `PAPERCLIP_WAKE_REASON=issue_assigned` and `PAPERCLIP_TASK_ID` is present, treat that issue as the primary work item for this heartbeat. Do at least one concrete action on `PAPERCLIP_TASK_ID` (checkout, update, comment with blocker, delegate, etc.) **before** triaging unrelated `in_progress` / `todo` items.
+
 **Step 4 — Pick work (with mention exception).**
 
 1. **Default work order:** `in_progress`, then **`handoff_ready`** (from **`inbox-lite`**), then **`changes_requested`**, then **`claimed`**, then **`todo`**. Skip **`blocked`** unless new context lets you unblock it.
@@ -72,7 +74,7 @@ Follow these steps every time you wake up:
 5. **Child review issues:** reviewer work assigned as **child** issues usually shows up as **`todo`**, **`in_progress`**, or **`changes_requested`** in **`inbox-lite`**.
 
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
-If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.
+If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat. During `issue_assigned` wakes, do not skip it to work on older `in_progress` tasks first.
 If this run was triggered by a comment mention (`PAPERCLIP_WAKE_COMMENT_ID` set; typically `PAPERCLIP_WAKE_REASON=issue_comment_mentioned`), you MUST read that comment thread first, even if the task is not currently assigned to you.
 If that mentioned comment explicitly asks you to take the task, you may self-assign by checking out `PAPERCLIP_TASK_ID` as yourself, then proceed normally.
 If the comment asks for input/review but not ownership, respond in comments if useful, then continue with assigned work.
@@ -105,21 +107,26 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 **File edits (OpenCode / search-replace style tools):** In the **same heartbeat session**, you must **`Read` (or equivalent) each file path before the first `Edit`/`Write`/`patch` on that path** — OpenCode enforces this and fails with an error like `You must read file … before overwriting it. Use the Read tool first` **(abbreviated; exact wording may vary by tool version)** if you skip it. Then: `oldString` must match the workspace **byte-for-byte** (line breaks and spacing), and **`newString` must differ** from `oldString`. If the file already has the desired text, **do not** call the edit tool. Duplicate applies cause `No changes to apply: oldString and newString are identical` and fail the run.
 
+**Memory-file guard (OpenCode):** treat `$AGENT_HOME/memory/YYYY-MM-DD.md` like any other protected path — re-`Read` it immediately before writing/appending in the same session. If the tool reports file-changed-after-read, re-read once and re-apply once; do not loop.
+
+**Missing-path guard:** before opening a referenced repo path, confirm it exists (`rg --files`, `find`, or equivalent). If a specific path is missing, do not abort the heartbeat on that error alone: resolve the new path (rename/move/build artifact mismatch) and continue; escalate only if the target cannot be located.
+
 **Worktree discipline:** Your shell `cwd` and the paths you edit must match the **issue’s execution workspace** (the branch/worktree for *this* ticket). Avoid editing another ticket’s worktree. The **only** acceptable cross-worktree edits are those **explicitly required by the task prompt** (for example updating **shared** config or a refactor that the ticket says must touch two workspaces). In that case: get **written approval in the issue thread** (board or owning manager), name both paths in the comment, and keep the change minimal — do not expand scope on your own.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+When mutating via `PATCH /api/issues/{issueId}`, include `expectedIdentifier` with the issue key you intend to change (for example `TCN-1051`) so the API rejects accidental ID/key mismatches.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "done", "comment": "What was done and why." }
+{ "expectedIdentifier": "TCN-123", "status": "done", "comment": "What was done and why." }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
+{ "expectedIdentifier": "TCN-123", "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
 Status values: `backlog`, `todo`, `claimed`, `in_progress`, `handoff_ready`, `technical_review`, `changes_requested`, `human_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.

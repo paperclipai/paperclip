@@ -167,7 +167,13 @@ export function deriveDashboardObservability(input: {
           && run.operationalEffect?.producedEffect,
       ) ?? null;
     const latestFailureRun =
-      runs.find((run) => run.status === "failed" || run.status === "timed_out") ?? null;
+      runs.find(
+        (run) =>
+          (run.status === "failed" || run.status === "timed_out")
+          && !run.operationalEffect?.producedEffect,
+      )
+      ?? runs.find((run) => run.status === "failed" || run.status === "timed_out")
+      ?? null;
 
     const statusCounts: Partial<Record<IssueStatus, number>> = {};
     for (const issue of assignedIssues) {

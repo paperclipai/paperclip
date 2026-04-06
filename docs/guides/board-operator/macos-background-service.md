@@ -132,7 +132,8 @@ Or list PIDs with `pgrep -fl vitest` and **`kill`** specific ones.
 **Reduce recurrence**
 
 - Prefer **`vitest run`** for one-shot local runs; avoid leaving **`vitest --watch`** running unattended.
-- Cap parallelism when needed, e.g. **`vitest run --maxWorkers=2`** (or set **`maxWorkers`** / **`poolOptions`** in Vitest config for this repo).
+- This repo now caps root Vitest worker fan-out by default (`2` locally, `50%` on CI) via `vitest.config.ts`.
+- Override when needed, e.g. **`PAPERCLIP_VITEST_MAX_WORKERS=4 pnpm test:run`** or `vitest run --maxWorkers=4`.
 
 **LaunchAgent-specific:** keep **`PAPERCLIP_UI_DEV_MIDDLEWARE=false`** and a built UI so the **background** Paperclip process does not embed Vite (see env table above). That does **not** limit Vitest—you must manage test processes separately.
 

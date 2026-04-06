@@ -28,8 +28,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   opencodeStdoutIndicatesIgnorableNonZeroExit,
+  isOpenCodeFileNotFoundPathError,
   isOpenCodePermissionAutoRejectError,
   isOpenCodeStaleWorkspaceFileError,
+  isOpenCodeToolArgumentValidationError,
+  isOpenCodeWebfetchFormatValidationError,
   isOpenCodeUnknownSessionError,
   parseOpenCodeJsonl,
 } from "./parse.js";
@@ -38,6 +41,10 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const OPEN_CODE_WEBFETCH_FORMAT_REPAIR_HINT =
+  "Tool-call repair hint: when using webfetch, format must be exactly one of text, markdown, or html (do not use json).";
+const OPEN_CODE_FILE_NOT_FOUND_REPAIR_HINT =
+  "Path-recovery hint: if a file path fails, first verify existence from the current repository root (for example with rg --files). Prefer repository-relative paths, avoid stale absolute paths from other workspaces, and continue with available files when an exact file truly does not exist.";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -69,7 +76,7 @@ function resolveOpenCodeErrorCode(input: {
   ) {
     return "opencode_auth_required";
   }
-  if (/modified\s+since\s+it\s+was\s+last\s+read/i.test(blob)) {
+  if (isOpenCodeStaleWorkspaceFileError(input.stdout, input.stderr, input.parsedError || null)) {
     return "opencode_stale_workspace_file";
   }
   return "opencode_exit_nonzero";
@@ -116,6 +123,8 @@ async function mergeOpenCodePermissionNonInteractive(
   return JSON.stringify({
     ...parsed,
     external_directory: "allow",
+    webfetch: "allow",
+    network: "allow",
   });
 }
 
@@ -348,15 +357,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const renderedPrompt = renderTemplate(promptTemplate, templateData);
+  const wakeFocusHint = (() => {
+    if (!wakeTaskId || wakeReason !== "issue_assigned") return "";
+    return [
+      `Wake focus rule (mandatory): this heartbeat was triggered for issue ${wakeTaskId}.`,
+      `Handle issue ${wakeTaskId} first and complete at least one concrete action on it before triaging other assignments.`,
+      `Do not prioritize unrelated in_progress/todo tasks ahead of issue ${wakeTaskId} in this run.`,
+    ].join("\n");
+  })();
   const renderedBootstrapPrompt =
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = expandShellStyleAgentHome(
-    joinPromptSections([instructionsPrefix, renderedBootstrapPrompt, sessionHandoffNote, renderedPrompt]),
-    agentHome || null,
-  );
+  const buildPrompt = (extraHint: string | null = null) =>
+    expandShellStyleAgentHome(
+      joinPromptSections([
+        instructionsPrefix,
+        renderedBootstrapPrompt,
+        sessionHandoffNote,
+        renderedPrompt,
+        wakeFocusHint,
+        extraHint ?? "",
+      ]),
+      agentHome || null,
+    );
+  const prompt = buildPrompt();
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars: instructionsPrefix.length,
@@ -392,7 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
-    const runAttempt = async (resumeSessionId: string | null) => {
+    const runAttempt = async (resumeSessionId: string | null, promptInput: string = prompt) => {
       const args = buildArgs(resumeSessionId);
       if (onMeta) {
         await onMeta({
@@ -402,7 +428,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           commandNotes,
           commandArgs: [...args, `<stdin prompt ${prompt.length} chars>`],
           env: loggedEnv,
-          prompt,
+          prompt: promptInput,
           promptMetrics,
           context,
         });
@@ -411,7 +437,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const proc = await runChildProcess(runId, command, args, {
         cwd,
         env: runtimeEnv,
-        stdin: prompt,
+        stdin: promptInput,
         timeoutSec,
         graceSec,
         onSpawn,
@@ -528,7 +554,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (
-      sessionId &&
       initialFailed &&
       isOpenCodePermissionAutoRejectError(
         initial.proc.stdout,
@@ -538,10 +563,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ) {
       await onLog(
         "stdout",
-        `[paperclip] OpenCode auto-rejected a permission prompt (non-interactive run); retrying once without session resume.\n`,
+        sessionId
+          ? `[paperclip] OpenCode auto-rejected a permission prompt (non-interactive run); retrying once without session resume.\n`
+          : `[paperclip] OpenCode auto-rejected a permission prompt (non-interactive run); retrying once with a fresh run.\n`,
       );
       const retry = await runAttempt(null);
-      return toResult(retry, true);
+      return toResult(retry, Boolean(sessionId));
+    }
+
+    if (
+      initialFailed &&
+      isOpenCodeToolArgumentValidationError(
+        initial.proc.stdout,
+        initial.rawStderr,
+        initial.parsed.errorMessage,
+      )
+    ) {
+      const repairHint = isOpenCodeWebfetchFormatValidationError(
+        initial.proc.stdout,
+        initial.rawStderr,
+        initial.parsed.errorMessage,
+      )
+        ? OPEN_CODE_WEBFETCH_FORMAT_REPAIR_HINT
+        : null;
+      await onLog(
+        "stdout",
+        sessionId
+          ? `[paperclip] OpenCode reported invalid tool-call arguments (likely stale tool schema/session); retrying once without session resume${repairHint ? " with webfetch format hint" : ""}.\n`
+          : `[paperclip] OpenCode reported invalid tool-call arguments; retrying once with a fresh run${repairHint ? " and webfetch format hint" : ""}.\n`,
+      );
+      const retry = await runAttempt(null, repairHint ? buildPrompt(repairHint) : prompt);
+      return toResult(retry, Boolean(sessionId));
     }
 
     if (
@@ -559,6 +611,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : `[paperclip] OpenCode reported a workspace file changed after it was read; retrying the run once.\n`,
       );
       const retry = await runAttempt(null);
+      return toResult(retry, Boolean(sessionId));
+    }
+
+    if (
+      initialFailed &&
+      isOpenCodeFileNotFoundPathError(
+        initial.proc.stdout,
+        initial.rawStderr,
+        initial.parsed.errorMessage,
+      )
+    ) {
+      await onLog(
+        "stdout",
+        sessionId
+          ? `[paperclip] OpenCode reported file-path resolution failure; retrying once without session resume and with path-recovery hint.\n`
+          : `[paperclip] OpenCode reported file-path resolution failure; retrying once with path-recovery hint.\n`,
+      );
+      const retry = await runAttempt(null, buildPrompt(OPEN_CODE_FILE_NOT_FOUND_REPAIR_HINT));
       return toResult(retry, Boolean(sessionId));
     }
 

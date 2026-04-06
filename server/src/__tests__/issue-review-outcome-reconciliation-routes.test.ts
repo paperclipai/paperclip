@@ -47,6 +47,18 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
 }));
 
+const mockFeedbackService = vi.hoisted(() => ({
+  listVotesForIssue: vi.fn(async () => []),
+  upsertVote: vi.fn(async () => undefined),
+  removeVote: vi.fn(async () => undefined),
+  queueTrace: vi.fn(async () => undefined),
+  listTracesForIssue: vi.fn(async () => []),
+}));
+
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => null),
+}));
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -58,20 +70,30 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockWorkProductService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
 }));
+const mockReviewDispatch = vi.hoisted(() => ({
+  dispatchForIssue: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
+  feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
   heartbeatService: () => mockHeartbeatService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
   workProductService: () => mockWorkProductService,
+}));
+
+vi.mock("../services/review-dispatch.js", () => ({
+  REVIEW_DISPATCH_ORIGIN_KIND: "technical_review_dispatch",
+  reviewDispatchService: () => mockReviewDispatch,
 }));
 
 function createApp() {
@@ -172,6 +194,52 @@ describe("issue review outcome reconciliation routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
+    mockReviewDispatch.dispatchForIssue.mockResolvedValue({
+      kind: "noop",
+      reason: "pull_request_not_found",
+    });
+  });
+
+  it("re-attempts technical review dispatch when parent is already technical_review", async () => {
+    const parent = makeParentIssue("technical_review");
+    mockIssueService.getById.mockResolvedValue(parent);
+
+    mockReviewDispatch.dispatchForIssue.mockResolvedValueOnce({
+      kind: "created",
+      reviewIssue: {
+        id: "review-1",
+        companyId: "company-1",
+        identifier: "PAP-702",
+        title: "Review PR #218",
+        originKind: "technical_review_dispatch",
+        originId: parent.id,
+        assigneeAgentId: reviewerAgentId,
+      },
+      artifact: {
+        pullRequest: {
+          url: "https://github.com/acme/app/pull/218",
+          prNumber: 218,
+        },
+        diffIdentity: "github:acme/app:pr:218",
+      },
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({ comment: "Revalidar dispatch técnico com PR já vinculado." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockReviewDispatch.dispatchForIssue).toHaveBeenCalledWith({
+      issueId: parentIssueId,
+      commentId: "comment-1",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.review_dispatch_created",
+        entityId: parentIssueId,
+      }),
+    );
   });
 
   it("returns the parent issue to in_progress when the technical review has blocking findings", async () => {
