@@ -360,7 +360,7 @@ function IssueChatUserMessage() {
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="group relative pr-8">
+      <div className="group relative">
         <div className="flex flex-col items-end">
           <div
             className={cn(
@@ -435,7 +435,7 @@ function IssueChatUserMessage() {
           </div>
         </div>
 
-        <Avatar size="sm" className="absolute right-0 top-1 shrink-0">
+        <Avatar size="sm" className="absolute -right-8 top-1 shrink-0">
           <AvatarFallback>You</AvatarFallback>
         </Avatar>
       </div>
@@ -894,12 +894,12 @@ function IssueChatSystemMessage() {
 
     return (
       <MessagePrimitive.Root id={anchorId}>
-        <div className="flex items-start gap-2 py-1">
-          <Avatar size="xs" className="mt-0.5">
+        <div className="flex items-start gap-2.5 py-1">
+          <Avatar size="sm" className="mt-0.5">
             {agentIcon ? (
-              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3 w-3" /></AvatarFallback>
+              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
             ) : (
-              <AvatarFallback className="text-[9px]">{initialsForName(actorName)}</AvatarFallback>
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
             )}
           </Avatar>
           <div className="flex-1">
@@ -915,12 +915,12 @@ function IssueChatSystemMessage() {
   if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
     return (
       <MessagePrimitive.Root id={anchorId}>
-        <div className="flex items-center gap-2 py-1">
-          <Avatar size="xs">
+        <div className="flex items-center gap-2.5 py-1">
+          <Avatar size="sm">
             {runAgentIcon ? (
-              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3 w-3" /></AvatarFallback>
+              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
             ) : (
-              <AvatarFallback className="text-[9px]">{initialsForName(displayedRunAgentName)}</AvatarFallback>
+              <AvatarFallback>{initialsForName(displayedRunAgentName)}</AvatarFallback>
             )}
           </Avatar>
 
