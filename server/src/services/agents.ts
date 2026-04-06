@@ -678,15 +678,44 @@ export function agentService(db: Db) {
       }
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-      const matches = rows
-        .map(normalizeAgentRow)
-        .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
-      if (matches.length === 1) {
-        return { agent: matches[0] ?? null, ambiguous: false } as const;
+      const active = rows.map(normalizeAgentRow).filter((a) => a.status !== "terminated");
+
+      // 1. Exact urlKey match (existing behavior)
+      const urlKeyMatches = active.filter((agent) => agent.urlKey === urlKey);
+      if (urlKeyMatches.length === 1) {
+        return { agent: urlKeyMatches[0] ?? null, ambiguous: false } as const;
       }
-      if (matches.length > 1) {
+      if (urlKeyMatches.length > 1) {
         return { agent: null, ambiguous: true } as const;
       }
+
+      // 2. Fallback: match by role (company-scoped, must be unique)
+      const lowerRef = raw.toLowerCase();
+      const roleMatches = active.filter((agent) => agent.role === lowerRef);
+      if (roleMatches.length === 1) {
+        return { agent: roleMatches[0] ?? null, ambiguous: false } as const;
+      }
+      if (roleMatches.length > 1) {
+        return { agent: null, ambiguous: true } as const;
+      }
+
+      // 3. Fallback: match by normalized name slug prefix
+      const nameMatches = active.filter((agent) => {
+        const nameSlug = agent.name
+          ? agent.name
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-|-$/g, "")
+          : "";
+        return nameSlug === urlKey || nameSlug.startsWith(`${urlKey}-`);
+      });
+      if (nameMatches.length === 1) {
+        return { agent: nameMatches[0] ?? null, ambiguous: false } as const;
+      }
+      if (nameMatches.length > 1) {
+        return { agent: null, ambiguous: true } as const;
+      }
+
       return { agent: null, ambiguous: false } as const;
     },
   };
