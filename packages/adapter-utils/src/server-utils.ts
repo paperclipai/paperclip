@@ -921,6 +921,11 @@ export interface PreparedAgentQmdEnvironment {
   env: Record<string, string>;
 }
 
+const PROTECTED_PREPARED_AGENT_QMD_ENV_KEYS = new Set([
+  "QMD_CONFIG_DIR",
+  "XDG_CACHE_HOME",
+]);
+
 function resolveAgentQmdConfigDir(agentHome: string): string {
   return path.resolve(agentHome, ".config", "qmd");
 }
@@ -932,7 +937,19 @@ function resolveAgentQmdCacheHome(agentHome: string): string {
 function resolveSharedQmdCacheHome(baseEnv: NodeJS.ProcessEnv | Record<string, string>): string {
   const configured = typeof baseEnv.XDG_CACHE_HOME === "string" ? baseEnv.XDG_CACHE_HOME.trim() : "";
   if (configured) return path.resolve(configured);
+  const configuredHome = typeof baseEnv.HOME === "string" ? baseEnv.HOME.trim() : "";
+  if (configuredHome) return path.resolve(configuredHome, ".cache");
   return path.resolve(os.homedir(), ".cache");
+}
+
+export function filterPreparedAgentQmdEnvOverrides(
+  envOverrides: Record<string, string>,
+  preservePreparedQmdEnv = false,
+): Record<string, string> {
+  if (!preservePreparedQmdEnv) return envOverrides;
+  return Object.fromEntries(
+    Object.entries(envOverrides).filter(([key]) => !PROTECTED_PREPARED_AGENT_QMD_ENV_KEYS.has(key)),
+  );
 }
 
 async function ensureDirectorySymlink(source: string, target: string): Promise<"created" | "repaired" | "skipped"> {
@@ -1034,6 +1051,7 @@ export async function prepareAgentQmdEnvironment(
   const qmdRunIdBase = `qmd-bootstrap-${process.pid}-${Date.now().toString(36)}`;
   const bootstrapEnv = Object.fromEntries(
     Object.entries({
+      ...process.env,
       ...(options.baseEnv ?? {}),
       ...env,
     }).filter((entry): entry is [string, string] => typeof entry[1] === "string"),

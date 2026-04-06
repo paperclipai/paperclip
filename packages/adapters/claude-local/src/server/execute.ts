@@ -17,6 +17,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  filterPreparedAgentQmdEnvOverrides,
   prepareAgentQmdEnvironment,
   resolveCommandForLogs,
   renderTemplate,
@@ -44,6 +45,7 @@ interface ClaudeExecutionInput {
   config: Record<string, unknown>;
   context: Record<string, unknown>;
   authToken?: string;
+  onLog?: AdapterExecutionContext["onLog"];
 }
 
 interface ClaudeRuntimeConfig {
@@ -94,6 +96,7 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, authToken } = input;
+  const onLog = input.onLog ?? (async () => {});
 
   const command = asString(config.command, "claude");
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -210,6 +213,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (agentHome) {
     const preparedQmd = await prepareAgentQmdEnvironment(agentHome, {
       baseEnv: { ...process.env, ...env, ...envOverrides },
+      onLog,
     });
     Object.assign(env, preparedQmd.env);
     env.AGENT_HOME = agentHome;
@@ -227,7 +231,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
 
-  Object.assign(env, envOverrides);
+  Object.assign(env, filterPreparedAgentQmdEnvOverrides(envOverrides, Boolean(agentHome)));
 
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
@@ -280,6 +284,7 @@ export async function runClaudeLogin(input: {
     config: input.config,
     context: input.context ?? {},
     authToken: input.authToken,
+    onLog,
   });
 
   const proc = await runChildProcess(input.runId, runtime.command, ["login"], {
@@ -322,6 +327,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config,
     context,
     authToken,
+    onLog,
   });
   const {
     command,

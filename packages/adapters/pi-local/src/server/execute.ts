@@ -15,6 +15,7 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  filterPreparedAgentQmdEnvOverrides,
   prepareAgentQmdEnvironment,
   readPaperclipRuntimeSkillEntries,
   resolveCommandForLogs,
@@ -208,7 +209,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
-  Object.assign(env, envOverrides);
+  Object.assign(env, filterPreparedAgentQmdEnvOverrides(envOverrides, Boolean(agentHome)));
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }

@@ -15,6 +15,7 @@ import {
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  filterPreparedAgentQmdEnvOverrides,
   prepareAgentQmdEnvironment,
   resolveCommandForLogs,
   renderTemplate,
@@ -184,7 +185,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   if (workspaceHints.length > 0) env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(workspaceHints);
 
-  Object.assign(env, envOverrides);
+  Object.assign(env, filterPreparedAgentQmdEnvOverrides(envOverrides, Boolean(agentHome)));
   // Prevent OpenCode from writing an opencode.json config file into the
   // project working directory (which would pollute the git repo).  Model
   // selection is already handled via the --model CLI flag.  Set after the

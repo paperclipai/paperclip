@@ -99,6 +99,60 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-2", res
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeFakeQmdCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const statePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+const args = process.argv.slice(2);
+const readState = () => {
+  if (!statePath || !fs.existsSync(statePath)) {
+    return { path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 };
+  }
+  return JSON.parse(fs.readFileSync(statePath, "utf8"));
+};
+const writeState = (state) => {
+  if (!statePath) return;
+  fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+};
+
+const state = readState();
+if (args[0] === "collection" && args[1] === "show") {
+  if (state.path && state.collectionName === args[2]) {
+    writeState(state);
+    process.stdout.write("Collection: " + args[2] + "\\n");
+    process.stdout.write("  Path:     " + state.path + "\\n");
+    process.exit(0);
+  }
+  writeState(state);
+  process.exit(1);
+}
+if (args[0] === "collection" && args[1] === "remove") {
+  state.path = null;
+  state.collectionName = null;
+  state.removeCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "collection" && args[1] === "add") {
+  const nameIndex = args.indexOf("--name");
+  state.path = args[2] || null;
+  state.collectionName = nameIndex >= 0 ? args[nameIndex + 1] || null : null;
+  state.addCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+if (args[0] === "update") {
+  state.updateCount += 1;
+  writeState(state);
+  process.exit(0);
+}
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -413,6 +467,107 @@ describe("claude execute", () => {
       else process.env.PATH = previousPath;
       if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards qmd bootstrap logs and keeps prepared qmd paths authoritative", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-qmd-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const sharedHome = path.join(root, "shared-home");
+    const manualQmdConfig = path.join(root, "manual-qmd-config");
+    const manualQmdCache = path.join(root, "manual-qmd-cache");
+    const binDir = path.join(root, "bin");
+    const commandPath = path.join(binDir, "claude");
+    const qmdPath = path.join(binDir, "qmd");
+    const capturePath = path.join(root, "capture.json");
+    const qmdStatePath = path.join(root, "qmd-state.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(agentHome, { recursive: true });
+    await fs.mkdir(path.join(manualQmdCache, "qmd", "models"), { recursive: true });
+    await fs.mkdir(binDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+    await writeFakeQmdCommand(qmdPath);
+    await fs.writeFile(
+      qmdStatePath,
+      JSON.stringify({ path: null, collectionName: null, addCount: 0, removeCount: 0, updateCount: 0 }),
+      "utf8",
+    );
+
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    const previousQmdStatePath = process.env.PAPERCLIP_QMD_STATE_PATH;
+    process.env.HOME = root;
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+    process.env.PAPERCLIP_QMD_STATE_PATH = qmdStatePath;
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    try {
+      const result = await execute({
+        runId: "run-qmd-logs",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: {
+            HOME: sharedHome,
+            QMD_CONFIG_DIR: manualQmdConfig,
+            XDG_CACHE_HOME: manualQmdCache,
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            agentHome,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        agentHome: string | null;
+        qmdConfigDir: string | null;
+        xdgCacheHome: string | null;
+      };
+      expect(capture.agentHome).toBe(agentHome);
+      expect(capture.qmdConfigDir).toBe(path.join(agentHome, ".config", "qmd"));
+      expect(capture.xdgCacheHome).toBe(path.join(agentHome, ".cache"));
+      expect(await fs.realpath(path.join(agentHome, ".cache", "qmd", "models"))).toBe(
+        await fs.realpath(path.join(manualQmdCache, "qmd", "models")),
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Linked shared qmd models"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousQmdStatePath === undefined) delete process.env.PAPERCLIP_QMD_STATE_PATH;
+      else process.env.PAPERCLIP_QMD_STATE_PATH = previousQmdStatePath;
       await fs.rm(root, { recursive: true, force: true });
     }
   });
