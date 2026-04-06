@@ -26,6 +26,128 @@ console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", res
 }
 
 describe("claude execute", () => {
+  it("disables Claude auto-memory in the run cwd and AGENT_HOME when para-memory-files is active", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-auto-memory-"));
+    const workspace = path.join(root, "workspace");
+    const agentHome = path.join(root, "agent-home");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(path.join(workspace, ".claude"), { recursive: true });
+    await fs.mkdir(path.join(agentHome, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, ".claude", "settings.json"),
+      JSON.stringify({ autoMemoryEnabled: true, permissions: { allow: ["Read"] } }, null, 2),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(agentHome, ".claude", "settings.json"),
+      JSON.stringify({ env: { PAPERCLIP_TEST: "1" } }, null, 2),
+      "utf8",
+    );
+    await writeFakeClaudeCommand(commandPath);
+
+    try {
+      const result = await execute({
+        runId: "run-auto-memory",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          paperclipSkillSync: {
+            desiredSkills: ["para-memory-files"],
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspace,
+            agentHome,
+            source: "workspace",
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(JSON.parse(await fs.readFile(path.join(workspace, ".claude", "settings.json"), "utf8"))).toEqual({
+        autoMemoryEnabled: false,
+        permissions: { allow: ["Read"] },
+      });
+      expect(JSON.parse(await fs.readFile(path.join(agentHome, ".claude", "settings.json"), "utf8"))).toEqual({
+        env: { PAPERCLIP_TEST: "1" },
+        autoMemoryEnabled: false,
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not write Claude auto-memory settings when para-memory-files is not active", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-no-auto-memory-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const customSkillDir = path.join(root, "custom-skill");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(customSkillDir, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+
+    try {
+      const result = await execute({
+        runId: "run-custom-skills",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          paperclipRuntimeSkills: [
+            {
+              key: "custom/test-skill",
+              runtimeName: "test-skill",
+              source: customSkillDir,
+            },
+          ],
+          paperclipSkillSync: {
+            desiredSkills: ["custom/test-skill"],
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      await expect(fs.lstat(path.join(workspace, ".claude", "settings.json"))).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");

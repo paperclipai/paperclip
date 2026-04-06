@@ -34,6 +34,76 @@ import {
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const PARA_MEMORY_FILES_SKILL_SLUG = "para-memory-files";
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isParaMemoryFilesSkillEntry(entry: { key: string; runtimeName: string }): boolean {
+  return (
+    entry.runtimeName.trim().toLowerCase() === PARA_MEMORY_FILES_SKILL_SLUG ||
+    entry.key.trim().toLowerCase().endsWith(`/${PARA_MEMORY_FILES_SKILL_SLUG}`)
+  );
+}
+
+async function hasActiveParaMemoryFilesSkill(config: Record<string, unknown>): Promise<boolean> {
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(resolveClaudeDesiredSkillNames(config, availableEntries));
+  return availableEntries.some((entry) => desiredNames.has(entry.key) && isParaMemoryFilesSkillEntry(entry));
+}
+
+async function ensureClaudeAutoMemoryDisabled(projectRoot: string): Promise<void> {
+  const settingsPath = path.join(projectRoot, ".claude", "settings.json");
+  const currentPayload = await fs.readFile(settingsPath, "utf8").catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return null;
+    throw err;
+  });
+
+  let nextSettings: Record<string, unknown> = {};
+  if (currentPayload !== null) {
+    try {
+      const parsed = JSON.parse(currentPayload);
+      if (isPlainRecord(parsed)) {
+        nextSettings = { ...parsed };
+      }
+    } catch {
+      nextSettings = {};
+    }
+  }
+
+  if (currentPayload !== null && nextSettings.autoMemoryEnabled === false) {
+    return;
+  }
+
+  nextSettings.autoMemoryEnabled = false;
+  const nextPayload = `${JSON.stringify(nextSettings, null, 2)}
+`;
+  if (currentPayload === nextPayload) {
+    return;
+  }
+
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  const existing = await fs.lstat(settingsPath).catch(() => null);
+  if (existing && (existing.isSymbolicLink() || !existing.isFile())) {
+    await fs.rm(settingsPath, { recursive: true, force: true });
+  }
+  await fs.writeFile(settingsPath, nextPayload, "utf8");
+}
+
+async function ensureClaudeAutoMemoryDisabledForRun(cwd: string, agentHome?: string | null): Promise<void> {
+  const targets = [path.resolve(cwd)];
+  if (typeof agentHome === "string" && agentHome.trim().length > 0) {
+    const resolvedAgentHome = path.resolve(agentHome);
+    if (resolvedAgentHome !== targets[0]) {
+      targets.push(resolvedAgentHome);
+    }
+  }
+
+  for (const target of targets) {
+    await ensureClaudeAutoMemoryDisabled(target);
+  }
+}
 
 /**
  * Create a tmpdir with `.claude/skills/` containing symlinks to skills from
@@ -358,7 +428,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const billingType = resolveClaudeBillingType(effectiveEnv);
-  const skillsDir = await buildSkillsDir(config);
+  const [skillsDir, paraMemoryFilesActive] = await Promise.all([
+    buildSkillsDir(config),
+    hasActiveParaMemoryFilesSkill(config),
+  ]);
+  if (paraMemoryFilesActive) {
+    await ensureClaudeAutoMemoryDisabledForRun(cwd, asString(env.AGENT_HOME, "") || null);
+  }
 
   // When instructionsFilePath is configured, create a combined temp file that
   // includes both the file content and the path directive, so we only need
