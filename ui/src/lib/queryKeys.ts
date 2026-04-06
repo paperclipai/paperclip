@@ -90,6 +90,9 @@ export const queryKeys = {
       ["access", "join-requests", companyId, status] as const,
     invite: (token: string) => ["access", "invite", token] as const,
   },
+  members: {
+    list: (companyId: string) => ["members", companyId] as const,
+  },
   auth: {
     session: ["auth", "session"] as const,
   },
