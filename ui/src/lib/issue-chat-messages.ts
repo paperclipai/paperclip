@@ -485,6 +485,7 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+    if (run.status === "succeeded") continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(runTimestamp(run)),
       order: 2,

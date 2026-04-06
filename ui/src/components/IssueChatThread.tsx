@@ -360,7 +360,7 @@ function IssueChatUserMessage() {
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="group flex items-end justify-end gap-2">
+      <div className="group flex items-start justify-end gap-2">
         <div className="flex max-w-[85%] flex-col items-end">
           <div
             className={cn(
@@ -435,7 +435,7 @@ function IssueChatUserMessage() {
           </div>
         </div>
 
-        <Avatar size="sm" className="mb-6 shrink-0">
+        <Avatar size="sm" className="mt-1 shrink-0">
           <AvatarFallback>You</AvatarFallback>
         </Avatar>
       </div>
@@ -508,26 +508,38 @@ function IssueChatAssistantMessage() {
               <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
                 {message.createdAt ? formatShortDate(message.createdAt) : ""}
               </a>
-              {runHref ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      className="text-muted-foreground hover:text-foreground"
-                      title="More actions"
-                      aria-label="More actions"
-                    >
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground hover:text-foreground"
+                    title="More actions"
+                    aria-label="More actions"
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => {
+                      const text = message.content
+                        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                        .map((p) => p.text)
+                        .join("\n\n");
+                      void navigator.clipboard.writeText(text);
+                    }}
+                  >
+                    <Copy className="mr-2 h-3.5 w-3.5" />
+                    Copy message
+                  </DropdownMenuItem>
+                  {runHref ? (
                     <DropdownMenuItem asChild>
                       <Link to={runHref}>View run</Link>
                     </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
@@ -830,38 +842,38 @@ function IssueChatSystemMessage() {
     const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
 
     const eventContent = (
-      <div className="min-w-0 space-y-1.5">
-        <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm", isCurrentUser && "justify-end")}>
+      <div className="min-w-0 space-y-1">
+        <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs", isCurrentUser && "justify-end")}>
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">updated this task</span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
-            className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
           >
             {timeAgo(message.createdAt)}
           </a>
         </div>
 
         {statusChange ? (
-          <div className={cn("flex flex-wrap items-center gap-2 text-sm", isCurrentUser && "justify-end")}>
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+            <span className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Status
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
-            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
           </div>
         ) : null}
 
         {assigneeChange ? (
-          <div className={cn("flex flex-wrap items-center gap-2 text-sm", isCurrentUser && "justify-end")}>
-            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+            <span className="text-[9px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Assignee
             </span>
             <span className="text-muted-foreground">
               {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
             </span>
-            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
             </span>
@@ -873,7 +885,7 @@ function IssueChatSystemMessage() {
     if (isCurrentUser) {
       return (
         <MessagePrimitive.Root id={anchorId}>
-          <div className="flex items-start justify-end gap-2.5 py-1.5">
+          <div className="flex items-start justify-end gap-2 py-1">
             {eventContent}
           </div>
         </MessagePrimitive.Root>
@@ -882,12 +894,12 @@ function IssueChatSystemMessage() {
 
     return (
       <MessagePrimitive.Root id={anchorId}>
-        <div className="flex items-start gap-2.5 py-1.5">
-          <Avatar size="sm" className="mt-0.5">
+        <div className="flex items-start gap-2 py-1">
+          <Avatar size="xs" className="mt-0.5">
             {agentIcon ? (
-              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3 w-3" /></AvatarFallback>
             ) : (
-              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+              <AvatarFallback className="text-[9px]">{initialsForName(actorName)}</AvatarFallback>
             )}
           </Avatar>
           <div className="flex-1">
@@ -903,24 +915,24 @@ function IssueChatSystemMessage() {
   if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
     return (
       <MessagePrimitive.Root id={anchorId}>
-        <div className="flex items-center gap-2.5 py-1.5">
-          <Avatar size="sm">
+        <div className="flex items-center gap-2 py-1">
+          <Avatar size="xs">
             {runAgentIcon ? (
-              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3 w-3" /></AvatarFallback>
             ) : (
-              <AvatarFallback>{initialsForName(displayedRunAgentName)}</AvatarFallback>
+              <AvatarFallback className="text-[9px]">{initialsForName(displayedRunAgentName)}</AvatarFallback>
             )}
           </Avatar>
 
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
               <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
                 {displayedRunAgentName}
               </Link>
               <span className="text-muted-foreground">run</span>
               <Link
                 to={`/agents/${runAgentId}/runs/${runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/40 px-2 py-1 font-mono text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
               >
                 {runId.slice(0, 8)}
               </Link>
@@ -929,7 +941,7 @@ function IssueChatSystemMessage() {
               </span>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
               >
                 {timeAgo(message.createdAt)}
               </a>
