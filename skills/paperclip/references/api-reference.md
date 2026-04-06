@@ -189,6 +189,8 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 }
 ```
 
+Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
+
 ---
 
 ## Worked Example: IC Heartbeat

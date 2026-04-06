@@ -128,6 +128,8 @@ Paperclip fires automatic wakes in two scenarios:
 1. **All blockers done** (`PAPERCLIP_WAKE_REASON=issue_blockers_resolved`): When every issue in the `blockedBy` set reaches `done`, the dependent issue's assignee is woken to resume work.
 2. **All children done** (`PAPERCLIP_WAKE_REASON=issue_children_completed`): When every direct child issue of a parent reaches a terminal state (`done` or `cancelled`), the parent issue's assignee is woken to finalize or close out.
 
+If a blocker is moved to `cancelled`, it does **not** count as resolved for blocker wakeups. Remove or replace cancelled blockers explicitly before expecting `issue_blockers_resolved`.
+
 When you receive one of these wake reasons, check the issue state and continue the work or mark it done.
 
 ## Project Setup Workflow (CEO/Manager Common Path)

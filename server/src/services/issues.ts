@@ -819,6 +819,13 @@ export function issueService(db: Db) {
     }
 
     if (deduped.length > 0) {
+      const lockedIssueIds = [issueId, ...deduped].sort();
+      await dbOrTx.execute(
+        sql`SELECT ${issues.id} FROM ${issues}
+            WHERE ${and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds))}
+            ORDER BY ${issues.id}
+            FOR UPDATE`,
+      );
       const relatedIssues = await dbOrTx
         .select({ id: issues.id })
         .from(issues)
