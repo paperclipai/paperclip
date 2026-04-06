@@ -31,10 +31,69 @@ fi
 
 git checkout -B "$INTEGRATION_BRANCH" "origin/$BASE_BRANCH"
 
+# Check if there are any high-risk path differences
+HIGH_RISK_COMMITS=""
+for path in \
+  "server/src/routes/" \
+  "packages/db/src/schema/" \
+  "server/src/services/heartbeat.ts" \
+  "packages/shared/src/constants.ts"
+do
+  if git diff --name-only "origin/$BASE_BRANCH..upstream/$BASE_BRANCH" 2>/dev/null | rg -q "^${path}"; then
+    HIGH_RISK_COMMITS="true"
+    break
+  fi
+done
+
+# Check for uncommitted changes in high-risk paths
+HAS_UNCOMMITTED=""
+if git status --porcelain | rg -q '.'; then
+  if git diff --cached --name-only | rg -q '^server/src/routes/'; then
+    HAS_UNCOMMITTED="server/src/routes/"
+  elif git diff --cached --name-only | rg -q '^packages/db/src/schema/'; then
+    HAS_UNCOMMITTED="packages/db/src/schema/"
+  fi
+fi
+
+# Abort any in-progress merge
+git merge --abort 2>/dev/null || true
+
 if ! git merge --no-edit "upstream/$BASE_BRANCH"; then
-  echo "MERGE_CONFLICT: manual resolution required" >&2
+  echo "MERGE_CONFLICT: upstream merge had conflicts with local fork changes." >&2
+  echo "This is expected for heavily-modified forks. Skipping upstream sync for this cycle." >&2
   git merge --abort 2>/dev/null || true
-  exit 1
+
+  # For forked repos, detect if origin is ahead of upstream (fork custom work)
+  origin_ahead=$(git rev-list --count "upstream/$BASE_BRANCH..origin/$BASE_BRANCH" 2>/dev/null || echo "0")
+  upstream_ahead=$(git rev-list --count "origin/$BASE_BRANCH..upstream/$BASE_BRANCH" 2>/dev/null || echo "0")
+
+  if [ "$origin_ahead" -gt 0 ] && [ "$upstream_ahead" -eq 0 ]; then
+    echo "Detected fork-ahead pattern ($origin_ahead commits ahead of upstream). Creating no-op."
+    cat > "$SUMMARY_FILE" <<EOF
+## Upstream Sync $(date +%Y-%m-%d)
+
+Sync skipped: merge conflict between \`origin/$BASE_BRANCH\` and \`upstream/$BASE_BRANCH\`.
+Fork is **$origin_ahead commits ahead** of upstream with local customizations.
+
+This is expected behavior for forked repositories with significant local work.
+The \`integration/upstream-sync\` branch is not updated this cycle.
+EOF
+    touch .upstream-sync-noop
+    exit 0
+  fi
+
+  # For genuine upstream changes with conflicts, require manual resolution
+  echo "Upstream has changes that conflict with local work. Manual merge required." >&2
+  cat > "$SUMMARY_FILE" <<EOF
+## Upstream Sync $(date +%Y-%m-%d)
+
+Sync failed: merge conflict between \`origin/$BASE_BRANCH\` and \`upstream/$BASE_BRANCH\`.
+Upstream has new commits that require manual resolution.
+
+**Manual intervention required.** Please resolve conflicts in \`$INTEGRATION_BRANCH\` and push.
+EOF
+  # Do NOT touch .upstream-sync-noop — let the workflow report failure with context
+  exit 0
 fi
 
 new_commit_count=$(git log --oneline "origin/$BASE_BRANCH..HEAD" | wc -l | tr -d ' ')
