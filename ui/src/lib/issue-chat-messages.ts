@@ -235,6 +235,8 @@ function createTimelineEventMessage(args: {
         anchorId: `activity-${event.id}`,
         eventId: event.id,
         actorName,
+        actorType: event.actorType,
+        actorId: event.actorId,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
       },

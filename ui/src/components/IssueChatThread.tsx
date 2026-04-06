@@ -360,45 +360,47 @@ function IssueChatUserMessage() {
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="flex justify-end">
-        <div
-          className={cn(
-            "group relative max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
-            queued
-              ? "bg-amber-50/80 dark:bg-amber-500/10"
-              : "bg-muted/60",
-            pending && "opacity-80",
-          )}
-        >
-          {queued ? (
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
-                Queued
-              </span>
-              {queueTargetRunId && onInterruptQueued ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                  disabled={interruptingQueuedRunId === queueTargetRunId}
-                  onClick={() => void onInterruptQueued(queueTargetRunId)}
-                >
-                  {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-          {pending ? <div className="mb-1 text-xs text-muted-foreground">Sending...</div> : null}
+      <div className="group flex items-end justify-end gap-2">
+        <div className="flex max-w-[85%] flex-col items-end">
+          <div
+            className={cn(
+              "min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
+              queued
+                ? "bg-amber-50/80 dark:bg-amber-500/10"
+                : "bg-muted",
+              pending && "opacity-80",
+            )}
+          >
+            {queued ? (
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+                  Queued
+                </span>
+                {queueTargetRunId && onInterruptQueued ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                    disabled={interruptingQueuedRunId === queueTargetRunId}
+                    onClick={() => void onInterruptQueued(queueTargetRunId)}
+                  >
+                    {interruptingQueuedRunId === queueTargetRunId ? "Interrupting..." : "Interrupt"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {pending ? <div className="mb-1 text-xs text-muted-foreground">Sending...</div> : null}
 
-          <div className="space-y-3">
-            <MessagePrimitive.Parts
-              components={{
-                Text: ({ text }) => <IssueChatTextPart text={text} />,
-              }}
-            />
+            <div className="space-y-3">
+              <MessagePrimitive.Parts
+                components={{
+                  Text: ({ text }) => <IssueChatTextPart text={text} />,
+                }}
+              />
+            </div>
           </div>
 
-          <div className="mt-1 flex items-center justify-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
             <Tooltip>
               <TooltipTrigger asChild>
                 <a
@@ -432,6 +434,10 @@ function IssueChatUserMessage() {
             </button>
           </div>
         </div>
+
+        <Avatar size="sm" className="mb-6 shrink-0">
+          <AvatarFallback>You</AvatarFallback>
+        </Avatar>
       </div>
     </MessagePrimitive.Root>
   );
@@ -453,9 +459,11 @@ function IssueChatAssistantMessage() {
     : typeof custom.runAgentName === "string"
       ? custom.runAgentName
       : "Agent";
+  const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
-  const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
+  const agentId = authorAgentId ?? runAgentId;
+  const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
@@ -476,97 +484,98 @@ function IssueChatAssistantMessage() {
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="min-w-0 overflow-hidden rounded-sm p-3">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            {runAgentId ? (
-              <Avatar size="sm">
-                {runAgentIcon ? (
-                  <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
-                ) : (
-                  <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
-                )}
-              </Avatar>
-            ) : null}
-            <span className="text-sm font-medium text-foreground">{authorName}</span>
-            {isRunning ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                Running
-              </span>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
-              {message.createdAt ? formatShortDate(message.createdAt) : ""}
-            </a>
-            {runHref ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    className="text-muted-foreground hover:text-foreground"
-                    title="More actions"
-                    aria-label="More actions"
-                  >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem asChild>
-                    <Link to={runHref}>View run</Link>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-          </div>
-        </div>
+      <div className="flex items-start gap-2.5 py-1.5">
+        <Avatar size="sm" className="mt-0.5 shrink-0">
+          {agentIcon ? (
+            <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+          ) : (
+            <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
+          )}
+        </Avatar>
 
-        <div className="space-y-3">
-          <MessagePrimitive.Parts
-            components={{
-              Text: ({ text }) => <IssueChatTextPart text={text} />,
-              ChainOfThought: IssueChatChainOfThought,
-            }}
-          />
-          {message.content.length === 0 && waitingText ? (
-            <div className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
-              {waitingText}
+        <div className="min-w-0 flex-1">
+          <div className="mb-1.5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-foreground">{authorName}</span>
+              {isRunning ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Running
+                </span>
+              ) : null}
             </div>
-          ) : null}
-          {notices.length > 0 ? (
-            <div className="space-y-2">
-              {notices.map((notice, index) => (
-                <div
-                  key={`${message.id}:notice:${index}`}
-                  className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
-                >
-                  {notice}
-                </div>
-              ))}
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
+                {message.createdAt ? formatShortDate(message.createdAt) : ""}
+              </a>
+              {runHref ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground hover:text-foreground"
+                      title="More actions"
+                      aria-label="More actions"
+                    >
+                      <MoreHorizontal className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem asChild>
+                      <Link to={runHref}>View run</Link>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : null}
             </div>
-          ) : null}
-        </div>
+          </div>
 
-        <div className="mt-2 flex items-center gap-1">
-          <ActionBarPrimitive.Copy
-            copiedDuration={2000}
-            className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
-          >
-            <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
-            <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
-          </ActionBarPrimitive.Copy>
-          {commentId && onVote ? (
-            <IssueChatFeedbackButtons
-              activeVote={activeVote}
-              sharingPreference={feedbackDataSharingPreference}
-              termsUrl={feedbackTermsUrl ?? null}
-              onVote={handleVote}
+          <div className="space-y-3">
+            <MessagePrimitive.Parts
+              components={{
+                Text: ({ text }) => <IssueChatTextPart text={text} />,
+                ChainOfThought: IssueChatChainOfThought,
+              }}
             />
-          ) : null}
+            {message.content.length === 0 && waitingText ? (
+              <div className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground">
+                {waitingText}
+              </div>
+            ) : null}
+            {notices.length > 0 ? (
+              <div className="space-y-2">
+                {notices.map((notice, index) => (
+                  <div
+                    key={`${message.id}:notice:${index}`}
+                    className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
+                  >
+                    {notice}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-2 flex items-center gap-1">
+            <ActionBarPrimitive.Copy
+              copiedDuration={2000}
+              className="group inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[copied=true]:text-foreground"
+              title="Copy message"
+              aria-label="Copy message"
+            >
+              <Copy className="h-3.5 w-3.5 group-data-[copied=true]:hidden" />
+              <Check className="hidden h-3.5 w-3.5 group-data-[copied=true]:block" />
+            </ActionBarPrimitive.Copy>
+            {commentId && onVote ? (
+              <IssueChatFeedbackButtons
+                activeVote={activeVote}
+                sharingPreference={feedbackDataSharingPreference}
+                termsUrl={feedbackTermsUrl ?? null}
+                onVote={handleVote}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -803,6 +812,8 @@ function IssueChatSystemMessage() {
   const runAgentName = typeof custom.runAgentName === "string" ? custom.runAgentName : null;
   const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
   const actorName = typeof custom.actorName === "string" ? custom.actorName : null;
+  const actorType = typeof custom.actorType === "string" ? custom.actorType : null;
+  const actorId = typeof custom.actorId === "string" ? custom.actorId : null;
   const statusChange = typeof custom.statusChange === "object" && custom.statusChange
     ? custom.statusChange as { from: string | null; to: string | null }
     : null;
@@ -814,50 +825,73 @@ function IssueChatSystemMessage() {
     : null;
 
   if (custom.kind === "event" && actorName) {
+    const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
+    const isAgent = actorType === "agent";
+    const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
+
+    const eventContent = (
+      <div className="min-w-0 space-y-1.5">
+        <div className={cn("flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm", isCurrentUser && "justify-end")}>
+          <span className="font-medium text-foreground">{actorName}</span>
+          <span className="text-muted-foreground">updated this task</span>
+          <a
+            href={anchorId ? `#${anchorId}` : undefined}
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+          >
+            {timeAgo(message.createdAt)}
+          </a>
+        </div>
+
+        {statusChange ? (
+          <div className={cn("flex flex-wrap items-center gap-2 text-sm", isCurrentUser && "justify-end")}>
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Status
+            </span>
+            <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
+          </div>
+        ) : null}
+
+        {assigneeChange ? (
+          <div className={cn("flex flex-wrap items-center gap-2 text-sm", isCurrentUser && "justify-end")}>
+            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              Assignee
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
+            </span>
+            <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    );
+
+    if (isCurrentUser) {
+      return (
+        <MessagePrimitive.Root id={anchorId}>
+          <div className="flex items-start justify-end gap-2.5 py-1.5">
+            {eventContent}
+          </div>
+        </MessagePrimitive.Root>
+      );
+    }
+
     return (
       <MessagePrimitive.Root id={anchorId}>
         <div className="flex items-start gap-2.5 py-1.5">
           <Avatar size="sm" className="mt-0.5">
-            <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            {agentIcon ? (
+              <AvatarFallback><AgentIcon icon={agentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            )}
           </Avatar>
-
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
-              <span className="font-medium text-foreground">{actorName}</span>
-              <span className="text-muted-foreground">updated this task</span>
-              <a
-                href={anchorId ? `#${anchorId}` : undefined}
-                className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
-              >
-                {timeAgo(message.createdAt)}
-              </a>
-            </div>
-
-            {statusChange ? (
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                  Status
-                </span>
-                <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
-                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
-              </div>
-            ) : null}
-
-            {assigneeChange ? (
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                  Assignee
-                </span>
-                <span className="text-muted-foreground">
-                  {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
-                </span>
-                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="font-medium text-foreground">
-                  {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
-                </span>
-              </div>
-            ) : null}
+          <div className="flex-1">
+            {eventContent}
           </div>
         </div>
       </MessagePrimitive.Root>
@@ -865,12 +899,17 @@ function IssueChatSystemMessage() {
   }
 
   const displayedRunAgentName = runAgentName ?? (runAgentId ? agentMap?.get(runAgentId)?.name ?? runAgentId.slice(0, 8) : null);
+  const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
   if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
     return (
       <MessagePrimitive.Root id={anchorId}>
         <div className="flex items-center gap-2.5 py-1.5">
           <Avatar size="sm">
-            <AvatarFallback>{initialsForName(displayedRunAgentName)}</AvatarFallback>
+            {runAgentIcon ? (
+              <AvatarFallback><AgentIcon icon={runAgentIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(displayedRunAgentName)}</AvatarFallback>
+            )}
           </Avatar>
 
           <div className="min-w-0 flex-1">
