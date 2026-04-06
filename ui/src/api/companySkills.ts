@@ -51,4 +51,8 @@ export const companySkillsApi = {
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/install-update`,
       {},
     ),
+  delete: (companyId: string, skillId: string) =>
+    api.delete<{ id: string; slug: string; name: string }>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}`,
+    ),
 };
