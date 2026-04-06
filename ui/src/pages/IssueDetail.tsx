@@ -1218,7 +1218,9 @@ export function IssueDetail() {
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
   const attachmentList = attachments ?? [];
   const imageAttachments = attachmentList.filter(isImageAttachment);
+  const nonImageAttachments = attachmentList.filter((a) => !isImageAttachment(a));
   const hasAttachments = attachmentList.length > 0;
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const attachmentUploadButton = (
     <>
       <input
@@ -1537,53 +1539,105 @@ export function IssueDetail() {
           <p className="text-xs text-destructive">{attachmentError}</p>
         )}
 
-        <div className="space-y-2">
-          {attachmentList.map((attachment) => (
-            <div key={attachment.id} className="border border-border rounded-md p-2">
-              <div className="flex items-center justify-between gap-2">
-                <a
-                  href={attachment.contentPath}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs hover:underline truncate"
-                  title={attachment.originalFilename ?? attachment.id}
-                >
-                  {attachment.originalFilename ?? attachment.id}
-                </a>
-                <button
-                  type="button"
-                  className="text-muted-foreground hover:text-destructive"
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
-                  disabled={deleteAttachment.isPending}
-                  title="Delete attachment"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+        {imageAttachments.length > 0 && (
+          <div className="grid grid-cols-4 gap-2">
+            {imageAttachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-accent/10 cursor-pointer"
+                onClick={() => {
+                  const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+                  setGalleryIndex(idx >= 0 ? idx : 0);
+                  setGalleryOpen(true);
+                }}
+              >
+                <img
+                  src={attachment.contentPath}
+                  alt={attachment.originalFilename ?? "attachment"}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
+                {confirmDeleteId === attachment.id ? (
+                  <div
+                    className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="text-xs text-white font-medium">Delete?</p>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        className="rounded bg-destructive px-2 py-0.5 text-xs text-white hover:bg-destructive/80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteAttachment.mutate(attachment.id);
+                          setConfirmDeleteId(null);
+                        }}
+                        disabled={deleteAttachment.isPending}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded bg-muted px-2 py-0.5 text-xs hover:bg-muted/80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(null);
+                        }}
+                      >
+                        No
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="absolute top-1.5 right-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDeleteId(attachment.id);
+                    }}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-              </p>
-              {isImageAttachment(attachment) && (
-                <button
-                  type="button"
-                  className="block w-full text-left"
-                  onClick={() => {
-                    const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
-                    setGalleryIndex(idx >= 0 ? idx : 0);
-                    setGalleryOpen(true);
-                  }}
-                >
-                  <img
-                    src={attachment.contentPath}
-                    alt={attachment.originalFilename ?? "attachment"}
-                    className="mt-2 max-h-56 rounded border border-border object-contain bg-accent/10 cursor-pointer hover:opacity-80 transition-opacity"
-                    loading="lazy"
-                  />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
+
+        {nonImageAttachments.length > 0 && (
+          <div className="space-y-2">
+            {nonImageAttachments.map((attachment) => (
+              <div key={attachment.id} className="border border-border rounded-md p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <a
+                    href={attachment.contentPath}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs hover:underline truncate"
+                    title={attachment.originalFilename ?? attachment.id}
+                  >
+                    {attachment.originalFilename ?? attachment.id}
+                  </a>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                    disabled={deleteAttachment.isPending}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
         </div>
       ) : null}
 
