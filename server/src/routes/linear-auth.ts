@@ -566,7 +566,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           body: JSON.stringify({
             query: `query($teamId: ID!, $after: String) {
               issues(
-                filter: { team: { id: { eq: $teamId } }, state: { type: { nin: ["completed", "cancelled"] } } }
+                filter: { team: { id: { eq: $teamId } } }
                 first: 50
                 after: $after
                 orderBy: updatedAt
@@ -621,11 +621,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         const nodes = issuesData.data?.issues?.nodes ?? [];
 
         for (const li of nodes) {
-          // Check if already imported (by identifier)
+          // Check if already imported (by identifier within this company)
           const [existingIssue] = await db
             .select({ id: issues.id })
             .from(issues)
-            .where(eq(issues.identifier, li.identifier))
+            .where(and(eq(issues.companyId, companyId), eq(issues.identifier, li.identifier)))
             .limit(1);
           if (existingIssue) continue;
 

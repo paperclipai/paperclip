@@ -76,6 +76,32 @@ export function selectDefaultCompanyGoalId(goals: Goal[]): string | null {
   );
 }
 
+export function buildCeoTriageTask(issueCount: number, hasCto: boolean) {
+  return {
+    title: "Triage and delegate imported issues",
+    description: `${issueCount} issues were imported from Linear during onboarding.
+
+- Review each issue and determine the right department
+- ${hasCto ? "Delegate technical issues to the CTO — they will assign to engineers" : "Hire a CTO and delegate technical issues to them"}
+- Assign marketing/growth issues to the CMO (or hire one)
+- Delegate everything else using your best judgment
+- Follow up on any blockers or stale work`,
+  };
+}
+
+export function buildCtoKickoffTask(issueCount: number) {
+  return {
+    title: "Review technical issues and assign to engineers",
+    description: `${issueCount} issues were imported from Linear. The CEO will delegate technical issues to you.
+
+- Review each assigned issue for clarity and scope
+- Break large issues into subtasks if needed
+- Assign work to engineers on your team (hire if needed)
+- Prioritize based on dependencies and impact
+- Flag any blockers or unclear requirements back to the CEO`,
+  };
+}
+
 export function buildOnboardingProjectPayload(goalId: string | null) {
   return {
     name: ONBOARDING_PROJECT_NAME,

@@ -32,6 +32,8 @@ import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
   buildContextualTaskDescription,
+  buildCeoTriageTask,
+  buildCtoKickoffTask,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
 import {
@@ -69,7 +71,7 @@ import {
 } from "lucide-react";
 import { HermesIcon } from "./HermesIcon";
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4 | 5 | 6;
 type SetupMode = "fresh" | "import";
 
 // Kept for backward compatibility — upstream code may reference this.
@@ -236,7 +238,7 @@ export function OnboardingWizard() {
 
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
-    if (step === 3) autoResizeTextarea();
+    if (step === 6) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
   const {
@@ -385,6 +387,23 @@ export function OnboardingWizard() {
     setCreatedAgentId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
+    // Linear state
+    setLinearConnected(false);
+    setLinearIssueCount(null);
+    setLinearTeamKey(null);
+    setLinearHighestNumber(null);
+    setImportingIssues(false);
+    setImportPhase("config");
+    setImportResult(null);
+    setImportDone(false);
+    setShowAdvancedConfig(false);
+    setCustomPrefix("");
+    setStartFromOne(true);
+    // Step 6 state
+    setImportedIssues([]);
+    setIssueAssignments({});
+    setOnboardingAgents([]);
+    setAdditionalTasks([]);
   }
 
   function handleClose() {
@@ -460,7 +479,6 @@ export function OnboardingWizard() {
   }
 
   const [linearAvailable, setLinearAvailable] = useState(false);
-  const [showLinearConnect, setShowLinearConnect] = useState(false);
   const [linearConnected, setLinearConnected] = useState(false);
   const [linearIssueCount, setLinearIssueCount] = useState<number | null>(null);
   const [linearTeamKey, setLinearTeamKey] = useState<string | null>(null);
@@ -472,6 +490,12 @@ export function OnboardingWizard() {
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
   const [customPrefix, setCustomPrefix] = useState("");
   const [startFromOne, setStartFromOne] = useState(true);
+
+  // Step 6 — imported issues + multi-task state
+  const [importedIssues, setImportedIssues] = useState<Array<{ id: string; identifier: string | null; title: string; status: string; priority: string }>>([]);
+  const [issueAssignments, setIssueAssignments] = useState<Record<string, string>>({});
+  const [onboardingAgents, setOnboardingAgents] = useState<Array<{ id: string; name: string; role: string }>>([]);
+  const [additionalTasks, setAdditionalTasks] = useState<Array<{ title: string; description: string }>>([]);
 
   function handleConnectLinear() {
     if (!createdCompanyId) return;
@@ -697,11 +721,6 @@ export function OnboardingWizard() {
       setError(err instanceof Error ? err.message : "Failed to create company");
       setLoading(false);
     }
-  }
-
-  function handleStep1Continue() {
-    setShowLinearConnect(false);
-    setStep(2);
   }
 
   async function handleStep2Next() {
@@ -946,8 +965,49 @@ export function OnboardingWizard() {
     }
   }
 
-  function handleStep4Next() {
-    setStep(5);
+  async function handleStep4Next() {
+    // Always go to Launch — Linear step is optional (user can click the tab)
+    setLoading(true);
+    try {
+      await fetchIssuesForLaunch();
+      setStep(6);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchIssuesForLaunch() {
+    if (!createdCompanyId) return;
+    try {
+      const [issues, agents] = await Promise.all([
+        issuesApi.list(createdCompanyId),
+        agentsApi.list(createdCompanyId),
+      ]);
+      const allIssues = issues
+        .map((i: { id: string; identifier: string | null; title: string; status: string; priority: string }) => ({
+          id: i.id,
+          identifier: i.identifier,
+          title: i.title,
+          status: i.status,
+          priority: i.priority,
+        }));
+      setImportedIssues(allIssues);
+      setOnboardingAgents(agents.map((a: { id: string; name: string; role: string }) => ({ id: a.id, name: a.name, role: a.role })));
+      setIssueAssignments({});
+    } catch {
+      // Best effort — proceed without issue list
+    }
+  }
+
+  async function handleStep5Next() {
+    if (!createdCompanyId) return;
+    setLoading(true);
+    try {
+      await fetchIssuesForLaunch();
+      setStep(6);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleLaunch() {
@@ -955,43 +1015,129 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      const goalId = createdCompanyGoalId;
-      const projectId = createdProjectId;
+      if (importedIssues.length > 0) {
+        // Mode A: Apply any manual assignments, then create CEO triage task
+        const assignments = Object.entries(issueAssignments).filter(([, agentId]) => agentId);
+        if (assignments.length > 0) {
+          await Promise.all(
+            assignments.map(([issueId, agentId]) =>
+              issuesApi.update(issueId, { assigneeAgentId: agentId })
+            )
+          );
+        }
 
-      // Project should already be created in step 3
-      if (!projectId) {
-        setError("No project found. Please go back to the workspace step.");
-        setLoading(false);
-        return;
-      }
+        // Create a project if one doesn't exist yet (user may have skipped workspace step)
+        let projectId = createdProjectId;
+        if (!projectId) {
+          let goalId = createdCompanyGoalId;
+          if (!goalId) {
+            const goals = await goalsApi.list(createdCompanyId);
+            goalId = selectDefaultCompanyGoalId(goals);
+          }
+          const project = await projectsApi.create(
+            createdCompanyId,
+            { ...buildOnboardingProjectPayload(goalId), name: "Main" }
+          );
+          projectId = project.id;
+        }
 
-      let issueRef = createdIssueRef;
-      if (!issueRef) {
-        const issue = await issuesApi.create(
+        // Find CTO if one exists in the team
+        const ctoAgent = onboardingAgents.find((a) => a.role === "cto");
+
+        // Create CTO kick-off task if CTO exists
+        if (ctoAgent) {
+          const ctoTask = buildCtoKickoffTask(importedIssues.length);
+          await issuesApi.create(
+            createdCompanyId,
+            buildOnboardingIssuePayload({
+              title: ctoTask.title,
+              description: ctoTask.description,
+              assigneeAgentId: ctoAgent.id,
+              projectId,
+              goalId: createdCompanyGoalId
+            })
+          );
+        }
+
+        // Create CEO kick-off task to triage and delegate the imported issues
+        const unassignedCount = importedIssues.length - assignments.length;
+        const triage = buildCeoTriageTask(importedIssues.length, !!ctoAgent);
+        const ceoTask = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
-            title: taskTitle,
-            description: taskDescription,
+            title: triage.title,
+            description: unassignedCount > 0
+              ? triage.description
+              : `${importedIssues.length} issues were imported from Linear and assigned during onboarding.\n\n- Review assignments and adjust as needed\n- Follow up on any blockers or stale work\n- Create subtasks where issues need to be broken down further`,
             assigneeAgentId: createdAgentId,
             projectId,
-            goalId
+            goalId: createdCompanyGoalId
           })
         );
-        issueRef = issue.identifier ?? issue.id;
-        setCreatedIssueRef(issueRef);
+
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });
-      }
 
-      setSelectedCompanyId(createdCompanyId);
-      reset();
-      closeOnboarding();
-      navigate(
-        createdCompanyPrefix
-          ? `/${createdCompanyPrefix}/issues/${issueRef}`
-          : `/issues/${issueRef}`
-      );
+        const issueRef = ceoTask.identifier ?? ceoTask.id;
+        const prefix = createdCompanyPrefix;
+        setSelectedCompanyId(createdCompanyId);
+        reset();
+        closeOnboarding();
+        navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
+      } else {
+        // Mode B: Create tasks (primary + additional)
+        const goalId = createdCompanyGoalId;
+        const projectId = createdProjectId;
+
+        if (!projectId) {
+          setError("No project found. Please go back to the workspace step.");
+          setLoading(false);
+          return;
+        }
+
+        let issueRef = createdIssueRef;
+        if (!issueRef) {
+          const issue = await issuesApi.create(
+            createdCompanyId,
+            buildOnboardingIssuePayload({
+              title: taskTitle,
+              description: taskDescription,
+              assigneeAgentId: createdAgentId,
+              projectId,
+              goalId
+            })
+          );
+          issueRef = issue.identifier ?? issue.id;
+          setCreatedIssueRef(issueRef);
+        }
+
+        // Create additional tasks
+        for (const task of additionalTasks) {
+          if (task.title.trim()) {
+            await issuesApi.create(
+              createdCompanyId,
+              buildOnboardingIssuePayload({
+                title: task.title,
+                description: task.description,
+                assigneeAgentId: createdAgentId,
+                projectId,
+                goalId
+              })
+            );
+          }
+        }
+
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.list(createdCompanyId)
+        });
+
+        const prefix = createdCompanyPrefix;
+        setSelectedCompanyId(createdCompanyId);
+        reset();
+        closeOnboarding();
+        navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create task");
     } finally {
@@ -1002,15 +1148,15 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (step === 1 && showLinearConnect && !importingIssues) handleStep1Continue();
-      else if (step === 1 && setupMode === "fresh" && companyName.trim()) handleStep1Next();
+      if (step === 1 && setupMode === "fresh" && companyName.trim()) handleStep1Next();
       else if (step === 1 && setupMode === "import" && buildImportSource()) {
         if (!importPreview) { void handleImportPreview(); } else { handleStep1Next(); }
       }
       else if (step === 2 && (importedAgents || agentName.trim())) handleStep2Next();
       else if (step === 3) handleStep3Next();
       else if (step === 4) handleStep4Next();
-      else if (step === 5) handleLaunch();
+      else if (step === 5 && !importingIssues) handleStep5Next();
+      else if (step === 6) handleLaunch();
     }
   }
 
@@ -1057,7 +1203,8 @@ export function OnboardingWizard() {
                     { step: 2 as Step, label: "Agent", icon: Bot },
                     { step: 3 as Step, label: "Workspace", icon: FolderOpen },
                     { step: 4 as Step, label: "Team", icon: Network },
-                    { step: 5 as Step, label: "Launch", icon: Rocket }
+                    ...(linearAvailable ? [{ step: 5 as Step, label: "Linear", icon: ListTodo }] : []),
+                    { step: 6 as Step, label: "Launch", icon: Rocket },
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -1078,7 +1225,7 @@ export function OnboardingWizard() {
               </div>
 
               {/* Step content */}
-              {step === 1 && !showLinearConnect && (
+              {step === 1 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
@@ -1330,197 +1477,6 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 1 && showLinearConnect && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <ListTodo className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Connect Linear</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Link your Linear workspace so agents can manage issues.
-                      </p>
-                    </div>
-                  </div>
-
-                  {linearConnected ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3">
-                        <Check className="h-4 w-4 text-green-500" />
-                        <span className="text-sm text-green-400">
-                          Linear connected{linearTeamKey ? ` (${linearTeamKey})` : ""}
-                        </span>
-                      </div>
-
-                      {linearIssueCount !== null && linearIssueCount > 0 && !importDone && (
-                        <div className="rounded-md border border-border bg-muted/30 px-4 py-3 space-y-3">
-                          <p className="text-sm">
-                            Found <span className="font-medium text-foreground">{linearIssueCount} open issues</span> in Linear{linearTeamKey ? ` (${linearTeamKey})` : ""}.
-                          </p>
-
-                          <button
-                            type="button"
-                            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                            onClick={() => setShowAdvancedConfig(!showAdvancedConfig)}
-                          >
-                            {showAdvancedConfig ? "▾" : "▸"} Advanced configuration
-                          </button>
-
-                          {showAdvancedConfig && (
-                            <div className="space-y-3 pl-3 border-l-2 border-border">
-                              <div>
-                                <label className="text-xs text-muted-foreground block mb-1">
-                                  Issue prefix
-                                </label>
-                                <input
-                                  className="w-24 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 uppercase"
-                                  placeholder={linearTeamKey || "LUC"}
-                                  value={customPrefix}
-                                  onChange={(e) => setCustomPrefix(e.target.value.toUpperCase())}
-                                />
-                              </div>
-                              <div>
-                                <label className="text-xs text-muted-foreground block mb-1">
-                                  Next issue number
-                                </label>
-                                <div className="flex items-center gap-2">
-                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="startNumber"
-                                      checked={!startFromOne}
-                                      onChange={() => setStartFromOne(false)}
-                                      className="accent-primary"
-                                    />
-                                    <span className={!startFromOne ? "text-foreground" : "text-muted-foreground"}>
-                                      {customPrefix || linearTeamKey || "LUC"}-{(linearHighestNumber ?? 0) + 1}
-                                    </span>
-                                    <span className="text-muted-foreground/60">
-                                      (continue from Linear)
-                                    </span>
-                                  </label>
-                                </div>
-                                <div className="flex items-center gap-2 mt-1">
-                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                                    <input
-                                      type="radio"
-                                      name="startNumber"
-                                      checked={startFromOne}
-                                      onChange={() => setStartFromOne(true)}
-                                      className="accent-primary"
-                                    />
-                                    <span className={startFromOne ? "text-foreground" : "text-muted-foreground"}>
-                                      {customPrefix || linearTeamKey || "LUC"}-1
-                                    </span>
-                                    <span className="text-muted-foreground/60">
-                                      (start fresh)
-                                    </span>
-                                  </label>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {!importingIssues && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={handleImportLinearIssues}
-                            >
-                              <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                              Import issues
-                            </Button>
-                          )}
-
-                          {importingIssues && (
-                            <div className="space-y-2 pt-1">
-                              {[
-                                { key: "config", label: "Saving configuration" },
-                                { key: "projects", label: "Syncing projects" },
-                                { key: "issues", label: "Importing issues" },
-                                { key: "labels", label: "Linking labels" },
-                                { key: "sync", label: "Full sync from Linear" },
-                              ].map((step) => {
-                                const phases = ["config", "projects", "issues", "labels", "sync", "done"];
-                                const stepIdx = phases.indexOf(step.key);
-                                const currentIdx = phases.indexOf(importPhase);
-                                const isDone = currentIdx > stepIdx;
-                                const isActive = currentIdx === stepIdx;
-                                return (
-                                  <div key={step.key} className="flex items-center gap-2">
-                                    {isDone ? (
-                                      <Check className="h-3 w-3 text-green-500 shrink-0" />
-                                    ) : isActive ? (
-                                      <Loader2 className="h-3 w-3 animate-spin text-foreground shrink-0" />
-                                    ) : (
-                                      <div className="h-3 w-3 rounded-full border border-border shrink-0" />
-                                    )}
-                                    <span className={cn(
-                                      "text-xs transition-colors",
-                                      isDone ? "text-muted-foreground" : isActive ? "text-foreground" : "text-muted-foreground/50"
-                                    )}>
-                                      {step.label}
-                                    </span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {importDone && (
-                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
-                          <div className="flex items-center gap-2">
-                            <Check className="h-3.5 w-3.5 text-green-500" />
-                            <span className="text-xs text-green-400 font-medium">Import complete</span>
-                          </div>
-                          {importResult && (
-                            <p className="text-xs text-muted-foreground pl-5.5">
-                              {importResult.imported} issues{importResult.projects > 0 ? `, ${importResult.projects} projects` : ""}{importResult.labels > 0 ? `, ${importResult.labels} labels` : ""}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      className="w-full justify-center gap-2"
-                      onClick={handleConnectLinear}
-                    >
-                      <svg viewBox="0 0 100 100" className="h-4 w-4" fill="currentColor">
-                        <path d="M1.22541 61.5228c-.97437-2.7004-.97437-5.6961 0-8.3965L16.3262 10.3963C19.094 2.6584 26.8267 -1.80816 34.9157.614964c8.0889 2.423814 12.7709 10.917336 10.347 18.654936L30.1619 61.9999 45.2627 14.2691"/>
-                      </svg>
-                      Connect Linear
-                    </Button>
-                  )}
-
-                  <div className="flex gap-2 pt-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-xs text-muted-foreground"
-                      disabled={importingIssues}
-                      onClick={handleStep1Continue}
-                    >
-                      {linearConnected ? "Skip import" : "Skip for now"}
-                    </Button>
-                    {linearConnected && (
-                      <Button
-                        size="sm"
-                        className="ml-auto"
-                        disabled={importingIssues}
-                        onClick={handleStep1Continue}
-                      >
-                        Continue
-                        <ArrowRight className="h-3 w-3 ml-1" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {step === 2 && (
                 <div className="space-y-5">
@@ -1581,12 +1537,7 @@ export function OnboardingWizard() {
                           onClick={() => {
                             const nextType = opt.value as AdapterType;
                             setAdapterType(nextType);
-                            if (nextType === "codex_local" && !model) {
-                              setModel(DEFAULT_CODEX_LOCAL_MODEL);
-                            }
-                            if (nextType !== "codex_local") {
-                              setModel("");
-                            }
+                            setModel("");
                           }}
                         >
                           {opt.recommended && (
@@ -1673,20 +1624,6 @@ export function OnboardingWizard() {
                               if (opt.comingSoon) return;
                               const nextType = opt.value as AdapterType;
                               setAdapterType(nextType);
-                              if (nextType === "gemini_local" && !model) {
-                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "cursor" && !model) {
-                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "opencode_local") {
-                                if (!model.includes("/")) {
-                                  setModel("");
-                                }
-                                return;
-                              }
                               setModel("");
                             }}
                           >
@@ -2237,45 +2174,311 @@ export function OnboardingWizard() {
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
-                      <Rocket className="h-5 w-5 text-muted-foreground" />
+                      <ListTodo className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Launch with a task</h3>
+                      <h3 className="font-medium">Connect Linear</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your CEO agent a grounded task to start with.
+                        Import issues from Linear so your agents have real work from day one.
                       </p>
                     </div>
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Task title
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Review the codebase and create a roadmap"
-                      value={taskTitle}
-                      onChange={(e) => {
-                        setTaskTitle(e.target.value);
-                        setTaskTouched(true);
-                      }}
-                      autoFocus
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
-                      Description
-                    </label>
-                    <textarea
-                      ref={textareaRef}
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
-                      placeholder="Add more detail about what the agent should do..."
-                      value={taskDescription}
-                      onChange={(e) => {
-                        setTaskDescription(e.target.value);
-                        setTaskTouched(true);
-                      }}
-                    />
-                  </div>
+
+                  {linearConnected ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3">
+                        <Check className="h-4 w-4 text-green-500" />
+                        <span className="text-sm text-green-400">
+                          Linear connected{linearTeamKey ? ` (${linearTeamKey})` : ""}
+                        </span>
+                      </div>
+
+                      {linearIssueCount !== null && linearIssueCount > 0 && !importDone && (
+                        <div className="rounded-md border border-border bg-muted/30 px-4 py-3 space-y-3">
+                          <p className="text-sm">
+                            Found <span className="font-medium text-foreground">{linearIssueCount} open issues</span> in Linear{linearTeamKey ? ` (${linearTeamKey})` : ""}.
+                          </p>
+
+                          <button
+                            type="button"
+                            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => setShowAdvancedConfig(!showAdvancedConfig)}
+                          >
+                            {showAdvancedConfig ? "▾" : "▸"} Advanced configuration
+                          </button>
+
+                          {showAdvancedConfig && (
+                            <div className="space-y-3 pl-3 border-l-2 border-border">
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">
+                                  Issue prefix
+                                </label>
+                                <input
+                                  className="w-24 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 uppercase"
+                                  placeholder={linearTeamKey || "LUC"}
+                                  value={customPrefix}
+                                  onChange={(e) => setCustomPrefix(e.target.value.toUpperCase())}
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground block mb-1">
+                                  Next issue number
+                                </label>
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name="startNumber"
+                                      checked={!startFromOne}
+                                      onChange={() => setStartFromOne(false)}
+                                      className="accent-primary"
+                                    />
+                                    <span className={!startFromOne ? "text-foreground" : "text-muted-foreground"}>
+                                      {customPrefix || linearTeamKey || "LUC"}-{(linearHighestNumber ?? 0) + 1}
+                                    </span>
+                                    <span className="text-muted-foreground/60">
+                                      (continue from Linear)
+                                    </span>
+                                  </label>
+                                </div>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name="startNumber"
+                                      checked={startFromOne}
+                                      onChange={() => setStartFromOne(true)}
+                                      className="accent-primary"
+                                    />
+                                    <span className={startFromOne ? "text-foreground" : "text-muted-foreground"}>
+                                      {customPrefix || linearTeamKey || "LUC"}-1
+                                    </span>
+                                    <span className="text-muted-foreground/60">
+                                      (start fresh)
+                                    </span>
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {!importingIssues && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={handleImportLinearIssues}
+                            >
+                              <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                              Import issues
+                            </Button>
+                          )}
+
+                          {importingIssues && (
+                            <div className="space-y-2 pt-1">
+                              {[
+                                { key: "config", label: "Saving configuration" },
+                                { key: "projects", label: "Syncing projects" },
+                                { key: "issues", label: "Importing issues" },
+                                { key: "labels", label: "Linking labels" },
+                                { key: "sync", label: "Full sync from Linear" },
+                              ].map((phaseStep) => {
+                                const phases = ["config", "projects", "issues", "labels", "sync", "done"];
+                                const stepIdx = phases.indexOf(phaseStep.key);
+                                const currentIdx = phases.indexOf(importPhase);
+                                const isDone = currentIdx > stepIdx;
+                                const isActive = currentIdx === stepIdx;
+                                return (
+                                  <div key={phaseStep.key} className="flex items-center gap-2">
+                                    {isDone ? (
+                                      <Check className="h-3 w-3 text-green-500 shrink-0" />
+                                    ) : isActive ? (
+                                      <Loader2 className="h-3 w-3 animate-spin text-foreground shrink-0" />
+                                    ) : (
+                                      <div className="h-3 w-3 rounded-full border border-border shrink-0" />
+                                    )}
+                                    <span className={cn(
+                                      "text-xs transition-colors",
+                                      isDone ? "text-muted-foreground" : isActive ? "text-foreground" : "text-muted-foreground/50"
+                                    )}>
+                                      {phaseStep.label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {importDone && (
+                        <div className="rounded-md border border-green-500/30 bg-green-500/5 px-4 py-3 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Check className="h-3.5 w-3.5 text-green-500" />
+                            <span className="text-xs text-green-400 font-medium">Import complete</span>
+                          </div>
+                          {importResult && (
+                            <p className="text-xs text-muted-foreground pl-5.5">
+                              {importResult.imported} issues{importResult.projects > 0 ? `, ${importResult.projects} projects` : ""}{importResult.labels > 0 ? `, ${importResult.labels} labels` : ""}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="w-full justify-center gap-2"
+                      onClick={handleConnectLinear}
+                    >
+                      <svg viewBox="0 0 100 100" className="h-4 w-4" fill="currentColor">
+                        <path d="M1.22541 61.5228c-.97437-2.7004-.97437-5.6961 0-8.3965L16.3262 10.3963C19.094 2.6584 26.8267 -1.80816 34.9157.614964c8.0889 2.423814 12.7709 10.917336 10.347 18.654936L30.1619 61.9999 45.2627 14.2691"/>
+                      </svg>
+                      Connect Linear
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {step === 6 && (
+                <div className="space-y-5">
+                  {importedIssues.length > 0 ? (
+                    <>
+                      <div className="flex items-center gap-3 mb-1">
+                        <div className="bg-muted/50 p-2">
+                          <Rocket className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium">Review &amp; launch</h3>
+                          <p className="text-xs text-muted-foreground">
+                            Your CEO will receive a triage task to delegate these issues.
+                            Optionally pre-assign any you already know the owner for.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="max-h-[400px] overflow-y-auto space-y-1 border border-border rounded-md divide-y divide-border">
+                        {importedIssues.map((issue) => (
+                          <div key={issue.id} className="flex items-center gap-2 px-3 py-2">
+                            <span className="text-xs text-muted-foreground font-mono shrink-0 w-16 truncate">
+                              {issue.identifier ?? "—"}
+                            </span>
+                            <span className={cn(
+                              "text-xs shrink-0 px-1.5 py-0.5 rounded",
+                              issue.status === "done" ? "bg-green-500/10 text-green-500" :
+                              issue.status === "cancelled" ? "bg-muted text-muted-foreground" :
+                              issue.status === "in_progress" ? "bg-blue-500/10 text-blue-500" :
+                              "bg-muted/50 text-muted-foreground"
+                            )}>
+                              {issue.status === "in_progress" ? "active" : issue.status}
+                            </span>
+                            <span className="text-sm flex-1 truncate">{issue.title}</span>
+                            <select
+                              className="text-xs rounded-md border border-border bg-transparent px-2 py-1 outline-none focus:ring-1 focus:ring-ring shrink-0"
+                              value={issueAssignments[issue.id] ?? ""}
+                              onChange={(e) => setIssueAssignments((prev) => ({
+                                ...prev,
+                                [issue.id]: e.target.value,
+                              }))}
+                            >
+                              <option value="">CEO will triage</option>
+                              {onboardingAgents.map((agent) => (
+                                <option key={agent.id} value={agent.id}>{agent.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+
+                      <p className="text-[11px] text-muted-foreground">
+                        Unassigned issues will be routed by the CEO to the right department head (CTO, CMO, etc.) based on their content.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-3 mb-1">
+                        <div className="bg-muted/50 p-2">
+                          <Rocket className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div>
+                          <h3 className="font-medium">Launch with tasks</h3>
+                          <p className="text-xs text-muted-foreground">
+                            Give your CEO agent tasks to delegate to the team.
+                          </p>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Task title
+                        </label>
+                        <input
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                          placeholder="e.g. Review the codebase and create a roadmap"
+                          value={taskTitle}
+                          onChange={(e) => {
+                            setTaskTitle(e.target.value);
+                            setTaskTouched(true);
+                          }}
+                          autoFocus
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Description
+                        </label>
+                        <textarea
+                          ref={textareaRef}
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
+                          placeholder="Add more detail about what the agent should do..."
+                          value={taskDescription}
+                          onChange={(e) => {
+                            setTaskDescription(e.target.value);
+                            setTaskTouched(true);
+                          }}
+                        />
+                      </div>
+
+                      {additionalTasks.map((task, idx) => (
+                        <div key={idx} className="space-y-2 border border-border rounded-md p-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground">Task {idx + 2}</span>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                              onClick={() => setAdditionalTasks((prev) => prev.filter((_, i) => i !== idx))}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                          <input
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                            placeholder="Task title"
+                            value={task.title}
+                            onChange={(e) => setAdditionalTasks((prev) =>
+                              prev.map((t, i) => i === idx ? { ...t, title: e.target.value } : t)
+                            )}
+                          />
+                          <textarea
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                            placeholder="Description (optional)"
+                            value={task.description}
+                            onChange={(e) => setAdditionalTasks((prev) =>
+                              prev.map((t, i) => i === idx ? { ...t, description: e.target.value } : t)
+                            )}
+                          />
+                        </div>
+                      ))}
+
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-xs text-muted-foreground"
+                        onClick={() => setAdditionalTasks((prev) => [...prev, { title: "", description: "" }])}
+                      >
+                        + Add another task
+                      </Button>
+                    </>
+                  )}
 
                   {/* Summary */}
                   <div className="border border-border divide-y divide-border text-xs">
@@ -2293,6 +2496,13 @@ export function OnboardingWizard() {
                       <div className="flex items-center gap-2 px-3 py-2">
                         <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                         <span className="flex-1 truncate font-mono">{workspaceScan.projectName ?? workspaceScan.cwd}</span>
+                        <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                      </div>
+                    )}
+                    {importedIssues.length > 0 && (
+                      <div className="flex items-center gap-2 px-3 py-2">
+                        <ListTodo className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                        <span className="flex-1 truncate">{importedIssues.length} issues imported from Linear</span>
                         <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
                       </div>
                     )}
@@ -2314,7 +2524,10 @@ export function OnboardingWizard() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setStep((step - 1) as Step)}
+                      onClick={() => {
+                        const prev = step === 6 ? 4 : step - 1;
+                        setStep(prev as Step);
+                      }}
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
@@ -2323,7 +2536,7 @@ export function OnboardingWizard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && !showLinearConnect && (
+                  {step === 1 && (
                     <Button
                       size="sm"
                       disabled={
@@ -2396,7 +2609,44 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 5 && (
-                    <Button size="sm" disabled={!taskTitle.trim() || loading} onClick={handleLaunch}>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-muted-foreground"
+                        disabled={importingIssues || loading}
+                        onClick={async () => {
+                          setLoading(true);
+                          try {
+                            await fetchIssuesForLaunch();
+                            setStep(6);
+                          } finally {
+                            setLoading(false);
+                          }
+                        }}
+                      >
+                        Skip
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={importingIssues || loading}
+                        onClick={handleStep5Next}
+                      >
+                        {loading ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                        ) : (
+                          <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        )}
+                        {loading ? "Loading..." : "Next"}
+                      </Button>
+                    </div>
+                  )}
+                  {step === 6 && (
+                    <Button
+                      size="sm"
+                      disabled={(importedIssues.length === 0 && !taskTitle.trim()) || loading}
+                      onClick={handleLaunch}
+                    >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
