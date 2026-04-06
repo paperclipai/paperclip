@@ -3900,24 +3900,32 @@ export function heartbeatService(db: Db) {
         const agentId = issue.assigneeAgentId;
         if (!agentId) continue;
         checked += 1;
-        const run = await enqueueWakeup(agentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "startup_issue_reconciliation",
-          payload: {
-            issueId: issue.id,
-            mutation: "startup_reconciliation",
-          },
-          requestedByActorType: "system",
-          requestedByActorId: opts?.requestedByActorId ?? "server_startup",
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "startup_reconciliation",
-            issueStatus: issue.status,
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        try {
+          const run = await enqueueWakeup(agentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "startup_issue_reconciliation",
+            payload: {
+              issueId: issue.id,
+              mutation: "startup_reconciliation",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: opts?.requestedByActorId ?? "server_startup",
+            contextSnapshot: {
+              issueId: issue.id,
+              source: "startup_reconciliation",
+              issueStatus: issue.status,
+            },
+          });
+          if (run) enqueued += 1;
+          else skipped += 1;
+        } catch (err) {
+          skipped += 1;
+          logger.warn(
+            { err, agentId, issueId: issue.id },
+            "startup reconciliation: skipping agent wakeup due to error",
+          );
+        }
       }
 
       logger.info(
