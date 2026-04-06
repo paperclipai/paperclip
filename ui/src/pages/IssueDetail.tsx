@@ -43,6 +43,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
+import { ExecutionParticipantPicker } from "../components/ExecutionParticipantPicker";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -1354,6 +1355,23 @@ export function IssueDetail() {
               )}
             </div>
           )}
+
+          <div className="flex items-center gap-1">
+            <ExecutionParticipantPicker
+              issue={issue}
+              stageType="review"
+              agents={agents ?? []}
+              currentUserId={currentUserId}
+              onUpdate={(data) => updateIssue.mutate(data)}
+            />
+            <ExecutionParticipantPicker
+              issue={issue}
+              stageType="approval"
+              agents={agents ?? []}
+              currentUserId={currentUserId}
+              onUpdate={(data) => updateIssue.mutate(data)}
+            />
+          </div>
 
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
             <Button
