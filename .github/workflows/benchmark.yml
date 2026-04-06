@@ -71,14 +71,29 @@ jobs:
         env:
           BENCH_SCORE: ${{ steps.benchmark.outputs.score }}
           BENCH_PASS: ${{ steps.benchmark.outputs.pass }}
+          BENCH_FILE: benchmarks/latest.json
         with:
           script: |
+            const fs = require('fs');
             const score = process.env.BENCH_SCORE;
             const pass = process.env.BENCH_PASS === 'true';
             const emoji = pass ? '✅' : '⚠️';
-            const body = `${emoji} **Benchmark Score: ${score}/100** ${pass ? '(passing)' : '(below threshold)'}`;
 
-            // Find existing benchmark comment
+            let breakdown = '';
+            try {
+              const data = JSON.parse(fs.readFileSync(process.env.BENCH_FILE, 'utf8'));
+              const s = data.scores;
+              breakdown = [
+                `| Dimension | Score | Weight |`,
+                `|-----------|-------|--------|`,
+                ...Object.entries(s).map(([k, v]) =>
+                  `| ${k} | ${v.score.toFixed(1)} | ${(v.weight * 100).toFixed(0)}% |`
+                ),
+              ].join('\n');
+            } catch {}
+
+            const body = `${emoji} **Benchmark Score: ${score}/100** ${pass ? '(passing)' : '(below threshold)'}\n\n${breakdown}`;
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,

@@ -1,16 +1,20 @@
 #!/usr/bin/env -S node --import tsx/esm
 
 /**
- * Paperclip Fork — Commit Benchmark Score
+ * Paperclip Fork — Commit Benchmark Score (v2)
  *
- * Computes a composite quality score for a commit based on:
- *   - Test pass rate (40%)
- *   - Coverage metrics (30%)
- *   - Typecheck pass (15%)
- *   - Build success (15%)
+ * Computes a composite quality score across 8 dimensions:
+ *   - Test pass rate (15%)
+ *   - Code coverage (20%)
+ *   - TypeScript typecheck (10%)
+ *   - Build success (10%)
+ *   - Security audit (15%)
+ *   - Code health (15%)
+ *   - Lint / diagnostics (10%)
+ *   - Documentation (5%)
  *
- * Outputs a JSON scorecard to stdout (--json) or a human-readable summary.
- * Designed for CI integration: exit code 0 = pass, 1 = below threshold.
+ * Each dimension produces a 0-100 score. The composite is the weighted average.
+ * Exit code 0 = pass, 1 = below threshold.
  */
 
 import { execFile } from "node:child_process";
@@ -21,17 +25,46 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
 const SCORE_WEIGHTS = {
-  tests: 0.4,
-  coverage: 0.3,
-  typecheck: 0.15,
-  build: 0.15,
+  tests: 0.15,
+  coverage: 0.20,
+  typecheck: 0.10,
+  build: 0.10,
+  security: 0.15,
+  codeHealth: 0.15,
+  lint: 0.10,
+  docs: 0.05,
 } as const;
 
 const DEFAULT_SCORE_THRESHOLD = 70;
-const DEFAULT_OUTPUT_DIR = "benchmarks";
-// Resolved relative to PROJECT_ROOT after it's computed
-const COVERAGE_SUMMARY_RELATIVE = "coverage/coverage-summary.json";
+
+// Code health thresholds (graduated scoring)
+const ANY_COUNT_IDEAL = 0;
+const ANY_COUNT_ACCEPTABLE = 50;
+const ANY_COUNT_MAX = 200; // above this = 0 points
+
+const FILE_SIZE_WARN = 1000; // lines
+const FILE_SIZE_MAX = 3000; // lines — above this penalizes heavily
+
+const TODO_FIXME_IDEAL = 0;
+const TODO_FIXME_MAX = 100; // above this = 0 points
+
+// Source directories to scan
+const SOURCE_DIRS = [
+  "server/src",
+  "packages/*/src",
+  "packages/adapters/*/src",
+  "cli/src",
+  "ui/src",
+];
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface CoverageSummary {
   total: {
@@ -59,25 +92,51 @@ interface CheckResult {
   error?: string;
 }
 
+interface SecurityDetails {
+  npmAuditVulns: { critical: number; high: number; moderate: number; low: number };
+  forbiddenTokensClean: boolean;
+  hardcodedSecrets: number;
+}
+
+interface CodeHealthDetails {
+  anyCount: number;
+  oversizedFiles: number;
+  totalSourceFiles: number;
+  todoFixmeCount: number;
+  maxFileLines: number;
+}
+
+interface LintDetails {
+  tsDiagnosticCount: number;
+  unusedExports: number;
+}
+
+interface DocsDetails {
+  exportedFunctions: number;
+  documentedFunctions: number;
+  coveragePct: number;
+}
+
+interface DimensionScore<D = unknown> {
+  score: number;
+  weight: number;
+  details: D;
+}
+
 interface Scorecard {
-  version: 1;
+  version: 2;
   timestamp: string;
   commit: string;
   branch: string;
   scores: {
-    tests: { score: number; weight: number; details: TestResults };
-    coverage: {
-      score: number;
-      weight: number;
-      details: {
-        lines: number;
-        statements: number;
-        functions: number;
-        branches: number;
-      };
-    };
-    typecheck: { score: number; weight: number; details: CheckResult };
-    build: { score: number; weight: number; details: CheckResult };
+    tests: DimensionScore<TestResults>;
+    coverage: DimensionScore<{ lines: number; statements: number; functions: number; branches: number }>;
+    typecheck: DimensionScore<CheckResult>;
+    build: DimensionScore<CheckResult>;
+    security: DimensionScore<SecurityDetails>;
+    codeHealth: DimensionScore<CodeHealthDetails>;
+    lint: DimensionScore<LintDetails>;
+    docs: DimensionScore<DocsDetails>;
   };
   composite: number;
   threshold: number;
@@ -91,8 +150,13 @@ interface CliOptions {
   threshold: number;
   skipBuild: boolean;
   skipTypecheck: boolean;
+  skipSecurity: boolean;
   markdownSummary: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
 
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
@@ -101,33 +165,22 @@ function parseArgs(argv: string[]): CliOptions {
     threshold: DEFAULT_SCORE_THRESHOLD,
     skipBuild: false,
     skipTypecheck: false,
+    skipSecurity: false,
     markdownSummary: null,
   };
 
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
-      case "--json":
-        options.json = true;
-        break;
-      case "--output":
-        options.output = argv[++i] ?? null;
-        break;
+      case "--json": options.json = true; break;
+      case "--output": options.output = argv[++i] ?? null; break;
       case "--threshold":
         options.threshold = Number.parseInt(argv[++i] ?? "", 10) || DEFAULT_SCORE_THRESHOLD;
         break;
-      case "--skip-build":
-        options.skipBuild = true;
-        break;
-      case "--skip-typecheck":
-        options.skipTypecheck = true;
-        break;
-      case "--markdown-summary":
-        options.markdownSummary = argv[++i] ?? null;
-        break;
-      case "--help":
-        printHelp();
-        process.exit(0);
-        break;
+      case "--skip-build": options.skipBuild = true; break;
+      case "--skip-typecheck": options.skipTypecheck = true; break;
+      case "--skip-security": options.skipSecurity = true; break;
+      case "--markdown-summary": options.markdownSummary = argv[++i] ?? null; break;
+      case "--help": printHelp(); process.exit(0); break;
     }
   }
 
@@ -137,7 +190,10 @@ function parseArgs(argv: string[]): CliOptions {
 function printHelp() {
   console.log(`Usage: tsx scripts/benchmark-score.ts [options]
 
-Computes a composite quality score for the current commit.
+Computes a composite quality score (v2) for the current commit.
+
+Dimensions: tests (15%), coverage (20%), typecheck (10%), build (10%),
+security (15%), code health (15%), lint (10%), docs (5%)
 
 Options:
   --json                 Output JSON scorecard to stdout
@@ -145,10 +201,15 @@ Options:
   --threshold <n>        Minimum passing score (default: ${DEFAULT_SCORE_THRESHOLD})
   --skip-build           Skip the build step
   --skip-typecheck       Skip the typecheck step
+  --skip-security        Skip npm audit
   --markdown-summary <f> Write markdown summary to file (for GitHub step summary)
   --help                 Show this help
 `);
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 async function getGitInfo(): Promise<{ commit: string; branch: string }> {
   try {
@@ -156,17 +217,13 @@ async function getGitInfo(): Promise<{ commit: string; branch: string }> {
       execFileAsync("git", ["rev-parse", "--short", "HEAD"]),
       execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
     ]);
-    return {
-      commit: commitResult.stdout.trim(),
-      branch: branchResult.stdout.trim(),
-    };
+    return { commit: commitResult.stdout.trim(), branch: branchResult.stdout.trim() };
   } catch {
     return { commit: "unknown", branch: "unknown" };
   }
 }
 
 function resolveProjectRoot(): string {
-  // Walk up from this script to find root package.json with "name": "paperclip"
   let dir = path.dirname(new URL(import.meta.url).pathname);
   for (let i = 0; i < 5; i++) {
     const parent = path.dirname(dir);
@@ -181,6 +238,63 @@ function resolveProjectRoot(): string {
 
 const PROJECT_ROOT = resolveProjectRoot();
 
+/** Linear interpolation: score 100 at `ideal`, 0 at `worst`. Clamped [0,100]. */
+function linearScore(value: number, ideal: number, worst: number): number {
+  if (ideal === worst) return value <= ideal ? 100 : 0;
+  const raw = ((value - worst) / (ideal - worst)) * 100;
+  return Math.max(0, Math.min(100, raw));
+}
+
+async function execQuiet(cmd: string, args: string[], opts?: { cwd?: string; maxBuffer?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const result = await execFileAsync(cmd, args, {
+      maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
+      cwd: opts?.cwd ?? PROJECT_ROOT,
+      env: { ...process.env, NODE_ENV: "development" },
+    });
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+  } catch (error: any) {
+    return {
+      stdout: error?.stdout ?? "",
+      stderr: error?.stderr ?? "",
+      exitCode: error?.code ?? 1,
+    };
+  }
+}
+
+async function globSourceFiles(): Promise<string[]> {
+  // Find all .ts source files by scanning each known source directory individually
+  // to avoid `find` failing entirely when one directory doesn't exist
+  const candidateDirs = [
+    path.join(PROJECT_ROOT, "server", "src"),
+    path.join(PROJECT_ROOT, "packages"),
+    path.join(PROJECT_ROOT, "cli", "src"),
+    path.join(PROJECT_ROOT, "ui", "src"),
+  ];
+
+  const files: string[] = [];
+  for (const dir of candidateDirs) {
+    // Check if directory exists first
+    try { await fs.access(dir); } catch { continue; }
+    const result = await execQuiet("find", [
+      dir,
+      "-name", "*.ts",
+      "-not", "-name", "*.d.ts",
+      "-not", "-name", "*.test.ts",
+      "-not", "-name", "*.spec.ts",
+      "-not", "-path", "*/node_modules/*",
+      "-not", "-path", "*/dist/*",
+      "-type", "f",
+    ]);
+    files.push(...result.stdout.trim().split("\n").filter(Boolean));
+  }
+  return files;
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 1: Tests (15%)
+// ---------------------------------------------------------------------------
+
 async function runTests(): Promise<TestResults> {
   const startMs = Date.now();
   const jsonOutputFile = path.join(os.tmpdir(), `vitest-results-${Date.now()}.json`);
@@ -189,7 +303,7 @@ async function runTests(): Promise<TestResults> {
       await execFileAsync(
         "npx",
         [
-          "vitest", "run",
+          "vitest", "run", "--coverage",
           "--reporter=default", "--reporter=json",
           "--outputFile.json", jsonOutputFile,
         ],
@@ -197,104 +311,55 @@ async function runTests(): Promise<TestResults> {
           maxBuffer: 50 * 1024 * 1024,
           cwd: PROJECT_ROOT,
           env: { ...process.env, NODE_ENV: "development" },
+          // Ensure vitest finds the root config
+          shell: false,
         },
       );
     } catch (error: any) {
-      // vitest exits non-zero when tests fail — that's expected, continue to read the file
-      // Only re-throw if the file wasn't created (vitest didn't run at all)
-      try {
-        await fs.access(jsonOutputFile);
-      } catch {
-        // Fall back to parsing stdout/stderr
-        const stdout = error?.stdout ?? "";
-        const stderr = error?.stderr ?? "";
-        const combined = stdout + stderr;
-        if (combined) {
-          return parseVitestJson(combined, Date.now() - startMs);
-        }
+      try { await fs.access(jsonOutputFile); } catch {
+        const combined = (error?.stdout ?? "") + (error?.stderr ?? "");
+        if (combined) return parseVitestJson(combined, Date.now() - startMs);
         return emptyTestResults(Date.now() - startMs);
       }
     }
-
-    // Read the JSON output file
     const jsonContent = await fs.readFile(jsonOutputFile, "utf8");
     return parseVitestJson(jsonContent, Date.now() - startMs);
   } catch {
     return emptyTestResults(Date.now() - startMs);
   } finally {
-    // Clean up temp file
     fs.unlink(jsonOutputFile).catch(() => {});
   }
 }
 
 function emptyTestResults(durationMs: number): TestResults {
-  return {
-    totalTests: 0,
-    passedTests: 0,
-    failedTests: 0,
-    skippedTests: 0,
-    totalSuites: 0,
-    passedSuites: 0,
-    failedSuites: 0,
-    durationMs,
-  };
+  return { totalTests: 0, passedTests: 0, failedTests: 0, skippedTests: 0, totalSuites: 0, passedSuites: 0, failedSuites: 0, durationMs };
 }
 
-function parseVitestJson(stdout: string, durationMs: number): TestResults {
-  // vitest JSON output may have non-JSON lines before/after
-  const jsonMatch = stdout.match(/\{[\s\S]*"testResults"[\s\S]*\}/);
-  if (!jsonMatch) {
-    // Fall back to parsing vitest summary line from stderr/stdout
-    return parseVitestSummary(stdout, durationMs);
-  }
-
+function parseVitestJson(content: string, durationMs: number): TestResults {
+  const jsonMatch = content.match(/\{[\s\S]*"testResults"[\s\S]*\}/);
+  if (!jsonMatch) return parseVitestSummary(content, durationMs);
   try {
     const data = JSON.parse(jsonMatch[0]);
     const testResults = data.testResults ?? [];
-    let passed = 0;
-    let failed = 0;
-    let skipped = 0;
-    let passedSuites = 0;
-    let failedSuites = 0;
-
+    let passed = 0, failed = 0, skipped = 0, passedSuites = 0, failedSuites = 0;
     for (const suite of testResults) {
-      const status = suite.status ?? "";
-      if (status === "passed") passedSuites++;
-      else if (status === "failed") failedSuites++;
-
+      if (suite.status === "passed") passedSuites++;
+      else if (suite.status === "failed") failedSuites++;
       for (const test of suite.assertionResults ?? []) {
-        const testStatus = test.status ?? "";
-        if (testStatus === "passed") passed++;
-        else if (testStatus === "failed") failed++;
+        if (test.status === "passed") passed++;
+        else if (test.status === "failed") failed++;
         else skipped++;
       }
     }
-
-    return {
-      totalTests: passed + failed + skipped,
-      passedTests: passed,
-      failedTests: failed,
-      skippedTests: skipped,
-      totalSuites: testResults.length,
-      passedSuites,
-      failedSuites,
-      durationMs,
-    };
+    return { totalTests: passed + failed + skipped, passedTests: passed, failedTests: failed, skippedTests: skipped, totalSuites: testResults.length, passedSuites, failedSuites, durationMs };
   } catch {
-    return parseVitestSummary(stdout, durationMs);
+    return parseVitestSummary(content, durationMs);
   }
 }
 
 function parseVitestSummary(output: string, durationMs: number): TestResults {
-  // Parse "Test Files  20 failed | 158 passed (178)"
-  const suitesMatch = output.match(
-    /Test Files\s+(?:(\d+)\s+failed\s+\|\s+)?(\d+)\s+passed\s+\((\d+)\)/,
-  );
-  // Parse "Tests  18 failed | 830 passed | 2 skipped (850)"
-  const testsMatch = output.match(
-    /Tests\s+(?:(\d+)\s+failed\s+\|\s+)?(\d+)\s+passed(?:\s+\|\s+(\d+)\s+skipped)?\s+\((\d+)\)/,
-  );
-
+  const suitesMatch = output.match(/Test Files\s+(?:(\d+)\s+failed\s+\|\s+)?(\d+)\s+passed\s+\((\d+)\)/);
+  const testsMatch = output.match(/Tests\s+(?:(\d+)\s+failed\s+\|\s+)?(\d+)\s+passed(?:\s+\|\s+(\d+)\s+skipped)?\s+\((\d+)\)/);
   return {
     totalTests: testsMatch ? parseInt(testsMatch[4]) : 0,
     passedTests: testsMatch ? parseInt(testsMatch[2]) : 0,
@@ -307,133 +372,434 @@ function parseVitestSummary(output: string, durationMs: number): TestResults {
   };
 }
 
-async function readCoverage(): Promise<CoverageSummary["total"] | null> {
-  try {
-    const coveragePath = path.join(PROJECT_ROOT, COVERAGE_SUMMARY_RELATIVE);
-    const raw = await fs.readFile(coveragePath, "utf8");
-    const data = JSON.parse(raw) as CoverageSummary;
-    return data.total;
-  } catch {
-    return null;
-  }
-}
-
-async function runCheck(
-  label: string,
-  command: string,
-  args: string[],
-): Promise<CheckResult> {
-  const startMs = Date.now();
-  try {
-    await execFileAsync(command, args, {
-      maxBuffer: 20 * 1024 * 1024,
-      cwd: PROJECT_ROOT,
-      env: { ...process.env, NODE_ENV: "development" },
-    });
-    return { passed: true, durationMs: Date.now() - startMs };
-  } catch (error: any) {
-    return {
-      passed: false,
-      durationMs: Date.now() - startMs,
-      error: error?.stderr?.slice(0, 500) || error?.message || `${label} failed`,
-    };
-  }
-}
-
 function computeTestScore(results: TestResults): number {
   if (results.totalTests === 0) return 0;
-  return (results.passedTests / results.totalTests) * 100;
+  // Penalize heavily: each failed test costs proportionally more than just pass rate
+  const passRate = results.passedTests / results.totalTests;
+  // Below 95% pass rate = sharp drop-off
+  if (passRate >= 0.99) return 100;
+  if (passRate >= 0.95) return 80 + (passRate - 0.95) * 500; // 80-100 for 95-99%
+  return passRate * 84; // 0-80 for 0-95%
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 2: Coverage (20%)
+// ---------------------------------------------------------------------------
+
+async function readCoverage(): Promise<CoverageSummary["total"] | null> {
+  // Try multiple possible coverage locations
+  const candidates = [
+    path.join(PROJECT_ROOT, "coverage", "coverage-summary.json"),
+    path.join(PROJECT_ROOT, "server", "coverage", "coverage-summary.json"),
+    path.join(process.cwd(), "coverage", "coverage-summary.json"),
+  ];
+  for (const coveragePath of candidates) {
+    try {
+      const raw = await fs.readFile(coveragePath, "utf8");
+      console.error(`Coverage data found at: ${coveragePath}`);
+      return (JSON.parse(raw) as CoverageSummary).total;
+    } catch { /* try next */ }
+  }
+  // Debug: list what's in the coverage directory
+  try {
+    const coverageDir = path.join(PROJECT_ROOT, "coverage");
+    const files = await fs.readdir(coverageDir);
+    console.error(`Coverage dir contents: ${files.join(", ")}`);
+  } catch {
+    console.error(`No coverage directory found at ${path.join(PROJECT_ROOT, "coverage")}`);
+  }
+  return null;
 }
 
 function computeCoverageScore(coverage: CoverageSummary["total"] | null): number {
   if (!coverage) return 0;
-  // Weighted average of coverage metrics
-  return (
-    coverage.lines.pct * 0.35 +
-    coverage.functions.pct * 0.25 +
-    coverage.branches.pct * 0.25 +
-    coverage.statements.pct * 0.15
-  );
+  // Weighted average, but with higher expectations: 80%+ coverage = good
+  const raw = coverage.lines.pct * 0.30 + coverage.branches.pct * 0.30 + coverage.functions.pct * 0.25 + coverage.statements.pct * 0.15;
+  // Scale: 80%+ coverage = 100 score, <30% = 0
+  return linearScore(raw, 80, 30);
 }
+
+// ---------------------------------------------------------------------------
+// Dimension 3: Typecheck (10%)
+// ---------------------------------------------------------------------------
+
+async function runTypecheck(): Promise<CheckResult> {
+  const startMs = Date.now();
+  const result = await execQuiet("pnpm", ["-r", "typecheck"]);
+  return {
+    passed: result.exitCode === 0,
+    durationMs: Date.now() - startMs,
+    error: result.exitCode !== 0 ? result.stderr.slice(0, 500) : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 4: Build (10%)
+// ---------------------------------------------------------------------------
+
+async function runBuild(): Promise<CheckResult> {
+  const startMs = Date.now();
+  const result = await execQuiet("pnpm", ["-r", "build"]);
+  return {
+    passed: result.exitCode === 0,
+    durationMs: Date.now() - startMs,
+    error: result.exitCode !== 0 ? result.stderr.slice(0, 500) : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 5: Security (15%)
+// ---------------------------------------------------------------------------
+
+async function runSecurityChecks(skip: boolean): Promise<{ score: number; details: SecurityDetails }> {
+  const details: SecurityDetails = {
+    npmAuditVulns: { critical: 0, high: 0, moderate: 0, low: 0 },
+    forbiddenTokensClean: true,
+    hardcodedSecrets: 0,
+  };
+
+  if (skip) return { score: 100, details };
+
+  // npm audit
+  let auditScore = 100;
+  try {
+    const auditResult = await execQuiet("pnpm", ["audit", "--json"], { maxBuffer: 50 * 1024 * 1024 });
+    try {
+      const auditData = JSON.parse(auditResult.stdout);
+      const meta = auditData.metadata?.vulnerabilities ?? {};
+      details.npmAuditVulns = {
+        critical: meta.critical ?? 0,
+        high: meta.high ?? 0,
+        moderate: meta.moderate ?? 0,
+        low: meta.low ?? 0,
+      };
+    } catch {
+      // pnpm audit output format varies; try line-based parsing
+      const criticalMatch = auditResult.stdout.match(/(\d+)\s+critical/i);
+      const highMatch = auditResult.stdout.match(/(\d+)\s+high/i);
+      if (criticalMatch) details.npmAuditVulns.critical = parseInt(criticalMatch[1]);
+      if (highMatch) details.npmAuditVulns.high = parseInt(highMatch[1]);
+    }
+    // Critical = -40, High = -20, Moderate = -5 each
+    auditScore = Math.max(0, 100
+      - details.npmAuditVulns.critical * 40
+      - details.npmAuditVulns.high * 20
+      - details.npmAuditVulns.moderate * 5
+      - details.npmAuditVulns.low * 1);
+  } catch { /* audit unavailable */ }
+
+  // Forbidden tokens check
+  let tokensScore = 100;
+  try {
+    const tokensResult = await execQuiet("node", ["scripts/check-forbidden-tokens.mjs"]);
+    details.forbiddenTokensClean = tokensResult.exitCode === 0;
+    if (!details.forbiddenTokensClean) tokensScore = 0;
+  } catch {
+    // Script may not exist; skip gracefully
+  }
+
+  // Hardcoded secrets scan (grep for common patterns)
+  let secretsScore = 100;
+  try {
+    const secretPatterns = [
+      "sk-[a-zA-Z0-9]{20,}",            // OpenAI keys
+      "AKIA[0-9A-Z]{16}",               // AWS access keys
+      "ghp_[a-zA-Z0-9]{36}",            // GitHub PATs
+      "gho_[a-zA-Z0-9]{36}",            // GitHub OAuth tokens
+      "password\\s*[:=]\\s*[\"'][^\"']+[\"']", // hardcoded passwords
+    ];
+    for (const pattern of secretPatterns) {
+      const result = await execQuiet("grep", [
+        "-rn", "-E", pattern,
+        "--include=*.ts", "--include=*.js", "--include=*.json",
+        "--exclude-dir=node_modules", "--exclude-dir=dist",
+        "--exclude-dir=.git", "--exclude=pnpm-lock.yaml",
+        "--exclude=benchmark-score.ts", // exclude this script's patterns
+        ".",
+      ]);
+      const matches = result.stdout.trim().split("\n").filter(Boolean);
+      // Filter out test files and mock data
+      const realMatches = matches.filter(m =>
+        !m.includes(".test.") && !m.includes("__mocks__") && !m.includes("fixtures/")
+        && !m.includes("// example") && !m.includes("mock")
+      );
+      details.hardcodedSecrets += realMatches.length;
+    }
+    // Each hardcoded secret costs 25 points
+    secretsScore = Math.max(0, 100 - details.hardcodedSecrets * 25);
+  } catch { /* grep unavailable */ }
+
+  // Composite: audit 50%, tokens 25%, secrets 25%
+  const score = auditScore * 0.50 + tokensScore * 0.25 + secretsScore * 0.25;
+  return { score, details };
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 6: Code Health (15%)
+// ---------------------------------------------------------------------------
+
+async function runCodeHealthChecks(): Promise<{ score: number; details: CodeHealthDetails }> {
+  const sourceFiles = await globSourceFiles();
+  const details: CodeHealthDetails = {
+    anyCount: 0,
+    oversizedFiles: 0,
+    totalSourceFiles: sourceFiles.length,
+    todoFixmeCount: 0,
+    maxFileLines: 0,
+  };
+
+  // Count `any` usage across source
+  try {
+    const result = await execQuiet("grep", [
+      "-rn", "-E", ":\\s*any\\b|as\\s+any\\b|<any>",
+      "--include=*.ts",
+      "--exclude-dir=node_modules", "--exclude-dir=dist",
+      "--exclude=*.d.ts", "--exclude=*.test.ts",
+      ".",
+    ]);
+    details.anyCount = result.stdout.trim().split("\n").filter(Boolean).length;
+  } catch { /* skip */ }
+
+  // Check file sizes and find oversized files
+  for (const file of sourceFiles) {
+    try {
+      const content = await fs.readFile(file, "utf8");
+      const lines = content.split("\n").length;
+      if (lines > details.maxFileLines) details.maxFileLines = lines;
+      if (lines > FILE_SIZE_WARN) details.oversizedFiles++;
+    } catch { /* skip */ }
+  }
+
+  // Count TODO/FIXME/HACK/XXX
+  try {
+    const result = await execQuiet("grep", [
+      "-rn", "-E", "\\b(TODO|FIXME|HACK|XXX)\\b",
+      "--include=*.ts",
+      "--exclude-dir=node_modules", "--exclude-dir=dist",
+      ".",
+    ]);
+    details.todoFixmeCount = result.stdout.trim().split("\n").filter(Boolean).length;
+  } catch { /* skip */ }
+
+  // Score components
+  const anyScore = linearScore(details.anyCount, ANY_COUNT_IDEAL, ANY_COUNT_MAX);
+  const fileSizeScore = details.totalSourceFiles > 0
+    ? linearScore(details.oversizedFiles, 0, Math.ceil(details.totalSourceFiles * 0.1))
+    : 100;
+  const todoScore = linearScore(details.todoFixmeCount, TODO_FIXME_IDEAL, TODO_FIXME_MAX);
+
+  // Weighted: any 50%, file size 30%, TODO debt 20%
+  const score = anyScore * 0.50 + fileSizeScore * 0.30 + todoScore * 0.20;
+  return { score, details };
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 7: Lint / Diagnostics (10%)
+// ---------------------------------------------------------------------------
+
+async function runLintChecks(): Promise<{ score: number; details: LintDetails }> {
+  const details: LintDetails = { tsDiagnosticCount: 0, unusedExports: 0 };
+
+  // Count TypeScript diagnostics (errors + warnings from tsc)
+  // Use --noEmit --pretty false for parseable output
+  try {
+    const result = await execQuiet("npx", [
+      "tsc", "--noEmit", "--pretty", "false", "-p", "tsconfig.json",
+    ]);
+    if (result.exitCode !== 0) {
+      // Count error lines: "file.ts(line,col): error TS..."
+      const errorLines = result.stdout.split("\n").filter(l => l.includes(": error TS"));
+      details.tsDiagnosticCount = errorLines.length;
+    }
+  } catch { /* skip */ }
+
+  // Count unused exports (rough heuristic: exported functions not imported elsewhere)
+  // This is expensive for large repos, so we just count `export` density as a proxy
+  try {
+    const result = await execQuiet("grep", [
+      "-rn", "-E", "^export (const|function|class|type|interface|enum) ",
+      "--include=*.ts", "--exclude=*.d.ts", "--exclude=*.test.ts",
+      "--exclude-dir=node_modules", "--exclude-dir=dist",
+      "server/src",
+    ]);
+    const exports = result.stdout.trim().split("\n").filter(Boolean);
+    // Check how many of these are imported somewhere
+    let unused = 0;
+    for (const line of exports.slice(0, 100)) { // cap to avoid timeout
+      const nameMatch = line.match(/export (?:const|function|class|type|interface|enum) (\w+)/);
+      if (!nameMatch) continue;
+      const name = nameMatch[1];
+      const importCheck = await execQuiet("grep", [
+        "-rn", "-l", name,
+        "--include=*.ts", "--exclude=*.d.ts",
+        "--exclude-dir=node_modules", "--exclude-dir=dist",
+        ".",
+      ]);
+      const importFiles = importCheck.stdout.trim().split("\n").filter(Boolean);
+      // If only found in the defining file, it's likely unused
+      if (importFiles.length <= 1) unused++;
+    }
+    details.unusedExports = unused;
+  } catch { /* skip */ }
+
+  // Score: 0 diagnostics = 100, each diagnostic costs 5 points
+  const diagScore = Math.max(0, 100 - details.tsDiagnosticCount * 5);
+  // Unused exports: minor penalty
+  const unusedScore = Math.max(0, 100 - details.unusedExports * 2);
+
+  const score = diagScore * 0.70 + unusedScore * 0.30;
+  return { score, details };
+}
+
+// ---------------------------------------------------------------------------
+// Dimension 8: Documentation (5%)
+// ---------------------------------------------------------------------------
+
+async function runDocsChecks(): Promise<{ score: number; details: DocsDetails }> {
+  const details: DocsDetails = { exportedFunctions: 0, documentedFunctions: 0, coveragePct: 0 };
+
+  try {
+    // Find exported functions in server/src
+    const result = await execQuiet("grep", [
+      "-rn", "-B1", "export function ",
+      "--include=*.ts", "--exclude=*.d.ts", "--exclude=*.test.ts",
+      "--exclude-dir=node_modules", "--exclude-dir=dist",
+      "server/src",
+    ]);
+    const lines = result.stdout.split("\n");
+    let exported = 0;
+    let documented = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes("export function ")) {
+        exported++;
+        // Check if previous line(s) have JSDoc or comment
+        const prev = lines[i - 1] ?? "";
+        if (prev.includes("*/") || prev.includes("//") || prev.includes("/**")) {
+          documented++;
+        }
+      }
+    }
+    details.exportedFunctions = exported;
+    details.documentedFunctions = documented;
+    details.coveragePct = exported > 0 ? (documented / exported) * 100 : 100;
+  } catch { /* skip */ }
+
+  // Score = documentation coverage percentage
+  return { score: details.coveragePct, details };
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
 
 function buildMarkdownSummary(scorecard: Scorecard): string {
   const { scores, composite, pass, threshold } = scorecard;
   const emoji = pass ? "✅" : "❌";
   const t = scores.tests.details;
   const c = scores.coverage.details;
+  const s = scores.security.details;
+  const h = scores.codeHealth.details;
+  const l = scores.lint.details;
+  const d = scores.docs.details;
 
   return `## ${emoji} Benchmark Score: ${composite.toFixed(1)} / 100
 
-| Component | Score | Weight | Details |
+| Dimension | Score | Weight | Details |
 |-----------|-------|--------|---------|
 | Tests | ${scores.tests.score.toFixed(1)} | ${(scores.tests.weight * 100).toFixed(0)}% | ${t.passedTests}/${t.totalTests} passed (${t.failedTests} failed) |
-| Coverage | ${scores.coverage.score.toFixed(1)} | ${(scores.coverage.weight * 100).toFixed(0)}% | L:${c.lines.toFixed(1)}% F:${c.functions.toFixed(1)}% B:${c.branches.toFixed(1)}% |
+| Coverage | ${scores.coverage.score.toFixed(1)} | ${(scores.coverage.weight * 100).toFixed(0)}% | L:${c.lines.toFixed(1)}% B:${c.branches.toFixed(1)}% F:${c.functions.toFixed(1)}% |
 | Typecheck | ${scores.typecheck.score.toFixed(1)} | ${(scores.typecheck.weight * 100).toFixed(0)}% | ${scores.typecheck.details.passed ? "PASS" : "FAIL"} |
 | Build | ${scores.build.score.toFixed(1)} | ${(scores.build.weight * 100).toFixed(0)}% | ${scores.build.details.passed ? "PASS" : "FAIL"} |
+| Security | ${scores.security.score.toFixed(1)} | ${(scores.security.weight * 100).toFixed(0)}% | audit: ${s.npmAuditVulns.critical}C/${s.npmAuditVulns.high}H/${s.npmAuditVulns.moderate}M, tokens: ${s.forbiddenTokensClean ? "clean" : "FAIL"}, secrets: ${s.hardcodedSecrets} |
+| Code Health | ${scores.codeHealth.score.toFixed(1)} | ${(scores.codeHealth.weight * 100).toFixed(0)}% | any:${h.anyCount}, oversized:${h.oversizedFiles}/${h.totalSourceFiles}, TODO:${h.todoFixmeCount} |
+| Lint | ${scores.lint.score.toFixed(1)} | ${(scores.lint.weight * 100).toFixed(0)}% | TS errors:${l.tsDiagnosticCount}, unused exports:${l.unusedExports} |
+| Docs | ${scores.docs.score.toFixed(1)} | ${(scores.docs.weight * 100).toFixed(0)}% | ${d.documentedFunctions}/${d.exportedFunctions} exported fns documented (${d.coveragePct.toFixed(0)}%) |
 
 **Threshold:** ${threshold} | **Commit:** ${scorecard.commit} | **Branch:** ${scorecard.branch}
 `;
 }
+
+function printHumanSummary(sc: Scorecard) {
+  const { scores } = sc;
+  const t = scores.tests.details;
+  const h = scores.codeHealth.details;
+  const s = scores.security.details;
+  console.log("═══════════════════════════════════════════════════");
+  console.log("  Paperclip Fork — Benchmark Scorecard (v2)");
+  console.log("═══════════════════════════════════════════════════");
+  console.log(`  Commit:    ${sc.commit} (${sc.branch})`);
+  console.log(`  Timestamp: ${sc.timestamp}`);
+  console.log("─────────────────────────────────────────────────");
+  console.log(`  Tests:       ${scores.tests.score.toFixed(1).padStart(5)}  (${t.passedTests}/${t.totalTests} passed)`);
+  console.log(`  Coverage:    ${scores.coverage.score.toFixed(1).padStart(5)}  (L:${scores.coverage.details.lines.toFixed(1)}% B:${scores.coverage.details.branches.toFixed(1)}%)`);
+  console.log(`  Typecheck:   ${scores.typecheck.score.toFixed(1).padStart(5)}  (${scores.typecheck.details.passed ? "PASS" : "FAIL"})`);
+  console.log(`  Build:       ${scores.build.score.toFixed(1).padStart(5)}  (${scores.build.details.passed ? "PASS" : "FAIL"})`);
+  console.log(`  Security:    ${scores.security.score.toFixed(1).padStart(5)}  (${s.npmAuditVulns.critical}C/${s.npmAuditVulns.high}H, secrets:${s.hardcodedSecrets})`);
+  console.log(`  Code Health: ${scores.codeHealth.score.toFixed(1).padStart(5)}  (any:${h.anyCount}, oversized:${h.oversizedFiles}, TODO:${h.todoFixmeCount})`);
+  console.log(`  Lint:        ${scores.lint.score.toFixed(1).padStart(5)}  (TS errors:${scores.lint.details.tsDiagnosticCount})`);
+  console.log(`  Docs:        ${scores.docs.score.toFixed(1).padStart(5)}  (${scores.docs.details.coveragePct.toFixed(0)}% exported fns documented)`);
+  console.log("─────────────────────────────────────────────────");
+  console.log(`  COMPOSITE: ${sc.composite.toFixed(1)} / 100  ${sc.pass ? "PASS" : "FAIL"} (threshold: ${sc.threshold})`);
+  console.log(`  Duration:  ${(sc.durationMs / 1000).toFixed(1)}s`);
+  console.log("═══════════════════════════════════════════════════");
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const overallStart = Date.now();
   const gitInfo = await getGitInfo();
 
-  // Step 1: Run tests with coverage
-  console.error("Running tests with coverage...");
+  // Phase 1: Tests + coverage (sequential — tests generate coverage data)
+  console.error("Phase 1/4: Running tests...");
   const testResults = await runTests();
   const testScore = computeTestScore(testResults);
-
-  // Step 2: Read coverage (generated by test run)
   const coverageData = await readCoverage();
   const coverageScore = computeCoverageScore(coverageData);
 
-  // Step 3: Typecheck
-  console.error("Running typecheck...");
+  // Phase 2: Typecheck + build (sequential — build depends on typecheck for some packages)
+  console.error("Phase 2/4: Typecheck + build...");
   const typecheckResult = options.skipTypecheck
     ? { passed: true, durationMs: 0 } as CheckResult
-    : await runCheck("typecheck", "pnpm", ["-r", "typecheck"]);
-
-  // Step 4: Build (run after typecheck to avoid pnpm store contention)
-  console.error("Running build...");
+    : await runTypecheck();
   const buildResult = options.skipBuild
     ? { passed: true, durationMs: 0 } as CheckResult
-    : await runCheck("build", "pnpm", ["-r", "build"]);
+    : await runBuild();
 
-  // Compute composite score
-  // When coverage data is unavailable, redistribute its weight proportionally
-  // to avoid permanently penalizing commits before coverage tooling is set up
-  const hasCoverage = coverageData !== null;
-  const effectiveWeights = hasCoverage
-    ? SCORE_WEIGHTS
-    : (() => {
-        const pool = SCORE_WEIGHTS.coverage;
-        const remaining = 1 - pool;
-        return {
-          tests: SCORE_WEIGHTS.tests + pool * (SCORE_WEIGHTS.tests / remaining),
-          coverage: 0,
-          typecheck: SCORE_WEIGHTS.typecheck + pool * (SCORE_WEIGHTS.typecheck / remaining),
-          build: SCORE_WEIGHTS.build + pool * (SCORE_WEIGHTS.build / remaining),
-        };
-      })();
+  // Phase 3: Security + code health + lint + docs (parallel — independent)
+  console.error("Phase 3/4: Security, code health, lint, docs...");
+  const [securityResult, codeHealthResult, lintResult, docsResult] = await Promise.all([
+    runSecurityChecks(options.skipSecurity),
+    runCodeHealthChecks(),
+    runLintChecks(),
+    runDocsChecks(),
+  ]);
 
+  // Phase 4: Compute composite
+  console.error("Phase 4/4: Computing score...");
   const composite =
-    testScore * effectiveWeights.tests +
-    coverageScore * effectiveWeights.coverage +
-    (typecheckResult.passed ? 100 : 0) * effectiveWeights.typecheck +
-    (buildResult.passed ? 100 : 0) * effectiveWeights.build;
+    testScore * SCORE_WEIGHTS.tests +
+    coverageScore * SCORE_WEIGHTS.coverage +
+    (typecheckResult.passed ? 100 : 0) * SCORE_WEIGHTS.typecheck +
+    (buildResult.passed ? 100 : 0) * SCORE_WEIGHTS.build +
+    securityResult.score * SCORE_WEIGHTS.security +
+    codeHealthResult.score * SCORE_WEIGHTS.codeHealth +
+    lintResult.score * SCORE_WEIGHTS.lint +
+    docsResult.score * SCORE_WEIGHTS.docs;
 
   const scorecard: Scorecard = {
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     commit: gitInfo.commit,
     branch: gitInfo.branch,
     scores: {
-      tests: { score: testScore, weight: effectiveWeights.tests, details: testResults },
+      tests: { score: testScore, weight: SCORE_WEIGHTS.tests, details: testResults },
       coverage: {
         score: coverageScore,
-        weight: effectiveWeights.coverage,
+        weight: SCORE_WEIGHTS.coverage,
         details: {
           lines: coverageData?.lines.pct ?? 0,
           statements: coverageData?.statements.pct ?? 0,
@@ -441,8 +807,12 @@ async function main() {
           branches: coverageData?.branches.pct ?? 0,
         },
       },
-      typecheck: { score: typecheckResult.passed ? 100 : 0, weight: effectiveWeights.typecheck, details: typecheckResult },
-      build: { score: buildResult.passed ? 100 : 0, weight: effectiveWeights.build, details: buildResult },
+      typecheck: { score: typecheckResult.passed ? 100 : 0, weight: SCORE_WEIGHTS.typecheck, details: typecheckResult },
+      build: { score: buildResult.passed ? 100 : 0, weight: SCORE_WEIGHTS.build, details: buildResult },
+      security: { score: securityResult.score, weight: SCORE_WEIGHTS.security, details: securityResult.details },
+      codeHealth: { score: codeHealthResult.score, weight: SCORE_WEIGHTS.codeHealth, details: codeHealthResult.details },
+      lint: { score: lintResult.score, weight: SCORE_WEIGHTS.lint, details: lintResult.details },
+      docs: { score: docsResult.score, weight: SCORE_WEIGHTS.docs, details: docsResult.details },
     },
     composite: Math.round(composite * 10) / 10,
     threshold: options.threshold,
@@ -450,21 +820,18 @@ async function main() {
     durationMs: Date.now() - overallStart,
   };
 
-  // Output
   if (options.json) {
     console.log(JSON.stringify(scorecard, null, 2));
   } else {
     printHumanSummary(scorecard);
   }
 
-  // Write scorecard file
   if (options.output) {
     await fs.mkdir(path.dirname(options.output), { recursive: true });
     await fs.writeFile(options.output, JSON.stringify(scorecard, null, 2), "utf8");
     console.error(`Scorecard written to ${options.output}`);
   }
 
-  // Write markdown summary (for GitHub Actions step summary)
   if (options.markdownSummary) {
     const md = buildMarkdownSummary(scorecard);
     await fs.appendFile(options.markdownSummary, md, "utf8");
@@ -472,33 +839,6 @@ async function main() {
   }
 
   process.exit(scorecard.pass ? 0 : 1);
-}
-
-function printHumanSummary(sc: Scorecard) {
-  const { scores } = sc;
-  const t = scores.tests.details;
-  console.log("═══════════════════════════════════════════");
-  console.log(`  Paperclip Fork — Benchmark Scorecard`);
-  console.log("═══════════════════════════════════════════");
-  console.log(`  Commit:    ${sc.commit} (${sc.branch})`);
-  console.log(`  Timestamp: ${sc.timestamp}`);
-  console.log("───────────────────────────────────────────");
-  console.log(
-    `  Tests:     ${scores.tests.score.toFixed(1)}  (${t.passedTests}/${t.totalTests} passed, ${t.failedTests} failed)`,
-  );
-  console.log(
-    `  Coverage:  ${scores.coverage.score.toFixed(1)}  (L:${scores.coverage.details.lines.toFixed(1)}% F:${scores.coverage.details.functions.toFixed(1)}% B:${scores.coverage.details.branches.toFixed(1)}%)`,
-  );
-  console.log(
-    `  Typecheck: ${scores.typecheck.score.toFixed(1)}  (${scores.typecheck.details.passed ? "PASS" : "FAIL"})`,
-  );
-  console.log(
-    `  Build:     ${scores.build.score.toFixed(1)}  (${scores.build.details.passed ? "PASS" : "FAIL"})`,
-  );
-  console.log("───────────────────────────────────────────");
-  console.log(`  COMPOSITE: ${sc.composite.toFixed(1)} / 100  ${sc.pass ? "PASS" : "FAIL"} (threshold: ${sc.threshold})`);
-  console.log(`  Duration:  ${(sc.durationMs / 1000).toFixed(1)}s`);
-  console.log("═══════════════════════════════════════════");
 }
 
 main().catch((error) => {
