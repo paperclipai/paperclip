@@ -1067,10 +1067,11 @@ export function OnboardingWizard() {
             title: triage.title,
             description: unassignedCount > 0
               ? triage.description
-              : `${importedIssues.length} issues were imported from Linear and assigned during onboarding.\n\n**Before work begins, review assignments and present your plan to the board for approval.**\n\n- Review all assignments and adjust if needed\n- Post a summary of the plan as a comment on this task for board sign-off\n- Wait for board approval before any agent starts work\n- For any issue that changes scope, pause and get board approval first`,
+              : `${importedIssues.length} issues were imported from Linear and assigned during onboarding.\n\n**Before work begins, review assignments and present your plan to the board for approval.**\n\n- Review all assignments and adjust if needed\n- Create a formal approval request via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\` — include your plan in \`payload.plan\`, next steps if approved in \`payload.nextStepsIfApproved\`, and next steps if rejected in \`payload.nextStepsIfRejected\`. Link this issue using the \`issueIds\` field.\n- Wait for board approval before any agent starts work\n- For any issue that changes scope, pause and get board approval first`,
             assigneeAgentId: createdAgentId,
             projectId,
-            goalId: createdCompanyGoalId
+            goalId: createdCompanyGoalId,
+            priority: "critical",
           })
         );
 
@@ -1104,7 +1105,8 @@ export function OnboardingWizard() {
               description: taskDescription,
               assigneeAgentId: createdAgentId,
               projectId,
-              goalId
+              goalId,
+              priority: "critical",
             })
           );
           issueRef = issue.identifier ?? issue.id;

@@ -11,7 +11,7 @@ export const DEFAULT_TASK_DESCRIPTION = `You are the CEO. The board oversees all
 
 - Review the current backlog and company goals
 - For each potential initiative, write a brief summary: what it is, why it matters, estimated effort
-- Post your proposed priority list as a comment on this task for board review
+- Create a formal approval request via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\` — include your plan in \`payload.plan\`, what happens if approved in \`payload.nextStepsIfApproved\`, and what happens if rejected in \`payload.nextStepsIfRejected\`. Link this issue using the \`issueIds\` field.
 - Wait for board approval before delegating or starting any work
 - Once approved, break initiatives into tasks and delegate — but request board sign-off on any task that changes scope, architecture, or budget
 - Hire agents only after the board approves the hiring plan`;
@@ -50,7 +50,7 @@ export function buildContextualTaskDescription(
     "**Before starting any work, present a plan to the board for approval.**",
     "",
     "- Review the codebase and create an initial technical assessment",
-    "- Propose a prioritized roadmap as a comment on this task for board review",
+    "- Create a formal approval request via `POST /api/companies/{companyId}/approvals` with type `approve_ceo_strategy` — include your roadmap in `payload.plan`, what happens if approved in `payload.nextStepsIfApproved`, and what happens if rejected in `payload.nextStepsIfRejected`. Link this issue using the `issueIds` field.",
     "- Wait for board approval before delegating or starting any work",
     "- Once approved, break initiatives into tasks and delegate — but request board sign-off on any task that changes scope, architecture, or budget",
     "- Hire agents only after the board approves the hiring plan",
@@ -93,7 +93,11 @@ export function buildCeoTriageTask(issueCount: number, hasCto: boolean) {
 **Before starting any work, present a triage plan to the board for approval.**
 
 - Review each imported issue and categorize by department and priority
-- Post a proposed triage plan as a comment on this task: which issues to pursue, which to defer, and why
+- Create a formal approval request via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\`. In the payload include:
+  - \`plan\`: your triage plan — which issues to pursue, which to defer, and why
+  - \`nextStepsIfApproved\`: what you will do immediately (e.g., "Begin hiring Eng Lead and delegating Wave 1 critical issues")
+  - \`nextStepsIfRejected\`: how you will adjust (e.g., "Revise triage plan based on board feedback")
+  - Link this issue using the \`issueIds\` field so the board sees the full context
 - Wait for board approval before delegating or starting any work
 - Once approved:
   - ${hasCto ? "Delegate technical issues to the CTO — they will assign to engineers" : "Hire a CTO and delegate technical issues to them"}
@@ -112,7 +116,7 @@ export function buildCtoKickoffTask(issueCount: number) {
 **Before starting any work, present your technical plan to the board for approval.**
 
 - Review each assigned issue for clarity, scope, and feasibility
-- Post a proposed plan as a comment: priority order, estimated effort, and suggested assignments
+- Create a formal approval request via \`POST /api/companies/{companyId}/approvals\` with type \`approve_ceo_strategy\` — include your technical plan in \`payload.plan\`, next steps if approved in \`payload.nextStepsIfApproved\`, and next steps if rejected in \`payload.nextStepsIfRejected\`. Link this issue using the \`issueIds\` field.
 - Wait for board approval before assigning work or hiring engineers
 - Once approved:
   - Break large issues into subtasks
@@ -137,6 +141,7 @@ export function buildOnboardingIssuePayload(input: {
   assigneeAgentId: string;
   projectId: string;
   goalId: string | null;
+  priority?: "critical" | "high" | "medium" | "low";
 }) {
   const title = input.title.trim();
   const description = input.description.trim();
@@ -147,6 +152,7 @@ export function buildOnboardingIssuePayload(input: {
     assigneeAgentId: input.assigneeAgentId,
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),
+    ...(input.priority ? { priority: input.priority } : {}),
     status: "todo" as const,
   };
 }
