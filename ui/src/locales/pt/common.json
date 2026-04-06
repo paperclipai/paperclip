@@ -974,6 +974,185 @@
       "fit": "Ajustar",
       "empty_state": "Nenhum dado organizacional disponível."
     },
+    "companySkills": {
+      "title": "Habilidades",
+      "detail_breadcrumb": "Detalhe",
+      "available": "{{count}} disponiveis",
+      "filter_placeholder": "Filtrar habilidades",
+      "source_placeholder": "Cole caminho, URL do GitHub ou comando skills.sh",
+      "add": "Adicionar",
+      "select_company": "Selecione uma empresa para gerenciar habilidades.",
+      "form": {
+        "skill_name": "Nome da habilidade",
+        "skill_slug": "nome-curto-opcional",
+        "short_description": "Descricao curta",
+        "cancel": "Cancelar",
+        "creating": "Criando...",
+        "create_skill": "Criar habilidade"
+      },
+      "list": {
+        "no_filter_match": "Nenhuma habilidade corresponde a este filtro.",
+        "collapse_skill": "Recolher {{name}}",
+        "expand_skill": "Expandir {{name}}"
+      },
+      "tree": {
+        "references": "referencias"
+      },
+      "source": {
+        "skills_sh_managed": "gerenciado por skills.sh",
+        "github_managed": "gerenciado pelo GitHub",
+        "url_managed": "gerenciado por URL",
+        "folder": "Pasta",
+        "folder_managed": "gerenciado por pasta",
+        "paperclip_managed": "gerenciado pelo Paperclip",
+        "catalog": "Catalogo",
+        "catalog_managed": "gerenciado por catalogo"
+      },
+      "scan": {
+        "scan_workspaces": "Escanear workspaces de projeto em busca de habilidades",
+        "scanning": "Escaneando workspaces de projeto em busca de habilidades...",
+        "refreshing": "Atualizando lista de habilidades...",
+        "found": "{{count}} encontradas",
+        "imported": "{{count}} importadas",
+        "updated": "{{count}} atualizadas",
+        "conflicts": "{{count}} conflitos",
+        "skipped": "{{count}} ignoradas",
+        "summary": "{{parts}} em {{count}} workspace(s)."
+      },
+      "dialog": {
+        "add_source_title": "Adicionar fonte de habilidade",
+        "add_source_description": "Cole primeiro um caminho local, URL do GitHub ou comando `skills.sh` no campo.",
+        "browse_skills_sh": "Explorar skills.sh",
+        "browse_skills_sh_hint": "Encontre comandos de instalacao e cole um aqui.",
+        "search_github": "Buscar no GitHub",
+        "search_github_hint": "Procure repositorios com `SKILL.md` e depois cole a URL do repo aqui."
+      },
+      "detail": {
+        "select_skill": "Selecione uma habilidade para inspecionar seus arquivos.",
+        "stop_editing": "Parar edicao",
+        "edit": "Editar",
+        "source": "Origem",
+        "copied_path": "Caminho copiado para o workspace",
+        "pin": "PIN",
+        "untracked": "nao rastreado",
+        "tracking": "rastreando {{ref}}",
+        "check_updates": "Verificar atualizacoes",
+        "install_update": "Instalar atualizacao",
+        "up_to_date": "Atualizado",
+        "key": "Chave",
+        "mode": "Modo",
+        "editable": "Editavel",
+        "read_only": "Somente leitura",
+        "used_by": "Usado por",
+        "no_agents_attached": "Nenhum agente vinculado",
+        "view": "Visualizar",
+        "code": "Codigo",
+        "saving": "Salvando...",
+        "save": "Salvar",
+        "select_file": "Selecione um arquivo para inspecionar.",
+        "reason_bundled_read_only": "As habilidades empacotadas do Paperclip sao somente leitura."
+      },
+      "toasts": {
+        "imported_title": "Habilidades importadas",
+        "imported_body": "{{count}} habilidade(s) adicionada(s).",
+        "import_warnings": "Avisos de importacao",
+        "import_failed_title": "Falha ao importar habilidade",
+        "import_failed_body": "Falha ao importar a fonte de habilidade.",
+        "created_title": "Habilidade criada",
+        "created_body": "{{name}} agora e editavel no workspace do Paperclip.",
+        "create_failed_title": "Falha ao criar habilidade",
+        "create_failed_body": "Falha ao criar habilidade.",
+        "scan_complete": "Escaneamento de habilidades concluido",
+        "conflicts_found": "Conflitos de habilidades encontrados",
+        "scan_warnings": "Avisos do escaneamento",
+        "scan_failed_title": "Falha no escaneamento de habilidades",
+        "scan_failed_body": "Falha ao escanear workspaces de projeto.",
+        "saved_title": "Habilidade salva",
+        "save_failed_title": "Falha ao salvar",
+        "save_failed_body": "Falha ao salvar arquivo da habilidade.",
+        "updated_title": "Habilidade atualizada",
+        "updated_body_pinned": "Fixado em {{pin}}",
+        "update_failed_title": "Falha ao atualizar",
+        "update_failed_body": "Falha ao instalar atualizacao da habilidade."
+      }
+    },
+    "costs": {
+      "title": "Custos",
+      "subtitle": "Gastos de inferencia, taxas de plataforma, creditos e janelas de cota em tempo real.",
+      "select_company": "Selecione uma empresa para visualizar custos.",
+      "to": "ate",
+      "select_range": "Selecione data inicial e final para carregar os dados.",
+      "presets": {
+        "mtd": "Mes atual",
+        "last7d": "Ultimos 7 dias",
+        "last30d": "Ultimos 30 dias",
+        "ytd": "Ano atual",
+        "all": "Todo periodo",
+        "custom": "Personalizado"
+      },
+      "tabs": {
+        "overview": "Visao geral",
+        "budgets": "Orcamentos",
+        "providers": "Provedores",
+        "billers": "Faturadores",
+        "finance": "Financeiro"
+      },
+      "metrics": {
+        "inference_spend": "Gasto de inferencia",
+        "inference_spend_subtitle": "{{tokens}} tokens em eventos por requisicao",
+        "budget": "Orcamento",
+        "open": "Aberto",
+        "paused_summary": "{{agents}} agentes pausados · {{projects}} projetos pausados",
+        "of_budget": "{{spend}} de {{budget}}",
+        "no_monthly_cap": "Sem limite mensal configurado",
+        "finance_net": "Liquido financeiro",
+        "finance_net_subtitle": "{{debits}} debitos · {{credits}} creditos",
+        "finance_events": "Eventos financeiros",
+        "estimated_in_range": "{{value}} estimado no periodo"
+      },
+      "inference_ledger": {
+        "title": "Razao de inferencia",
+        "description": "Gasto de inferencia por requisicao no periodo selecionado.",
+        "budget_value": "Orcamento {{value}}",
+        "unlimited_budget": "Orcamento ilimitado",
+        "usage": "uso",
+        "utilization": "{{percent}}% do orcamento mensal consumido neste periodo."
+      },
+      "finance_ledger": {
+        "title": "Razao financeiro",
+        "description": "Lancamentos de conta que nao mapeiam para uma unica requisicao de inferencia.",
+        "debits": "Debitos",
+        "credits": "Creditos",
+        "net": "Liquido",
+        "estimated": "Estimado",
+        "events_in_range": "{{count}} evento(s) no periodo",
+        "credits_description": "Reembolsos, compensacoes e retornos de credito",
+        "net_description": "Debito menos credito no periodo selecionado",
+        "estimated_description": "Debitos estimados que ainda nao estao consolidados em fatura"
+      },
+      "by_project": {
+        "title": "Por projeto",
+        "description": "Custos de execucao atribuidos a chamados vinculados a projeto.",
+        "empty": "Ainda nao ha custos de execucao atribuidos a projeto.",
+        "unattributed": "Nao atribuido"
+      },
+      "by_biller": {
+        "title": "Por faturador",
+        "description": "Eventos financeiros de conta agrupados por quem cobrou ou creditou.",
+        "empty": "Ainda nao ha eventos financeiros."
+      },
+      "providers": {
+        "all": "Todos os provedores",
+        "empty": "Nenhum evento de custo neste periodo."
+      },
+      "billers": {
+        "all": "Todos os faturadores",
+        "empty": "Nenhum evento faturavel neste periodo."
+      },
+      "finance_timeline": {
+        "empty": "Ainda nao ha eventos financeiros. Adicione lancamentos de conta quando faturas ou creditos forem processados."
+      }
+    },
     "companies": {
       "title": "Empresas",
       "new_company": "Nova Empresa",

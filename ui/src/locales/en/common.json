@@ -1035,6 +1035,185 @@
       "fit": "Fit",
       "empty_state": "No organizational data available."
     },
+    "companySkills": {
+      "title": "Skills",
+      "detail_breadcrumb": "Detail",
+      "available": "{{count}} available",
+      "filter_placeholder": "Filter skills",
+      "source_placeholder": "Paste path, GitHub URL, or skills.sh command",
+      "add": "Add",
+      "select_company": "Select a company to manage skills.",
+      "form": {
+        "skill_name": "Skill name",
+        "skill_slug": "optional-shortname",
+        "short_description": "Short description",
+        "cancel": "Cancel",
+        "creating": "Creating...",
+        "create_skill": "Create skill"
+      },
+      "list": {
+        "no_filter_match": "No skills match this filter.",
+        "collapse_skill": "Collapse {{name}}",
+        "expand_skill": "Expand {{name}}"
+      },
+      "tree": {
+        "references": "references"
+      },
+      "source": {
+        "skills_sh_managed": "skills.sh managed",
+        "github_managed": "GitHub managed",
+        "url_managed": "URL managed",
+        "folder": "Folder",
+        "folder_managed": "Folder managed",
+        "paperclip_managed": "Paperclip managed",
+        "catalog": "Catalog",
+        "catalog_managed": "Catalog managed"
+      },
+      "scan": {
+        "scan_workspaces": "Scan project workspaces for skills",
+        "scanning": "Scanning project workspaces for skills...",
+        "refreshing": "Refreshing skills list...",
+        "found": "{{count}} found",
+        "imported": "{{count}} imported",
+        "updated": "{{count}} updated",
+        "conflicts": "{{count}} conflicts",
+        "skipped": "{{count}} skipped",
+        "summary": "{{parts}} across {{count}} workspace(s)."
+      },
+      "dialog": {
+        "add_source_title": "Add a skill source",
+        "add_source_description": "Paste a local path, GitHub URL, or `skills.sh` command into the field first.",
+        "browse_skills_sh": "Browse skills.sh",
+        "browse_skills_sh_hint": "Find install commands and paste one here.",
+        "search_github": "Search GitHub",
+        "search_github_hint": "Look for repositories with `SKILL.md`, then paste the repo URL here."
+      },
+      "detail": {
+        "select_skill": "Select a skill to inspect its files.",
+        "stop_editing": "Stop editing",
+        "edit": "Edit",
+        "source": "Source",
+        "copied_path": "Copied path to workspace",
+        "pin": "Pin",
+        "untracked": "untracked",
+        "tracking": "tracking {{ref}}",
+        "check_updates": "Check for updates",
+        "install_update": "Install update",
+        "up_to_date": "Up to date",
+        "key": "Key",
+        "mode": "Mode",
+        "editable": "Editable",
+        "read_only": "Read only",
+        "used_by": "Used by",
+        "no_agents_attached": "No agents attached",
+        "view": "View",
+        "code": "Code",
+        "saving": "Saving...",
+        "save": "Save",
+        "select_file": "Select a file to inspect.",
+        "reason_bundled_read_only": "Bundled Paperclip skills are read-only."
+      },
+      "toasts": {
+        "imported_title": "Skills imported",
+        "imported_body": "{{count}} skill(s) added.",
+        "import_warnings": "Import warnings",
+        "import_failed_title": "Skill import failed",
+        "import_failed_body": "Failed to import skill source.",
+        "created_title": "Skill created",
+        "created_body": "{{name}} is now editable in the Paperclip workspace.",
+        "create_failed_title": "Skill creation failed",
+        "create_failed_body": "Failed to create skill.",
+        "scan_complete": "Project skill scan complete",
+        "conflicts_found": "Skill conflicts found",
+        "scan_warnings": "Scan warnings",
+        "scan_failed_title": "Project skill scan failed",
+        "scan_failed_body": "Failed to scan project workspaces.",
+        "saved_title": "Skill saved",
+        "save_failed_title": "Save failed",
+        "save_failed_body": "Failed to save skill file.",
+        "updated_title": "Skill updated",
+        "updated_body_pinned": "Pinned to {{pin}}",
+        "update_failed_title": "Update failed",
+        "update_failed_body": "Failed to install skill update."
+      }
+    },
+    "costs": {
+      "title": "Costs",
+      "subtitle": "Inference spend, platform fees, credits, and live quota windows.",
+      "select_company": "Select a company to view costs.",
+      "to": "to",
+      "select_range": "Select a start and end date to load data.",
+      "presets": {
+        "mtd": "Month to Date",
+        "last7d": "Last 7 Days",
+        "last30d": "Last 30 Days",
+        "ytd": "Year to Date",
+        "all": "All Time",
+        "custom": "Custom"
+      },
+      "tabs": {
+        "overview": "Overview",
+        "budgets": "Budgets",
+        "providers": "Providers",
+        "billers": "Billers",
+        "finance": "Finance"
+      },
+      "metrics": {
+        "inference_spend": "Inference spend",
+        "inference_spend_subtitle": "{{tokens}} tokens across request-scoped events",
+        "budget": "Budget",
+        "open": "Open",
+        "paused_summary": "{{agents}} agents paused · {{projects}} projects paused",
+        "of_budget": "{{spend}} of {{budget}}",
+        "no_monthly_cap": "No monthly cap configured",
+        "finance_net": "Finance net",
+        "finance_net_subtitle": "{{debits}} debits · {{credits}} credits",
+        "finance_events": "Finance events",
+        "estimated_in_range": "{{value}} estimated in range"
+      },
+      "inference_ledger": {
+        "title": "Inference ledger",
+        "description": "Request-scoped inference spend for the selected period.",
+        "budget_value": "Budget {{value}}",
+        "unlimited_budget": "Unlimited budget",
+        "usage": "usage",
+        "utilization": "{{percent}}% of monthly budget consumed in this range."
+      },
+      "finance_ledger": {
+        "title": "Finance ledger",
+        "description": "Account-level charges that do not map to a single inference request.",
+        "debits": "Debits",
+        "credits": "Credits",
+        "net": "Net",
+        "estimated": "Estimated",
+        "events_in_range": "{{count}} total event(s) in range",
+        "credits_description": "Refunds, offsets, and credit returns",
+        "net_description": "Debit minus credit for the selected period",
+        "estimated_description": "Estimated debits that are not yet invoice-authoritative"
+      },
+      "by_project": {
+        "title": "By project",
+        "description": "Run costs attributed through project-linked issues.",
+        "empty": "No project-attributed run costs yet.",
+        "unattributed": "Unattributed"
+      },
+      "by_biller": {
+        "title": "By biller",
+        "description": "Account-level financial events grouped by who charged or credited them.",
+        "empty": "No finance events yet."
+      },
+      "providers": {
+        "all": "All providers",
+        "empty": "No cost events in this period."
+      },
+      "billers": {
+        "all": "All billers",
+        "empty": "No billable events in this period."
+      },
+      "finance_timeline": {
+        "empty": "No finance events yet. Add account-level charges once biller invoices or credits land."
+      }
+    },
     "companies": {
       "title": "Companies",
       "new_company": "New Company",
