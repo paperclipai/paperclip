@@ -137,13 +137,20 @@ function StatusCard({
     red: "bg-red-500",
   }[color];
 
+  const numberClass =
+    color === "green" && count > 0
+      ? "font-display text-[36px] tracking-tight raava-gradient-text raava-tabular-nums"
+      : color === "red" && count > 0
+        ? "font-display text-[36px] tracking-tight text-red-500 raava-tabular-nums"
+        : "font-display text-[36px] tracking-tight text-muted-foreground raava-tabular-nums";
+
   return (
     <Link
       to={to}
-      className="raava-card flex flex-1 items-center gap-3 bg-white px-5 py-4 transition-colors hover:bg-accent/30 no-underline text-inherit dark:bg-card"
+      className="raava-card raava-card-hover flex flex-1 flex-col items-center gap-1 bg-white px-5 py-5 transition-all no-underline text-inherit dark:bg-card"
     >
-      <span className={cn("h-2.5 w-2.5 rounded-full shrink-0", dotColor)} />
-      <span className="font-display text-2xl text-foreground">{count}</span>
+      <span className={cn("h-2 w-2 rounded-full shrink-0 mb-1", dotColor)} />
+      <span className={numberClass}>{count}</span>
       <span className="text-[13px] font-medium text-muted-foreground">
         {label}
       </span>
@@ -283,7 +290,7 @@ export function RaavaHome() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* --------------------------------------------------------------- */}
       {/* 1. Welcome Banner                                                */}
       {/* --------------------------------------------------------------- */}
@@ -291,15 +298,27 @@ export function RaavaHome() {
         className="relative overflow-hidden rounded-2xl border border-border/50 px-8 py-7"
         style={{
           background:
-            "linear-gradient(135deg, rgba(34,74,232,0.06) 0%, rgba(113,110,255,0.04) 50%, rgba(0,189,183,0.06) 100%)",
+            "linear-gradient(135deg, rgba(34,74,232,0.12) 0%, rgba(113,110,255,0.08) 50%, rgba(0,189,183,0.12) 100%)",
         }}
       >
-        <h1 className="font-display text-[22px] text-foreground">
+        <h1 className="font-display text-[28px] tracking-[-0.02em] text-foreground">
           {getGreeting()}, {userName}.
         </h1>
-        <p className="text-[15px] text-muted-foreground mt-2">
-          Here&apos;s your team&apos;s status.
+        <p className="text-[15px] text-muted-foreground mt-2 flex items-center gap-2">
+          {counts.active > 0 ? (
+            <>
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 raava-pulse-dot" />
+              {counts.active} team member{counts.active !== 1 ? "s" : ""} working right now
+            </>
+          ) : (
+            "Here\u2019s your team\u2019s status."
+          )}
         </p>
+        {/* Thin gradient accent line at bottom of banner */}
+        <div
+          className="absolute bottom-0 left-0 right-0 h-[2px]"
+          style={{ background: "var(--raava-gradient)" }}
+        />
       </div>
 
       {/* --------------------------------------------------------------- */}
@@ -332,7 +351,7 @@ export function RaavaHome() {
       <div className="flex gap-5">
         {/* Active Work */}
         <div className="raava-card flex-1 bg-white px-6 py-5 dark:bg-card">
-          <h2 className="text-[15px] font-semibold text-foreground mb-4">
+          <h2 className="text-[15px] font-display tracking-[-0.01em] text-foreground mb-4">
             Active Work
           </h2>
 
@@ -342,25 +361,38 @@ export function RaavaHome() {
             </p>
           ) : (
             <div className="space-y-0">
-              {activeWorkItems.map((item) => (
-                <div
-                  key={item.name}
-                  className="flex items-center justify-between py-2"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
-                    <span className="text-[13px] font-semibold text-foreground">
-                      {item.name}
-                    </span>
-                    <span className="text-[13px] text-muted-foreground">
-                      {item.task}
+              {activeWorkItems.map((item) => {
+                const initials = item.name
+                  .split(/\s+/)
+                  .map((w) => w[0])
+                  .join("")
+                  .toUpperCase()
+                  .slice(0, 2);
+                return (
+                  <div
+                    key={item.name}
+                    className="flex items-center justify-between py-2.5 px-2 -mx-2 rounded-lg cursor-pointer transition-colors hover:bg-accent/20"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                        style={{ background: "linear-gradient(135deg, #224AE8, #716EFF)" }}
+                      >
+                        {initials}
+                      </span>
+                      <span className="text-[13px] font-semibold text-foreground">
+                        {item.name}
+                      </span>
+                      <span className="text-[13px] text-muted-foreground truncate max-w-[260px]">
+                        {item.task}
+                      </span>
+                    </div>
+                    <span className="text-xs font-medium text-muted-foreground shrink-0 ml-4 raava-tabular-nums">
+                      {item.time}
                     </span>
                   </div>
-                  <span className="text-xs font-medium text-muted-foreground shrink-0 ml-4">
-                    {item.time}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -368,7 +400,7 @@ export function RaavaHome() {
         {/* Spend This Week */}
         <div className="raava-card w-[280px] shrink-0 bg-white px-6 py-5 dark:bg-card flex flex-col justify-between">
           <div>
-            <h2 className="text-[15px] font-semibold text-foreground mb-2">
+            <h2 className="text-[15px] font-display tracking-[-0.01em] text-foreground mb-2">
               Spend This Week
             </h2>
             {isCostLoading ? (
@@ -379,7 +411,7 @@ export function RaavaHome() {
             ) : costSummary ? (
               <>
                 <div className="flex items-baseline gap-2.5">
-                  <p className="font-display text-[32px] text-foreground">
+                  <p className="raava-stat-number">
                     {formatCents(costSummary.spendCents)}
                   </p>
                 </div>
@@ -388,6 +420,21 @@ export function RaavaHome() {
                     ? `${costSummary.utilizationPercent}% of ${formatCents(costSummary.budgetCents)} budget`
                     : "No budget set"}
                 </p>
+                {costSummary.budgetCents > 0 && (
+                  <div className="raava-budget-bar mt-3">
+                    <div
+                      className={cn(
+                        "raava-budget-bar-fill",
+                        costSummary.utilizationPercent < 70
+                          ? "raava-budget-bar-fill--healthy"
+                          : costSummary.utilizationPercent < 90
+                            ? "raava-budget-bar-fill--warning"
+                            : "raava-budget-bar-fill--danger",
+                      )}
+                      style={{ width: `${Math.min(costSummary.utilizationPercent, 100)}%` }}
+                    />
+                  </div>
+                )}
               </>
             ) : (
               <p className="text-sm text-muted-foreground py-2">
@@ -407,8 +454,8 @@ export function RaavaHome() {
       {/* --------------------------------------------------------------- */}
       {/* 4. Recent Tasks                                                  */}
       {/* --------------------------------------------------------------- */}
-      <div className="raava-card bg-white pt-5 pb-2 px-6 dark:bg-card">
-        <h2 className="text-[15px] font-semibold text-foreground mb-3">
+      <div className="raava-card raava-bg-warm bg-white pt-5 pb-2 px-6 dark:bg-card">
+        <h2 className="text-[15px] font-display tracking-[-0.01em] text-foreground mb-3">
           Recent Tasks
         </h2>
         <div>
@@ -429,25 +476,31 @@ export function RaavaHome() {
               const badgeKey = issueStatusToBadge(issue.status);
               const badge = STATUS_BADGE[badgeKey];
               const isLast = idx === recentIssues.length - 1;
+              const borderColor = {
+                done: "border-l-emerald-500",
+                in_progress: "border-l-[#224ae8]",
+                stuck: "border-l-red-500",
+              }[badgeKey];
               return (
                 <div
                   key={issue.id}
                   className={cn(
-                    "flex items-center justify-between py-3",
+                    "flex items-center justify-between py-3 pl-3 border-l-[3px]",
+                    borderColor,
                     !isLast && "border-b border-border",
                   )}
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
                     <span className="text-[13px] font-medium text-foreground">
                       {issue.title}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {issueAssigneeLabel(issue)}
+                      @{issueAssigneeLabel(issue)}
                     </span>
                   </div>
                   <span
                     className={cn(
-                      "shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-medium",
+                      "shrink-0 rounded-xl px-3 py-1 text-xs font-medium",
                       badge.bgClass,
                       badge.textClass,
                     )}

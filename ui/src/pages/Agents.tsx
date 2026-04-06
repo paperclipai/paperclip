@@ -227,27 +227,32 @@ function RaavaMyTeamPage({
   ];
 
   return (
-    <div className="space-y-7">
+    <div className="space-y-8">
       {/* Header row */}
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-[26px] text-foreground">My Team</h1>
-        <Button variant="gradient" size="sm" onClick={openNewAgent}>
+        <h1 className="font-display text-[28px] tracking-[-0.02em] text-foreground">My Team</h1>
+        <Button
+          variant="gradient"
+          size="sm"
+          className="shadow-[0_4px_12px_rgba(34,74,232,0.18)]"
+          onClick={openNewAgent}
+        >
           <Plus className="h-4 w-4" />
           Hire
         </Button>
       </div>
 
-      {/* Filter tabs (pill style matching Figma) */}
-      <div className="flex items-center gap-1">
+      {/* Filter tabs (pill style with brand accent active state) */}
+      <div className="flex items-center gap-1.5">
         {tabs.map((t) => (
           <button
             key={t.value}
             onClick={() => setActiveTab(t.value)}
             className={cn(
-              "flex items-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-medium transition-colors",
+              "flex items-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-medium transition-all",
               activeTab === t.value
-                ? "bg-foreground text-background"
-                : "bg-secondary text-muted-foreground hover:bg-accent/50",
+                ? "bg-primary text-primary-foreground shadow-[0_2px_8px_rgba(34,74,232,0.2)]"
+                : "bg-secondary text-muted-foreground hover:bg-accent/30",
             )}
           >
             {t.label}
@@ -255,7 +260,7 @@ function RaavaMyTeamPage({
               className={cn(
                 "text-[11px] font-semibold",
                 activeTab === t.value
-                  ? "text-background"
+                  ? "text-primary-foreground/80"
                   : "text-muted-foreground",
               )}
             >
@@ -267,11 +272,19 @@ function RaavaMyTeamPage({
 
       {/* Card grid - 2x3 */}
       {filteredItems.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No team members match the selected filter.
-        </p>
+        <div className="raava-card raava-bg-warm flex flex-col items-center justify-center py-16 gap-3">
+          <p className="text-sm text-muted-foreground">
+            No team members match the selected filter.
+          </p>
+          <button
+            onClick={() => setActiveTab("all")}
+            className="text-sm font-medium text-primary hover:underline"
+          >
+            View all team members
+          </button>
+        </div>
       ) : (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
           {filteredItems.map((member, idx) => {
             const isMock = useMock;
             const m = isMock ? (member as MockTeamMember) : (member as (typeof teamMembers)[number]);
@@ -291,26 +304,24 @@ function RaavaMyTeamPage({
               <Link
                 key={m.id}
                 to={href}
-                className="raava-card bg-white px-6 pt-6 pb-5 flex flex-col gap-3.5 no-underline text-inherit hover:shadow-md transition-shadow dark:bg-card"
+                className="raava-card raava-card-hover bg-white px-6 pt-6 pb-5 flex flex-col gap-3.5 no-underline text-inherit transition-all dark:bg-card"
               >
-                {/* Header: avatar + name/role */}
-                <div className="flex items-center gap-3">
+                {/* Header: gradient avatar + name/role */}
+                <div className="flex items-center gap-3.5">
                   <div
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
-                    style={{ backgroundColor: color.bg }}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full raava-gradient-bg"
                   >
                     <span
-                      className="font-display text-lg"
-                      style={{ color: color.text }}
+                      className="font-display text-base text-white"
                     >
                       {initial}
                     </span>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="font-display text-base text-foreground">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="font-display text-[15px] tracking-[-0.01em] text-foreground">
                       {name}
                     </span>
-                    <span className="inline-flex w-fit rounded-xl bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                    <span className="inline-flex w-fit rounded-full bg-primary/8 px-2.5 py-0.5 text-[11px] font-medium text-primary">
                       {role}
                     </span>
                   </div>
@@ -319,17 +330,28 @@ function RaavaMyTeamPage({
                 {/* Divider */}
                 <div className="h-px w-full bg-border" />
 
-                {/* Status dot + label */}
-                <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      "h-2 w-2 rounded-full shrink-0",
-                      statusConfig.dotClass,
+                {/* Status dot + label (prominent) */}
+                <div className="flex items-center gap-2.5">
+                  <span className="relative flex h-2.5 w-2.5 shrink-0">
+                    {statusKey === "working" && (
+                      <span
+                        className={cn(
+                          "absolute inline-flex h-full w-full rounded-full opacity-40",
+                          statusConfig.dotClass,
+                          "raava-pulse-dot",
+                        )}
+                      />
                     )}
-                  />
+                    <span
+                      className={cn(
+                        "relative inline-flex h-2.5 w-2.5 rounded-full",
+                        statusConfig.dotClass,
+                      )}
+                    />
+                  </span>
                   <span
                     className={cn(
-                      "text-xs font-medium",
+                      "text-[13px] font-medium",
                       statusConfig.textClass,
                     )}
                   >
@@ -340,7 +362,7 @@ function RaavaMyTeamPage({
                 {/* Activity */}
                 <p
                   className={cn(
-                    "text-[13px] truncate",
+                    "text-[13px] truncate leading-relaxed",
                     statusKey === "attention"
                       ? "text-red-500"
                       : "text-muted-foreground",
@@ -350,7 +372,7 @@ function RaavaMyTeamPage({
                 </p>
 
                 {/* Cost */}
-                <p className="text-sm font-semibold text-foreground font-mono">
+                <p className="text-sm font-medium text-foreground font-mono raava-tabular-nums">
                   {cost}
                 </p>
               </Link>
@@ -368,25 +390,37 @@ function RaavaMyTeamPage({
 
 function RaavaEmptyState({ openNewAgent }: { openNewAgent: () => void }) {
   return (
-    <div className="space-y-7">
+    <div className="space-y-8">
       {/* Header row (same as populated page) */}
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-[26px] text-foreground">My Team</h1>
-        <Button variant="gradient" size="sm" onClick={openNewAgent}>
+        <h1 className="font-display text-[28px] tracking-[-0.02em] text-foreground">My Team</h1>
+        <Button
+          variant="gradient"
+          size="sm"
+          className="shadow-[0_4px_12px_rgba(34,74,232,0.18)]"
+          onClick={openNewAgent}
+        >
           <Plus className="h-4 w-4" />
           Hire
         </Button>
       </div>
 
-      {/* Centered empty state */}
-      <div className="flex flex-col items-center justify-center py-24 gap-6">
-        <RaavaStarMark size={80} className="drop-shadow-lg" />
+      {/* Premium empty state */}
+      <div className="raava-card bg-white dark:bg-card flex flex-col items-center justify-center py-24 gap-8">
+        {/* Gradient glow behind the star */}
+        <div className="relative">
+          <div
+            className="absolute inset-0 rounded-full blur-2xl opacity-20"
+            style={{ background: "var(--raava-gradient)" }}
+          />
+          <RaavaStarMark size={80} className="relative" />
+        </div>
 
-        <div className="flex flex-col items-center gap-2 text-center">
-          <h2 className="font-display text-xl text-foreground">
-            Your team is empty
+        <div className="flex flex-col items-center gap-3 text-center">
+          <h2 className="font-display text-[22px] tracking-[-0.02em] text-foreground">
+            Build your team
           </h2>
-          <p className="text-sm text-muted-foreground max-w-[400px] leading-relaxed">
+          <p className="text-[15px] text-muted-foreground max-w-[420px] leading-relaxed">
             Hire your first AI team member to get started. Pick a role, name
             them, and they&apos;ll be working in under 2 minutes.
           </p>
@@ -395,7 +429,7 @@ function RaavaEmptyState({ openNewAgent }: { openNewAgent: () => void }) {
         <Button
           variant="gradient"
           size="lg"
-          className="rounded-xl px-8 py-3.5 text-base shadow-[0_4px_16px_rgba(34,74,232,0.2)]"
+          className="rounded-xl px-8 py-3.5 text-base shadow-[0_6px_20px_rgba(34,74,232,0.25)]"
           onClick={openNewAgent}
         >
           <span className="font-display font-semibold">
@@ -417,7 +451,7 @@ function RaavaEmptyState({ openNewAgent }: { openNewAgent: () => void }) {
 
 export function Agents() {
   const { selectedCompanyId } = useCompany();
-  const { openNewAgent } = useDialog();
+  const { openNewAgent, openOnboarding } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
@@ -479,12 +513,15 @@ export function Agents() {
   // Raava mode: render the card-grid My Team page
   // -----------------------------------------------------------------------
   if (isRaava) {
+    const openHireWizard = () =>
+      openOnboarding({ initialStep: 2, companyId: selectedCompanyId ?? undefined });
+
     return (
       <RaavaMyTeamPage
         agents={agents}
         isLoading={isLoading}
         error={error as Error | null}
-        openNewAgent={openNewAgent}
+        openNewAgent={openHireWizard}
       />
     );
   }

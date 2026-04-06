@@ -415,8 +415,8 @@ function CredentialInput({
 // ---------------------------------------------------------------------------
 
 export function RaavaOnboardingWizard() {
-  const { onboardingOpen, closeOnboarding } = useDialog();
-  const { setSelectedCompanyId } = useCompany();
+  const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
+  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -451,6 +451,24 @@ export function RaavaOnboardingWizard() {
 
   // Auto-grow textarea ref
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // When the wizard opens with an initialStep (e.g. "Hire" from My Team page),
+  // jump directly to that step and use the existing company context.
+  useEffect(() => {
+    if (!onboardingOpen) return;
+    const initStep = onboardingOptions.initialStep;
+    if (initStep && initStep > 1) {
+      setStep(initStep);
+      // Use the company passed via options, or fall back to the currently
+      // selected company so step 1 (company creation) can be skipped.
+      const companyId = onboardingOptions.companyId ?? selectedCompanyId;
+      if (companyId) {
+        setCreatedCompanyId(companyId);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps — only run when the
+  // dialog opens/closes, not on every options or selectedCompanyId change.
+  }, [onboardingOpen]);
 
   const selectedRole = ROLES.find((r) => r.id === selectedRoleId) ?? null;
 
