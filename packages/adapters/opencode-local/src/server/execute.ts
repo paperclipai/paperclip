@@ -54,6 +54,24 @@ function claudeSkillsHome(): string {
   return path.join(os.homedir(), ".claude", "skills");
 }
 
+export function buildOpenCodePermissionEnv(cwd: string): string | null {
+  const cwdPath = path.resolve(cwd);
+  const parentDirs: string[] = [];
+  let current = cwdPath;
+  for (let i = 0; i < 3; i++) {
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    parentDirs.push(parent);
+    current = parent;
+  }
+  if (parentDirs.length === 0) return null;
+  const permissionConfig: Record<string, string> = {};
+  for (const dir of parentDirs) {
+    permissionConfig[dir === "/" ? "/" : `${dir}/**`] = "allow";
+  }
+  return JSON.stringify({ external_directory: permissionConfig });
+}
+
 async function ensureOpenCodeSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
@@ -174,6 +192,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
+  }
+  if (!env.OPENCODE_PERMISSION) {
+    const opencodePermission = buildOpenCodePermissionEnv(cwd);
+    if (opencodePermission) {
+      env.OPENCODE_PERMISSION = opencodePermission;
+    }
   }
   // Prevent OpenCode from writing an opencode.json config file into the
   // project working directory (which would pollute the git repo).  Model

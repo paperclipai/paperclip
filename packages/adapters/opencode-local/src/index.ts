@@ -35,6 +35,9 @@ Core fields:
 - command (string, optional): defaults to "opencode"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+  - OPENCODE_PERMISSION (string, optional): JSON permissions config for OpenCode. \
+    Defaults to allowing external_directory access for parent directories of cwd (up to 3 levels, with /** glob). \
+    Set to override the default behavior. Example: '{"external_directory":{"~/allowed/**":"allow"}}'
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
