@@ -226,9 +226,9 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "assignee") return "minmax(7.5rem, 9.5rem)";
       if (column === "project") return "minmax(6.5rem, 8.5rem)";
       if (column === "workspace") return "minmax(9rem, 12rem)";
-      if (column === "parent") return "minmax(8rem, 12rem)";
+      if (column === "parent") return "minmax(5rem, 7rem)";
       if (column === "labels") return "minmax(8rem, 10rem)";
-      return "minmax(6rem, 7rem)";
+      return "minmax(4rem, 5.5rem)";
     })
     .join(" ");
 }
