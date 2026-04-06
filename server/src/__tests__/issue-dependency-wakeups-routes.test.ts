@@ -43,6 +43,9 @@ vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({
     get: vi.fn(),
     listCompanyIds: vi.fn(),
+    getExperimental: vi.fn(async () => ({
+      enableDependencies: true,
+    })),
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
