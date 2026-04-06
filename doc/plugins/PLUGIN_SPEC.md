@@ -724,6 +724,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `webhooks.receive`
 - `http.outbound`
 - `secrets.read-ref`
+- `secrets.write`
 
 ### Agent Tools
 

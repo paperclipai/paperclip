@@ -596,6 +596,9 @@ export function buildHostServices(
       async resolve(params) {
         return secretsHandler.resolve(params);
       },
+      async write(params) {
+        return secretsHandler.write(params);
+      },
     },
 
     activity: {
