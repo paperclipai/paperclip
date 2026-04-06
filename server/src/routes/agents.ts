@@ -495,6 +495,12 @@ export function agentRoutes(db: Db) {
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
     }
+    // claude_local and opencode_local run headless; default to skipping permission prompts
+    if (adapterType === "claude_local" || adapterType === "opencode_local") {
+      if (typeof next.dangerouslySkipPermissions !== "boolean") {
+        next.dangerouslySkipPermissions = true;
+      }
+    }
     return ensureGatewayDeviceKey(adapterType, next);
   }
 
