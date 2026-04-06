@@ -500,8 +500,35 @@ function buildWorkspaceCommandEnv(input: {
   return env;
 }
 
+function quoteShellArg(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
+  const patterns = [
+    /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+    /^(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
+  ];
+
+  for (const pattern of patterns) {
+    const match = command.match(pattern);
+    if (!match?.groups) continue;
+
+    const relativePath = match.groups.relative;
+    const repoManagedPath = path.join(repoRoot, relativePath.slice(2));
+    if (!existsSync(repoManagedPath)) continue;
+
+    const prefix = match.groups.prefix ?? "";
+    const suffix = match.groups.suffix ?? "";
+    return `${prefix}${quoteShellArg(repoManagedPath)}${suffix}`;
+  }
+
+  return command;
+}
+
 async function runWorkspaceCommand(input: {
   command: string;
+  resolvedCommand?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   label: string;
@@ -509,7 +536,7 @@ async function runWorkspaceCommand(input: {
   const shell = resolveShell();
   const proc = await executeProcess({
     command: shell,
-    args: ["-c", input.command],
+    args: ["-c", input.resolvedCommand ?? input.command],
     cwd: input.cwd,
     env: input.env,
   });
@@ -581,6 +608,7 @@ async function recordWorkspaceCommandOperation(
   input: {
     phase: "workspace_provision" | "workspace_teardown";
     command: string;
+    resolvedCommand?: string;
     cwd: string;
     env: NodeJS.ProcessEnv;
     label: string;
@@ -605,7 +633,7 @@ async function recordWorkspaceCommandOperation(
       const shell = resolveShell();
       const result = await executeProcess({
         command: shell,
-        args: ["-c", input.command],
+        args: ["-c", input.resolvedCommand ?? input.command],
         cwd: input.cwd,
         env: input.env,
       });
@@ -645,10 +673,12 @@ async function provisionExecutionWorktree(input: {
 }) {
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
+  const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
   await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: provisionCommand,
+    resolvedCommand: resolvedProvisionCommand,
     cwd: input.worktreePath,
     env: buildWorkspaceCommandEnv({
       base: input.base,
@@ -665,6 +695,7 @@ async function provisionExecutionWorktree(input: {
       worktreePath: input.worktreePath,
       branchName: input.branchName,
       created: input.created,
+      resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
   });
@@ -892,6 +923,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
+  const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
+    ? await resolveGitRepoRootForWorkspaceCleanup(
+      workspacePath,
+      input.projectWorkspace?.cwd ?? null,
+    )
+    : null;
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
@@ -907,9 +944,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
 
   for (const command of cleanupCommands) {
     try {
+      const resolvedCommand = repoRoot
+        ? resolveRepoManagedWorkspaceCommand(command, repoRoot)
+        : command;
       await recordWorkspaceCommandOperation(input.recorder, {
         phase: "workspace_teardown",
         command,
+        resolvedCommand,
         cwd: workspacePath ?? input.projectWorkspace?.cwd ?? process.cwd(),
         env: cleanupEnv,
         label: `Execution workspace cleanup command "${command}"`,
@@ -918,6 +959,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           workspacePath,
           branchName: input.workspace.branchName,
           providerType: input.workspace.providerType,
+          resolvedCommand: resolvedCommand === command ? null : resolvedCommand,
         },
         successMessage: `Completed cleanup command "${command}"\n`,
       });
@@ -927,10 +969,6 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   }
 
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    const repoRoot = await resolveGitRepoRootForWorkspaceCleanup(
-      workspacePath,
-      input.projectWorkspace?.cwd ?? null,
-    );
     const worktreeExists = await directoryExists(workspacePath);
     if (worktreeExists) {
       if (!repoRoot) {
