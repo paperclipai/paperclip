@@ -2100,6 +2100,7 @@
       "adapter_environment_check": "Verificacao de ambiente do adaptador",
       "adapter_environment_check_description": "Executa uma sonda ao vivo pedindo para a CLI do adaptador responder com hello.",
       "test_now": "Testar agora",
+      "test_environment_requires_company": "Crie ou selecione uma empresa antes de testar o ambiente do adaptador.",
       "gateway_url": "URL do gateway",
       "webhook_url": "URL do webhook"
     },

@@ -2094,6 +2094,7 @@
       "adapter_environment_check": "Adapter environment check",
       "adapter_environment_check_description": "Runs a live probe that asks the adapter CLI to respond with hello.",
       "test_now": "Test now",
+      "test_environment_requires_company": "Create or select a company before testing adapter environment.",
       "gateway_url": "Gateway URL",
       "webhook_url": "Webhook URL"
     },
