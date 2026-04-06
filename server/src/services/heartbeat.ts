@@ -913,8 +913,13 @@ export function heartbeatService(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
+    const adapterCwd = readNonEmptyString(
+      (agent.adapterConfig as Record<string, unknown> | null)?.cwd,
+    );
+    const cwd = adapterCwd ?? resolveDefaultAgentWorkspaceDir(agent.id);
+    if (!adapterCwd) {
+      await fs.mkdir(cwd, { recursive: true });
+    }
     const warnings: string[] = [];
     if (sessionCwd) {
       warnings.push(
@@ -923,10 +928,6 @@ export function heartbeatService(db: Db) {
     } else if (resolvedProjectId) {
       warnings.push(
         `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
       );
     }
     return {
