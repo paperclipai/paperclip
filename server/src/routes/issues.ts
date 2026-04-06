@@ -180,7 +180,7 @@ export function issueRoutes(
     return false;
   }
 
-  const C_SUITE_ROLES = new Set(["ceo", "cto", "cmo", "cfo"]);
+  const C_SUITE_ROLES = new Set(["ceo", "cto", "cmo", "cfo", "hermes"]);
 
   function canAssignTasksImplicitly(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
     if (C_SUITE_ROLES.has(agent.role)) return true;
@@ -484,12 +484,12 @@ export function issueRoutes(
   // ---------- Assignment policy gate ----------
   // Control-plane roles bypass ownership and role-matrix restrictions.
   // They are still subject to target existence, company, and dispatchability checks.
-  const CONTROL_PLANE_ROLES = new Set(["ceo", "cto"]);
+  const CONTROL_PLANE_ROLES = new Set(["ceo", "cto", "hermes"]);
 
   // Role handoff matrix: operational handoffs + management escalation.
   // Every non-control-plane role can escalate to CEO/CTO.
   // Same-role lateral handoffs are blocked separately below.
-  const MANAGEMENT_ROLES = ["ceo", "cto"] as const;
+  const MANAGEMENT_ROLES = ["ceo", "cto", "hermes"] as const;
   const ALLOWED_HANDOFFS: Record<string, readonly string[]> = {
     engineer: ["qa", "devops", ...MANAGEMENT_ROLES],
     devops: ["qa", "engineer", ...MANAGEMENT_ROLES],
@@ -540,7 +540,7 @@ export function issueRoutes(
       if (!ownsIssue) {
         return {
           gate: "assignment_ownership_required",
-          reason: "Agents can only reassign issues they currently own. Control-plane roles (CEO, CTO) can reassign any issue.",
+          reason: "Agents can only reassign issues they currently own. Control-plane roles (CEO, CTO, Hermes) can reassign any issue.",
         };
       }
     }
