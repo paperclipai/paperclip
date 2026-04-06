@@ -1,0 +1,30 @@
+{
+  "name": "@paperclip/report-agents",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "bot": "tsx bot-listener.ts",
+    "report": "tsx report-manager.ts",
+    "visual": "tsx visual-report.ts",
+    "visual:weekly": "tsx visual-report.ts weekly",
+    "visual:monthly": "tsx visual-report.ts monthly",
+    "monthly": "tsx monthly-report.ts",
+    "platform": "tsx platform-collector.ts",
+    "social": "tsx social-collector.ts",
+    "ga": "tsx ga-collector.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^17.0.1",
+    "googleapis": "^144.0.0",
+    "puppeteer": "^24.40.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

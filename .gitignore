@@ -51,3 +51,13 @@ tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
+scripts/report-agents/.env
+
+# Sensitive credentials
+ga4-key.json
+
+# Plugin local data
+server/.x-watchdog-data/
+
+# Generated analysis reports
+scripts/report-agents/reports/*.md
