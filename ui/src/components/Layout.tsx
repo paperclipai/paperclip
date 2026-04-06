@@ -21,7 +21,7 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
-import { AskAIButton } from "./AskAIButton";
+import { AskAIHeaderButton, AskAIPanel } from "./AskAIButton";
 import { NotificationCenter, NotificationBell, useNotifications } from "./NotificationCenter";
 import { SampleDataBanner } from "./SampleDataToggle";
 import { GuidedTour, useGuidedTour, isFirstRun, markFirstRunSeen } from "./GuidedTour";
@@ -95,6 +95,7 @@ export function Layout() {
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
   const [notifCenterOpen, setNotifCenterOpen] = useState(false);
+  const [askAIOpen, setAskAIOpen] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [showWelcome, setShowWelcome] = useState(() => !hasSeenWelcome());
   // FirstLoginWizard state removed
@@ -420,7 +421,9 @@ export function Layout() {
               <div className="flex-1 min-w-0">
                 <BreadcrumbBar />
               </div>
-              <div className="flex items-center gap-1 pr-4 shrink-0">
+              <div className="flex items-center gap-1 pr-4 shrink-0 relative">
+                <AskAIHeaderButton onClick={() => setAskAIOpen((v) => !v)} />
+                <AskAIPanel open={askAIOpen} onClose={() => setAskAIOpen(false)} />
                 <NotificationBell
                   unreadCount={notifs.unreadCount}
                   onClick={() => setNotifCenterOpen(true)}
@@ -500,7 +503,6 @@ export function Layout() {
       />
       {/* FirstLoginWizard removed - redundant with onboarding wizard */}
       <ToastViewport />
-      <AskAIButton />
     </div>
   );
 }

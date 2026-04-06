@@ -54,7 +54,7 @@ export function SidebarSection({ label, children }: SidebarSectionProps) {
         <CollapsibleTrigger className="flex items-center w-full px-3 py-1.5">
           <ChevronRight
             className={cn(
-              "h-3 w-3 text-muted-foreground/60 transition-transform md:opacity-0 md:group-hover:opacity-100 shrink-0",
+              "h-3 w-3 text-muted-foreground/50 transition-transform shrink-0",
               open && "rotate-90",
             )}
           />
