@@ -99,7 +99,7 @@ const PRIORITY_BADGE: Record<string, { label: string; className: string }> = {
 function PriorityBadge({ priority }: { priority: string }) {
   const config = PRIORITY_BADGE[priority] ?? PRIORITY_BADGE.medium!;
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap", config.className)}>
+    <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap", config.className)}>
       {config.label}
     </span>
   );
@@ -194,7 +194,7 @@ export function RaavaTasks() {
   const filters: TaskFilter[] = ["all", "in_progress", "waiting", "completed", "todo"];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <h1 className="font-display text-[22px] text-foreground">Tasks</h1>
@@ -250,7 +250,7 @@ export function RaavaTasks() {
       {/* Task table */}
       <div className="raava-card overflow-hidden bg-white dark:bg-card">
         {/* Table header */}
-        <div className="hidden sm:grid grid-cols-[auto_80px_1fr_180px_100px_100px] items-center gap-3 border-b border-border px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="hidden sm:grid grid-cols-[auto_80px_1fr_180px_100px_100px] items-center gap-3 border-b border-border px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           <span className="w-5" />
           <span>ID</span>
           <span>Title</span>
@@ -261,15 +261,15 @@ export function RaavaTasks() {
 
         {/* Rows */}
         {isSearchActive && searchError ? (
-          <div className="px-4 py-8 text-center text-sm text-destructive">
+          <div className="px-5 py-8 text-center text-sm text-destructive">
             {searchError instanceof Error ? searchError.message : "Search failed."}
           </div>
         ) : isSearchActive && isSearchLoading ? (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          <div className="px-5 py-8 text-center text-sm text-muted-foreground">
             Searching...
           </div>
         ) : sortedIssues.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          <div className="px-5 py-8 text-center text-sm text-muted-foreground">
             No tasks found.
           </div>
         ) : (
@@ -284,7 +284,7 @@ export function RaavaTasks() {
                 key={issue.id}
                 to={createIssueDetailPath(issue.identifier ?? issue.id, issueLinkState)}
                 state={issueLinkState}
-                className="group grid grid-cols-1 sm:grid-cols-[auto_80px_1fr_180px_100px_100px] items-center gap-2 sm:gap-3 border-b border-border px-4 py-3 text-sm no-underline text-inherit transition-colors hover:bg-accent/40 last:border-b-0"
+                className="group grid grid-cols-1 sm:grid-cols-[auto_80px_1fr_180px_100px_100px] items-center gap-2 sm:gap-3 border-b border-border px-5 py-3 text-sm no-underline text-inherit transition-colors hover:bg-accent/40 last:border-b-0"
               >
                 {/* Status icon */}
                 <span className="hidden sm:flex w-5 justify-center">

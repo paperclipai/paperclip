@@ -262,7 +262,7 @@ export function RaavaTaskDetail() {
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <Link
@@ -318,7 +318,7 @@ export function RaavaTaskDetail() {
                   const isCurrentUser = !!(currentUserId && comment.authorUserId === currentUserId);
                   const authorName = authorAgent?.name ?? (isCurrentUser ? "You" : comment.authorUserId ? "User" : "System");
                   return (
-                    <div key={comment.id} className="raava-card bg-white dark:bg-card px-4 py-3">
+                    <div key={comment.id} className="raava-card bg-white dark:bg-card px-5 py-4">
                       <div className="flex items-center gap-2 mb-1.5">
                         <Identity name={authorName} size="sm" />
                         <span className="text-xs text-muted-foreground">
@@ -364,7 +364,7 @@ export function RaavaTaskDetail() {
 
         {/* Right column — 35% sidebar */}
         <div className="lg:w-[35%] shrink-0">
-          <div className="raava-card bg-white dark:bg-card px-5 py-5 space-y-5 sticky top-4">
+          <div className="raava-card bg-white dark:bg-card px-6 py-5 space-y-5 sticky top-4">
             {/* Assigned to */}
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
@@ -397,7 +397,7 @@ export function RaavaTaskDetail() {
               {projectName && issue.projectId ? (
                 <Link
                   to={`/projects/${issue.projectId}`}
-                  className="text-sm text-foreground hover:text-[#224ae8] transition-colors no-underline"
+                  className="text-sm text-foreground hover:text-primary transition-colors no-underline"
                 >
                   {projectName}
                 </Link>

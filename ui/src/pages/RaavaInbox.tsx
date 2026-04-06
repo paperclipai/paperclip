@@ -66,7 +66,7 @@ function ReviewRequestCard({
 }) {
   const canAct = ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
   return (
-    <div className="raava-card bg-white dark:bg-card border-l-4 border-l-[#224ae8] px-5 py-4">
+    <div className="raava-card bg-white dark:bg-card border-l-4 border-l-primary px-6 py-5">
       <div className="flex items-start gap-3">
         {/* Avatar */}
         <div className="mt-0.5">
@@ -124,8 +124,8 @@ function NotificationItem({
       to={createIssueDetailPath(issue.identifier ?? issue.id, issueLinkState)}
       state={issueLinkState}
       className={cn(
-        "group flex items-center gap-3 border-b border-border px-4 py-3 text-sm no-underline text-inherit transition-colors hover:bg-accent/40 last:border-b-0",
-        isUnread && "bg-[rgba(34,74,232,0.03)]",
+        "group flex items-center gap-3 border-b border-border px-5 py-3.5 text-sm no-underline text-inherit transition-colors hover:bg-accent/40 last:border-b-0",
+        isUnread && "bg-primary/[0.03]",
       )}
     >
       {/* Unread dot */}
@@ -141,7 +141,7 @@ function NotificationItem({
             className="inline-flex h-4 w-4 items-center justify-center rounded-full hover:bg-blue-500/20 transition-colors"
             aria-label="Mark as read"
           >
-            <span className="block h-2 w-2 rounded-full bg-[#224ae8]" />
+            <span className="block h-2 w-2 rounded-full bg-primary" />
           </button>
         ) : (
           <span className="h-2 w-2" />
@@ -186,7 +186,7 @@ function EscalationItem({
     ?? "Run exited with an error.";
 
   return (
-    <div className="raava-card bg-white dark:bg-card border-l-4 border-l-red-500 px-5 py-4">
+    <div className="raava-card bg-white dark:bg-card border-l-4 border-l-red-500 px-6 py-5">
       <div className="flex items-start gap-3">
         <XCircle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
@@ -388,7 +388,7 @@ export function RaavaInbox() {
   ];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {/* Header */}
       <h1 className="font-display text-[22px] text-foreground">Inbox</h1>
 
@@ -468,11 +468,11 @@ export function RaavaInbox() {
           {activeTab === "notifications" && (
             <div className="raava-card overflow-hidden bg-white dark:bg-card">
               {touchedIssuesError ? (
-                <div className="px-4 py-8 text-center">
+                <div className="px-5 py-8 text-center">
                   <p className="text-sm text-destructive">{touchedIssuesError instanceof Error ? touchedIssuesError.message : "Failed to load notifications."}</p>
                 </div>
               ) : touchedIssues.length === 0 ? (
-                <div className="px-4 py-8">
+                <div className="px-5 py-8">
                   <EmptyState icon={Bell} message="No notifications." />
                 </div>
               ) : (

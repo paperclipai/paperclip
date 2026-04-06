@@ -106,8 +106,8 @@ const STATUS_BADGE: Record<
   },
   in_progress: {
     label: "In Progress",
-    bgClass: "bg-[rgba(34,74,232,0.1)]",
-    textClass: "text-[#224ae8]",
+    bgClass: "bg-primary/10",
+    textClass: "text-primary",
   },
   stuck: {
     label: "Stuck",
@@ -147,7 +147,7 @@ function StatusCard({
   return (
     <Link
       to={to}
-      className="raava-card raava-card-hover flex flex-1 flex-col items-center gap-1 bg-white px-5 py-5 transition-all no-underline text-inherit dark:bg-card"
+      className="raava-card raava-card-hover flex flex-1 flex-col items-center gap-1 bg-white px-6 py-5 transition-all no-underline text-inherit dark:bg-card"
     >
       <span className={cn("h-2 w-2 rounded-full shrink-0 mb-1", dotColor)} />
       <span className={numberClass}>{count}</span>
@@ -301,7 +301,7 @@ export function RaavaHome() {
             "linear-gradient(135deg, rgba(34,74,232,0.12) 0%, rgba(113,110,255,0.08) 50%, rgba(0,189,183,0.12) 100%)",
         }}
       >
-        <h1 className="font-display text-[28px] tracking-[-0.02em] text-foreground">
+        <h1 className="font-display text-[26px] tracking-[-0.02em] text-foreground">
           {getGreeting()}, {userName}.
         </h1>
         <p className="text-[15px] text-muted-foreground mt-2 flex items-center gap-2">
@@ -455,7 +455,7 @@ export function RaavaHome() {
       {/* 4. Recent Tasks                                                  */}
       {/* --------------------------------------------------------------- */}
       <div className="raava-card raava-bg-warm bg-white pt-5 pb-2 px-6 dark:bg-card">
-        <h2 className="text-[15px] font-display tracking-[-0.01em] text-foreground mb-3">
+        <h2 className="text-[15px] font-semibold text-foreground mb-3">
           Recent Tasks
         </h2>
         <div>
@@ -478,7 +478,7 @@ export function RaavaHome() {
               const isLast = idx === recentIssues.length - 1;
               const borderColor = {
                 done: "border-l-emerald-500",
-                in_progress: "border-l-[#224ae8]",
+                in_progress: "border-l-primary",
                 stuck: "border-l-red-500",
               }[badgeKey];
               return (
@@ -500,7 +500,7 @@ export function RaavaHome() {
                   </div>
                   <span
                     className={cn(
-                      "shrink-0 rounded-xl px-3 py-1 text-xs font-medium",
+                      "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium",
                       badge.bgClass,
                       badge.textClass,
                     )}
