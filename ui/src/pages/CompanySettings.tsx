@@ -856,13 +856,13 @@ function buildAgentSnippet(input: AgentSnippetInput) {
       ? `No candidate URLs are available. Ask your user to configure a reachable hostname in Raava, then retry.
 Suggested steps:
 - choose a hostname that resolves to the Raava host from your runtime
-- run: pnpm paperclipai allowed-hostname <host>
+- run: pnpm raava allowed-hostname <host>
 - restart Raava
 - verify with: curl -fsS http://<host>:3100/api/health
 - regenerate this invite snippet`
       : `If none are reachable, ask your user to add a reachable hostname in Raava, restart, and retry.
 Suggested command:
-- pnpm paperclipai allowed-hostname <host>
+- pnpm raava allowed-hostname <host>
 Then verify with: curl -fsS <base-url>/api/health`;
 
   const resolutionLine = resolutionTestUrl
