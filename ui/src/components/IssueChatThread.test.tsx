@@ -22,6 +22,7 @@ vi.mock("@assistant-ui/react", () => ({
   MessagePrimitive: {
     Root: ({ children }: { children: ReactNode }) => <div>{children}</div>,
     Content: () => null,
+    Parts: () => null,
   },
   useAui: () => ({ thread: () => ({ append: vi.fn() }) }),
   useAuiState: () => false,
@@ -47,7 +48,19 @@ vi.mock("./MarkdownBody", () => ({
 }));
 
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: () => <textarea aria-label="Issue chat editor" />,
+  MarkdownEditor: ({
+    value = "",
+    onChange,
+  }: {
+    value?: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <textarea
+      aria-label="Issue chat editor"
+      value={value}
+      onChange={(event) => onChange?.(event.target.value)}
+    />
+  ),
 }));
 
 vi.mock("./InlineEntitySelector", () => ({
@@ -83,10 +96,12 @@ describe("IssueChatThread", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    localStorage.clear();
   });
 
   afterEach(() => {
     container.remove();
+    vi.useRealTimers();
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -118,6 +133,73 @@ describe("IssueChatThread", () => {
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  it("stores and restores the composer draft per issue key", () => {
+    vi.useFakeTimers();
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            draftKey="issue-chat-draft:test-1"
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor).not.toBeNull();
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Draft survives refresh");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+
+    expect(localStorage.getItem("issue-chat-draft:test-1")).toBe("Draft survives refresh");
+
+    act(() => {
+      root.unmount();
+    });
+
+    const remount = createRoot(container);
+    act(() => {
+      remount.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            draftKey="issue-chat-draft:test-1"
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const restoredEditor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(restoredEditor?.value).toBe("Draft survives refresh");
+
+    act(() => {
+      remount.unmount();
     });
   });
 });

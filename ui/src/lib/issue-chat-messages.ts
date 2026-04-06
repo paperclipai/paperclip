@@ -268,58 +268,46 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
   return message;
 }
 
-function mergeAdjacentTextParts(parts: Array<TextMessagePart | ReasoningMessagePart>) {
-  const merged: Array<TextMessagePart | ReasoningMessagePart> = [];
-  for (const part of parts) {
-    const previous = merged.at(-1);
-    if (previous && previous.type === part.type && previous.parentId === part.parentId) {
-      merged[merged.length - 1] = {
-        ...previous,
-        text: `${previous.text}${part.text}`,
-      };
-      continue;
-    }
-    merged.push(part);
-  }
-  return merged;
-}
-
 export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTranscriptEntry[]) {
-  const textLikeParts: Array<TextMessagePart | ReasoningMessagePart> = [];
+  const orderedParts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>> = [];
   const toolParts = new Map<string, ToolCallMessagePart<JsonObject, unknown>>();
-  const toolOrder: string[] = [];
+  const toolIndices = new Map<string, number>();
   const notices: string[] = [];
 
   for (const [index, entry] of entries.entries()) {
     if (entry.kind === "assistant" && entry.text) {
-      textLikeParts.push({ type: "text", text: entry.text });
+      orderedParts.push({ type: "text", text: entry.text });
       continue;
     }
     if (entry.kind === "thinking" && entry.text) {
-      textLikeParts.push({ type: "reasoning", text: entry.text });
+      orderedParts.push({ type: "reasoning", text: entry.text });
       continue;
     }
     if (entry.kind === "tool_call") {
       const toolCallId = entry.toolUseId || `tool-${index}`;
-      if (!toolParts.has(toolCallId)) {
-        toolOrder.push(toolCallId);
-      }
-      toolParts.set(toolCallId, {
+      const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: entry.name || "tool",
         args: normalizeToolArgs(entry.input),
         argsText: stringifyUnknown(entry.input),
-      });
+      };
+      if (!toolParts.has(toolCallId)) {
+        toolIndices.set(toolCallId, orderedParts.length);
+        orderedParts.push(nextPart);
+      } else {
+        const existingIndex = toolIndices.get(toolCallId);
+        if (existingIndex !== undefined) {
+          orderedParts[existingIndex] = nextPart;
+        }
+      }
+      toolParts.set(toolCallId, nextPart);
       continue;
     }
     if (entry.kind === "tool_result") {
       const toolCallId = entry.toolUseId || `tool-result-${index}`;
       const existing = toolParts.get(toolCallId);
-      if (!existing) {
-        toolOrder.push(toolCallId);
-      }
-      toolParts.set(toolCallId, {
+      const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: existing?.toolName || entry.toolName || "tool",
@@ -327,7 +315,17 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
         argsText: existing?.argsText ?? "",
         result: entry.content ?? "",
         isError: entry.isError === true,
-      });
+      };
+      if (existing) {
+        const existingIndex = toolIndices.get(toolCallId);
+        if (existingIndex !== undefined) {
+          orderedParts[existingIndex] = nextPart;
+        }
+      } else {
+        toolIndices.set(toolCallId, orderedParts.length);
+        orderedParts.push(nextPart);
+      }
+      toolParts.set(toolCallId, nextPart);
       continue;
     }
     if (entry.kind === "stderr" && entry.text) {
@@ -347,13 +345,25 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     }
   }
 
+  const mergedParts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>> = [];
+  for (const part of orderedParts) {
+    if (part.type === "tool-call") {
+      mergedParts.push(part);
+      continue;
+    }
+    const previous = mergedParts.at(-1);
+    if (previous && previous.type === part.type && previous.parentId === part.parentId) {
+      mergedParts[mergedParts.length - 1] = {
+        ...previous,
+        text: `${previous.text}${part.text}`,
+      };
+      continue;
+    }
+    mergedParts.push(part);
+  }
+
   return {
-    parts: [
-      ...mergeAdjacentTextParts(textLikeParts),
-      ...toolOrder
-        .map((toolCallId) => toolParts.get(toolCallId))
-        .filter((part): part is ToolCallMessagePart<JsonObject, unknown> => Boolean(part)),
-    ],
+    parts: mergedParts,
     notices,
   };
 }

@@ -85,6 +85,50 @@ describe("buildAssistantPartsFromTranscript", () => {
     });
     expect(result.notices).toEqual(["warn: noisy setup output"]);
   });
+
+  it("preserves transcript ordering when text and tool activity are interleaved", () => {
+    const result = buildAssistantPartsFromTranscript([
+      { kind: "assistant", ts: "2026-04-06T12:00:00.000Z", text: "First." },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T12:00:01.000Z",
+        name: "read_file",
+        toolUseId: "tool-1",
+        input: { path: "ui/src/components/IssueChatThread.tsx" },
+      },
+      { kind: "assistant", ts: "2026-04-06T12:00:02.000Z", text: "Second." },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T12:00:03.000Z",
+        toolUseId: "tool-1",
+        content: "ok",
+        isError: false,
+      },
+      { kind: "thinking", ts: "2026-04-06T12:00:04.000Z", text: "Need one more check." },
+      {
+        kind: "tool_call",
+        ts: "2026-04-06T12:00:05.000Z",
+        name: "write_file",
+        toolUseId: "tool-2",
+        input: { path: "ui/src/lib/issue-chat-messages.ts" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-04-06T12:00:06.000Z",
+        toolUseId: "tool-2",
+        content: "saved",
+        isError: false,
+      },
+    ]);
+
+    expect(result.parts).toMatchObject([
+      { type: "text", text: "First." },
+      { type: "tool-call", toolCallId: "tool-1", toolName: "read_file", result: "ok" },
+      { type: "text", text: "Second." },
+      { type: "reasoning", text: "Need one more check." },
+      { type: "tool-call", toolCallId: "tool-2", toolName: "write_file", result: "saved" },
+    ]);
+  });
 });
 
 describe("buildIssueChatMessages", () => {

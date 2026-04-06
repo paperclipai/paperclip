@@ -147,6 +147,7 @@ export function IssueChatUxLab() {
           onAdd={noop}
           onVote={noop}
           onCancelRun={noop}
+          onInterruptQueued={noop}
           draftKey="issue-chat-ux-lab-primary"
           enableReassign
           reassignOptions={issueChatUxReassignOptions}

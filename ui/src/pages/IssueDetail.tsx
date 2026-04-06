@@ -1771,6 +1771,10 @@ export function IssueDetail() {
             onAttachImage={async (file) => {
               await uploadAttachment.mutateAsync(file);
             }}
+            onInterruptQueued={async (runId) => {
+              await interruptQueuedComment.mutateAsync(runId);
+            }}
+            interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
             onCancelRun={runningIssueRun
               ? async () => {
                   await interruptQueuedComment.mutateAsync(runningIssueRun.id);
