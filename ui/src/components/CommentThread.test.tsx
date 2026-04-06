@@ -4,7 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
 
@@ -31,6 +31,25 @@ vi.mock("./MarkdownEditor", () => ({
 
 vi.mock("./InlineEntitySelector", () => ({
   InlineEntitySelector: () => null,
+}));
+
+vi.mock("./ApprovalCard", () => ({
+  ApprovalCard: ({
+    approval,
+    onApprove,
+    onReject,
+  }: {
+    approval: Approval;
+    onApprove?: () => void;
+    onReject?: () => void;
+  }) => (
+    <div>
+      <div>{approval.type}</div>
+      <div>{String(approval.payload.title ?? "")}</div>
+      {onApprove ? <button type="button" onClick={onApprove}>Approve</button> : null}
+      {onReject ? <button type="button" onClick={onReject}>Reject</button> : null}
+    </div>
+  ),
 }));
 
 vi.mock("@/plugins/slots", () => ({
@@ -139,6 +158,77 @@ describe("CommentThread", () => {
     expect(container.textContent).toContain("Workspace is closed.");
     expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
     expect(container.textContent).not.toContain("Comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders linked approvals inline in the timeline", () => {
+    const root = createRoot(container);
+    const agent: Agent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "CodexCoder",
+      urlKey: "codexcoder",
+      role: "engineer",
+      title: null,
+      icon: "code",
+      status: "active",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date("2026-03-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T00:00:00.000Z"),
+    };
+    const approval: Approval = {
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        title: "Approve hosting spend",
+        text: "Estimated monthly cost is $42.",
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-03-11T09:00:00.000Z"),
+      updatedAt: new Date("2026-03-11T09:00:00.000Z"),
+    };
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[]}
+            linkedApprovals={[approval]}
+            agentMap={new Map([["agent-1", agent]])}
+            onAdd={async () => {}}
+            onApproveApproval={async () => {}}
+            onRejectApproval={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const approvalRow = container.querySelector("#approval-approval-1") as HTMLDivElement | null;
+    expect(approvalRow).not.toBeNull();
+    expect(container.textContent).toContain("request_board_approval");
+    expect(container.textContent).toContain("Approve hosting spend");
+    expect(container.textContent).toContain("Approve");
+    expect(container.textContent).toContain("Reject");
 
     act(() => {
       root.unmount();

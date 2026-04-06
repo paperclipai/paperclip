@@ -21,19 +21,22 @@ export function ApprovalCard({
   onReject,
   onOpen,
   detailLink,
-  isPending,
+  isPending = false,
+  pendingAction = null,
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
-  onApprove: () => void;
-  onReject: () => void;
+  onApprove?: () => void;
+  onReject?: () => void;
   onOpen?: () => void;
   detailLink?: string;
-  isPending: boolean;
+  isPending?: boolean;
+  pendingAction?: "approve" | "reject" | null;
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
+    Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
 
@@ -78,7 +81,7 @@ export function ApprovalCard({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {pendingAction === "approve" ? "Approving..." : "Approve"}
           </Button>
           <Button
             variant="destructive"
@@ -86,21 +89,23 @@ export function ApprovalCard({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {pendingAction === "reject" ? "Rejecting..." : "Reject"}
           </Button>
         </div>
       )}
-      <div className="mt-3">
-        {detailLink ? (
-          <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
-            <Link to={detailLink}>View details</Link>
-          </Button>
-        ) : (
-          <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
-            View details
-          </Button>
-        )}
-      </div>
+      {(detailLink || onOpen) ? (
+        <div className="mt-3">
+          {detailLink ? (
+            <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
+              <Link to={detailLink}>View details</Link>
+            </Button>
+          ) : (
+            <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
+              View details
+            </Button>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
