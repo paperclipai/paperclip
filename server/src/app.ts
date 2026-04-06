@@ -271,10 +271,30 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
+      const indexHtmlPath = path.join(uiDist, "index.html");
+      // Cache the branded HTML but allow it to refresh when the file changes on
+      // disk (e.g. after a `vite build` while the dev server is still running).
+      let cachedIndexHtml: string | null = null;
+      let cachedIndexMtimeMs = 0;
+      const getIndexHtml = (): string => {
+        try {
+          const stat = fs.statSync(indexHtmlPath);
+          if (!cachedIndexHtml || stat.mtimeMs !== cachedIndexMtimeMs) {
+            cachedIndexHtml = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
+            cachedIndexMtimeMs = stat.mtimeMs;
+          }
+        } catch {
+          if (!cachedIndexHtml) {
+            cachedIndexHtml = applyUiBranding(fs.readFileSync(indexHtmlPath, "utf-8"));
+          }
+        }
+        return cachedIndexHtml;
+      };
+      // Warm the cache on startup
+      getIndexHtml();
       app.use(express.static(uiDist));
       app.get(/.*/, (_req, res) => {
-        res.status(200).set("Content-Type", "text/html").end(indexHtml);
+        res.status(200).set("Content-Type", "text/html").end(getIndexHtml());
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");

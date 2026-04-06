@@ -223,30 +223,8 @@ export function RaavaHome() {
     [containers],
   );
 
-  // Company name for greeting
-  const userName = selectedCompany?.name ?? "there";
-
-  if (isLoading) {
-    return <PageSkeleton variant="dashboard" />;
-  }
-
-  if (isError) {
-    return (
-      <div className="raava-card bg-destructive/5 p-6 text-center">
-        <AlertTriangle className="mx-auto h-8 w-8 text-destructive mb-2" />
-        <p className="text-sm font-medium text-destructive">
-          Failed to load team data
-        </p>
-        <p className="text-xs text-muted-foreground mt-1">
-          {error instanceof Error
-            ? error.message
-            : "An unexpected error occurred. Please try again."}
-        </p>
-      </div>
-    );
-  }
-
   // Build active work items by cross-referencing in_progress issues with running containers
+  // NOTE: This useMemo MUST be above the early returns to satisfy the Rules of Hooks.
   const activeWorkItems = useMemo(() => {
     // Build a lookup from agent name key to running container for uptime info
     const containerByAgent = new Map<string, FleetContainer>();
@@ -280,6 +258,29 @@ export function RaavaHome() {
           : "--",
     }));
   }, [activeIssues, activeContainers]);
+
+  // Company name for greeting
+  const userName = selectedCompany?.name ?? "there";
+
+  if (isLoading) {
+    return <PageSkeleton variant="dashboard" />;
+  }
+
+  if (isError) {
+    return (
+      <div className="raava-card bg-destructive/5 p-6 text-center">
+        <AlertTriangle className="mx-auto h-8 w-8 text-destructive mb-2" />
+        <p className="text-sm font-medium text-destructive">
+          Failed to load team data
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {error instanceof Error
+            ? error.message
+            : "An unexpected error occurred. Please try again."}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
