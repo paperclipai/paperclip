@@ -1031,6 +1031,7 @@ export function OnboardingWizard() {
                       {CLOUD_RUNTIME_OPTIONS.map((opt) => {
                         // Map cloud runtime values to local adapter types for state compatibility
                         const runtimeToAdapter: Record<string, AdapterType> = {
+                          claude: "claude_local",
                           codex: "codex_local",
                           gemini: "gemini_local",
                           opencode: "opencode_local",

@@ -37,16 +37,11 @@ export function billingRoutes(db: Db) {
 
     // Check if this user has ever had a company (including archived).
     // One free trial per user, ever. Second+ companies require payment upfront.
-    const userSubs = await db
-      .select({
-        status: companySubscriptions.status,
-        companyId: companySubscriptions.companyId,
-      })
-      .from(companySubscriptions)
-      .innerJoin(
-        companyMemberships,
-        eq(companySubscriptions.companyId, companyMemberships.companyId),
-      )
+    // We check memberships (not subscriptions) because companies created before
+    // the subscription system don't have subscription records.
+    const userCompanies = await db
+      .select({ companyId: companyMemberships.companyId })
+      .from(companyMemberships)
       .where(
         and(
           eq(companyMemberships.principalId, req.actor.userId),
@@ -54,7 +49,7 @@ export function billingRoutes(db: Db) {
         ),
       );
 
-    const hasUsedTrial = userSubs.length > 0;
+    const hasUsedTrial = userCompanies.length > 0;
 
     res.json({
       canCreateCompany: !hasUsedTrial,
