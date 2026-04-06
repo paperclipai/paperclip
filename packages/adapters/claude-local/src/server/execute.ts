@@ -264,12 +264,27 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   // Resolve MCP config paths: explicit adapter config takes precedence,
   // otherwise auto-discover .mcp.json from the project base directory.
-  const mcpConfigPaths: string[] = (() => {
+  const mcpConfigPaths: string[] = await (async () => {
     const explicit = asStringArray(config.mcpConfig);
     if (explicit.length > 0) return explicit;
     // Auto-discover: prefer baseCwd (original project root) over the effective cwd,
     // since .mcp.json is typically untracked and absent from git worktrees.
-    const discoveryRoot = workspaceBaseCwd || configuredCwd;
+    // When falling back to configuredCwd, walk up to the git root because
+    // configuredCwd may be a subdirectory (e.g. packages/my-app).
+    let discoveryRoot = workspaceBaseCwd;
+    if (!discoveryRoot && configuredCwd) {
+      let dir = configuredCwd;
+      while (dir !== path.dirname(dir)) {
+        try {
+          await fs.access(path.join(dir, ".git"));
+          discoveryRoot = dir;
+          break;
+        } catch {
+          dir = path.dirname(dir);
+        }
+      }
+      if (!discoveryRoot) discoveryRoot = configuredCwd;
+    }
     if (discoveryRoot) return [path.join(discoveryRoot, ".mcp.json")];
     return [];
   })();
