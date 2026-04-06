@@ -662,6 +662,61 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     }));
   });
 
+  it("allows null-run checkout when executionRunId points to a queued run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const queuedRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued execution lock without actor run",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: queuedRunId,
+    });
+
+    const checkedOut = await svc.checkout(issueId, agentId, ["todo"], null);
+
+    expect(checkedOut).toEqual(expect.objectContaining({
+      id: issueId,
+      status: "in_progress",
+      checkoutRunId: null,
+      executionRunId: null,
+    }));
+  });
+
   it("still rejects checkout when executionRunId points to a running run", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

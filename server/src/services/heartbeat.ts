@@ -1962,6 +1962,8 @@ export function heartbeatService(db: Db) {
         const issue = await tx
           .select({
             id: issues.id,
+            status: issues.status,
+            checkoutRunId: issues.checkoutRunId,
             executionRunId: issues.executionRunId,
           })
           .from(issues)
@@ -1979,8 +1981,17 @@ export function heartbeatService(db: Db) {
             .then((rows) => rows[0] ?? null)
           : null;
 
-        if (currentExecutionRun && currentExecutionRun.id !== run.id && currentExecutionRun.status === "running") {
-          return { claimed: null, cancelReason: "Cancelled because the issue is already owned by another running run" };
+        if (currentExecutionRun && currentExecutionRun.id !== run.id) {
+          return { claimed: null, cancelReason: "Cancelled because the issue is already owned by another execution run" };
+        }
+
+        if (
+          issue &&
+          issue.executionRunId == null &&
+          issue.status === "in_progress" &&
+          issue.checkoutRunId == null
+        ) {
+          return { claimed: null, cancelReason: "Cancelled because the issue execution lock was cleared before this queued run was claimed" };
         }
 
         const claimedRun = await tx

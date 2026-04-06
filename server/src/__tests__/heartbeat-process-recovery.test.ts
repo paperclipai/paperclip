@@ -322,6 +322,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("cancelled");
   });
 
+  it("cancels a queued run when the issue lock was cleared by a later null-run checkout", async () => {
+    const { issueId, runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    await heartbeat.resumeQueuedRuns();
+
+    const queuedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(queuedRun?.status).toBe("cancelled");
+    expect(queuedRun?.errorCode).toBe("cancelled");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
