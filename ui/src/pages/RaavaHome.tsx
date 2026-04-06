@@ -2,11 +2,16 @@ import { useEffect, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { fleetosApi, type FleetContainer } from "../api/fleetos";
+import { costsApi } from "../api/costs";
+import { issuesApi } from "../api/issues";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { cn } from "../lib/utils";
+import { cn, formatCents } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { Skeleton } from "../components/ui/skeleton";
 import { AlertTriangle, ArrowUpRight } from "lucide-react";
+import type { Issue } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,51 +71,29 @@ function countByStatus(containers: FleetContainer[]): StatusCounts {
 }
 
 // ---------------------------------------------------------------------------
-// Mock data for Active Work fallback
+// Helpers — current week date range
 // ---------------------------------------------------------------------------
 
-const MOCK_ACTIVE_WORK = [
-  { name: "Alex", task: "Following up on 3 leads from yesterday", time: "12m" },
-  { name: "Jordan", task: "Auditing overdue tasks in Project Alpha", time: "45m" },
-  { name: "Riley", task: "Drafting social posts for product launch", time: "8m" },
-];
+function currentWeekRange(): { from: string; to: string } {
+  const now = new Date();
+  const day = now.getDay();
+  const diffToMon = day === 0 ? -6 : 1 - day;
+  const mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMon, 0, 0, 0, 0);
+  return { from: mon.toISOString(), to: now.toISOString() };
+}
 
-// ---------------------------------------------------------------------------
-// Mock data for Recent Tasks (matches Figma Screen 3)
-// ---------------------------------------------------------------------------
+/** Map an Issue status to the badge key used by the Recent Tasks UI. */
+function issueStatusToBadge(status: string): TaskStatus {
+  if (status === "done" || status === "cancelled") return "done";
+  if (status === "in_progress") return "in_progress";
+  if (status === "blocked" || status === "in_review") return "stuck";
+  return "in_progress";
+}
 
-const MOCK_RECENT_TASKS = [
-  {
-    id: "1",
-    title: "Draft follow-up emails for leads",
-    status: "done" as const,
-    assignee: "Alex",
-  },
-  {
-    id: "2",
-    title: "Audit overdue items in Project Alpha",
-    status: "in_progress" as const,
-    assignee: "Jordan",
-  },
-  {
-    id: "3",
-    title: "Pull weekly KPI metrics report",
-    status: "stuck" as const,
-    assignee: "Sam",
-  },
-  {
-    id: "4",
-    title: "Respond to 5 latest support tickets",
-    status: "done" as const,
-    assignee: "Taylor",
-  },
-  {
-    id: "5",
-    title: "Draft 3 social posts for launch",
-    status: "in_progress" as const,
-    assignee: "Riley",
-  },
-];
+/** Derive a short assignee label from an Issue. */
+function issueAssigneeLabel(issue: Issue): string {
+  return issue.executionAgentNameKey ?? issue.assigneeAgentId ?? "Unassigned";
+}
 
 type TaskStatus = "done" | "in_progress" | "stuck";
 
@@ -176,6 +159,7 @@ function StatusCard({
 
 export function RaavaHome() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { selectedCompanyId, selectedCompany } = useCompany();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Home" }]);
@@ -193,6 +177,44 @@ export function RaavaHome() {
     refetchInterval: 30_000,
   });
 
+  // Weekly spend from costs API
+  const weekRange = useMemo(() => currentWeekRange(), []);
+  const {
+    data: costSummary,
+    isLoading: isCostLoading,
+  } = useQuery({
+    queryKey: queryKeys.costs(selectedCompanyId!, weekRange.from, weekRange.to),
+    queryFn: () => costsApi.summary(selectedCompanyId!, weekRange.from, weekRange.to),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+
+  // Recent tasks from issues API — most recently updated, limit 5
+  const {
+    data: recentIssues,
+    isLoading: isRecentTasksLoading,
+  } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "recent-home"],
+    queryFn: () => issuesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+    select: (issues: Issue[]) =>
+      [...issues]
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+        .slice(0, 5),
+  });
+
+  // Active work = in_progress issues (cross-referenced with running containers below)
+  const {
+    data: activeIssues,
+    isLoading: isActiveIssuesLoading,
+  } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "active-home"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { status: "in_progress" }),
+    enabled: !!selectedCompanyId,
+    staleTime: 15_000,
+  });
+
   const counts = useMemo(
     () => countByStatus(containers ?? []),
     [containers],
@@ -203,8 +225,8 @@ export function RaavaHome() {
     [containers],
   );
 
-  // TODO: Pull user name from company context or auth session when available
-  const userName = "Carlos";
+  // Company name for greeting
+  const userName = selectedCompany?.name ?? "there";
 
   if (isLoading) {
     return <PageSkeleton variant="dashboard" />;
@@ -226,9 +248,32 @@ export function RaavaHome() {
     );
   }
 
-  // Use real active containers; show idle message when genuinely empty
-  const activeWorkItems =
-    activeContainers.map((c) => ({
+  // Build active work items by cross-referencing in_progress issues with running containers
+  const activeWorkItems = useMemo(() => {
+    // Build a lookup from agent name key to running container for uptime info
+    const containerByAgent = new Map<string, FleetContainer>();
+    for (const c of activeContainers) {
+      const agentName = c.labels?.["agent_name"] ?? c.name;
+      containerByAgent.set(agentName, c);
+    }
+
+    if (activeIssues && activeIssues.length > 0) {
+      return activeIssues.map((issue) => {
+        const agentKey = issue.executionAgentNameKey ?? issue.assigneeAgentId ?? "";
+        const container = containerByAgent.get(agentKey);
+        return {
+          name: agentKey || "Agent",
+          task: issue.title,
+          time:
+            container?.health?.uptime_seconds != null
+              ? formatElapsed(container.health.uptime_seconds)
+              : "--",
+        };
+      });
+    }
+
+    // Fallback to container-only data when no active issues available
+    return activeContainers.map((c) => ({
       name: displayName(c),
       task: `Working on: ${c.name}`,
       time:
@@ -236,6 +281,7 @@ export function RaavaHome() {
           ? formatElapsed(c.health.uptime_seconds)
           : "--",
     }));
+  }, [activeIssues, activeContainers]);
 
   return (
     <div className="space-y-6">
@@ -326,16 +372,29 @@ export function RaavaHome() {
             <h2 className="text-[15px] font-semibold text-foreground mb-2">
               Spend This Week
             </h2>
-            {/* TODO: Replace with real billing data from backend billing API */}
-            <div className="flex items-baseline gap-2.5">
-              <p className="font-display text-[32px] text-foreground">
-                $127.40
+            {isCostLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-9 w-28 animate-pulse" />
+                <Skeleton className="h-4 w-36 animate-pulse" />
+              </div>
+            ) : costSummary ? (
+              <>
+                <div className="flex items-baseline gap-2.5">
+                  <p className="font-display text-[32px] text-foreground">
+                    {formatCents(costSummary.spendCents)}
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {costSummary.budgetCents > 0
+                    ? `${costSummary.utilizationPercent}% of ${formatCents(costSummary.budgetCents)} budget`
+                    : "No budget set"}
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground py-2">
+                Unable to load spend data.
               </p>
-              <span className="text-sm font-medium text-red-500">+12%</span>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              vs. $113.75 last week
-            </p>
+            )}
           </div>
           <Link
             to="/costs"
@@ -353,39 +412,57 @@ export function RaavaHome() {
         <h2 className="text-[15px] font-semibold text-foreground mb-3">
           Recent Tasks
         </h2>
-        {/* TODO: Replace mock data with real task data from issues API */}
         <div>
-          {MOCK_RECENT_TASKS.map((task, idx) => {
-            const badge = STATUS_BADGE[task.status];
-            const isLast = idx === MOCK_RECENT_TASKS.length - 1;
-            return (
-              <div
-                key={task.id}
-                className={cn(
-                  "flex items-center justify-between py-3",
-                  !isLast && "border-b border-border",
-                )}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium text-foreground">
-                    {task.title}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {task.assignee}
-                  </span>
+          {isRecentTasksLoading ? (
+            <div className="space-y-3 py-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center justify-between py-3">
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="h-4 w-48 animate-pulse" />
+                    <Skeleton className="h-3 w-16 animate-pulse" />
+                  </div>
+                  <Skeleton className="h-5 w-16 rounded-xl animate-pulse" />
                 </div>
-                <span
+              ))}
+            </div>
+          ) : recentIssues && recentIssues.length > 0 ? (
+            recentIssues.map((issue, idx) => {
+              const badgeKey = issueStatusToBadge(issue.status);
+              const badge = STATUS_BADGE[badgeKey];
+              const isLast = idx === recentIssues.length - 1;
+              return (
+                <div
+                  key={issue.id}
                   className={cn(
-                    "shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-medium",
-                    badge.bgClass,
-                    badge.textClass,
+                    "flex items-center justify-between py-3",
+                    !isLast && "border-b border-border",
                   )}
                 >
-                  {badge.label}
-                </span>
-              </div>
-            );
-          })}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] font-medium text-foreground">
+                      {issue.title}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {issueAssigneeLabel(issue)}
+                    </span>
+                  </div>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-medium",
+                      badge.bgClass,
+                      badge.textClass,
+                    )}
+                  >
+                    {badge.label}
+                  </span>
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-sm text-muted-foreground py-4 text-center">
+              No recent tasks found.
+            </p>
+          )}
         </div>
       </div>
     </div>

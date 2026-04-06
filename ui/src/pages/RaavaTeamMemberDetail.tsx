@@ -33,6 +33,10 @@ import {
   isUuidLike,
   AGENT_ROLE_LABELS,
   type AgentDetail as AgentDetailRecord,
+  type AgentInstructionsBundle,
+  type AgentInstructionsFileDetail,
+  type AgentSkillSnapshot,
+  type AgentTaskSession,
   type Issue,
 } from "@paperclipai/shared";
 
@@ -113,27 +117,51 @@ const MOCK_CHAT_MESSAGES = [
   { id: "5", sender: "agent", text: "Understood. I'll have all 12 drafts ready within the next 15 minutes. I'll tag each with the lead's company name for easy scanning.", ts: "10:36 AM" },
 ];
 
-// TODO: Replace with real work history API when available
-const MOCK_WORK_HISTORY = [
-  { id: "1", date: "Apr 3, 2026 — 10:32 AM", task: "Follow up on eMerge leads", duration: "23m", outcome: "completed" as const, cost: "$2.40" },
-  { id: "2", date: "Apr 3, 2026 — 9:15 AM", task: "Draft weekly KPI summary", duration: "18m", outcome: "completed" as const, cost: "$1.85" },
-  { id: "3", date: "Apr 2, 2026 — 4:48 PM", task: "Audit overdue tasks in Project Alpha", duration: "45m", outcome: "in_progress" as const, cost: "$4.60" },
-  { id: "4", date: "Apr 2, 2026 — 2:10 PM", task: "Respond to support tickets batch #12", duration: "31m", outcome: "completed" as const, cost: "$3.20" },
-  { id: "5", date: "Apr 2, 2026 — 11:00 AM", task: "Generate competitor analysis report", duration: "52m", outcome: "completed" as const, cost: "$5.40" },
-  { id: "6", date: "Apr 1, 2026 — 3:30 PM", task: "Organize shared drive folders", duration: "15m", outcome: "completed" as const, cost: "$1.50" },
-];
+// ---------------------------------------------------------------------------
+// Work-history helpers
+// ---------------------------------------------------------------------------
 
-// TODO: Replace with real personality/instructions from agent config when API supports it
-const MOCK_PERSONALITY = `You are a professional sales assistant. Your communication style is warm but concise. You focus on building genuine relationships with leads rather than pushing for immediate conversions.
+interface WorkHistoryEntry {
+  id: string;
+  date: string;
+  task: string;
+  duration: string;
+  outcome: "completed" | "in_progress";
+  cost: string;
+}
 
-## Core Principles
-- **Always personalize** — Reference specific details from previous conversations
-- **Be proactive** — Suggest follow-up actions before being asked
-- **Stay organized** — Keep detailed notes on every lead interaction
-- **Respect boundaries** — Never follow up more than twice without a response
+function formatSessionDate(d: Date | string): string {
+  const dt = new Date(d);
+  return dt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }) + " — " + dt.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
 
-## Tone Guidelines
-Write in a professional yet approachable tone. Avoid jargon. Use short paragraphs and bullet points for clarity. Sign off with a warm but professional closing.`;
+function mapTaskSessions(sessions: AgentTaskSession[]): WorkHistoryEntry[] {
+  return sessions
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .map((s) => {
+      const created = new Date(s.createdAt);
+      const updated = new Date(s.updatedAt);
+      const diffMs = updated.getTime() - created.getTime();
+      const diffMin = Math.max(1, Math.round(diffMs / 60_000));
+      const hasError = Boolean(s.lastError);
+      return {
+        id: s.id,
+        date: formatSessionDate(s.updatedAt),
+        task: s.taskKey,
+        duration: diffMin >= 60 ? `${Math.floor(diffMin / 60)}h ${diffMin % 60}m` : `${diffMin}m`,
+        outcome: hasError ? "in_progress" as const : "completed" as const,
+        cost: "—",
+      };
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Sub-components: Shared Header
@@ -241,10 +269,24 @@ function TabBar({
 function OverviewTab({
   agent,
   issues,
+  agentId,
+  companyId,
 }: {
   agent: AgentDetailRecord;
   issues: Issue[];
+  agentId: string;
+  companyId: string | undefined;
 }) {
+  const { data: skillsSnapshot, isLoading: skillsLoading } = useQuery<AgentSkillSnapshot>({
+    queryKey: queryKeys.agents.skills(agentId),
+    queryFn: () => agentsApi.skills(agentId, companyId),
+    enabled: Boolean(agentId),
+  });
+
+  const skillNames = useMemo(() => {
+    if (!skillsSnapshot?.entries?.length) return [];
+    return skillsSnapshot.entries.map((e) => e.runtimeName ?? e.key);
+  }, [skillsSnapshot]);
   const completedIssues = issues.filter((i) => i.status === "done");
   const completedThisMonth = completedIssues.filter((i) => {
     if (!i.completedAt) return false;
@@ -329,15 +371,20 @@ function OverviewTab({
           Tools & Skills
         </h3>
         <div className="flex flex-wrap gap-2">
-          {/* TODO: Pull real skills from agent capabilities or skills API */}
-          {["Email", "CRM", "Document Drafting", "Data Analysis", "Web Search"].map((skill) => (
-            <span
-              key={skill}
-              className="rounded-full bg-secondary px-3.5 py-1.5 text-[12px] font-medium text-foreground"
-            >
-              {skill}
-            </span>
-          ))}
+          {skillsLoading ? (
+            <span className="text-[12px] text-muted-foreground">Loading skills...</span>
+          ) : skillNames.length > 0 ? (
+            skillNames.map((skill) => (
+              <span
+                key={skill}
+                className="rounded-full bg-secondary px-3.5 py-1.5 text-[12px] font-medium text-foreground"
+              >
+                {skill}
+              </span>
+            ))
+          ) : (
+            <span className="text-[12px] text-muted-foreground">No skills configured</span>
+          )}
         </div>
       </div>
     </div>
@@ -435,13 +482,46 @@ function TasksTab({ issues }: { issues: Issue[] }) {
 // Work History Tab (Figma Screen 13)
 // ---------------------------------------------------------------------------
 
-function WorkHistoryTab() {
+function WorkHistoryTab({
+  agentId,
+  companyId,
+}: {
+  agentId: string;
+  companyId: string | undefined;
+}) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const { data: taskSessions, isLoading: sessionsLoading } = useQuery<AgentTaskSession[]>({
+    queryKey: queryKeys.agents.taskSessions(agentId),
+    queryFn: () => agentsApi.taskSessions(agentId, companyId),
+    enabled: Boolean(agentId),
+  });
+
+  const workHistory = useMemo(
+    () => mapTaskSessions(taskSessions ?? []),
+    [taskSessions],
+  );
+
+  if (sessionsLoading) {
+    return (
+      <div className="raava-card bg-white dark:bg-card p-8 text-center">
+        <p className="text-sm text-muted-foreground">Loading work history...</p>
+      </div>
+    );
+  }
+
+  if (workHistory.length === 0) {
+    return (
+      <div className="raava-card bg-white dark:bg-card p-8 text-center">
+        <p className="text-sm text-muted-foreground">No work history yet.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="raava-card bg-white dark:bg-card overflow-hidden">
-      {MOCK_WORK_HISTORY.map((entry, idx) => {
-        const isLast = idx === MOCK_WORK_HISTORY.length - 1;
+      {workHistory.map((entry, idx) => {
+        const isLast = idx === workHistory.length - 1;
         const isExpanded = expandedId === entry.id;
         return (
           <div
@@ -500,8 +580,30 @@ function WorkHistoryTab() {
 // Personality Tab (Figma Screen 14)
 // ---------------------------------------------------------------------------
 
-function PersonalityTab() {
-  // Personality editing is read-only until the instructions API is available
+function PersonalityTab({
+  agentId,
+  companyId,
+}: {
+  agentId: string;
+  companyId: string | undefined;
+}) {
+  const { data: bundle, isLoading: bundleLoading } = useQuery<AgentInstructionsBundle>({
+    queryKey: queryKeys.agents.instructionsBundle(agentId),
+    queryFn: () => agentsApi.instructionsBundle(agentId, companyId),
+    enabled: Boolean(agentId),
+  });
+
+  const entryFile = bundle?.entryFile ?? "SOUL.md";
+
+  const { data: fileDetail, isLoading: fileLoading } = useQuery<AgentInstructionsFileDetail>({
+    queryKey: queryKeys.agents.instructionsFile(agentId, entryFile),
+    queryFn: () => agentsApi.instructionsFile(agentId, entryFile, companyId),
+    enabled: Boolean(agentId && bundle && bundle.files.some((f) => f.path === entryFile)),
+  });
+
+  const isLoading = bundleLoading || fileLoading;
+  const personalityContent = fileDetail?.content ?? "";
+
   return (
     <div className="space-y-4">
       <p className="text-[13px] text-muted-foreground">
@@ -530,12 +632,18 @@ function PersonalityTab() {
           </button>
         </div>
 
-        <textarea
-          readOnly
-          value={MOCK_PERSONALITY}
-          className="w-full min-h-[320px] px-5 py-4 text-[13px] text-foreground bg-transparent resize-y focus:outline-none leading-relaxed cursor-default"
-          placeholder="Describe this team member's personality, communication style, and approach to work..."
-        />
+        {isLoading ? (
+          <div className="w-full min-h-[320px] px-5 py-4 flex items-center justify-center">
+            <span className="text-[13px] text-muted-foreground">Loading instructions...</span>
+          </div>
+        ) : (
+          <textarea
+            readOnly
+            value={personalityContent}
+            className="w-full min-h-[320px] px-5 py-4 text-[13px] text-foreground bg-transparent resize-y focus:outline-none leading-relaxed cursor-default"
+            placeholder="No instructions configured for this team member."
+          />
+        )}
       </div>
 
       {/* Action row — disabled with "Coming soon" tooltip */}
@@ -941,11 +1049,11 @@ export function RaavaTeamMemberDetail() {
       {/* Tab Content */}
       <div>
         {activeTab === "overview" && (
-          <OverviewTab agent={agent} issues={issues} />
+          <OverviewTab agent={agent} issues={issues} agentId={agent.id} companyId={resolvedCompanyId ?? undefined} />
         )}
         {activeTab === "tasks" && <TasksTab issues={issues} />}
-        {activeTab === "work-history" && <WorkHistoryTab />}
-        {activeTab === "personality" && <PersonalityTab />}
+        {activeTab === "work-history" && <WorkHistoryTab agentId={agent.id} companyId={resolvedCompanyId ?? undefined} />}
+        {activeTab === "personality" && <PersonalityTab agentId={agent.id} companyId={resolvedCompanyId ?? undefined} />}
         {activeTab === "chat" && <ChatTab agentName={agent.name} />}
         {activeTab === "settings" && <SettingsTab agent={agent} />}
       </div>
