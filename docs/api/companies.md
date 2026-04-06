@@ -73,6 +73,23 @@ POST /api/companies/{companyId}/archive
 
 Archives a company. Archived companies are hidden from default listings.
 
+## Delete Company
+
+```
+DELETE /api/companies/{companyId}
+{
+  "confirmCompanyName": "My AI Company"
+}
+```
+
+Permanently deletes a company and all its associated data. This action is irreversible.
+
+Board access is required. The `confirmCompanyName` field must match the company's exact name — if it does not, the request is rejected with `422 Unprocessable Entity`.
+
+Deleted data includes all agents, issues, routines, documents, feedback votes, budgets, goals, projects, and related records. The response returns `{ "ok": true }`.
+
+Use archive instead if you want to hide the company without destroying its data.
+
 ## Company Fields
 
 | Field | Type | Description |

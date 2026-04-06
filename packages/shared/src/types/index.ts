@@ -1,4 +1,9 @@
-export type { Company } from "./company.js";
+export type {
+  Company,
+  CompanyResetDeletedCounts,
+  CompanyResetRequest,
+  CompanyResetResult,
+} from "./company.js";
 export type {
   FeedbackVote,
   FeedbackDataSharingPreference,

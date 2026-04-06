@@ -30,6 +30,18 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+const localStorageMock = {
+  data: {} as Record<string, string>,
+  clear: vi.fn(() => { localStorageMock.data = {}; }),
+  getItem: vi.fn((key: string) => localStorageMock.data[key] ?? null),
+  setItem: vi.fn((key: string, value: string) => { localStorageMock.data[key] = value; }),
+  removeItem: vi.fn((key: string) => { delete localStorageMock.data[key]; }),
+  key: vi.fn(),
+  get length() { return Object.keys(localStorageMock.data).length; },
+};
+
+Object.defineProperty(window, "localStorage", { value: localStorageMock, writable: true });
+
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
 }));
@@ -304,7 +316,8 @@ describe("Routines page", () => {
     routinesListMock.mockReset();
     issuesListMock.mockReset();
     issuesListRenderMock.mockClear();
-    localStorage.clear();
+    localStorageMock.data = {};
+    localStorageMock.clear.mockClear();
   });
 
   afterEach(() => {

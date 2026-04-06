@@ -141,6 +141,9 @@ export {
 
 export type {
   Company,
+  CompanyResetDeletedCounts,
+  CompanyResetRequest,
+  CompanyResetResult,
   FeedbackVote,
   FeedbackDataSharingPreference,
   FeedbackTargetType,
@@ -369,6 +372,8 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companyResetRequestSchema,
+  deleteCompanyRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,

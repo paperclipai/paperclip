@@ -20,6 +20,8 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companyResetRequestSchema,
+  deleteCompanyRequestSchema,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
