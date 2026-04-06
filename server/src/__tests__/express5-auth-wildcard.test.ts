@@ -38,6 +38,15 @@ describe("Express 5 /api/auth wildcard route", () => {
     expect(res.status).toBe(200);
   });
 
+  it("does not match unrelated paths outside /api/auth", async () => {
+    // Confirm the route is not over-broad — requests to other API paths
+    // must fall through to 404 and not reach the better-auth handler.
+    const { app, handler } = buildApp();
+    const res = await request(app).get("/api/other/endpoint");
+    expect(res.status).toBe(404);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it("invokes the handler for every matched sub-path", async () => {
     const { app, handler } = buildApp();
     await request(app).post("/api/auth/sign-out");
