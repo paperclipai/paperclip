@@ -297,10 +297,10 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
-    remove: (id: string, confirmName?: string) =>
+    remove: (id: string, confirmName: string) =>
       db.transaction(async (tx) => {
-        // Step 1: Verify company exists and name matches if provided
-        if (confirmName !== undefined) {
+        // Step 1: Verify company exists and name matches
+        {
           const [company] = await tx
             .select({ name: companies.name })
             .from(companies)
@@ -348,15 +348,23 @@ export function companyService(db: Db) {
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(labels).where(eq(labels.companyId, id));
-        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
+        await tx
+          .delete(routineTriggers)
+          .where(eq(routineTriggers.companyId, id));
         await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
         await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
-        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx
+          .delete(budgetIncidents)
+          .where(eq(budgetIncidents.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
-        await tx.delete(documentRevisions).where(eq(documentRevisions.companyId, id));
+        await tx
+          .delete(documentRevisions)
+          .where(eq(documentRevisions.companyId, id));
         await tx.delete(feedbackVotes).where(eq(feedbackVotes.companyId, id));
-        await tx.delete(feedbackExports).where(eq(feedbackExports.companyId, id));
+        await tx
+          .delete(feedbackExports)
+          .where(eq(feedbackExports.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
