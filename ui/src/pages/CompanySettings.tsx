@@ -472,9 +472,16 @@ export function CompanySettings() {
           Technical review
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          {!selectedCompany.technicalReviewerReference ? (
+            <p className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              Important: configure an agent here to ensure automatic technical review dispatch.
+              When this field stays as "Default", routing depends on environment/slug fallbacks
+              and may silently fail if there is no unique match.
+            </p>
+          ) : null}
           <Field
             label="Technical reviewer for dispatch"
-            hint="Agent that receives automatic technical_review_dispatch work when parent issues are in handoff_ready. Company override is optional: when unset, the server uses PAPERCLIP_TECHNICAL_REVIEWER_REFERENCE, then the default name reference revisor-pr (exactly one matching non-terminated agent). Dispatch still requires a GitHub PR URL on the work product, a comment, or the issue description."
+            hint="Agent that receives automatic technical_review_dispatch work when parent issues are in handoff_ready. Recommended: always set this at company level via board so dispatch does not depend on env/default fallbacks. Dispatch still requires a GitHub PR URL on the work product, a comment, or the issue description."
           >
             <div className="space-y-2">
               {technicalReviewerUnmatched ? (

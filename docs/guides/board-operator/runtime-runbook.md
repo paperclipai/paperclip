@@ -129,6 +129,7 @@ Current dispatch contract:
   - Env `PAPERCLIP_TECHNICAL_REVIEWER_REFERENCE`
   - Default agent name reference `revisor-pr`
 - **Where to set the company field:** board **Company Settings** → *Technical review*, or PATCH `/api/companies/{companyId}`.
+- **Operator recommendation (important):** set `technicalReviewerReference` explicitly via board for every active company. Keeping it unset makes dispatch depend on env/default references and increases the chance of no-op dispatches (`reviewer_not_found` / `reviewer_ambiguous`).
 - **Match rule:** the resolved reference must match a single non-terminated agent in the company.
 - **Ambiguity:** when multiple agents match the resolved reference (e.g. duplicate name slugs), dispatch is a noop with reason `reviewer_ambiguous`.
 - **PR URLs** are parsed for **github.com** only (`owner/repo/pull/n`); other hosts are not auto-dispatched—attach a GitHub work product or link in handoff text, or create review issues manually.

@@ -60,6 +60,8 @@ PATCH /api/companies/{companyId}
 
 `technicalReviewerReference` is optional. When present, it is an agent **name** reference (same resolution rules as `@AgentName` in comments — see [Issues API — Add Comment](./issues.md#add-comment) for mention matching). It is used when dispatching technical review children from `handoff_ready` issues.
 
+For production/operator reliability, prefer setting this field explicitly per company via the Update Company endpoint (API) or in UI board settings. Leaving it `null` through either mechanism shifts dispatch to fallback resolution (env/default), which can cause no-op dispatches when references are missing or ambiguous.
+
 On **PATCH**, a non-null value must resolve to exactly one **non-terminated** agent in the **same company** (same resolution as dispatch). The API returns **422** when no agent matches or when the reference is ambiguous. There is **no database foreign key** on this column; enforcement is application-level.
 
 **Fallback precedence** when `technicalReviewerReference` is **omitted** or **`null`:**
