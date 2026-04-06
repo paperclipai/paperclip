@@ -212,4 +212,18 @@ describe("optimistic issue comments", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not mark comments from the active run agent as queued", () => {
+    expect(
+      isQueuedIssueComment({
+        comment: {
+          createdAt: new Date("2026-03-28T16:20:05.000Z"),
+          authorAgentId: "agent-1",
+        },
+        activeRunStartedAt: new Date("2026-03-28T16:20:00.000Z"),
+        activeRunAgentId: "agent-1",
+        runId: null,
+      }),
+    ).toBe(false);
+  });
 });

@@ -553,6 +553,7 @@ export function IssueDetail() {
         isQueuedIssueComment({
           comment: nextComment,
           activeRunStartedAt,
+          activeRunAgentId: runningIssueRun?.agentId ?? null,
           runId: meta?.runId ?? nextComment.runId ?? null,
           interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
         })
