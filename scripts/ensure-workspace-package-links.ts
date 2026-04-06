@@ -1,10 +1,11 @@
 #!/usr/bin/env -S node --import tsx
-import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { repoRoot } from "./dev-service-profile.ts";
 
 type WorkspaceLinkMismatch = {
+  workspaceDir: string;
   packageName: string;
   expectedPath: string;
   actualPath: string | null;
@@ -44,11 +45,11 @@ function discoverWorkspacePackagePaths(rootDir: string): Map<string, string> {
 
 const workspacePackagePaths = discoverWorkspacePackagePaths(repoRoot);
 
-function findServerWorkspaceLinkMismatches(): WorkspaceLinkMismatch[] {
-  const serverPackageJson = readJsonFile(path.join(repoRoot, "server", "package.json"));
+function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
+  const packageJson = readJsonFile(path.join(repoRoot, workspaceDir, "package.json"));
   const dependencies = {
-    ...(serverPackageJson.dependencies as Record<string, unknown> | undefined),
-    ...(serverPackageJson.devDependencies as Record<string, unknown> | undefined),
+    ...(packageJson.dependencies as Record<string, unknown> | undefined),
+    ...(packageJson.devDependencies as Record<string, unknown> | undefined),
   };
   const mismatches: WorkspaceLinkMismatch[] = [];
 
@@ -58,11 +59,12 @@ function findServerWorkspaceLinkMismatches(): WorkspaceLinkMismatch[] {
     const expectedPath = workspacePackagePaths.get(packageName);
     if (!expectedPath) continue;
 
-    const linkPath = path.join(repoRoot, "server", "node_modules", ...packageName.split("/"));
+    const linkPath = path.join(repoRoot, workspaceDir, "node_modules", ...packageName.split("/"));
     const actualPath = existsSync(linkPath) ? path.resolve(realpathSync(linkPath)) : null;
     if (actualPath === path.resolve(expectedPath)) continue;
 
     mismatches.push({
+      workspaceDir,
       packageName,
       expectedPath: path.resolve(expectedPath),
       actualPath,
@@ -72,53 +74,32 @@ function findServerWorkspaceLinkMismatches(): WorkspaceLinkMismatch[] {
   return mismatches;
 }
 
-function runCommand(command: string, args: string[], cwd: string) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: process.env,
-      stdio: "inherit",
-    });
-
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(
-        new Error(
-          `${command} ${args.join(" ")} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}`,
-        ),
-      );
-    });
-  });
-}
-
-async function ensureServerWorkspaceLinksCurrent() {
-  const mismatches = findServerWorkspaceLinkMismatches();
+async function ensureWorkspaceLinksCurrent(workspaceDir: string) {
+  const mismatches = findWorkspaceLinkMismatches(workspaceDir);
   if (mismatches.length === 0) return;
 
-  console.log("[paperclip] detected stale workspace package links for server; relinking dependencies...");
+  console.log(`[paperclip] detected stale workspace package links for ${workspaceDir}; relinking dependencies...`);
   for (const mismatch of mismatches) {
     console.log(
       `[paperclip]   ${mismatch.packageName}: ${mismatch.actualPath ?? "missing"} -> ${mismatch.expectedPath}`,
     );
   }
 
-  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  await runCommand(
-    pnpmBin,
-    ["install", "--force", "--config.confirmModulesPurge=false"],
-    repoRoot,
-  );
+  for (const mismatch of mismatches) {
+    const linkPath = path.join(repoRoot, mismatch.workspaceDir, "node_modules", ...mismatch.packageName.split("/"));
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.symlink(mismatch.expectedPath, linkPath);
+  }
 
-  const remainingMismatches = findServerWorkspaceLinkMismatches();
+  const remainingMismatches = findWorkspaceLinkMismatches(workspaceDir);
   if (remainingMismatches.length === 0) return;
 
   throw new Error(
-    `Workspace relink did not repair all server package links: ${remainingMismatches.map((item) => item.packageName).join(", ")}`,
+    `Workspace relink did not repair all ${workspaceDir} package links: ${remainingMismatches.map((item) => item.packageName).join(", ")}`,
   );
 }
 
-await ensureServerWorkspaceLinksCurrent();
+for (const workspaceDir of ["server", "ui"]) {
+  await ensureWorkspaceLinksCurrent(workspaceDir);
+}

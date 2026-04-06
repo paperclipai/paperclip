@@ -208,35 +208,10 @@ function findServerWorkspaceLinkMismatches(rootDir: string): WorkspaceLinkMismat
   return mismatches;
 }
 
-async function runCommand(command: string, args: string[], cwd: string) {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: process.env,
-      stdio: "ignore",
-      shell: process.platform === "win32",
-    });
-
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(
-        new Error(
-          `${command} ${args.join(" ")} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}`,
-        ),
-      );
-    });
-  });
-}
-
 export async function ensureServerWorkspaceLinksCurrent(
   startCwd: string,
   opts?: {
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-    runCommand?: (command: string, args: string[], cwd: string) => Promise<void>;
   },
 ) {
   const workspaceRoot = findWorkspaceRoot(startCwd);
@@ -255,12 +230,12 @@ export async function ensureServerWorkspaceLinksCurrent(
     }
   }
 
-  const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  await (opts?.runCommand ?? runCommand)(
-    pnpmBin,
-    ["install", "--force", "--config.confirmModulesPurge=false"],
-    workspaceRoot,
-  );
+  for (const mismatch of mismatches) {
+    const linkPath = path.join(workspaceRoot, "server", "node_modules", ...mismatch.packageName.split("/"));
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    await fs.rm(linkPath, { recursive: true, force: true });
+    await fs.symlink(mismatch.expectedPath, linkPath);
+  }
 
   const remainingMismatches = findServerWorkspaceLinkMismatches(workspaceRoot);
   if (remainingMismatches.length === 0) return;

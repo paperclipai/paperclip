@@ -223,21 +223,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     );
     await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
 
-    const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
-    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"), {
-      runCommand: async (command, args, cwd) => {
-        commands.push({ command, args, cwd });
-        await fs.rm(path.join(serverNodeModulesScopeDir, "db"), { force: true });
-        await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
-      },
-    });
-
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      command: process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-      args: ["install", "--force", "--config.confirmModulesPurge=false"],
-      cwd: repoRoot,
-    });
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
     expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(expectedPackageDir));
   });
 
@@ -267,14 +253,7 @@ describe("ensureServerWorkspaceLinksCurrent", () => {
     );
     await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
 
-    let invoked = false;
-    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"), {
-      runCommand: async () => {
-        invoked = true;
-      },
-    });
-
-    expect(invoked).toBe(false);
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
   });
 });
 
