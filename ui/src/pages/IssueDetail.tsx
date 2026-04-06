@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,6 +11,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
+import { useDialog } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -291,6 +292,7 @@ function ActorIdentity({ evt, agentMap }: { evt: ActivityEvent; agentMap: Map<st
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { openNewIssue } = useDialog();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -496,6 +498,16 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+  const openNewSubIssue = useCallback(() => {
+    if (!issue) return;
+    openNewIssue({
+      parentId: issue.id,
+      parentIdentifier: issue.identifier ?? undefined,
+      parentTitle: issue.title,
+      projectId: issue.projectId ?? undefined,
+      goalId: issue.goalId ?? undefined,
+    });
+  }, [issue, openNewIssue]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -1042,11 +1054,16 @@ export function IssueDetail() {
   useEffect(() => {
     if (issue) {
       openPanel(
-        <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} />
+        <IssueProperties
+          issue={issue}
+          childIssues={childIssues}
+          onAddSubIssue={openNewSubIssue}
+          onUpdate={(data) => updateIssue.mutate(data)}
+        />
       );
     }
     return () => closePanel();
-  }, [issue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [childIssues, closePanel, issue, openNewSubIssue, openPanel, updateIssue]);
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
@@ -1639,6 +1656,11 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="subissues">
+          <div className="mb-3 flex items-center justify-end">
+            <Button variant="outline" size="sm" onClick={openNewSubIssue}>
+              Add sub-issue
+            </Button>
+          </div>
           {childIssues.length === 0 ? (
             <p className="text-xs text-muted-foreground">No sub-issues.</p>
           ) : (
@@ -1779,7 +1801,13 @@ export function IssueDetail() {
           </SheetHeader>
           <ScrollArea className="flex-1 overflow-y-auto">
             <div className="px-4 pb-4">
-              <IssueProperties issue={issue} onUpdate={(data) => updateIssue.mutate(data)} inline />
+              <IssueProperties
+                issue={issue}
+                childIssues={childIssues}
+                onAddSubIssue={openNewSubIssue}
+                onUpdate={(data) => updateIssue.mutate(data)}
+                inline
+              />
             </div>
           </ScrollArea>
         </SheetContent>

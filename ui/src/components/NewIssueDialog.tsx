@@ -46,6 +46,7 @@ import {
   Paperclip,
   FileText,
   Loader2,
+  ListTree,
   X,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -297,6 +298,9 @@ export function NewIssueDialog() {
 
   const effectiveCompanyId = dialogCompanyId ?? selectedCompanyId;
   const dialogCompany = companies.find((c) => c.id === effectiveCompanyId) ?? selectedCompany;
+  const isSubIssueMode = Boolean(newIssueDefaults.parentId);
+  const parentIssueLabel = newIssueDefaults.parentIdentifier
+    ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -510,7 +514,23 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
-    if (newIssueDefaults.title) {
+    if (newIssueDefaults.parentId) {
+      const defaultProjectId = newIssueDefaults.projectId ?? "";
+      const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      setTitle(newIssueDefaults.title ?? "");
+      setDescription(newIssueDefaults.description ?? "");
+      setStatus(newIssueDefaults.status ?? "todo");
+      setPriority(newIssueDefaults.priority ?? "");
+      setProjectId(defaultProjectId);
+      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
+      setAssigneeModelOverride("");
+      setAssigneeThinkingEffort("");
+      setAssigneeChrome(false);
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
+      setSelectedExecutionWorkspaceId("");
+      executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
+    } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
@@ -616,6 +636,7 @@ export function NewIssueDialog() {
   }
 
   function handleCompanyChange(companyId: string) {
+    if (isSubIssueMode) return;
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
     setAssigneeValue("");
@@ -666,6 +687,8 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
+      ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
+      ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
@@ -908,6 +931,7 @@ export function NewIssueDialog() {
                     "px-1.5 py-0.5 rounded text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity",
                     !dialogCompany?.brandColor && "bg-muted",
                   )}
+                  disabled={isSubIssueMode}
                   style={
                     dialogCompany?.brandColor
                       ? {
@@ -955,7 +979,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New issue</span>
+            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1118,6 +1142,19 @@ export function NewIssueDialog() {
             </div>
           </div>
         </div>
+
+        {isSubIssueMode ? (
+          <div className="px-4 pb-2 shrink-0">
+            <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground">
+              <ListTree className="h-3.5 w-3.5 shrink-0" />
+              <span className="shrink-0">Sub-issue of</span>
+              <span className="font-medium text-foreground">{parentIssueLabel}</span>
+              {newIssueDefaults.parentTitle ? (
+                <span className="truncate">· {newIssueDefaults.parentTitle}</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         {currentProject && currentProjectSupportsExecutionWorkspace && (
           <div className="px-4 py-3 shrink-0 space-y-2">
@@ -1455,7 +1492,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : "Create Issue"}</span>
+                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
               </span>
             </Button>
           </div>

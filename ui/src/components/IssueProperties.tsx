@@ -72,6 +72,8 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
 
 interface IssuePropertiesProps {
   issue: Issue;
+  childIssues?: Issue[];
+  onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
 }
@@ -147,7 +149,13 @@ function PropertyPicker({
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProps) {
+export function IssueProperties({
+  issue,
+  childIssues = [],
+  onAddSubIssue,
+  onUpdate,
+  inline,
+}: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -711,6 +719,34 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
           ) : (
             <span className="text-sm text-muted-foreground">None</span>
           )}
+        </PropertyRow>
+
+        <PropertyRow label="Sub-issues">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {childIssues.length > 0 ? (
+              childIssues.map((child) => (
+                <Link
+                  key={child.id}
+                  to={`/issues/${child.identifier ?? child.id}`}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent/50"
+                >
+                  {child.identifier ?? child.title}
+                </Link>
+              ))
+            ) : (
+              <span className="text-sm text-muted-foreground">None</span>
+            )}
+            {onAddSubIssue ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={onAddSubIssue}
+              >
+                <Plus className="h-3 w-3" />
+                Add sub-issue
+              </button>
+            ) : null}
+          </div>
         </PropertyRow>
 
         {issue.parentId && (
