@@ -51,12 +51,15 @@ vi.mock("./MarkdownEditor", () => ({
   MarkdownEditor: ({
     value = "",
     onChange,
+    placeholder,
   }: {
     value?: string;
     onChange?: (value: string) => void;
+    placeholder?: string;
   }) => (
     <textarea
       aria-label="Issue chat editor"
+      placeholder={placeholder}
       value={value}
       onChange={(event) => onChange?.(event.target.value)}
     />
@@ -158,6 +161,7 @@ describe("IssueChatThread", () => {
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editor).not.toBeNull();
+    expect(editor?.placeholder).toBe("Reply");
 
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(

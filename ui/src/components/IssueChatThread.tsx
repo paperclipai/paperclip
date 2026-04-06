@@ -27,6 +27,12 @@ import {
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -37,7 +43,7 @@ import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
-import { ChevronDown, Loader2, Paperclip } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, Copy, Loader2, MoreHorizontal, Paperclip } from "lucide-react";
 
 interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -412,6 +418,7 @@ function IssueChatAssistantMessage({
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
+  const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
 
   const handleVote = async (
     vote: FeedbackVoteValue,
@@ -434,11 +441,31 @@ function IssueChatAssistantMessage({
               </span>
             ) : null}
           </div>
-          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <a href={anchorId ? `#${anchorId}` : undefined} className="hover:text-foreground hover:underline">
               {formatDateTime(message.createdAt)}
             </a>
-          </span>
+            {runHref ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Run actions"
+                    aria-label="Run actions"
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem asChild>
+                    <Link to={runHref}>View run</Link>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -468,25 +495,14 @@ function IssueChatAssistantMessage({
         </div>
 
         <ActionBarPrimitive.Root className="mt-3 flex flex-wrap items-center justify-end gap-2 text-xs text-muted-foreground">
-          {runId ? (
-            runAgentId ? (
-              <Link
-                to={`/agents/${runAgentId}/runs/${runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-              >
-                run {runId.slice(0, 8)}
-              </Link>
-            ) : (
-              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
-                run {runId.slice(0, 8)}
-              </span>
-            )
-          ) : null}
           <ActionBarPrimitive.Copy
             copiedDuration={2000}
-            className="inline-flex h-8 items-center rounded-md border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+            className="group inline-flex h-8 items-center justify-center text-muted-foreground transition-colors hover:text-foreground data-[copied=true]:text-foreground"
+            title="Copy message"
+            aria-label="Copy message"
           >
-            Copy
+            <Copy className="h-4 w-4 group-data-[copied=true]:hidden" />
+            <Check className="hidden h-4 w-4 group-data-[copied=true]:block" />
           </ActionBarPrimitive.Copy>
           {commentId && onVote ? (
             <OutputFeedbackButtons
@@ -554,7 +570,7 @@ function IssueChatSystemMessage({
                   Status
                 </span>
                 <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
-                <span className="text-muted-foreground">{"->"}</span>
+                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="font-medium text-foreground">{humanizeValue(statusChange.to)}</span>
               </div>
             ) : null}
@@ -567,7 +583,7 @@ function IssueChatSystemMessage({
                 <span className="text-muted-foreground">
                   {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId)}
                 </span>
-                <span className="text-muted-foreground">{"->"}</span>
+                <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="font-medium text-foreground">
                   {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId)}
                 </span>
@@ -751,7 +767,7 @@ function IssueChatComposer({
         ref={editorRef}
         value={body}
         onChange={setBody}
-        placeholder="Reply in chat..."
+        placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={onImageUpload}
