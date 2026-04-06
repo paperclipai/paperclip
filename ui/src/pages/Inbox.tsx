@@ -141,13 +141,14 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
 
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
-const trailingIssueColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "labels", "updated"];
+const trailingIssueColumns: InboxIssueColumn[] = ["assignee", "project", "workspace", "parent", "labels", "updated"];
 const inboxIssueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
+  parent: "Parent issue",
   labels: "Tags",
   updated: "Last updated",
 };
@@ -157,6 +158,7 @@ const inboxIssueColumnDescriptions: Record<InboxIssueColumn, string> = {
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the issue.",
+  parent: "Parent issue identifier and title.",
   labels: "Issue labels and tags.",
   updated: "Latest visible activity time.",
 };
@@ -224,6 +226,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "assignee") return "minmax(7.5rem, 9.5rem)";
       if (column === "project") return "minmax(6.5rem, 8.5rem)";
       if (column === "workspace") return "minmax(9rem, 12rem)";
+      if (column === "parent") return "minmax(8rem, 12rem)";
       if (column === "labels") return "minmax(8rem, 10rem)";
       return "minmax(6rem, 7rem)";
     })
@@ -238,6 +241,8 @@ export function InboxIssueTrailingColumns({
   workspaceName,
   assigneeName,
   currentUserId,
+  parentIdentifier,
+  parentTitle,
 }: {
   issue: Issue;
   columns: InboxIssueColumn[];
@@ -246,6 +251,8 @@ export function InboxIssueTrailingColumns({
   workspaceName: string | null;
   assigneeName: string | null;
   currentUserId: string | null;
+  parentIdentifier: string | null;
+  parentTitle: string | null;
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
@@ -344,6 +351,22 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
               {workspaceName}
+            </span>
+          );
+        }
+
+        if (column === "parent") {
+          if (!issue.parentId) {
+            return <span key={column} className="min-w-0" aria-hidden="true" />;
+          }
+
+          return (
+            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground" title={parentTitle ?? undefined}>
+              {parentIdentifier ? (
+                <span className="font-mono">{parentIdentifier}</span>
+              ) : (
+                <span className="italic">Sub-issue</span>
+              )}
             </span>
           );
         }
@@ -1979,6 +2002,8 @@ export function Inbox() {
                           })}
                           assigneeName={agentName(issue.assigneeAgentId)}
                           currentUserId={currentUserId}
+                          parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
+                          parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}
                         />
                       ) : undefined
                     }
