@@ -507,9 +507,31 @@ export function IssueDetail() {
       parentIdentifier: issue.identifier ?? undefined,
       parentTitle: issue.title,
       projectId: issue.projectId ?? undefined,
+      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       goalId: issue.goalId ?? undefined,
+      executionWorkspaceId: issue.executionWorkspaceId ?? undefined,
+      executionWorkspaceMode: issue.executionWorkspaceId ? "reuse_existing" : issue.executionWorkspacePreference ?? undefined,
+      parentExecutionWorkspaceLabel:
+        issue.currentExecutionWorkspace?.name
+          ?? issue.currentExecutionWorkspace?.branchName
+          ?? issue.currentExecutionWorkspace?.cwd
+          ?? issue.executionWorkspaceId
+          ?? undefined,
     });
-  }, [issue?.goalId, issue?.id, issue?.identifier, issue?.projectId, issue?.title, openNewIssue]);
+  }, [
+    issue?.currentExecutionWorkspace?.branchName,
+    issue?.currentExecutionWorkspace?.cwd,
+    issue?.currentExecutionWorkspace?.name,
+    issue?.executionWorkspaceId,
+    issue?.executionWorkspacePreference,
+    issue?.goalId,
+    issue?.id,
+    issue?.identifier,
+    issue?.projectId,
+    issue?.projectWorkspaceId,
+    issue?.title,
+    openNewIssue,
+  ]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];

@@ -311,12 +311,37 @@ describe("NewIssueDialog", () => {
   });
 
   it("submits parent and goal context for sub-issues", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "Parent workspace",
+        status: "active",
+        branchName: "feature/pap-1",
+        cwd: "/tmp/workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
       parentTitle: "Parent issue",
       title: "Child issue",
       projectId: "project-1",
+      executionWorkspaceId: "workspace-1",
       goalId: "goal-1",
     };
 
@@ -340,8 +365,74 @@ describe("NewIssueDialog", () => {
         parentId: "issue-1",
         goalId: "goal-1",
         projectId: "project-1",
+        executionWorkspaceId: "workspace-1",
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("warns when a sub-issue stops matching the parent workspace", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "Parent workspace",
+        status: "active",
+        branchName: "feature/pap-1",
+        cwd: "/tmp/workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+      {
+        id: "workspace-2",
+        name: "Other workspace",
+        status: "active",
+        branchName: "feature/pap-2",
+        cwd: "/tmp/workspace-2",
+        lastUsedAt: new Date("2026-04-06T16:01:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      parentId: "issue-1",
+      parentIdentifier: "PAP-1",
+      parentTitle: "Parent issue",
+      title: "Child issue",
+      projectId: "project-1",
+      executionWorkspaceId: "workspace-1",
+      parentExecutionWorkspaceLabel: "Parent workspace",
+      goalId: "goal-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
+
+    const selects = Array.from(container.querySelectorAll("select"));
+    const modeSelect = selects[0] as HTMLSelectElement | undefined;
+    expect(modeSelect).not.toBeUndefined();
+
+    await act(async () => {
+      modeSelect!.value = "shared_workspace";
+      modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).toContain("Parent workspace");
 
     act(() => root.unmount());
   });

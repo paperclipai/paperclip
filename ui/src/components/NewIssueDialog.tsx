@@ -301,6 +301,8 @@ export function NewIssueDialog() {
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel = newIssueDefaults.parentIdentifier
     ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
+  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
+  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
@@ -517,18 +519,23 @@ export function NewIssueDialog() {
     if (newIssueDefaults.parentId) {
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
+        ?? defaultProjectWorkspaceIdForProject(defaultProject);
+      const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
+        ? "reuse_existing"
+        : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
       setTitle(newIssueDefaults.title ?? "");
       setDescription(newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorkspaceId(defaultProjectWorkspaceId);
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
-      setSelectedExecutionWorkspaceId("");
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
     } else if (newIssueDefaults.title) {
       setTitle(newIssueDefaults.title);
@@ -797,6 +804,13 @@ export function NewIssueDialog() {
   const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
+  const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
+    ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
+    : false;
+  const showParentWorkspaceWarning = isSubIssueMode
+    && currentProjectSupportsExecutionWorkspace
+    && Boolean(parentExecutionWorkspaceId)
+    && !isUsingParentExecutionWorkspace;
   const assigneeOptionsTitle =
     assigneeAdapterType === "claude_local"
       ? "Claude options"
@@ -1202,6 +1216,11 @@ export function NewIssueDialog() {
                   Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? selectedReusableExecutionWorkspace.cwd ?? "existing execution workspace"}.
                 </div>
               )}
+              {showParentWorkspaceWarning ? (
+                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                </div>
+              ) : null}
             </div>
           </div>
         )}
