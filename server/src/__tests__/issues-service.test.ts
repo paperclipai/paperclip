@@ -583,6 +583,65 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       "2026-03-26T10:00:00.000Z",
     );
   });
+
+  it("lists comments after an anchor comment without binding Date objects into the cursor query", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstCommentId = randomUUID();
+    const secondCommentId = randomUUID();
+    const thirdCommentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cursor pagination issue",
+      status: "todo",
+      priority: "medium",
+      createdAt: new Date("2026-03-26T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+    });
+
+    await db.insert(issueComments).values([
+      {
+        id: firstCommentId,
+        companyId,
+        issueId,
+        body: "first",
+        createdAt: new Date("2026-03-26T10:01:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:01:00.000Z"),
+      },
+      {
+        id: secondCommentId,
+        companyId,
+        issueId,
+        body: "second",
+        createdAt: new Date("2026-03-26T10:02:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:02:00.000Z"),
+      },
+      {
+        id: thirdCommentId,
+        companyId,
+        issueId,
+        body: "third",
+        createdAt: new Date("2026-03-26T10:03:00.000Z"),
+        updatedAt: new Date("2026-03-26T10:03:00.000Z"),
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, {
+      afterCommentId: firstCommentId,
+      order: "asc",
+    });
+
+    expect(comments.map((comment) => comment.id)).toEqual([secondCommentId, thirdCommentId]);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
