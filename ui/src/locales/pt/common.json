@@ -33,7 +33,7 @@
       "live_count": "{{count}} ao vivo"
     },
     "company_menu": {
-      "org": "Org",
+      "org": "Organograma",
       "skills": "Habilidades",
       "costs": "Custos",
       "activity": "Atividade",
@@ -490,6 +490,38 @@
             "cooldown_sec": "Segundos minimos entre execucoes consecutivas de heartbeat.",
             "max_concurrent_runs": "Numero maximo de execucoes de heartbeat simultaneas.",
             "budget_monthly_cents": "Limite mensal de gasto em centavos. 0 significa sem limite."
+          },
+          "environment_result": {
+            "status": {
+              "pass": "Aprovado",
+              "warn": "Avisos",
+              "fail": "Falhou"
+            },
+            "level": {
+              "info": "INFO",
+              "warn": "AVISO",
+              "error": "ERRO"
+            },
+            "hint_label": "Dica",
+            "messages": {
+              "cwd_valid": "Diretorio de trabalho valido: {{path}}",
+              "command_not_found": "Comando nao encontrado no PATH: \"{{command}}\"",
+              "codex_auth_config": "O Codex esta autenticado pela propria configuracao de auth.",
+              "openai_key_present": "OPENAI_API_KEY esta definido para autenticacao do Codex.",
+              "openai_key_missing": "OPENAI_API_KEY nao esta definido. As execucoes do Codex podem falhar ate configurar autenticacao."
+            },
+            "details": {
+              "logged_in_as": "Logado como {{email}}.",
+              "detected_in": "Detectado em {{source}}."
+            },
+            "hints": {
+              "set_openai_key_or_auth": "Defina OPENAI_API_KEY no env do adaptador, no shell, ou rode `codex auth` para login.",
+              "use_codex_cli_probe": "Use o comando `codex` para executar a sonda automatica de login e instalacao.",
+              "retry_probe": "Tente novamente a sonda. Se persistir, verifique manualmente se o Codex executa `Respond with hello` neste diretorio.",
+              "try_probe_manually": "Teste manualmente (`codex exec --json -` e prompt: Respond with hello) para inspecionar a saida completa.",
+              "configure_openai_or_login": "Configure OPENAI_API_KEY no env/shell do adaptador ou rode `codex login`, depois teste novamente.",
+              "run_codex_exec_debug": "Rode `codex exec --json -` manualmente neste diretorio de trabalho e envie `Respond with hello` para depurar."
+            }
           }
         },
         "liveRunWidget": {
@@ -933,9 +965,13 @@
       "title": "Organograma",
       "import": "Importar",
       "export": "Exportar",
+      "select_company": "Selecione uma empresa para visualizar o organograma.",
+      "no_hierarchy": "Nenhuma hierarquia organizacional definida.",
       "zoom_in": "Aumentar Zoom",
       "zoom_out": "Diminuir Zoom",
       "reset_zoom": "Redefinir Zoom",
+      "fit_screen": "Ajustar à tela",
+      "fit": "Ajustar",
       "empty_state": "Nenhum dado organizacional disponível."
     },
     "companies": {
@@ -1397,6 +1433,38 @@
           "cooldown_sec": "Segundos minimos entre execucoes consecutivas de heartbeat.",
           "max_concurrent_runs": "Numero maximo de execucoes de heartbeat simultaneas.",
           "budget_monthly_cents": "Limite mensal de gasto em centavos. 0 significa sem limite."
+        },
+        "environment_result": {
+          "status": {
+            "pass": "Aprovado",
+            "warn": "Avisos",
+            "fail": "Falhou"
+          },
+          "level": {
+            "info": "INFO",
+            "warn": "AVISO",
+            "error": "ERRO"
+          },
+          "hint_label": "Dica",
+          "messages": {
+            "cwd_valid": "Diretorio de trabalho valido: {{path}}",
+            "command_not_found": "Comando nao encontrado no PATH: \"{{command}}\"",
+            "codex_auth_config": "O Codex esta autenticado pela propria configuracao de auth.",
+            "openai_key_present": "OPENAI_API_KEY esta definido para autenticacao do Codex.",
+            "openai_key_missing": "OPENAI_API_KEY nao esta definido. As execucoes do Codex podem falhar ate configurar autenticacao."
+          },
+          "details": {
+            "logged_in_as": "Logado como {{email}}.",
+            "detected_in": "Detectado em {{source}}."
+          },
+          "hints": {
+            "set_openai_key_or_auth": "Defina OPENAI_API_KEY no env do adaptador, no shell, ou rode `codex auth` para login.",
+            "use_codex_cli_probe": "Use o comando `codex` para executar a sonda automatica de login e instalacao.",
+            "retry_probe": "Tente novamente a sonda. Se persistir, verifique manualmente se o Codex executa `Respond with hello` neste diretorio.",
+            "try_probe_manually": "Teste manualmente (`codex exec --json -` e prompt: Respond with hello) para inspecionar a saida completa.",
+            "configure_openai_or_login": "Configure OPENAI_API_KEY no env/shell do adaptador ou rode `codex login`, depois teste novamente.",
+            "run_codex_exec_debug": "Rode `codex exec --json -` manualmente neste diretorio de trabalho e envie `Respond with hello` para depurar."
+          }
         }
       },
       "liveRunWidget": {

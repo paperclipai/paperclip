@@ -990,14 +990,85 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 }
 
 function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
+  const { t } = useTranslation();
   const statusLabel =
-    result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
+    result.status === "pass"
+      ? t("page.components.agentConfigForm.environment_result.status.pass")
+      : result.status === "warn"
+        ? t("page.components.agentConfigForm.environment_result.status.warn")
+        : t("page.components.agentConfigForm.environment_result.status.fail");
   const statusClass =
     result.status === "pass"
       ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"
       : result.status === "warn"
         ? "text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10"
         : "text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10";
+
+  function translateCheckMessage(message: string): string {
+    if (message.startsWith("Working directory is valid: ")) {
+      return t("page.components.agentConfigForm.environment_result.messages.cwd_valid", {
+        path: message.replace("Working directory is valid: ", "").trim(),
+      });
+    }
+    if (message.startsWith("Command not found in PATH: ")) {
+      return t("page.components.agentConfigForm.environment_result.messages.command_not_found", {
+        command: message.replace("Command not found in PATH: ", "").replace(/^\"|\"$/g, "").trim(),
+      });
+    }
+    if (message === "Codex is authenticated via its own auth configuration.") {
+      return t("page.components.agentConfigForm.environment_result.messages.codex_auth_config");
+    }
+    if (message === "OPENAI_API_KEY is set for Codex authentication.") {
+      return t("page.components.agentConfigForm.environment_result.messages.openai_key_present");
+    }
+    if (message === "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured.") {
+      return t("page.components.agentConfigForm.environment_result.messages.openai_key_missing");
+    }
+    return message;
+  }
+
+  function translateCheckDetail(detail: string): string {
+    if (detail.startsWith("Logged in as ")) {
+      return t("page.components.agentConfigForm.environment_result.details.logged_in_as", {
+        email: detail.replace("Logged in as ", "").replace(/\.$/, "").trim(),
+      });
+    }
+    if (detail.startsWith("Detected in ")) {
+      return t("page.components.agentConfigForm.environment_result.details.detected_in", {
+        source: detail.replace("Detected in ", "").replace(/\.$/, "").trim(),
+      });
+    }
+    return detail;
+  }
+
+  function translateLevel(level: string): string {
+    if (level === "info") return t("page.components.agentConfigForm.environment_result.level.info");
+    if (level === "warn") return t("page.components.agentConfigForm.environment_result.level.warn");
+    if (level === "error") return t("page.components.agentConfigForm.environment_result.level.error");
+    return level.toUpperCase();
+  }
+
+  function translateCheckHint(hint: string): string {
+    if (hint === "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.") {
+      return t("page.components.agentConfigForm.environment_result.hints.set_openai_key_or_auth");
+    }
+    if (hint === "Use the `codex` CLI command to run the automatic login and installation probe.") {
+      return t("page.components.agentConfigForm.environment_result.hints.use_codex_cli_probe");
+    }
+    if (hint === "Retry the probe. If this persists, verify Codex can run `Respond with hello` from this directory manually.") {
+      return t("page.components.agentConfigForm.environment_result.hints.retry_probe");
+    }
+    if (hint === "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.") {
+      return t("page.components.agentConfigForm.environment_result.hints.try_probe_manually");
+    }
+    if (hint === "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.") {
+      return t("page.components.agentConfigForm.environment_result.hints.configure_openai_or_login");
+    }
+    if (hint === "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug.") {
+      return t("page.components.agentConfigForm.environment_result.hints.run_codex_exec_debug");
+    }
+    return hint;
+  }
 
   return (
     <div className={`rounded-md border px-3 py-2 text-xs ${statusClass}`}>
@@ -1011,12 +1082,16 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
         {result.checks.map((check, idx) => (
           <div key={`${check.code}-${idx}`} className="text-[11px] leading-relaxed break-words">
             <span className="font-medium uppercase tracking-wide opacity-80">
-              {check.level}
+              {translateLevel(check.level)}
             </span>
             <span className="mx-1 opacity-60">·</span>
-            <span>{check.message}</span>
-            {check.detail && <span className="block opacity-75 break-all">({check.detail})</span>}
-            {check.hint && <span className="block opacity-90 break-words">Hint: {check.hint}</span>}
+            <span>{translateCheckMessage(check.message)}</span>
+            {check.detail && <span className="block opacity-75 break-all">({translateCheckDetail(check.detail)})</span>}
+            {check.hint && (
+              <span className="block opacity-90 break-words">
+                {t("page.components.agentConfigForm.environment_result.hint_label")}: {translateCheckHint(check.hint)}
+              </span>
+            )}
           </div>
         ))}
       </div>

@@ -559,6 +559,38 @@
             "cooldown_sec": "Minimum seconds between consecutive heartbeat runs.",
             "max_concurrent_runs": "Maximum number of heartbeat runs that can execute simultaneously.",
             "budget_monthly_cents": "Monthly spend limit in cents. 0 means no limit."
+          },
+          "environment_result": {
+            "status": {
+              "pass": "Passed",
+              "warn": "Warnings",
+              "fail": "Failed"
+            },
+            "level": {
+              "info": "INFO",
+              "warn": "WARN",
+              "error": "ERROR"
+            },
+            "hint_label": "Hint",
+            "messages": {
+              "cwd_valid": "Working directory is valid: {{path}}",
+              "command_not_found": "Command not found in PATH: \"{{command}}\"",
+              "codex_auth_config": "Codex is authenticated via its own auth configuration.",
+              "openai_key_present": "OPENAI_API_KEY is set for Codex authentication.",
+              "openai_key_missing": "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured."
+            },
+            "details": {
+              "logged_in_as": "Logged in as {{email}}.",
+              "detected_in": "Detected in {{source}}."
+            },
+            "hints": {
+              "set_openai_key_or_auth": "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+              "use_codex_cli_probe": "Use the `codex` CLI command to run the automatic login and installation probe.",
+              "retry_probe": "Retry the probe. If this persists, verify Codex can run `Respond with hello` from this directory manually.",
+              "try_probe_manually": "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+              "configure_openai_or_login": "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+              "run_codex_exec_debug": "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug."
+            }
           }
         },
         "liveRunWidget": {
@@ -994,9 +1026,13 @@
       "title": "Org Chart",
       "import": "Import",
       "export": "Export",
+      "select_company": "Select a company to view the organization chart.",
+      "no_hierarchy": "No organizational hierarchy defined.",
       "zoom_in": "Zoom In",
       "zoom_out": "Zoom Out",
       "reset_zoom": "Reset Zoom",
+      "fit_screen": "Fit to screen",
+      "fit": "Fit",
       "empty_state": "No organizational data available."
     },
     "companies": {
@@ -1458,6 +1494,38 @@
           "cooldown_sec": "Minimum seconds between consecutive heartbeat runs.",
           "max_concurrent_runs": "Maximum number of heartbeat runs that can execute simultaneously.",
           "budget_monthly_cents": "Monthly spend limit in cents. 0 means no limit."
+        },
+        "environment_result": {
+          "status": {
+            "pass": "Passed",
+            "warn": "Warnings",
+            "fail": "Failed"
+          },
+          "level": {
+            "info": "INFO",
+            "warn": "WARN",
+            "error": "ERROR"
+          },
+          "hint_label": "Hint",
+          "messages": {
+            "cwd_valid": "Working directory is valid: {{path}}",
+            "command_not_found": "Command not found in PATH: \"{{command}}\"",
+            "codex_auth_config": "Codex is authenticated via its own auth configuration.",
+            "openai_key_present": "OPENAI_API_KEY is set for Codex authentication.",
+            "openai_key_missing": "OPENAI_API_KEY is not set. Codex runs may fail until authentication is configured."
+          },
+          "details": {
+            "logged_in_as": "Logged in as {{email}}.",
+            "detected_in": "Detected in {{source}}."
+          },
+          "hints": {
+            "set_openai_key_or_auth": "Set OPENAI_API_KEY in adapter env, shell environment, or run `codex auth` to log in.",
+            "use_codex_cli_probe": "Use the `codex` CLI command to run the automatic login and installation probe.",
+            "retry_probe": "Retry the probe. If this persists, verify Codex can run `Respond with hello` from this directory manually.",
+            "try_probe_manually": "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+            "configure_openai_or_login": "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+            "run_codex_exec_debug": "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug."
+          }
         }
       },
       "liveRunWidget": {
