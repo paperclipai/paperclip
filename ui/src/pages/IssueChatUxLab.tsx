@@ -22,7 +22,7 @@ import { Bot, FlaskConical, MessagesSquare, Route, Sparkles, WandSparkles } from
 const noop = async () => {};
 
 const highlights = [
-  "Running assistant replies with streamed text, reasoning, tool cards, and noisy notices",
+  "Running assistant replies with streamed text, reasoning, tool cards, and background status notes",
   "Historical issue events and linked runs rendered inline with the chat timeline",
   "Queued user messages, settled assistant comments, and feedback controls",
   "Empty and disabled-composer states without relying on live backend data",

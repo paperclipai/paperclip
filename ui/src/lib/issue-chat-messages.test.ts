@@ -73,7 +73,7 @@ describe("buildAssistantPartsFromTranscript", () => {
       { kind: "stderr", ts: "2026-04-06T12:00:05.000Z", text: "warn: noisy setup output" },
     ]);
 
-    expect(result.parts).toHaveLength(3);
+    expect(result.parts).toHaveLength(4);
     expect(result.parts[0]).toMatchObject({ type: "text", text: "Working on it. Done." });
     expect(result.parts[1]).toMatchObject({ type: "reasoning", text: "Need to inspect files." });
     expect(result.parts[2]).toMatchObject({
@@ -83,7 +83,11 @@ describe("buildAssistantPartsFromTranscript", () => {
       result: "file contents",
       isError: false,
     });
-    expect(result.notices).toEqual(["warn: noisy setup output"]);
+    expect(result.parts[3]).toMatchObject({
+      type: "reasoning",
+      text: "Background: warn: noisy setup output",
+    });
+    expect(result.notices).toEqual([]);
   });
 
   it("preserves transcript ordering when text and tool activity are interleaved", () => {
@@ -128,6 +132,52 @@ describe("buildAssistantPartsFromTranscript", () => {
       { type: "reasoning", text: "Need one more check." },
       { type: "tool-call", toolCallId: "tool-2", toolName: "write_file", result: "saved" },
     ]);
+  });
+
+  it("projects init, system activity, and errors into reasoning parts", () => {
+    const result = buildAssistantPartsFromTranscript([
+      {
+        kind: "init",
+        ts: "2026-04-06T12:00:00.000Z",
+        model: "gpt-5.4",
+        sessionId: "session-123",
+      },
+      {
+        kind: "system",
+        ts: "2026-04-06T12:00:01.000Z",
+        text: "item started: planning_step (id=step-1)",
+      },
+      {
+        kind: "system",
+        ts: "2026-04-06T12:00:02.000Z",
+        text: "item completed: planning_step (id=step-1)",
+      },
+      {
+        kind: "result",
+        ts: "2026-04-06T12:00:03.000Z",
+        text: "Tool crashed during execution",
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        costUsd: 0,
+        subtype: "error",
+        isError: true,
+        errors: ["ENOENT: missing file"],
+      },
+    ]);
+
+    expect(result.parts).toMatchObject([
+      {
+        type: "reasoning",
+        text: [
+          "Started gpt-5.4 session session-123.",
+          "Working on planning step.",
+          "Completed planning step.",
+          "Run error: ENOENT: missing file",
+        ].join("\n"),
+      },
+    ]);
+    expect(result.notices).toEqual([]);
   });
 });
 
@@ -205,7 +255,6 @@ describe("buildIssueChatMessages", () => {
     expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
       "system:activity:event-1",
       "user:comment-1",
-      "system:run:run-history-1",
       "assistant:comment-2",
       "assistant:live-run:run-live-1",
     ]);

@@ -11,6 +11,11 @@ import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import {
+  parseSystemActivity,
+  shouldHideNiceModeStderr,
+  summarizeNotice,
+} from "./transcriptPresentation";
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
@@ -49,6 +54,7 @@ export interface IssueChatTranscriptEntry {
     | "diff";
   ts: string;
   text?: string;
+  delta?: boolean;
   name?: string;
   input?: unknown;
   toolUseId?: string;
@@ -57,6 +63,13 @@ export interface IssueChatTranscriptEntry {
   isError?: boolean;
   subtype?: string;
   errors?: string[];
+  model?: string;
+  sessionId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  costUsd?: number;
+  changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
 }
 
 type MessageWithOrder = {
@@ -119,6 +132,25 @@ function stringifyUnknown(value: unknown) {
   } catch {
     return String(value);
   }
+}
+
+function mergePartText(
+  previous: TextMessagePart | ReasoningMessagePart,
+  next: TextMessagePart | ReasoningMessagePart,
+) {
+  if (!previous.text) return next.text;
+  if (!next.text) return previous.text;
+  if (
+    previous.text.endsWith("\n")
+    || next.text.startsWith("\n")
+    || previous.text.endsWith(" ")
+    || next.text.startsWith(" ")
+  ) {
+    return `${previous.text}${next.text}`;
+  }
+  return previous.type === "text"
+    ? `${previous.text} ${next.text}`
+    : `${previous.text}\n${next.text}`;
 }
 
 function createAssistantMetadata(custom: Record<string, unknown>) {
@@ -330,20 +362,51 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       toolParts.set(toolCallId, nextPart);
       continue;
     }
+    if (entry.kind === "init" && entry.model) {
+      const sessionSuffix = entry.sessionId ? ` session ${entry.sessionId}` : "";
+      orderedParts.push({ type: "reasoning", text: `Started ${entry.model}${sessionSuffix}.` });
+      continue;
+    }
     if (entry.kind === "stderr" && entry.text) {
-      notices.push(entry.text);
+      if (!shouldHideNiceModeStderr(entry.text)) {
+        orderedParts.push({ type: "reasoning", text: `Background: ${summarizeNotice(entry.text)}` });
+      }
       continue;
     }
     if (entry.kind === "system" && entry.text) {
-      notices.push(entry.text);
+      const normalized = entry.text.trim().toLowerCase();
+      if (normalized === "turn started") continue;
+      const activity = parseSystemActivity(entry.text);
+      if (activity) {
+        orderedParts.push({
+          type: "reasoning",
+          text: activity.status === "running"
+            ? `Working on ${activity.name.toLowerCase()}.`
+            : `Completed ${activity.name.toLowerCase()}.`,
+        });
+      } else {
+        orderedParts.push({ type: "reasoning", text: `System: ${summarizeNotice(entry.text)}` });
+      }
       continue;
     }
     if (entry.kind === "result") {
       if (entry.isError && entry.errors?.length) {
-        notices.push(...entry.errors);
+        for (const error of entry.errors) {
+          orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
+        }
       } else if (entry.text) {
-        notices.push(entry.text);
+        orderedParts.push({
+          type: "reasoning",
+          text: entry.isError
+            ? `Run error: ${summarizeNotice(entry.text)}`
+            : `Run update: ${summarizeNotice(entry.text)}`,
+        });
       }
+      continue;
+    }
+    if (entry.kind === "stdout" && entry.text) {
+      orderedParts.push({ type: "reasoning", text: `Log: ${summarizeNotice(entry.text)}` });
+      continue;
     }
   }
 
@@ -357,7 +420,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (previous && previous.type === part.type && previous.parentId === part.parentId) {
       mergedParts[mergedParts.length - 1] = {
         ...previous,
-        text: `${previous.text}${part.text}`,
+        text: mergePartText(previous, part),
       };
       continue;
     }

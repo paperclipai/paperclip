@@ -49,6 +49,13 @@ import { AgentIcon } from "./AgentIconPicker";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { timeAgo } from "../lib/timeAgo";
+import {
+  displayToolName,
+  formatToolPayload,
+  parseToolPayload,
+  summarizeToolInput,
+  summarizeToolResult,
+} from "../lib/transcriptPresentation";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -235,7 +242,7 @@ function IssueChatChainOfThought() {
     <ChainOfThoughtPrimitive.Root className="rounded-md bg-background/70">
       <ChainOfThoughtPrimitive.AccordionTrigger className="group flex w-full items-center justify-between gap-3 rounded-sm px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/20 hover:text-foreground">
         <span className="inline-flex items-center gap-2 uppercase tracking-[0.14em]">
-          Thinking
+          Chain of thought
         </span>
         <ChevronDown className="h-4 w-4 transition-transform group-data-[state=open]:rotate-180" />
       </ChainOfThoughtPrimitive.AccordionTrigger>
@@ -244,9 +251,10 @@ function IssueChatChainOfThought() {
           components={{
             Reasoning: ({ text }) => <IssueChatReasoningPart text={text} />,
             tools: {
-              Fallback: ({ toolName, argsText, result, isError }) => (
+              Fallback: ({ toolName, args, argsText, result, isError }) => (
                 <IssueChatToolPart
                   toolName={toolName}
+                  args={args}
                   argsText={argsText}
                   result={result}
                   isError={isError}
@@ -271,22 +279,31 @@ function IssueChatReasoningPart({ text }: { text: string }) {
 
 function IssueChatToolPart({
   toolName,
+  args,
   argsText,
   result,
   isError,
 }: {
   toolName: string;
-  argsText: string;
+  args?: unknown;
+  argsText?: string;
   result?: unknown;
   isError?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(isError));
+  const rawArgsText = argsText ?? "";
+  const parsedArgs = args ?? parseToolPayload(rawArgsText);
   const resultText =
     typeof result === "string"
       ? result
       : result === undefined
         ? ""
-        : JSON.stringify(result, null, 2);
+        : formatToolPayload(result);
+  const displayName = displayToolName(toolName, parsedArgs);
+  const summary =
+    result === undefined
+      ? summarizeToolInput(toolName, parsedArgs)
+      : summarizeToolResult(resultText, isError);
 
   return (
     <div
@@ -302,11 +319,13 @@ function IssueChatToolPart({
         className="flex w-full items-center justify-between gap-3 text-left"
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-          Tool
+        <span className="min-w-0 flex-1">
+          <span className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {displayName}
+          </span>
+          <span className="mt-1 block text-sm text-foreground/80">{summary}</span>
         </span>
-        <span className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground">{toolName}</span>
+        <span className="shrink-0 flex items-center gap-2">
           {result === undefined ? (
             <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -321,17 +340,18 @@ function IssueChatToolPart({
               Complete
             </span>
           )}
+          <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")} />
         </span>
       </button>
 
       {open ? (
         <div className="mt-3 space-y-3">
-          {argsText ? (
+          {rawArgsText ? (
             <div>
               <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                 Input
               </div>
-              <pre className="overflow-x-auto rounded-md bg-accent/40 p-2 text-xs text-foreground">{argsText}</pre>
+              <pre className="overflow-x-auto rounded-md bg-accent/40 p-2 text-xs text-foreground">{rawArgsText}</pre>
             </div>
           ) : null}
           {result !== undefined ? (
