@@ -21,6 +21,7 @@ import {
   buildIssueChatMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
+  type IssueChatTranscriptEntry,
 } from "../lib/issue-chat-messages";
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -70,6 +71,10 @@ interface IssueChatThreadProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
+  showComposer?: boolean;
+  enableLiveTranscriptPolling?: boolean;
+  transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
+  hasOutputForRun?: (runId: string) => boolean;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -735,9 +740,14 @@ export function IssueChatThread({
   suggestedAssigneeValue,
   mentions = [],
   composerDisabledReason = null,
+  showComposer = true,
+  enableLiveTranscriptPolling = true,
+  transcriptsByRunId,
+  hasOutputForRun: hasOutputForRunOverride,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const hasScrolledRef = useRef(false);
+  const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
@@ -759,7 +769,12 @@ export function IssueChatThread({
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [activeRun, liveRuns]);
-  const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({ runs: displayLiveRuns, companyId });
+  const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
+    runs: enableLiveTranscriptPolling ? displayLiveRuns : [],
+    companyId,
+  });
+  const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
+  const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
 
   const messages = useMemo(
     () =>
@@ -769,8 +784,8 @@ export function IssueChatThread({
         linkedRuns,
         liveRuns,
         activeRun,
-        transcriptsByRunId: transcriptByRun,
-        hasOutputForRun,
+        transcriptsByRunId: resolvedTranscriptByRun,
+        hasOutputForRun: resolvedHasOutputForRun,
         companyId,
         projectId,
         agentMap,
@@ -782,8 +797,8 @@ export function IssueChatThread({
       linkedRuns,
       liveRuns,
       activeRun,
-      transcriptByRun,
-      hasOutputForRun,
+      resolvedTranscriptByRun,
+      resolvedHasOutputForRun,
       companyId,
       projectId,
       agentMap,
@@ -819,6 +834,10 @@ export function IssueChatThread({
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [location.hash, messages]);
 
+  function handleJumpToLatest() {
+    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+
   const components = useMemo(
     () => ({
       UserMessage: () => <IssueChatUserMessage companyId={companyId} projectId={projectId} />,
@@ -845,38 +864,44 @@ export function IssueChatThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold">Chat ({messages.length})</h3>
-          <ThreadPrimitive.ScrollToBottom className="text-xs text-muted-foreground hover:text-foreground">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleJumpToLatest}
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
             Jump to latest
-          </ThreadPrimitive.ScrollToBottom>
+          </button>
         </div>
 
-        <ThreadPrimitive.Root className="rounded-2xl border border-border bg-background shadow-sm">
-          <ThreadPrimitive.Viewport className="max-h-[70vh] space-y-4 overflow-y-auto px-4 py-4">
+        <ThreadPrimitive.Root className="rounded-[28px] border border-border/70 bg-[linear-gradient(180deg,rgba(15,23,42,0.02),transparent_22%),var(--background)] px-4 py-4 shadow-sm">
+          <ThreadPrimitive.Viewport className="space-y-4">
             <ThreadPrimitive.Empty>
               <div className="rounded-2xl border border-dashed border-border bg-card px-6 py-10 text-center text-sm text-muted-foreground">
                 This issue conversation is empty. Start with a message below.
               </div>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={components} />
+            <div ref={bottomAnchorRef} />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
 
-        <IssueChatComposer
-          onImageUpload={imageUploadHandler}
-          onAttachImage={onAttachImage}
-          draftKey={draftKey}
-          enableReassign={enableReassign}
-          reassignOptions={reassignOptions}
-          currentAssigneeValue={currentAssigneeValue}
-          suggestedAssigneeValue={suggestedAssigneeValue}
-          mentions={mentions}
-          agentMap={agentMap}
-          composerDisabledReason={composerDisabledReason}
-          issueStatus={issueStatus}
-          onCancelRun={onCancelRun}
-        />
+        {showComposer ? (
+          <IssueChatComposer
+            onImageUpload={imageUploadHandler}
+            onAttachImage={onAttachImage}
+            draftKey={draftKey}
+            enableReassign={enableReassign}
+            reassignOptions={reassignOptions}
+            currentAssigneeValue={currentAssigneeValue}
+            suggestedAssigneeValue={suggestedAssigneeValue}
+            mentions={mentions}
+            agentMap={agentMap}
+            composerDisabledReason={composerDisabledReason}
+            issueStatus={issueStatus}
+            onCancelRun={onCancelRun}
+          />
+        ) : null}
       </div>
     </AssistantRuntimeProvider>
   );
