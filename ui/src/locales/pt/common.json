@@ -2079,7 +2079,49 @@
       "company": "Empresa",
       "agent": "Agente",
       "task": "Tarefa",
-      "launch": "Lançamento"
+      "launch": "Lancamento"
+    },
+    "company": {
+      "title": "Nomeie sua empresa",
+      "description": "Esta e a organizacao onde seus agentes vao trabalhar.",
+      "company_name": "Nome da empresa",
+      "mission_optional": "Missao / objetivo (opcional)",
+      "mission_placeholder": "O que esta empresa esta tentando alcancar?"
+    },
+    "agent": {
+      "title": "Crie seu primeiro agente",
+      "description": "Escolha como este agente vai executar tarefas.",
+      "name": "Nome do agente",
+      "adapter_type": "Tipo de adaptador",
+      "recommended": "Recomendado",
+      "more_adapter_types": "Mais tipos de adaptador",
+      "model": "Modelo",
+      "no_models_discovered": "Nenhum modelo encontrado.",
+      "adapter_environment_check": "Verificacao de ambiente do adaptador",
+      "adapter_environment_check_description": "Executa uma sonda ao vivo pedindo para a CLI do adaptador responder com hello.",
+      "test_now": "Testar agora",
+      "gateway_url": "URL do gateway",
+      "webhook_url": "URL do webhook"
+    },
+    "task": {
+      "title": "De algo para ele fazer",
+      "description": "De ao seu agente uma tarefa pequena para comecar - uma correcao de bug, uma pesquisa ou um script.",
+      "task_title": "Titulo da tarefa",
+      "task_title_placeholder": "ex.: Pesquisar precos dos concorrentes",
+      "description_optional": "Descricao (opcional)",
+      "description_placeholder": "Adicione mais detalhes sobre o que o agente deve fazer...",
+      "default_title": "Contrate seu primeiro engenheiro e crie um plano de contratacao",
+      "default_description": "Voce e o CEO. Voce define a direcao da empresa.\n\n- contratar um engenheiro fundador\n- escrever um plano de contratacao\n- quebrar o roadmap em tarefas concretas e comecar a delegar trabalho"
+    },
+    "launch": {
+      "title": "Pronto para lancar",
+      "description": "Tudo esta configurado. Ao lancar agora, vamos criar a tarefa inicial, acordar o agente e abrir o chamado."
+    },
+    "actions": {
+      "back": "Voltar",
+      "next": "Proximo",
+      "creating": "Criando...",
+      "create_open_issue": "Criar e abrir chamado"
     }
   }
 }
