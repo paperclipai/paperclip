@@ -48,7 +48,7 @@ import {
 } from "./workspace-runtime.js";
 import { logActivity } from "./activity-log.js";
 import { issueService } from "./issues.js";
-import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { executionWorkspaceService, mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -4117,7 +4117,10 @@ export function heartbeatService(db: Db) {
             .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
         : null;
 
-      const teardownCommand = projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+      const workspaceConfig = readExecutionWorkspaceConfig(
+        (workspace.metadata as Record<string, unknown> | null) ?? null,
+      );
+      const teardownCommand = workspaceConfig?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
 
       const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
         workspace: {
@@ -4135,6 +4138,7 @@ export function heartbeatService(db: Db) {
         },
         projectWorkspace,
         teardownCommand,
+        cleanupCommand: workspaceConfig?.cleanupCommand ?? null,
         recorder,
       });
 
