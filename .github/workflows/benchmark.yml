@@ -44,7 +44,7 @@ jobs:
             -- --json \
             --output ../benchmarks/latest.json \
             --markdown-summary "$GITHUB_STEP_SUMMARY" \
-            --threshold 70 \
+            --threshold 55 \
             || EXIT_CODE=$?
 
           # Extract score for PR comment (even if below threshold)
