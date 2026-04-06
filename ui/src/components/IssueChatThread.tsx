@@ -360,11 +360,11 @@ function IssueChatUserMessage() {
 
   return (
     <MessagePrimitive.Root id={anchorId}>
-      <div className="group flex items-start justify-end gap-2">
-        <div className="flex max-w-[85%] flex-col items-end">
+      <div className="group relative pr-8">
+        <div className="flex flex-col items-end">
           <div
             className={cn(
-              "min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
+              "max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2.5",
               queued
                 ? "bg-amber-50/80 dark:bg-amber-500/10"
                 : "bg-muted",
@@ -435,7 +435,7 @@ function IssueChatUserMessage() {
           </div>
         </div>
 
-        <Avatar size="sm" className="mt-1 shrink-0">
+        <Avatar size="sm" className="absolute right-0 top-1 shrink-0">
           <AvatarFallback>You</AvatarFallback>
         </Avatar>
       </div>
