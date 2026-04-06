@@ -72,7 +72,7 @@ export function DocumentDiffModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[90vw] w-full max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>
