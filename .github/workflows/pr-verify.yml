@@ -44,7 +44,8 @@ jobs:
       - name: Verify Dockerfile.vps workspace coverage
         run: node scripts/check-dockerfile-vps-coverage.mjs
 
-      - name: Verify Dockerfile.vps build
-        run: docker build -f Dockerfile.vps -t paperclip-vps-verify .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # Canary dry-run skipped: all packages are private (no npm publishing)
+      - name: Verify Dockerfile.vps build
+        run: docker build --load -f Dockerfile.vps -t paperclip-vps-verify .
