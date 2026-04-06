@@ -55,9 +55,9 @@ ERRORS=0
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log_create() { echo -e "  ${GREEN}+${NC} Created: $1"; ((CREATED++)); }
-log_skip()   { echo -e "  ${YELLOW}~${NC} Skipped: $1 (already exists)"; ((SKIPPED++)); }
-log_error()  { echo -e "  ${RED}!${NC} Error: $1"; ((ERRORS++)); }
+log_create() { echo -e "  ${GREEN}+${NC} Created: $1"; CREATED=$((CREATED + 1)); }
+log_skip()   { echo -e "  ${YELLOW}~${NC} Skipped: $1 (already exists)"; SKIPPED=$((SKIPPED + 1)); }
+log_error()  { echo -e "  ${RED}!${NC} Error: $1"; ERRORS=$((ERRORS + 1)); }
 
 header() {
   echo ""
@@ -68,7 +68,8 @@ header() {
 curl_args() {
   local args=(-sf --max-time 10)
   if [ -n "$API_KEY" ]; then
-    args+=(-H "Authorization: Bearer ${API_KEY}")
+    args+=(-H "x-api-key: ${API_KEY}")
+    args+=(-H "Origin: ${DASHBOARD_URL}")
   fi
   args+=(-H "Content-Type: application/json")
   echo "${args[@]}"
@@ -87,7 +88,8 @@ api_post() {
   local tmpfile
   tmpfile=$(mktemp)
   http_code=$(curl -s --max-time 10 \
-    ${API_KEY:+-H "Authorization: Bearer ${API_KEY}"} \
+    ${API_KEY:+-H "x-api-key: ${API_KEY}"} \
+    ${API_KEY:+-H "Origin: ${DASHBOARD_URL}"} \
     -H "Content-Type: application/json" \
     -d "$body" \
     -w "%{http_code}" \
@@ -109,7 +111,8 @@ api_get() {
   local endpoint="$1"
   local url="${API_BASE}${endpoint}"
   curl -sf --max-time 10 \
-    ${API_KEY:+-H "Authorization: Bearer ${API_KEY}"} \
+    ${API_KEY:+-H "x-api-key: ${API_KEY}"} \
+    ${API_KEY:+-H "Origin: ${DASHBOARD_URL}"} \
     -H "Content-Type: application/json" \
     "$url" 2>/dev/null || echo ""
 }
@@ -141,8 +144,8 @@ header "Company"
 COMPANIES=$(api_get "/companies")
 if echo "$COMPANIES" | grep -q '"Mendez Logistics"' 2>/dev/null; then
   log_skip "Company 'Mendez Logistics'"
-  # Extract the company ID for use in subsequent calls
-  COMPANY_ID=$(echo "$COMPANIES" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+  # Extract the Mendez Logistics company ID (find the id preceding "Mendez Logistics" in the JSON)
+  COMPANY_ID=$(echo "$COMPANIES" | grep -oP '"id"\s*:\s*"[^"]*"[^}]*"Mendez Logistics"' | grep -oP '"id"\s*:\s*"\K[^"]*')
 else
   RESULT=$(api_post "/companies" '{
     "name": "Mendez Logistics",
@@ -191,18 +194,16 @@ for agent_def in "${AGENTS[@]}"; do
   IFS='|' read -r AGENT_NAME AGENT_ROLE AGENT_DESC <<< "$agent_def"
 
   # Check if agent already exists (search by name in the agents list)
-  EXISTING_AGENTS=$(api_get "/agents?companyId=${COMPANY_ID}")
+  EXISTING_AGENTS=$(api_get "/companies/${COMPANY_ID}/agents")
   if echo "$EXISTING_AGENTS" | grep -q "\"${AGENT_NAME}\"" 2>/dev/null; then
     log_skip "Agent '${AGENT_NAME}' (${AGENT_ROLE})"
     continue
   fi
 
-  RESULT=$(api_post "/agents" "{
+  RESULT=$(api_post "/companies/${COMPANY_ID}/agents" "{
     \"name\": \"${AGENT_NAME}\",
-    \"role\": \"${AGENT_ROLE}\",
-    \"description\": \"${AGENT_DESC}\",
-    \"companyId\": \"${COMPANY_ID}\",
-    \"status\": \"active\"
+    \"title\": \"${AGENT_ROLE}\",
+    \"capabilities\": \"${AGENT_DESC}\"
   }")
 
   if [ -z "$RESULT" ]; then
@@ -215,43 +216,44 @@ for agent_def in "${AGENTS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 3. Create Tasks
+# 3. Create Issues (Tasks)
 # ---------------------------------------------------------------------------
-header "Tasks"
+header "Issues"
 
-# Task definitions: title|description|status|priority
+# Issue definitions: title|description|status|priority
+# Valid statuses: backlog, todo, in_progress, in_review, done
+# Valid priorities: critical, high, medium, low
 TASKS=(
-  "Follow up on Q2 leads|Review and prioritize the 47 inbound leads from the Q2 trade show. Schedule follow-up calls for top 10 prospects.|in_progress|high"
-  "Generate weekly KPI report|Compile delivery performance, on-time rates, and cost-per-mile metrics for the weekly ops review.|pending|medium"
-  "Resolve Acme Corp shipping delay|Customer escalation: Acme Corp shipment #4821 delayed 3 days. Coordinate with warehouse team for expedited resolution.|in_progress|urgent"
-  "Draft Q3 marketing campaign|Create campaign brief for Q3 focused on new warehouse automation capabilities. Include social, email, and trade show strategy.|pending|medium"
-  "Audit driver route efficiency|Analyze last 30 days of route data to identify optimization opportunities. Target: 12% reduction in average delivery time.|pending|low"
+  "Follow up on Q2 leads|Review and prioritize the 47 inbound leads from the Q2 trade show. Schedule follow-up calls for top 10 prospects.|todo|high"
+  "Generate weekly KPI report|Compile delivery performance, on-time rates, and cost-per-mile metrics for the weekly ops review.|todo|medium"
+  "Resolve Acme Corp shipping delay|Customer escalation: Acme Corp shipment #4821 delayed 3 days. Coordinate with warehouse team for expedited resolution.|todo|critical"
+  "Draft Q3 marketing campaign|Create campaign brief for Q3 focused on new warehouse automation capabilities. Include social, email, and trade show strategy.|backlog|medium"
+  "Audit driver route efficiency|Analyze last 30 days of route data to identify optimization opportunities. Target: 12% reduction in average delivery time.|backlog|low"
 )
 
-EXISTING_TASKS=$(api_get "/tasks?companyId=${COMPANY_ID}")
+EXISTING_TASKS=$(api_get "/companies/${COMPANY_ID}/issues")
 
 for task_def in "${TASKS[@]}"; do
   IFS='|' read -r TASK_TITLE TASK_DESC TASK_STATUS TASK_PRIORITY <<< "$task_def"
 
   if echo "$EXISTING_TASKS" | grep -q "$(echo "$TASK_TITLE" | head -c 30)" 2>/dev/null; then
-    log_skip "Task '${TASK_TITLE}'"
+    log_skip "Issue '${TASK_TITLE}'"
     continue
   fi
 
-  RESULT=$(api_post "/tasks" "{
+  RESULT=$(api_post "/companies/${COMPANY_ID}/issues" "{
     \"title\": \"${TASK_TITLE}\",
     \"description\": \"${TASK_DESC}\",
     \"status\": \"${TASK_STATUS}\",
-    \"priority\": \"${TASK_PRIORITY}\",
-    \"companyId\": \"${COMPANY_ID}\"
+    \"priority\": \"${TASK_PRIORITY}\"
   }")
 
   if [ -z "$RESULT" ]; then
-    log_error "Failed to create task '${TASK_TITLE}'"
+    log_error "Failed to create issue '${TASK_TITLE}'"
   elif [ "$RESULT" = "CONFLICT" ]; then
-    log_skip "Task '${TASK_TITLE}'"
+    log_skip "Issue '${TASK_TITLE}'"
   else
-    log_create "Task '${TASK_TITLE}'"
+    log_create "Issue '${TASK_TITLE}'"
   fi
 done
 
@@ -260,16 +262,15 @@ done
 # ---------------------------------------------------------------------------
 header "Projects"
 
-EXISTING_PROJECTS=$(api_get "/projects?companyId=${COMPANY_ID}")
+EXISTING_PROJECTS=$(api_get "/companies/${COMPANY_ID}/projects")
 
 if echo "$EXISTING_PROJECTS" | grep -q '"Project Alpha"' 2>/dev/null; then
   log_skip "Project 'Project Alpha'"
 else
-  RESULT=$(api_post "/projects" "{
+  RESULT=$(api_post "/companies/${COMPANY_ID}/projects" "{
     \"name\": \"Project Alpha\",
     \"description\": \"End-to-end automation of last-mile delivery operations. Phase 1 focuses on route optimization and real-time tracking integration.\",
-    \"status\": \"active\",
-    \"companyId\": \"${COMPANY_ID}\"
+    \"status\": \"in_progress\"
   }")
 
   if [ -z "$RESULT" ]; then

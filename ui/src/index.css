@@ -906,3 +906,43 @@ a.paperclip-project-mention-chip {
   border-color: var(--border-prominent);
   box-shadow: none;
 }
+
+/* Pulse dot animation for team activity indicator */
+@keyframes raava-pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.raava-pulse-dot {
+  animation: raava-pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Budget progress bar */
+.raava-budget-bar {
+  height: 6px;
+  border-radius: 3px;
+  background-color: oklch(0.95 0 0);
+  overflow: hidden;
+}
+
+.dark .raava-budget-bar {
+  background-color: oklch(0.25 0 0);
+}
+
+.raava-budget-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.raava-budget-bar-fill--healthy {
+  background: var(--raava-gradient);
+}
+
+.raava-budget-bar-fill--warning {
+  background: oklch(0.75 0.15 75);
+}
+
+.raava-budget-bar-fill--danger {
+  background: oklch(0.63 0.24 25);
+}

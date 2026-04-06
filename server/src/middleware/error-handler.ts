@@ -11,6 +11,15 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+/** Redact sensitive fields from request bodies before attaching to error context. */
+function redactSensitiveBody(url: string | undefined, body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  if (url && url.includes("store-credentials") && (body as any).credentials) {
+    return { ...body as Record<string, unknown>, credentials: "[REDACTED]" };
+  }
+  return body;
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -21,7 +30,7 @@ function attachErrorContext(
     error: payload,
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
+    reqBody: redactSensitiveBody(req.originalUrl, req.body),
     reqParams: req.params,
     reqQuery: req.query,
   } satisfies ErrorContext;

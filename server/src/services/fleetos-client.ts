@@ -201,34 +201,35 @@ export class FleetOSProxyClient {
 
   // Container CRUD
   async listContainers(): Promise<FleetContainer[]> {
-    return this.request<FleetContainer[]>("GET", "/api/v1/containers");
+    const res = await this.request<{ containers: FleetContainer[] } | FleetContainer[]>("GET", "/api/containers");
+    return Array.isArray(res) ? res : res.containers;
   }
 
   async getContainer(id: string): Promise<FleetContainer> {
-    return this.request<FleetContainer>("GET", `/api/v1/containers/${encodeURIComponent(id)}`);
+    return this.request<FleetContainer>("GET", `/api/containers/${encodeURIComponent(id)}`);
   }
 
   // Health
   async getHealth(id: string): Promise<FleetHealth> {
-    return this.request<FleetHealth>("GET", `/api/v1/containers/${encodeURIComponent(id)}/health`);
+    return this.request<FleetHealth>("GET", `/api/containers/${encodeURIComponent(id)}/health`);
   }
 
   // Agent process status
   async getAgentProcess(id: string): Promise<FleetAgentProcess> {
-    return this.request<FleetAgentProcess>("GET", `/api/v1/containers/${encodeURIComponent(id)}/agent`);
+    return this.request<FleetAgentProcess>("GET", `/api/containers/${encodeURIComponent(id)}/agent`);
   }
 
   // Lifecycle actions
   async startContainer(id: string): Promise<FleetContainer> {
-    return this.request<FleetContainer>("POST", `/api/v1/containers/${encodeURIComponent(id)}/start`);
+    return this.request<FleetContainer>("POST", `/api/containers/${encodeURIComponent(id)}/start`);
   }
 
   async stopContainer(id: string): Promise<FleetContainer> {
-    return this.request<FleetContainer>("POST", `/api/v1/containers/${encodeURIComponent(id)}/stop`);
+    return this.request<FleetContainer>("POST", `/api/containers/${encodeURIComponent(id)}/stop`);
   }
 
   async restartContainer(id: string): Promise<FleetContainer> {
-    return this.request<FleetContainer>("POST", `/api/v1/containers/${encodeURIComponent(id)}/restart`);
+    return this.request<FleetContainer>("POST", `/api/containers/${encodeURIComponent(id)}/restart`);
   }
 
   // Templates

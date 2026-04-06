@@ -90,7 +90,7 @@ function Gauge({ value, label, warn = 80, danger = 95 }: { value: number; label:
  */
 
 function ContainerCard({ container }: { container: FleetContainer }) {
-  const agentName = container.labels?.agent_name ?? container.name;
+  const agentName = container.labels?.agent_name ?? container.name ?? container.id ?? "Unknown";
   const h = container.health;
 
   return (

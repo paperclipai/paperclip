@@ -70,8 +70,18 @@ function formatUptime(seconds: number): string {
  * @returns The merged container object with a `health` property formatted for the UI
  */
 function mergeContainerAndHealth(container: FleetContainer, health: FleetHealth | null) {
-  return {
+  // Normalize Fleet API response fields to match the UI type contract:
+  // - agent_name → name (if name is missing)
+  // - ip → ip_address
+  // - Ensure labels object exists
+  const normalized = {
     ...container,
+    name: container.name ?? (container as Record<string, unknown>).agent_name as string ?? container.id,
+    ip_address: container.ip_address ?? (container as Record<string, unknown>).ip as string ?? undefined,
+    labels: container.labels ?? {},
+  };
+  return {
+    ...normalized,
     health: health
       ? {
           cpu_percent: health.cpu_percent,

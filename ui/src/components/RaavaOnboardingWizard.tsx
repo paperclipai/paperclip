@@ -22,7 +22,7 @@ import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -415,8 +415,8 @@ function CredentialInput({
 // ---------------------------------------------------------------------------
 
 export function RaavaOnboardingWizard() {
-  const { onboardingOpen, closeOnboarding } = useDialog();
-  const { setSelectedCompanyId } = useCompany();
+  const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
+  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -451,6 +451,24 @@ export function RaavaOnboardingWizard() {
 
   // Auto-grow textarea ref
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // When the wizard opens with an initialStep (e.g. "Hire" from My Team page),
+  // jump directly to that step and use the existing company context.
+  useEffect(() => {
+    if (!onboardingOpen) return;
+    const initStep = onboardingOptions.initialStep;
+    if (initStep && initStep > 1) {
+      setStep(initStep);
+      // Use the company passed via options, or fall back to the currently
+      // selected company so step 1 (company creation) can be skipped.
+      const companyId = onboardingOptions.companyId ?? selectedCompanyId;
+      if (companyId) {
+        setCreatedCompanyId(companyId);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps — only run when the
+  // dialog opens/closes, not on every options or selectedCompanyId change.
+  }, [onboardingOpen]);
 
   const selectedRole = ROLES.find((r) => r.id === selectedRoleId) ?? null;
 
@@ -637,7 +655,7 @@ export function RaavaOnboardingWizard() {
         assigneeAgentId: agent.id,
         projectId: project.id,
         priority: "medium",
-        status: "open",
+        status: "todo",
       });
 
       // Only invalidate queries after all resources are successfully created
@@ -714,42 +732,47 @@ export function RaavaOnboardingWizard() {
   if (successState) {
     return (
       <Dialog open onOpenChange={handleClose}>
-        <DialogContent className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm border-0 p-0 max-w-none">
-          <div className="relative w-full max-w-md mx-4 rounded-2xl bg-card p-8 shadow-2xl border border-border text-center animate-in fade-in-0 zoom-in-95 duration-300">
-            {/* Raava star mark */}
-            <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-[#224AE8] via-[#716EFF] to-[#00BDB7]">
-              <Sparkles className="w-8 h-8 text-white" />
+        <DialogPortal>
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+          <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="relative w-full max-w-md mx-4 rounded-2xl bg-card p-8 shadow-2xl border border-border text-center animate-in fade-in-0 zoom-in-95 duration-300">
+              {/* Raava star mark */}
+              <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-[#224AE8] via-[#716EFF] to-[#00BDB7]">
+                <Sparkles className="w-8 h-8 text-white" />
+              </div>
+
+              <h2
+                className="text-2xl font-bold"
+                style={{ fontFamily: "Syne, system-ui, sans-serif" }}
+              >
+                {hiredAgentName} is on your team!
+              </h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                They&apos;re starting on their first task now.
+              </p>
+
+              <Button
+                onClick={handleGoToTeam}
+                className="mt-6 w-full text-white font-semibold"
+                style={{
+                  background:
+                    "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
+                }}
+              >
+                Go to My Team
+              </Button>
             </div>
-
-            <h2
-              className="text-2xl font-bold"
-              style={{ fontFamily: "Syne, system-ui, sans-serif" }}
-            >
-              {hiredAgentName} is on your team!
-            </h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              They&apos;re starting on their first task now.
-            </p>
-
-            <Button
-              onClick={handleGoToTeam}
-              className="mt-6 w-full text-white font-semibold"
-              style={{
-                background:
-                  "linear-gradient(90deg, #224AE8, #716EFF, #00BDB7)",
-              }}
-            >
-              Go to My Team
-            </Button>
           </div>
-        </DialogContent>
+        </DialogPortal>
       </Dialog>
     );
   }
 
   return (
     <Dialog open onOpenChange={handleClose}>
-      <DialogContent className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm border-0 p-0 max-w-none">
+      <DialogPortal>
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
         <div
           className={cn(
             "relative w-full mx-4 rounded-2xl bg-card shadow-2xl border border-border animate-in fade-in-0 zoom-in-95 duration-300 overflow-hidden",
@@ -1103,7 +1126,8 @@ export function RaavaOnboardingWizard() {
               )}
             </div>
           </div>
-        </DialogContent>
+        </div>
+      </DialogPortal>
       </Dialog>
     );
   }

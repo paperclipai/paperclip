@@ -184,30 +184,32 @@ function ProfileHeader({
   const status = mapStatusLabel(agent.status);
   const initial = agent.name[0]?.toUpperCase() ?? "?";
 
+  const isActive = agent.status === "active" || agent.status === "running";
+
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-center gap-4">
-        {/* Avatar */}
+    <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-5">
+        {/* Avatar — large with gradient background */}
         <div
-          className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full"
-          style={{ backgroundColor: color.bg }}
+          className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full"
+          style={{ background: "linear-gradient(135deg, rgba(34,74,232,0.15), rgba(113,110,255,0.15), rgba(0,189,183,0.12))" }}
         >
-          <span className="font-display text-2xl" style={{ color: color.text }}>
+          <span className="font-display text-[28px] tracking-[-0.02em]" style={{ color: color.text }}>
             {initial}
           </span>
         </div>
 
         {/* Name, role, status, hired date */}
-        <div className="space-y-1">
+        <div className="space-y-1.5">
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-[20px] text-foreground">{agent.name}</h1>
-            <span className="rounded-full bg-secondary px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+            <h1 className="font-display text-[24px] tracking-[-0.02em] text-foreground">{agent.name}</h1>
+            <span className="rounded-full px-3 py-0.5 text-[11px] font-medium text-white" style={{ background: "#224ae8" }}>
               {roleLabels[agent.role] ?? agent.role}
             </span>
           </div>
           <div className="flex items-center gap-3 text-[13px] text-muted-foreground">
             <span className="flex items-center gap-1.5">
-              <span className={cn("h-2 w-2 rounded-full", status.dotClass)} />
+              <span className={cn("h-2 w-2 rounded-full", status.dotClass, isActive && "raava-pulse-dot")} />
               {status.label}
             </span>
             <span>Hired {formatDate(agent.createdAt)}</span>
@@ -217,7 +219,7 @@ function ProfileHeader({
 
       {/* Action buttons */}
       <div className="flex items-center gap-2">
-        <Button variant="gradient" size="sm" onClick={onAssignTask}>
+        <Button variant="gradient" size="sm" onClick={onAssignTask} className="shadow-[0_4px_12px_rgba(34,74,232,0.25)]">
           Assign Task
         </Button>
         <Button variant="outline" size="sm" onClick={onPause} disabled={isActionPending}>
@@ -310,7 +312,7 @@ function OverviewTab({
       {/* Current Task */}
       {currentTask && (
         <div className="raava-card bg-white px-6 py-5 dark:bg-card">
-          <h3 className="text-[13px] font-semibold text-muted-foreground mb-2">
+          <h3 className="font-display text-[13px] tracking-normal font-medium text-muted-foreground mb-2">
             Current Task
           </h3>
           <div className="flex items-center justify-between">
@@ -322,11 +324,11 @@ function OverviewTab({
               <span className="text-[13px] text-[#224ae8] font-medium">In Progress</span>
             </div>
           </div>
-          {/* Blue progress indicator */}
-          <div className="mt-3 h-1 w-full rounded-full bg-secondary">
+          {/* Gradient progress bar */}
+          <div className="mt-3 raava-budget-bar">
             <div
-              className="h-1 rounded-full"
-              style={{ width: "65%", background: "linear-gradient(90deg, #224AE8, #716EFF)" }}
+              className="raava-budget-bar-fill raava-budget-bar-fill--healthy"
+              style={{ width: "65%" }}
             />
           </div>
         </div>
@@ -340,11 +342,11 @@ function OverviewTab({
           { label: "Success Rate", value: successRate != null ? `${successRate}%` : "\u2014" },
           { label: "Avg Task Time", value: avgTaskTime != null ? `${avgTaskTime} min` : "\u2014" },
         ].map((stat) => (
-          <div key={stat.label} className="raava-card bg-white px-5 py-4 dark:bg-card">
-            <p className="font-display text-[28px] text-foreground">
+          <div key={stat.label} className="raava-card raava-card-hover bg-white px-5 py-5 dark:bg-card transition-shadow">
+            <p className="raava-stat-number text-[30px]">
               {stat.value}
             </p>
-            <p className="text-[12px] text-muted-foreground mt-1">
+            <p className="text-[12px] text-muted-foreground mt-1.5 font-medium">
               {stat.label}
             </p>
           </div>
@@ -353,11 +355,11 @@ function OverviewTab({
 
       {/* This Month's Cost */}
       <div className="raava-card bg-white px-6 py-5 dark:bg-card">
-        <h3 className="text-[13px] font-semibold text-muted-foreground mb-1">
+        <h3 className="font-display text-[13px] tracking-normal font-medium text-muted-foreground mb-1">
           This Month&apos;s Cost
         </h3>
         <div className="flex items-baseline gap-2">
-          <span className="raava-gradient-text font-display text-[32px]">
+          <span className="raava-stat-number text-[32px]">
             {monthlyCost}
           </span>
           {/* TODO: Replace with real trend data */}
@@ -367,7 +369,7 @@ function OverviewTab({
 
       {/* Tools & Skills */}
       <div className="raava-card bg-white px-6 py-5 dark:bg-card">
-        <h3 className="text-[13px] font-semibold text-muted-foreground mb-3">
+        <h3 className="font-display text-[13px] tracking-normal font-medium text-muted-foreground mb-3">
           Tools & Skills
         </h3>
         <div className="flex flex-wrap gap-2">
@@ -377,7 +379,8 @@ function OverviewTab({
             skillNames.map((skill) => (
               <span
                 key={skill}
-                className="rounded-full bg-secondary px-3.5 py-1.5 text-[12px] font-medium text-foreground"
+                className="rounded-full px-3.5 py-1.5 text-[12px] font-medium text-[#224ae8]"
+                style={{ backgroundColor: "rgba(34,74,232,0.08)" }}
               >
                 {skill}
               </span>
@@ -1019,7 +1022,7 @@ export function RaavaTeamMemberDetail() {
   if (!agent) return null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* Breadcrumb (visual — framework breadcrumbs set above) */}
       <div className="flex items-center gap-1.5 text-[13px]">
         <Link

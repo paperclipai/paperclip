@@ -5,6 +5,15 @@ import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 
+/** Redact sensitive fields from request bodies before logging. */
+function redactSensitiveBody(url: string | undefined, body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  if (url && url.includes("store-credentials") && (body as any).credentials) {
+    return { ...body as Record<string, unknown>, credentials: "[REDACTED]" };
+  }
+  return body;
+}
+
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
   if (envOverride) return resolveHomeAwarePath(envOverride);
@@ -64,7 +73,7 @@ export const httpLogger = pinoHttp({
       if (ctx) {
         return {
           errorContext: ctx.error,
-          reqBody: ctx.reqBody,
+          reqBody: redactSensitiveBody(ctx.url ?? (req as any).originalUrl, ctx.reqBody),
           reqParams: ctx.reqParams,
           reqQuery: ctx.reqQuery,
         };
@@ -72,7 +81,7 @@ export const httpLogger = pinoHttp({
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
       if (body && typeof body === "object" && Object.keys(body).length > 0) {
-        props.reqBody = body;
+        props.reqBody = redactSensitiveBody((req as any).originalUrl, body);
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {
         props.reqParams = params;
