@@ -24,8 +24,8 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 ## 4. Get Assignments
 
-- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,blocked`
-- Prioritize: `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
+- `GET /api/companies/{companyId}/issues?assigneeAgentId={your-id}&status=todo,in_progress,in_review,blocked`
+- Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
 
