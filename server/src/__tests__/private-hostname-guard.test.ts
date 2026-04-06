@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
-import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
+import { privateHostnameGuard, resolveUiAllowedHosts } from "../middleware/private-hostname-guard.js";
 
 function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHost?: string }) {
   const app = express();
@@ -53,4 +53,39 @@ describe("privateHostnameGuard", () => {
     expect(res.status).toBe(403);
     expect(res.text).toContain("please run pnpm paperclipai allowed-hostname dotta-macbook-pro");
   }, 20_000);
+});
+
+describe("resolveUiAllowedHosts", () => {
+  it("returns configured hosts in local_trusted mode when allowed hostnames are set", () => {
+    expect(resolveUiAllowedHosts({
+      privateHostnameGateEnabled: false,
+      allowedHostnames: ["example-host.private.ts.net"],
+      bindHost: "127.0.0.1",
+    })).toEqual([
+      "example-host.private.ts.net",
+      "127.0.0.1",
+      "localhost",
+      "::1",
+    ]);
+  });
+
+  it("leaves host filtering unset in local_trusted mode when no allowed hostnames are configured", () => {
+    expect(resolveUiAllowedHosts({
+      privateHostnameGateEnabled: false,
+      allowedHostnames: [],
+      bindHost: "127.0.0.1",
+    })).toBeUndefined();
+  });
+
+  it("preserves private-mode host filtering even without explicit hostnames", () => {
+    expect(resolveUiAllowedHosts({
+      privateHostnameGateEnabled: true,
+      allowedHostnames: [],
+      bindHost: "0.0.0.0",
+    })).toEqual([
+      "localhost",
+      "127.0.0.1",
+      "::1",
+    ]);
+  });
 });
