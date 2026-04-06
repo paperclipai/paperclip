@@ -582,9 +582,9 @@ export function ChannelView() {
     return map;
   }, [messages]);
 
-  // Top-level messages (not replies)
+  // Top-level messages (not replies), chronological order (oldest first)
   const topLevelMessages = useMemo(
-    () => messages.filter((m) => !m.replyToId),
+    () => [...messages.filter((m) => !m.replyToId)].reverse(),
     [messages],
   );
 
