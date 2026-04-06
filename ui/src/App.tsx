@@ -1,9 +1,11 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { BootstrapPendingPage } from "./components/BootstrapPendingPage";
 import { authApi } from "./api/auth";
+import { accessApi } from "./api/access";
 import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Companies } from "./pages/Companies";
@@ -50,26 +52,9 @@ import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
 
-function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {hasActiveInvite
-            ? "No instance admin exists yet. A bootstrap invite is already active. Check your Paperclip startup logs for the first admin invite URL, or run this command to rotate it:"
-            : "No instance admin exists yet. Run this command in your Paperclip environment to generate the first admin invite URL:"}
-        </p>
-        <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm paperclipai auth bootstrap-ceo`}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
 function CloudAccessGate() {
   const location = useLocation();
+  const queryClient = useQueryClient();
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -92,6 +77,14 @@ function CloudAccessGate() {
     enabled: isAuthenticatedMode,
     retry: false,
   });
+  const claimMutation = useMutation({
+    mutationFn: () => accessApi.claimBootstrapAdmin(),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
 
   if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
@@ -106,7 +99,21 @@ function CloudAccessGate() {
   }
 
   if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
+    const next = encodeURIComponent(`${location.pathname}${location.search}`);
+    return (
+      <BootstrapPendingPage
+        hasActiveInvite={healthQuery.data.bootstrapInviteActive}
+        session={sessionQuery.data}
+        onClaim={() => claimMutation.mutate()}
+        isClaiming={claimMutation.isPending}
+        claimError={
+          claimMutation.error instanceof Error
+            ? claimMutation.error.message
+            : null
+        }
+        signInPath={`/auth?next=${next}`}
+      />
+    );
   }
 
   if (isAuthenticatedMode && !sessionQuery.data) {
