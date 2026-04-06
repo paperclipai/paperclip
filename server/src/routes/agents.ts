@@ -988,7 +988,7 @@ export function agentRoutes(db: Db) {
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       assigneeAgentId: req.actor.agentId,
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,in_review,blocked",
     });
 
     res.json(
