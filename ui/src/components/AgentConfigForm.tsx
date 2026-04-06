@@ -390,7 +390,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return uiAdapter.buildAdapterConfig(val!);
     }
     const base = config as Record<string, unknown>;
-    return { ...base, ...overlay.adapterConfig };
+    const combined = { ...base, ...overlay.adapterConfig };
+    if (adapterType === "hermes_local" && combined.command) {
+      combined.hermesCommand = combined.command;
+    }
+    return combined;
   }
 
   const testEnvironment = useMutation({
@@ -713,11 +717,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? val!.command
                       : eff("adapterConfig", "command", String(config.command ?? ""))
                   }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ command: v })
-                      : mark("adapterConfig", "command", v || null)
-                  }
+                  onCommit={(v) => {
+                    if (isCreate) {
+                      set!({ command: v });
+                    } else {
+                      mark("adapterConfig", "command", v || null);
+                      if (adapterType === "hermes_local") {
+                        mark("adapterConfig", "hermesCommand", v || null);
+                      }
+                    }
+                  }}
                   immediate
                   className={inputClass}
                   placeholder={
