@@ -678,7 +678,26 @@ export function agentRoutes(db: Db) {
       (adapterConfig.fleetosUrl as string | undefined) ??
       process.env.FLEETOS_API_URL;
 
-    if (!baseUrl || !apiKey) return;
+    if (!baseUrl || !apiKey) {
+      await db
+        .update(agentsTable)
+        .set({
+          status: "error",
+          provisionError: "FleetOS API URL or API key not configured",
+          updatedAt: new Date(),
+        })
+        .where(eq(agentsTable.id, agent.id));
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.provision.skipped",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { reason: "FleetOS credentials not configured" },
+      });
+      return;
+    }
 
     const preset = resolveRolePreset(agent.role);
 
@@ -686,7 +705,24 @@ export function agentRoutes(db: Db) {
     try {
       client = createFleetOSClient(apiKey, baseUrl);
     } catch {
-      return; // Config missing — skip silently
+      await db
+        .update(agentsTable)
+        .set({
+          status: "error",
+          provisionError: "Failed to create FleetOS client",
+          updatedAt: new Date(),
+        })
+        .where(eq(agentsTable.id, agent.id));
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.provision.failed",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { reason: "Failed to create FleetOS client" },
+      });
+      return;
     }
 
     try {
@@ -707,16 +743,35 @@ export function agentRoutes(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(agentsTable.id, agent.id));
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.provision.started",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { jobId: job.id, template: preset.template },
+      });
     } catch (err) {
       // Fleet API unreachable or returned an error — log but don't fail agent creation.
       const message = err instanceof Error ? err.message : String(err);
       await db
         .update(agentsTable)
         .set({
+          status: "error",
           provisionError: `Failed to start provisioning: ${message}`,
           updatedAt: new Date(),
         })
         .where(eq(agentsTable.id, agent.id));
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "agent.provision.failed",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { error: message },
+      });
     }
   }
 

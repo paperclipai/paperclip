@@ -610,9 +610,10 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   // Start the FleetOS provisioning poller (monitors in-flight provision jobs)
+  let stopProvisionPoller: (() => void) | undefined;
   {
     const { startProvisionPoller } = await import("./services/provision-poller.js");
-    startProvisionPoller(db as any, {}, logger);
+    stopProvisionPoller = startProvisionPoller(db as any, {}, logger);
   }
 
   if (config.databaseBackupEnabled) {
@@ -723,18 +724,20 @@ export async function startServer(): Promise<StartedServer> {
     });
   });
   
-  if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+  {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      logger.info({ signal }, "Stopping embedded PostgreSQL");
-      try {
-        await embeddedPostgres?.stop();
-      } catch (err) {
-        logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-      } finally {
-        process.exit(0);
+      stopProvisionPoller?.();
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+        logger.info({ signal }, "Stopping embedded PostgreSQL");
+        try {
+          await embeddedPostgres?.stop();
+        } catch (err) {
+          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+        }
       }
+      process.exit(0);
     };
-  
+
     process.once("SIGINT", () => {
       void shutdown("SIGINT");
     });

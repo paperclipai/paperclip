@@ -41,17 +41,39 @@ function createPollerClient(opts: ProvisionPollerOptions): FleetOSProxyClient | 
 }
 
 /**
+ * Build a FleetOS client for a specific agent, using its per-agent adapter
+ * credentials when available, falling back to the global poller client.
+ */
+function clientForAgent(
+  adapterConfig: Record<string, unknown> | null,
+  fallbackClient: FleetOSProxyClient,
+): FleetOSProxyClient {
+  const config = adapterConfig ?? {};
+  const apiKey = config.apiKey as string | undefined;
+  const baseUrl = config.fleetosUrl as string | undefined;
+  if (apiKey && baseUrl) {
+    try {
+      return createFleetOSClient(apiKey, baseUrl);
+    } catch {
+      return fallbackClient;
+    }
+  }
+  return fallbackClient;
+}
+
+/**
  * Run a single poll tick: find all agents in "provisioning" status with a
  * provisionJobId, query FleetOS for the job status, and update the agent record.
  */
 async function pollProvisioningAgents(
   db: Db,
-  client: FleetOSProxyClient,
+  globalClient: FleetOSProxyClient,
 ): Promise<{ checked: number; completed: number; failed: number }> {
   const provisioningAgents = await db
     .select({
       id: agents.id,
       provisionJobId: agents.provisionJobId,
+      adapterConfig: agents.adapterConfig,
     })
     .from(agents)
     .where(
@@ -69,9 +91,15 @@ async function pollProvisioningAgents(
     if (!agent.provisionJobId) continue;
     checked++;
 
+    const client = clientForAgent(
+      agent.adapterConfig as Record<string, unknown> | null,
+      globalClient,
+    );
+    const jobId = agent.provisionJobId;
+
     let job: ProvisionJob;
     try {
-      job = await client.getProvisionJob(agent.provisionJobId);
+      job = await client.getProvisionJob(jobId);
     } catch (err) {
       // Network/timeout errors are transient — skip and retry next tick
       if (err instanceof FleetOSProxyError && (err.statusCode === 503 || err.statusCode === 504)) {
@@ -86,7 +114,13 @@ async function pollProvisioningAgents(
           provisionError: `Failed to poll provision job: ${message}`,
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, agent.id));
+        .where(
+          and(
+            eq(agents.id, agent.id),
+            eq(agents.provisionJobId, jobId),
+            eq(agents.status, "provisioning"),
+          ),
+        );
       failed++;
       continue;
     }
@@ -104,7 +138,13 @@ async function pollProvisioningAgents(
           provisionError: null,
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, agent.id));
+        .where(
+          and(
+            eq(agents.id, agent.id),
+            eq(agents.provisionJobId, jobId),
+            eq(agents.status, "provisioning"),
+          ),
+        );
       completed++;
     } else if (job.status === "failed" || job.status === "cancelled" || job.status === "timeout") {
       await db
@@ -114,7 +154,13 @@ async function pollProvisioningAgents(
           provisionError: job.error ?? `Provisioning ${job.status}`,
           updatedAt: new Date(),
         })
-        .where(eq(agents.id, agent.id));
+        .where(
+          and(
+            eq(agents.id, agent.id),
+            eq(agents.provisionJobId, jobId),
+            eq(agents.status, "provisioning"),
+          ),
+        );
       failed++;
     }
     // "running" status — leave as-is, will be checked next tick
@@ -141,7 +187,10 @@ export function startProvisionPoller(
 
   logger?.info("Provision poller started (interval: %dms)", PROVISION_POLL_INTERVAL_MS);
 
+  let tickInFlight = false;
   const interval = setInterval(() => {
+    if (tickInFlight) return;
+    tickInFlight = true;
     void pollProvisioningAgents(db, client)
       .then((result) => {
         if (result.checked > 0) {
@@ -156,6 +205,9 @@ export function startProvisionPoller(
       })
       .catch((err) => {
         logger?.error({ err }, "provision poller tick failed");
+      })
+      .finally(() => {
+        tickInFlight = false;
       });
   }, PROVISION_POLL_INTERVAL_MS);
 
@@ -183,6 +235,7 @@ export async function getProvisionStatus(
       provisionJobId: agents.provisionJobId,
       provisionedContainerId: agents.provisionedContainerId,
       provisionError: agents.provisionError,
+      adapterConfig: agents.adapterConfig,
     })
     .from(agents)
     .where(eq(agents.id, agentId));
@@ -198,8 +251,16 @@ export async function getProvisionStatus(
   } | null = null;
 
   // If still provisioning, try to get live progress from Fleet API
+  // Use per-agent credentials when available, falling back to global config
   if (agent.status === "provisioning" && agent.provisionJobId) {
-    const client = createPollerClient(opts);
+    const adapterConfig = agent.adapterConfig as Record<string, unknown> | null;
+    const agentApiKey = (adapterConfig?.apiKey as string | undefined);
+    const agentBaseUrl = (adapterConfig?.fleetosUrl as string | undefined);
+    const effectiveOpts: ProvisionPollerOptions = {
+      fleetApiKey: agentApiKey ?? opts.fleetApiKey,
+      fleetApiUrl: agentBaseUrl ?? opts.fleetApiUrl,
+    };
+    const client = createPollerClient(effectiveOpts);
     if (client) {
       try {
         const job = await client.getProvisionJob(agent.provisionJobId);

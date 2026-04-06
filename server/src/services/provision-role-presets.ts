@@ -1,8 +1,9 @@
 /**
  * Role-based provisioning preset configuration.
  *
- * Maps Raava agent roles to FleetOS provisioning defaults including
- * template, system prompt orientation, and integration hints.
+ * Maps Raava agent roles (from AGENT_ROLES in packages/shared/src/constants.ts)
+ * to FleetOS provisioning defaults including template, system prompt orientation,
+ * and integration hints.
  */
 
 export interface RolePreset {
@@ -18,45 +19,89 @@ export interface RolePreset {
 
 const DEFAULT_TEMPLATE = "hermes";
 
+/**
+ * Presets keyed by the actual AGENT_ROLES values:
+ * ceo, cto, cmo, cfo, engineer, designer, pm, qa, devops, researcher, general
+ */
 export const ROLE_PRESETS: Record<string, RolePreset> = {
-  sales: {
+  ceo: {
     template: DEFAULT_TEMPLATE,
-    systemPromptHint: "sales-oriented",
-    integrations: ["crm", "email", "calendar"],
+    systemPromptHint: "executive-leadership",
+    integrations: ["crm", "email", "calendar", "bi-tools"],
     extraFields: {
-      system_prompt_role: "sales",
+      system_prompt_role: "ceo",
     },
   },
-  ops: {
+  cto: {
     template: DEFAULT_TEMPLATE,
-    systemPromptHint: "operations",
-    integrations: ["logistics", "inventory", "scheduling"],
+    systemPromptHint: "technical-leadership",
+    integrations: ["code-review", "ci-cd", "monitoring", "architecture"],
     extraFields: {
-      system_prompt_role: "operations",
+      system_prompt_role: "cto",
     },
   },
-  data: {
+  cmo: {
     template: DEFAULT_TEMPLATE,
-    systemPromptHint: "analytics",
-    integrations: ["data-warehouse", "bi-tools", "etl"],
+    systemPromptHint: "marketing-leadership",
+    integrations: ["content-management", "social-media", "analytics", "email"],
     extraFields: {
-      system_prompt_role: "analytics",
+      system_prompt_role: "cmo",
     },
   },
-  support: {
+  cfo: {
     template: DEFAULT_TEMPLATE,
-    systemPromptHint: "support",
-    integrations: ["ticketing", "knowledge-base", "live-chat"],
+    systemPromptHint: "finance-leadership",
+    integrations: ["accounting", "bi-tools", "reporting", "budgeting"],
     extraFields: {
-      system_prompt_role: "support",
+      system_prompt_role: "cfo",
     },
   },
-  marketing: {
+  engineer: {
     template: DEFAULT_TEMPLATE,
-    systemPromptHint: "marketing",
-    integrations: ["content-management", "social-media", "analytics"],
+    systemPromptHint: "software-engineering",
+    integrations: ["code-review", "ci-cd", "ticketing"],
     extraFields: {
-      system_prompt_role: "marketing",
+      system_prompt_role: "engineer",
+    },
+  },
+  designer: {
+    template: DEFAULT_TEMPLATE,
+    systemPromptHint: "design",
+    integrations: ["design-tools", "prototyping", "asset-management"],
+    extraFields: {
+      system_prompt_role: "designer",
+    },
+  },
+  pm: {
+    template: DEFAULT_TEMPLATE,
+    systemPromptHint: "product-management",
+    integrations: ["ticketing", "roadmap", "analytics", "calendar"],
+    extraFields: {
+      system_prompt_role: "pm",
+    },
+  },
+  qa: {
+    template: DEFAULT_TEMPLATE,
+    systemPromptHint: "quality-assurance",
+    integrations: ["testing", "ci-cd", "ticketing", "monitoring"],
+    extraFields: {
+      system_prompt_role: "qa",
+    },
+  },
+  devops: {
+    template: DEFAULT_TEMPLATE,
+    systemPromptHint: "devops-infrastructure",
+    integrations: ["ci-cd", "monitoring", "cloud-infra", "logging"],
+    extraFields: {
+      system_prompt_role: "devops",
+    },
+  },
+  researcher: {
+    template: DEFAULT_TEMPLATE,
+    systemPromptHint: "research-analysis",
+    integrations: ["data-warehouse", "bi-tools", "knowledge-base"],
+    extraFields: {
+      system_prompt_role: "researcher",
     },
   },
   general: {
