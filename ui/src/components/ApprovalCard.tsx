@@ -1,10 +1,11 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import type { Approval, Agent } from "@paperclipai/shared";
+import { cn } from "@/lib/utils";
 
 function statusIcon(status: string) {
   if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
@@ -96,9 +97,12 @@ export function ApprovalCard({
       {(detailLink || onOpen) ? (
         <div className="mt-3">
           {detailLink ? (
-            <Button variant="ghost" size="sm" className="text-xs px-0" asChild>
-              <Link to={detailLink}>View details</Link>
-            </Button>
+            <Link
+              to={detailLink}
+              className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "px-0 text-xs")}
+            >
+              View details
+            </Link>
           ) : (
             <Button variant="ghost" size="sm" className="text-xs px-0" onClick={onOpen}>
               View details

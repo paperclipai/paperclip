@@ -38,8 +38,8 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
-import { InlineEditor } from "../components/InlineEditor";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { InlineEditor } from "../components/InlineEditor";
 import { CommentThread } from "../components/CommentThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
@@ -56,14 +56,12 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Activity as ActivityIcon,
   Check,
-  ChevronDown,
   ChevronRight,
   Copy,
   EyeOff,
@@ -303,9 +301,6 @@ export function IssueDetail() {
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
-  const [secondaryOpen, setSecondaryOpen] = useState({
-    approvals: false,
-  });
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
     action: "approve" | "reject";
@@ -498,6 +493,13 @@ export function IssueDetail() {
       .filter((i) => i.parentId === issue.id)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }, [allIssues, issue]);
+  const childIssuesPanelKey = useMemo(
+    () => childIssues.map((child) => `${child.id}:${String(child.updatedAt)}`).join("|"),
+    [childIssues],
+  );
+  const issuePanelKey = issue
+    ? `${issue.id}:${String(issue.updatedAt)}:${childIssuesPanelKey}`
+    : "";
   const openNewSubIssue = useCallback(() => {
     if (!issue) return;
     openNewIssue({
@@ -507,7 +509,7 @@ export function IssueDetail() {
       projectId: issue.projectId ?? undefined,
       goalId: issue.goalId ?? undefined,
     });
-  }, [issue, openNewIssue]);
+  }, [issue?.goalId, issue?.id, issue?.identifier, issue?.projectId, issue?.title, openNewIssue]);
 
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
@@ -675,6 +677,9 @@ export function IssueDetail() {
       invalidateIssue();
     },
   });
+  const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
+    updateIssue.mutate(data);
+  }, [updateIssue.mutate]);
 
   const approvalDecision = useMutation({
     mutationFn: async ({ approvalId, action }: { approvalId: string; action: "approve" | "reject" }) => {
@@ -1052,18 +1057,20 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (issue) {
-      openPanel(
-        <IssueProperties
-          issue={issue}
-          childIssues={childIssues}
-          onAddSubIssue={openNewSubIssue}
-          onUpdate={(data) => updateIssue.mutate(data)}
-        />
-      );
+    if (!issue) {
+      closePanel();
+      return;
     }
+    openPanel(
+      <IssueProperties
+        issue={issue}
+        childIssues={childIssues}
+        onAddSubIssue={openNewSubIssue}
+        onUpdate={handleIssuePropertiesUpdate}
+      />
+    );
     return () => closePanel();
-  }, [childIssues, closePanel, issue, openNewSubIssue, openPanel, updateIssue]);
+  }, [closePanel, handleIssuePropertiesUpdate, issuePanelKey, openNewSubIssue, openPanel]);
 
   const inboxQuickArchiveArmedRef = useRef(false);
   const canQuickArchiveFromInbox =
@@ -1699,6 +1706,26 @@ export function IssueDetail() {
         </TabsContent>
 
         <TabsContent value="activity">
+          {linkedApprovals && linkedApprovals.length > 0 && (
+            <div className="mb-3 space-y-3">
+              {linkedApprovals.map((approval) => (
+                <ApprovalCard
+                  key={approval.id}
+                  approval={approval}
+                  requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
+                  onApprove={() => approvalDecision.mutate({ approvalId: approval.id, action: "approve" })}
+                  onReject={() => approvalDecision.mutate({ approvalId: approval.id, action: "reject" })}
+                  detailLink={`/approvals/${approval.id}`}
+                  isPending={pendingApprovalAction?.approvalId === approval.id}
+                  pendingAction={
+                    pendingApprovalAction?.approvalId === approval.id
+                      ? pendingApprovalAction.action
+                      : null
+                  }
+                />
+              ))}
+            </div>
+          )}
           {linkedRuns && linkedRuns.length > 0 && (
             <div className="mb-3 px-3 py-2 rounded-lg border border-border">
               <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1753,44 +1780,6 @@ export function IssueDetail() {
           </TabsContent>
         )}
       </Tabs>
-
-      {linkedApprovals && linkedApprovals.length > 0 && (
-        <Collapsible
-          open={secondaryOpen.approvals}
-          onOpenChange={(open) => setSecondaryOpen((prev) => ({ ...prev, approvals: open }))}
-          className="rounded-lg border border-border"
-        >
-          <CollapsibleTrigger className="flex w-full items-center justify-between px-3 py-2 text-left">
-            <span className="text-sm font-medium text-muted-foreground">
-              Linked Approvals ({linkedApprovals.length})
-            </span>
-            <ChevronDown
-              className={cn("h-4 w-4 text-muted-foreground transition-transform", secondaryOpen.approvals && "rotate-180")}
-            />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border-t border-border divide-y divide-border">
-              {linkedApprovals.map((approval) => (
-                <div key={approval.id} className="px-3 py-3">
-                  <ApprovalCard
-                    approval={approval}
-                    requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
-                    onApprove={() => approvalDecision.mutate({ approvalId: approval.id, action: "approve" })}
-                    onReject={() => approvalDecision.mutate({ approvalId: approval.id, action: "reject" })}
-                    detailLink={`/approvals/${approval.id}`}
-                    isPending={pendingApprovalAction?.approvalId === approval.id}
-                    pendingAction={
-                      pendingApprovalAction?.approvalId === approval.id
-                        ? pendingApprovalAction.action
-                        : null
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-      )}
 
 
       {/* Mobile properties drawer */}
