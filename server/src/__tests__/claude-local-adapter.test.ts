@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isClaudeMaxTurnsResult } from "@paperclipai/adapter-claude-local/server";
+import { describeClaudeFailure, isClaudeMaxTurnsResult, isClaudeSuccessResult } from "@paperclipai/adapter-claude-local/server";
 import { parseClaudeStdoutLine } from "@paperclipai/adapter-claude-local/ui";
 import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 
@@ -28,6 +28,27 @@ describe("claude_local max-turn detection", () => {
         stop_reason: "end_turn",
       }),
     ).toBe(false);
+  });
+});
+
+describe("claude_local success detection", () => {
+  it("treats subtype=success as an explicit success result", () => {
+    expect(
+      isClaudeSuccessResult({
+        subtype: "success",
+        is_error: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not synthesize a failure message for explicit success", () => {
+    expect(
+      describeClaudeFailure({
+        subtype: "success",
+        is_error: false,
+        result: "Done",
+      }),
+    ).toBeNull();
   });
 });
 

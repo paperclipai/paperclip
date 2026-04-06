@@ -86,6 +86,22 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+export function hasExplicitSuccessfulResult(result: AdapterExecutionResult): boolean {
+  const parsed = parseObject(result.resultJson);
+  if (Object.keys(parsed).length === 0) return false;
+  if (asBoolean(parsed.is_error, false)) return false;
+
+  const subtype = readNonEmptyString(parsed.subtype)?.toLowerCase();
+  if (subtype === "success") return true;
+  if (subtype === "error" || subtype === "failed" || subtype?.startsWith("error_")) return false;
+
+  const status = readNonEmptyString(parsed.status)?.toLowerCase();
+  if (status === "success" || status === "succeeded" || status === "ok") return true;
+  if (status === "error" || status === "failed") return false;
+
+  return false;
+}
+
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
   workspaceConfig: ExecutionWorkspaceConfig | null;
@@ -2950,11 +2966,12 @@ export function heartbeatService(db: Db) {
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
       const latestRun = await getRun(run.id);
+      const explicitSuccess = hasExplicitSuccessfulResult(adapterResult);
       if (latestRun?.status === "cancelled") {
         outcome = "cancelled";
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+      } else if (((adapterResult.exitCode ?? 0) === 0 || explicitSuccess) && !adapterResult.errorMessage) {
         outcome = "succeeded";
       } else {
         outcome = "failed";
